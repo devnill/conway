@@ -256,7 +256,15 @@ boundary rather than a path-argument convention plain `bash` (`conway.shell`)
 has always been outside of — see `docs/plugins/confine.md`. Reads and
 network are not confined by it, only writes, and it refuses to run at all
 without a configured `--root` or a present primitive binary — never a
-silent fall-through to an unconfined command.
+silent fall-through to an unconfined command. Three more ship beside it:
+`crates/conway-plugin-checkpoint` (`conway.checkpoint`), shadow snapshots
+around every `write`/`edit` with `/conway.checkpoint.diff|rollback|list`,
+the one member of this list in the default opinion set;
+`crates/conway-plugin-web` (`conway.web`), an opt-in `web_fetch`/
+`web_search` and the only first-party tool that reaches the network on the
+model's behalf; and `crates/conway-plugin-toolindex`
+(`conway.toolindex`), an opt-in context hook that defers a tool's schema to
+a one-line index until `describe_tool` asks for it.
 Compaction remains the one first-party-plugin-tier capability still unbuilt
 (`/checkout`/`ContextMask` are built, above, in `conway-plugin-history`);
 conway-plugin-routing is not

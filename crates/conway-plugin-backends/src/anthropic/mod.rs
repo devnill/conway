@@ -24,15 +24,18 @@ use conway_core::content::ToolSpec;
 use conway_core::error::BackendError;
 use conway_core::ids::{BackendId, ModelId};
 use conway_core::ports::{
-    check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk,
-    TokenCountFidelity,
+    check_admission, Admission, Backend, BoxStream, CacheReporting, GenerateRequest,
+    GenerateResponse, StreamChunk, TokenCountFidelity,
 };
 use conway_core::segment::PromptSegment;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::capabilities::{anthropic_defaults, build_capabilities, CapabilityInputs};
+use crate::capabilities::{
+    anthropic_defaults, build_capabilities, max_context_tokens_source, CapabilityInputs,
+    ContextTokensSource,
+};
 use crate::config::{AnthropicConfig, ConfigError, ModelOverrides, SecretString};
 use crate::error::{classify, classify_malformed_body};
 use crate::http::HttpClient;
@@ -194,6 +197,23 @@ impl AnthropicBackend {
             cache::apply_cache_hints(body, segments, placements, *max_breakpoints);
         }
     }
+
+    /// The single construction site for [`CapabilityInputs`] over `model` —
+    /// used by both [`Backend::capabilities`] and
+    /// [`Backend::context_window_source`], mirroring `OpenAiCompatBackend`'s
+    /// own `capability_inputs` (P-14: one construction site per backend, so
+    /// the two can never independently drift).
+    fn capability_inputs(&self, model: &ModelId) -> CapabilityInputs<'_> {
+        CapabilityInputs {
+            dialect_defaults: anthropic_defaults(),
+            metadata: self.models.get(model),
+            overrides: self.overrides.get(model.as_str()),
+            // Anthropic has no discovery endpoint to probe (its window is
+            // Anthropic's own documented per-family figure, already
+            // `context_window_verified`) -- always `None`.
+            probed_max_context_tokens: None,
+        }
+    }
 }
 
 #[async_trait]
@@ -203,11 +223,19 @@ impl Backend for AnthropicBackend {
     }
 
     fn capabilities(&self, model: &ModelId) -> Capabilities {
-        build_capabilities(CapabilityInputs {
-            dialect_defaults: anthropic_defaults(),
-            metadata: self.models.get(model),
-            overrides: self.overrides.get(model.as_str()),
-        })
+        build_capabilities(self.capability_inputs(model))
+    }
+
+    /// Always [`ContextTokensSource::DialectDefaultFloor`]: Anthropic has no
+    /// discovery endpoint to probe, and its window is Anthropic's own
+    /// documented per-family figure (`anthropic_defaults().
+    /// context_window_verified == true`), never `models.json`/`ModelMetadata`
+    /// in practice today -- but this still calls the one resolution
+    /// function (P-14) rather than hardcoding the answer, so a future
+    /// `models.json` entry for an Anthropic model is reported correctly
+    /// without this method needing to change.
+    fn context_window_source(&self, model: &ModelId) -> ContextTokensSource {
+        max_context_tokens_source(&self.capability_inputs(model))
     }
 
     async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
@@ -288,6 +316,19 @@ impl Backend for AnthropicBackend {
     /// heuristic beats a fabricated exact count.
     fn token_fidelity(&self) -> TokenCountFidelity {
         TokenCountFidelity::Heuristic
+    }
+
+    /// **Declared as [`CacheReporting::Reported`] unconditionally** (board
+    /// item A5.7): the Messages API's `usage` object always carries both
+    /// `cache_read_input_tokens`/`cache_creation_input_tokens` once caching
+    /// went GA, zeroed rather than omitted when caching was not used --
+    /// `wire::map_usage`'s own doc states the identical fact for the
+    /// per-response `CacheAccounting` this declaration predicts. Unlike
+    /// `OpenAiCompatBackend::cache_reporting`, there is no per-profile
+    /// dialect split to consult here: every Anthropic-compatible endpoint
+    /// this crate targets speaks the one Messages API contract.
+    fn cache_reporting(&self) -> CacheReporting {
+        CacheReporting::Reported
     }
 
     async fn probe(&self) -> Result<ProbeReport, BackendError> {

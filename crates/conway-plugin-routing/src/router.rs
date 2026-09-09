@@ -46,12 +46,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use conway_core::capabilities::{HeadroomPolicy, RequiredCaps};
 use conway_core::error::RoutingError;
 use conway_core::ids::{EndpointId, ModelRef, RoleAlias};
 use conway_core::ports::{Admission, CapabilityIndex, HealthRegistry, Router};
 use conway_core::prelude::SamplingParams;
-use conway_core::routing::{BreakerState, Route, RouteRequest, RoutingConfig, RoutingReason};
+use conway_core::routing::{
+    AttemptFailure, BreakerState, Route, RouteRequest, RoutingConfig, RoutingReason,
+};
 
 use crate::capability::{non_size_missing, size_missing, strictest};
 use crate::config::{ConfigIssue, ConfigIssueKind};
@@ -317,6 +320,15 @@ impl DeclarativeRouter {
             }
         };
 
+        // One timestamp for every `AttemptFailure` this evaluation produces
+        // below (board item A1d): `evaluate` is synchronous and does no I/O
+        // (`check_candidate` only reads the capability index and health
+        // registry, both in-process), so every candidate in the chain is
+        // genuinely assessed within the same instant -- a per-candidate
+        // `Utc::now()` would manufacture false precision, not real
+        // provenance.
+        let now = Utc::now();
+
         let mut entries = Vec::with_capacity(chain.len());
         for (position, model_ref) in chain.iter().enumerate() {
             let outcome = match self.check_candidate(model_ref, req, headroom_tokens, &required) {
@@ -331,9 +343,19 @@ impl DeclarativeRouter {
                             alias: req.role.clone(),
                         }
                     } else {
+                        // Board item A1d ("say why a turn fell back"): name
+                        // every earlier-in-chain candidate this evaluation
+                        // itself skipped, and why -- `render_reason` (this
+                        // file, already the `RoutingError::NoCandidate`
+                        // renderer) is reused verbatim so this carries no
+                        // second reason vocabulary. Candidates the ROUTER
+                        // never reached at all (this chain's own later
+                        // entries, irrelevant here since `entries` only
+                        // holds positions strictly before `position`) are
+                        // absent by construction, not silently guessed at.
                         RoutingReason::Fallback {
                             position: position as u8,
-                            after: Vec::new(),
+                            after: skipped_so_far(&entries, now),
                         }
                     };
                     EvalOutcome::Selected(reason)
@@ -454,6 +476,10 @@ impl Router for DeclarativeRouter {
             considered,
         })
     }
+
+    fn known_roles(&self) -> Vec<RoleAlias> {
+        self.roles.keys().cloned().collect()
+    }
 }
 
 /// Renders a `RoutingReason` to the `String` form `RoutingError::NoCandidate`
@@ -477,6 +503,29 @@ fn render_reason(reason: &RoutingReason) -> String {
         }
         _ => "unrecognized routing reason".to_string(),
     }
+}
+
+/// Board item A1d: every already-evaluated `Skipped` entry in `entries`,
+/// converted to an `AttemptFailure` for a later `Fallback::after` -- the
+/// exact list of candidates this evaluation itself rejected before it
+/// reached the position now being recorded (`entries` only ever holds
+/// positions strictly earlier in the chain than the one under
+/// construction, since `evaluate`'s loop pushes each position's own
+/// `EvalEntry` only after this fn would already have consumed it). Reuses
+/// `render_reason` -- the same rendering `RoutingError::NoCandidate`
+/// carries -- rather than inventing a second reason vocabulary.
+fn skipped_so_far(entries: &[EvalEntry<'_>], at: DateTime<Utc>) -> Vec<AttemptFailure> {
+    entries
+        .iter()
+        .filter_map(|entry| match &entry.outcome {
+            EvalOutcome::Skipped(reason, _) => Some(AttemptFailure {
+                model: entry.model_ref.clone(),
+                error: render_reason(reason),
+                at,
+            }),
+            EvalOutcome::Selected(_) => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -617,6 +666,90 @@ mod tests {
             }
             other => panic!("expected NoCandidate, got {other:?}"),
         }
+    }
+
+    /// Board item A1d ("say why a turn fell back"): a two-candidate chain
+    /// whose HEAD the router itself pre-filters (breaker open, never
+    /// reaching `AttemptEngine` at all) must name that skip, with its
+    /// breaker kind, in the SELECTED fallback's `RoutingReason::Fallback::
+    /// after` -- the router-level half of A1d (the attempt-level half,
+    /// `Backend::admit` refusals, is covered in `conway-runtime`'s
+    /// `attempt_fallback.rs`).
+    #[test]
+    fn fallback_after_names_the_earlier_router_level_health_skip() {
+        let m0 = model_ref("anthropic", "claude-sonnet-4-6");
+        let m1 = model_ref("local", "qwen3-coder-80b");
+        let config = routing_config(
+            vec![("planner", role(vec![m0.clone(), m1.clone()]))],
+            HeadroomPolicy::default().default_headroom_tokens,
+        );
+        let health = Arc::new(FakeHealth::new());
+        health.set_state(
+            endpoint_of(&m0),
+            BreakerState::Open {
+                until: "2026-07-21T00:00:00Z".parse().unwrap(),
+                kind: BreakerKind::Transport,
+            },
+        );
+        let index = CapabilityIndex::builder()
+            .insert(m0.backend.clone(), m0.model.clone(), caps(100_000))
+            .insert(m1.backend.clone(), m1.model.clone(), caps(100_000))
+            .build();
+        let router = router_with(config, HeadroomPolicy::default(), health, index);
+
+        let routes = router
+            .resolve(&request("planner", 100))
+            .expect("m1 must be selected once m0 is filtered");
+        assert_eq!(routes.len(), 1, "only the surviving candidate is a Route");
+        let RoutingReason::Fallback { position, after } = &routes[0].reason else {
+            panic!("expected Fallback, got {:?}", routes[0].reason);
+        };
+        assert_eq!(*position, 1);
+        assert_eq!(after.len(), 1, "exactly the m0 skip, got {after:?}");
+        assert_eq!(after[0].model, m0);
+        assert!(
+            after[0].error.starts_with("health:"),
+            "got: {}",
+            after[0].error
+        );
+        assert!(
+            after[0].error.contains("Transport"),
+            "breaker kind missing from {:?}",
+            after[0].error
+        );
+
+        // `RoutingExplain` (`explain.rs`) is a pure projection of the SAME
+        // `evaluate()` this test already exercised through `resolve` -- the
+        // two surfaces cannot diverge on `after` any more than they can on
+        // anything else `evaluate` decides.
+        let explainer = crate::RoutingExplain::new(&router);
+        let report =
+            conway_core::ports::RoutingExplainer::explain(&explainer, &request("planner", 100));
+        let selected = report
+            .entries
+            .iter()
+            .find(|e| matches!(e.outcome, crate::EntryOutcome::Selected { .. }))
+            .expect("one entry is selected");
+        let crate::EntryOutcome::Selected { reason } = &selected.outcome else {
+            unreachable!()
+        };
+        // Not a full `assert_eq!` against `routes[0].reason`: each call
+        // captures its own `Utc::now()` (this test deliberately calls
+        // `resolve` and `explain` separately, unlike a real turn, which
+        // only ever calls one), so the two `after[0].at` timestamps
+        // legitimately differ by microseconds. Position and the rendered
+        // failure are what must agree.
+        let RoutingReason::Fallback {
+            position: explain_position,
+            after: explain_after,
+        } = reason
+        else {
+            panic!("expected Fallback, got {reason:?}");
+        };
+        assert_eq!(*explain_position, 1);
+        assert_eq!(explain_after.len(), 1);
+        assert_eq!(explain_after[0].model, m0);
+        assert_eq!(explain_after[0].error, after[0].error);
     }
 
     #[test]

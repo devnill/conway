@@ -373,10 +373,21 @@ impl PersistentSession {
             // This crate has no per-entry `env` field (unlike
             // `conway-plugin-mcp::McpPluginSpec`) -- the child inherits the
             // parent env unchanged, exactly as before this extraction.
+            // No warm-up concept of its own (unlike `conway-plugin-mcp`,
+            // which threads an operator-configured `first_call_timeout_ms`
+            // through `McpPluginSpec`): passing `spec.timeout_ms` again here
+            // makes `ChildSession`'s first-call elevation a no-op (the
+            // "first" round trip gets the SAME deadline an ordinary one
+            // would), so this crate's own per-call timing is unchanged.
+            // This session still inherits `ChildSession::await_response`'s
+            // bounded grace-before-kill uniformly (board item
+            // `01M1YQ3MJQSCQTMVAZ3GCSTB8P`) -- P-14, one implementation, not
+            // a second copy restated here.
             let inner = ChildSession::spawn(
                 &spec.config_id,
                 &spec.command,
                 &[],
+                spec.timeout_ms,
                 spec.timeout_ms,
                 NotificationRoute::Forward(notif_tx),
             )

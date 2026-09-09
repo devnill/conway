@@ -643,6 +643,26 @@ itself to. Ollama Cloud has made no such documented claim as of this
 writing; treat its `implicit_prefix` profile entry as an inherited
 assumption pending live confirmation, not a provider guarantee.
 
+**This section's own finding is now a declared, machine-readable capability,
+not just prose.** `Backend::cache_reporting` (board item A5.7, "prompt
+caching reads zero on every real session") states ahead of time, per
+backend instance, whether its wire dialect has anywhere to say "the cache
+was hit" at all — `conway routes explain` prints it as `cache: reported`
+(`ollama`'s dialect resolved through `openai`/`kimi`'s profiles), `cache:
+not reported` (`ollama` itself, and every other unverified built-in
+profile), or `cache: unknown` (the router held no live backend instance at
+all — `MinimalRouter`'s config-only fallback). This is a DIFFERENT question
+from the per-response `Usage::cache_accounting` the status line and turn
+summary already render (`docs/routing.md`'s "Prompt caching" section): that
+one answers "did THIS response say anything," discovered only after a
+request was sent; `cache_reporting` answers "will ANY response from this
+backend ever have anywhere to say so," answerable before the first request
+is sent. See `Profile::reports_cache_usage`'s own row in the table below —
+`true` only for `openai` and `kimi`, both for the documented reasons this
+section and the next one give; `ollama` stays at the conservative default
+precisely because this section's own live measurement is still an open
+gap, not a confirmed "no."
+
 ### Kimi (Moonshot platform API)
 
 `kimi` names Moonshot's platform API (`https://api.moonshot.ai/v1`) — a
@@ -725,18 +745,23 @@ like a maximally conservative, unfamiliar server. Verified against
 | `tool_call_style` | `"tolerant"` | `"structured"` (canonical deltas only), `"tolerant"` (also accepts a complete JSON-object `arguments` value, not just a string fragment), or `"hermes_text_fallback"` (also scans `delta.content` for an inline `<tool_call>` block). |
 | `cache` | `{ kind = "none" }` | Baseline caching behavior — see [prompt caching](routing.md#prompt-caching-economics-not-correctness). `{ kind = "implicit_prefix", min_prefix_tokens = N }`, `{ kind = "explicit_breakpoints", max_breakpoints, ttls }`, or `{ kind = "none" }`. |
 | `tool_calling` | `"non_streaming"` | Baseline tool-calling support: `"none"`, `"non_streaming"`, or `"streaming"` (with `structured_output`-style variants for validated streaming). |
-| `max_context_tokens` | `32768` | **A last-resort floor, not a routine per-model answer** — see ["Where a context ceiling comes from"](#where-a-context-ceiling-comes-from) immediately below. A context window is a property of a *model*, not a wire dialect (Ollama alone serves 4K- to 1M-token models under this identical `"ollama"` profile), so this number is reached only when nothing more specific — a `models.json` entry, conway's bundled per-model metadata, or a `probe_on_startup` discovery hint — says anything about the model in question. |
+| `max_context_tokens` | `32768` | **A last-resort floor, not a routine per-model answer** — see ["Where a context ceiling comes from"](#where-a-context-ceiling-comes-from) immediately below. A context window is a property of a *model*, not a wire dialect (Ollama alone serves 4K- to 1M-token models under this identical `"ollama"` profile), so this number is reached only when nothing more specific — a `models.json` entry, conway's bundled per-model metadata, or a live `probe_on_startup`/setup-time discovery result — says anything about the model in question. |
 | `context_window_verified` | `false` | Whether `max_context_tokens` above is a real, sourced fact about this provider as a whole (`openai`'s built-in `128000` is; every other built-in's `32768` is not — see below) rather than an internal placeholder clamp. Governs only which `ContextTokensSource` a resolution reports, never the number itself. |
 | `sends_num_ctx` | `false` | Whether this profile expresses a resolved context window on the wire as Ollama's native `options.num_ctx` (`true` for the built-in `ollama` profile only). Confirmed empirically (2026-08-30) that this is the ONLY endpoint that honours it — see ["Requesting the window: `num_ctx`"](#requesting-the-window-num_ctx) below. |
 | `structured_output` | `"none"` | `"none"`, `"json_schema"`, or `"grammar"`. |
 | `parallel_tool_calls` | `false` | Baseline "can an undescribed model of this provider make multiple tool calls in one turn" capability. |
 | `reliability_tier` | `"unknown"` | `"unknown"`, `"community"`, or `"verified"`. Feeds routing's capability floor if a role sets one. |
+| `reports_cache_usage` | `false` | Whether this provider's chat-completions response is **documented** (this crate's own verification, not a guess) to carry a cache-usage field when caching happens — distinct from `cache` above (whether caching is SUPPORTED at all; the two do not covary, see below). `true` only for the built-in `openai` and `kimi` profiles. Declares `Backend::cache_reporting`, which `conway routes explain` prints as `cache: reported`/`cache: not reported`/`cache: unknown` per candidate — see [routing.md](routing.md#prompt-caching-economics-not-correctness). |
 
 ### Where a context ceiling comes from
 
 A `max_context_tokens` conway actually uses for a `(backend, model)` pair
-is resolved through three layers, checked in this order — the first one
-that says anything about the model wins:
+is resolved through FOUR layers, checked in this order — the first one that
+says anything about the model wins. (An earlier version of this section
+described three layers; the hosted OpenAI-compatible models item inserted
+`Probed` between the second and what is now the fourth, closing the gap
+that let a hosted million-token model silently fall two whole layers to the
+dialect floor.)
 
 1. **A `models.json`/config-level override.** `.conway/models.json`'s
    `max_context_tokens` for this exact `"backend/model"` key
@@ -754,25 +779,38 @@ that says anything about the model wins:
    draft of this section (and this item's own first implementation
    attempt) assumed such a key existed and would be read; it does not, and
    a value written there is silently inert — corrected here, 2026-08-30,
-   rather than left standing.
+   rather than left standing. Resolving here reports
+   `ContextTokensSource::Override`.
 2. **conway's per-model metadata.** Bundled at compile time
    (`crates/conway-plugin-backends/src/model_metadata.rs`'s `DEFAULTS` —
    e.g. `glm-5.2` at `1,048,576`, the two Kimi K3 variants
    [above](#kimi-coding-plan)) and/or your own
    `.conway/models.json`-adjacent `metadata_path` TOML file (`[models]`
-   config, defaults to none). A `probe_on_startup` discovery hint, if
-   enabled, is folded in at this same layer for a model this metadata
-   doesn't already cover — see below.
-3. **The dialect's `max_context_tokens` profile field** — the table above,
+   config, defaults to none). Resolving here reports
+   `ContextTokensSource::Metadata`.
+3. **A live discovery result for this exact model**, when
+   `[models].probe_on_startup` is enabled (a rebuild-time overlay of the
+   router's capability index) OR at provider-setup time (below): every
+   OpenAI-compatible dialect's generic `GET {base}/models` step reads a
+   per-entry `context_length` field when a server reports one (some hosted
+   providers do; vLLM's own equivalent field is `max_model_len`, read the
+   same way), and the `"ollama"` profile additionally tries its own native
+   `POST /api/show` first — see ["Requesting the window:
+   `num_ctx`"](#requesting-the-window-num_ctx) below for why that native
+   step exists at all. A model with NEITHER a `models.json` entry NOR
+   bundled metadata, but whose server reports a real number here, gets that
+   real number rather than falling all the way to the floor. Resolving here
+   reports `ContextTokensSource::Probed`.
+4. **The dialect's `max_context_tokens` profile field** — the table above,
    `32768` for every built-in profile except `openai` (`128000`). Reached
    only when NEITHER layer above says anything about this exact model.
 
-That third layer is where the operator's own no-invented-numbers ruling
+That fourth layer is where the operator's own no-invented-numbers ruling
 (2026-08-30) matters: `32768` here was NEVER a fact about any specific
 model — Ollama alone serves windows from 4K to 1M+ tokens under this
 identical profile — and conway does not pretend otherwise. Whether this
 layer's number is a REAL, sourced per-*provider* figure or an unsourced
-placeholder is itself tracked, via the new `context_window_verified` field
+placeholder is itself tracked, via the `context_window_verified` field
 above:
 
 - `openai`'s `128000` is `context_window_verified = true` — OpenAI's own
@@ -786,25 +824,47 @@ above:
   never presented as fact. Resolving here reports
   `ContextTokensSource::Unverified`.
 
-**Which of these governed is discoverable, not silent, either way.** This
-is the direct fix for the incident that motivated this section: an
-operator's Ollama Cloud session against `glm-5.2` was refused at 36,288
-tokens ("accepts at most 32768") while the same model, on the same
-endpoint, was independently recorded accepting 61,667 input tokens minutes
-earlier — the floor was governing silently because `glm-5.2` had no
-bundled metadata entry at all, and a rejection citing "32768" read exactly
-like a real model limit rather than what it actually was.
-`conway_plugin_backends::capabilities::{ContextTokensSource,
-max_context_tokens_source}` is the pure primitive that answers "which layer
-actually governed, and is it a real fact?" for any given resolution;
-`OpenAiCompatBackend::capabilities` emits a `tracing::debug!` naming the
-backend, model, dialect, and resolved source whenever it resolves
-`DialectDefaultFloor` OR `Unverified` for exactly this reason — run with
-`RUST_LOG=conway_plugin_backends=debug` (or the CLI's own `-vv`; see
-[`scripting.md`'s flag reference](scripting.md#flag-reference) for the
-other log-level knobs) to see it. Fix it the same way you'd fix any other
-under-declared model: add a `models.json` entry, or a `metadata_path`
-entry, naming the real window — or let provider setup do it for you, next.
+**Which of these governed is discoverable, not silent, anywhere.** This is
+the direct fix for the incident that motivated this section: an operator's
+Ollama Cloud session against `glm-5.2` was refused at 36,288 tokens
+("accepts at most 32768") while the same model, on the same endpoint, was
+independently recorded accepting 61,667 input tokens minutes earlier — the
+floor was governing silently because `glm-5.2` had no bundled metadata
+entry at all, and a rejection citing "32768" read exactly like a real model
+limit rather than what it actually was. A LATER incident in the same
+family motivated the `Probed` layer above: a hosted million-token model
+was silently treated as if it had 32,768 tokens, and `conway routes
+explain` answered `unknown` for every candidate rather than naming the
+floor.
+
+`conway_core::capabilities::{ContextTokensSource,
+max_context_tokens_source}` (re-exported from `conway_plugin_backends::
+capabilities` for source compatibility — see that type's own doc for why
+it now lives in `conway-core`) is the pure primitive that answers "which
+layer actually governed, and is it a real fact?" for any given resolution.
+Three places surface it, never re-deriving the answer themselves — one
+resolution, many readers, because a restatement drifts and the duplicate
+silently drops a case:
+
+- `OpenAiCompatBackend::capabilities` emits a `tracing::debug!` naming the
+  backend, model, dialect, and resolved source whenever it resolves
+  `DialectDefaultFloor` OR `Unverified` — run with
+  `RUST_LOG=conway_plugin_backends=debug` (or the CLI's own `-vv`; see
+  [`scripting.md`'s flag reference](scripting.md#flag-reference) for the
+  other log-level knobs) to see it.
+- `conway routes explain <role>` prints EVERY candidate's window alongside
+  its provenance — `verified`, `models.json`, `probed`, or `floor
+  (assumed)` — never a bare `unknown` for a model it will actually route
+  to; see [routing.md](routing.md#asking-why-a-route-was-chosen).
+- The runway notice a model reads mid-turn (`docs/vision/` background;
+  emitted as a `SystemNote`) names the same provenance whenever a floor
+  governs — e.g. "32.7k assumed -- set the real window in
+  .conway/models.json" — never presenting an assumed number as if a real
+  one.
+
+Fix an under-declared model the same way regardless of which surface told
+you about it: add a `models.json` entry, or a `metadata_path` entry, naming
+the real window — or let provider setup do it for you, next.
 
 ### Establishing the window at setup
 
@@ -822,10 +882,23 @@ own `Mode::AddProviderContextWindow` card for ASK;
 set_context_window` for PERSIST), never two separate implementations of
 any of the three (a fix applied to only one of two config entrances shipped
 as a real defect earlier in this same item's own history, caught within
-minutes). For `ollama`, discovery is `POST /api/show` (below); a dialect
-with no known discovery endpoint (`lm_studio`, `vllm_hermes`,
-`llama_cpp_server`, `kimi` — none confirmed to expose one) is skipped,
-never attempted.
+minutes). **Both entrances write for EVERY model they add to a chain, not
+only the first/verified one:** guided setup calls the DISCOVER-then-ASK-
+then-PERSIST sequence once per backend added across an "add another" loop
+(`crates/conway-cli/src/first_run.rs`'s `run_backend_setup`, and its own
+retried-credential path, `retry_credential_and_finish`), and `/settings` →
+providers → add runs it for the one model each add-flow configures.
+
+For `ollama`, discovery tries native `POST /api/show` first (below); every
+OpenAI-compatible dialect — including one with no dialect-specific step —
+falls through to the generic `GET {base}/models` step, reading the same
+per-entry `context_length`/`max_model_len` fields the `probe_on_startup`
+capability probe reads (["Where a context ceiling comes
+from"](#where-a-context-ceiling-comes-from) above) — so a hosted provider
+this crate has no dialect-specific discovery step for still gets a real,
+live window at setup time whenever its own `/v1/models` response reports
+one. Only when NEITHER step finds anything for the model in question does
+this flow fall through to asking.
 
 **Asking is skipped when discovery is skipped for a GOOD reason, not just
 any reason.** `anthropic` and the `"openai"` dialect both have a real,
@@ -878,14 +951,19 @@ to answer at setup — is not broken and is not silently given an invented
 number.** A backend with no `.conway/models.json` entry for a model simply
 resolves `Unverified` exactly like any other undescribed model (above) —
 conway still routes, using the admission-safety clamp, and
-`tracing::debug!` (or a future operator-facing display of the resolved
-window's *source*, not just its value — the equivalent of typing
-`/context` in other coding-agent CLIs, but showing configured / discovered
-/ bundled / unverified rather than only a number, disclosed as a separate,
-not-yet-decided follow-up rather than folded into this item) says so.
-Nothing about this item retroactively fills in a window for a
-pre-existing config; it only makes `Unverified` rarer going forward, by
-asking once, at the moment a provider is configured.
+`tracing::debug!` says so. The "future operator-facing display of the
+resolved window's source" this paragraph used to flag as a not-yet-decided
+follow-up is no longer future: the hosted OpenAI-compatible models item
+built it — `conway routes explain <role>` (["Where a context ceiling comes
+from"](#where-a-context-ceiling-comes-from) above,
+[routing.md](routing.md#asking-why-a-route-was-chosen)) and the model-facing
+runway notice both show `verified` / `models.json` / `probed` / `floor
+(assumed)`, never only a number. Nothing about EITHER item retroactively
+fills in a window for a pre-existing config; setup only makes `Unverified`
+rarer going forward, by asking once, at the moment a provider is
+configured, and probing (`probe_on_startup`, or a live setup-time
+discovery attempt) narrows the remaining gap further without ever
+inventing a number a server did not actually report.
 
 ### Requesting the window: `num_ctx`
 
@@ -1479,6 +1557,13 @@ pub fn build_conway(dir: &Path, config_path: &Path) -> conway::Result<conway::Co
     })?;
     conway::ConwayBuilder::from_parts(outcome.config)
         .with_backend_factory(Arc::new(ThirdPartyBackendFactory))
+        // `ThirdPartyBackend` never issues a tool call, so which gate this
+        // selects is never actually consulted -- `GateMode::Deny` just
+        // needs to be SOMETHING that builds without a prompt handler.
+        .with_gate_config(conway::gates::GateConfig {
+            mode: conway::gates::GateMode::Deny,
+            ..conway::gates::GateConfig::default()
+        })
         .build()
 }
 ```
@@ -1505,13 +1590,10 @@ fn write_settings_with_backend_entry(
     let settings = serde_json::json!({
         "default_role": "coder",
         "cwd": dir.to_string_lossy(),
-        // `permissions.mode = "allowlist"` requires a non-empty
-        // `allowed_tools` list (`config::merge::validate`) even though
-        // `ThirdPartyBackend` never issues a tool call and this gate is
-        // therefore never actually consulted -- `"*"` is a real,
-        // syntactically valid `AllowListGate` glob entry (matches any
-        // tool name), not a magic sentinel this fixture invented.
-        "permissions": { "mode": "allowlist", "allowed_tools": ["*"] },
+        // No `"permissions"` key: `settings.json` no longer selects a
+        // gate at all -- `build_conway`'s own `with_gate_config` call
+        // (elided here) is what makes this build without a prompt
+        // handler.
         "backends": {
             BACKEND_ID: backend_entry
         },

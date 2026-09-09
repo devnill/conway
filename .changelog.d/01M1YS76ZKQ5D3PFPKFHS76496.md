@@ -1,0 +1,3 @@
+### Fixed
+
+- **A backgrounded `bash` job no longer holds the tool to its full timeout, and a completed call never again reports both `exit code: 0` and `timed out` on the same result** — board item `01M1YS76ZKQ5D3PFPKFHS76496`. `bash` now returns as soon as the launched `bash -c` process itself exits, rather than waiting for a still-running grandchild (`cmd &`) to release the stdout/stderr pipes it inherited; a successful return names any still-running background pid(s) instead of silently dropping that output, and the process group is still killed on timeout and on cancellation, exactly as before — never on a normal, successful return. See `docs/tools.md`'s new "What `&` does inside `bash`" section for the full contract.

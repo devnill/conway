@@ -757,21 +757,35 @@ Several already have a plausible answer written and shipped as a
 you install if you want it. What matters is that you took it, rather than
 discovering later that it had been applied on your behalf.
 
-Taking one is a different question from tuning it. A first-party plugin
-ships an opinionated default and no `settings.json` field of its own —
-`[plugins].install` decides *whether* it runs, never *how* it behaves once
-it does, and `first_party_plugins::bundle()`'s own module doc says the
-matching thing from the install side: it is "a worked example, not a
-commitment to any of its members individually," a statement about which
-plugins ship, not about what you may reconfigure inside one from outside
-code. The mechanism that exists below that tier,
+Taking one is a different question from tuning it. `[plugins].install`
+decides *whether* a first-party plugin runs; `[plugins.config.<id>]`
+decides *how* it behaves once it does — an operator-authored, free-form
+JSON table keyed by the plugin's own id, validated and applied by the
+plugin itself through one method (`Plugin::configure`), never interpreted
+by the core or the facade. Refusing a key it does not recognize, by name,
+is the plugin's own job, the same fail-loud discipline
+`#[serde(deny_unknown_fields)]` already gives conway's own settings tree
+one level up. `conway.trim`'s `keep_turns` — how many turns of tool output
+to keep before dropping the rest — is the first real settings, proving the
+seam with one operator-facing number rather than leaving it a hypothetical;
+`first_party_plugins::bundle()`'s own module doc still says the true thing
+about the BUNDLE side of this: it is "a worked example, not a commitment to
+any of its members individually," a statement about which plugins ship,
+which remains a separate question from what you may configure inside one
+you did choose to install. This is file configuration only, so far — no
+TUI editor renders a plugin's settings, no `/settings` row exists for one
+yet, and no other first-party plugin has adopted the mechanism for its own
+constants — but the config-file half already works exactly as
+`settings.json` itself does. The DIFFERENT mechanism below this tier,
 `conway_core::ports::PluginConfig` narrowed down a subagent tree via
-`Plugin::narrowable_keys`, is an embedder surface, deliberately, for this
-first slice (`[S1.5]`) — no model-invoked tool and no CLI flag reaches it,
-and no first-party plugin's own tuning constant is threaded through it
-either. Wanting a different answer than the shipped one still means what
-it always has: fork the plugin, or construct it yourself with the config
-you want and hand it to `ConwayBuilder::with_plugin`.
+`Plugin::narrowable_keys`, remains an embedder surface, deliberately, for
+this first slice (`[S1.5]`) — no model-invoked tool and no CLI flag
+reaches it; it answers a different question (how a CHILD agent's config
+may narrow relative to its parent's), not this one (what an OPERATOR's
+own top-level value is in the first place). Wanting a plugin's behavior to
+differ from what a `[plugins.config.<id>]` key lets you state still means
+what it always has: fork the plugin, or construct it yourself with the
+config you want and hand it to `ConwayBuilder::with_plugin`.
 
 **What to forget when context fills.** There is no automatic compaction. Nothing
 is dropped, rewritten, or summarized behind your back, because a compactor

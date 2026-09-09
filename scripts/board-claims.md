@@ -337,6 +337,13 @@ present: observe_sink
 -->
 
 <!-- claim-check
+why: regression guard: ChainedContextHook is the mechanism that makes Rust context hooks chain in install order (points 3/4 of hooks.md). A refactor that silently drops the Rust chain would make the documented composition rule false -- the claim that "Rust hooks chain" rests on this type existing in builder.rs.
+claim: ChainedContextHook exists in crates/conway/src/builder.rs -- the Rust context-hook chaining mechanism
+paths: crates/conway/src/builder.rs
+present: ChainedContextHook
+-->
+
+<!-- claim-check
 why: regression guard for the tui doc-comment sweep (board item 01M1FSQ99EZ1TF66775206YD3M), applying CONTRIBUTING.md's "What a doc comment is for" subsection -- specifically its MOVE rule that "this item" never survives as a durable comment reference, since it resolves only for the writer, and not durably even then. A future comment that reintroduces the phrase reopens the exact "unreadable once the item that wrote it closes" defect the sweep closed.
 claim: no comment in crates/conway-cli/src/tui says "this item"
 paths: crates/conway-cli/src/tui

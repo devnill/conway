@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::capabilities::{Capabilities, ProbeReport};
+use crate::capabilities::{Capabilities, ContextTokensSource, ProbeReport};
 use crate::content::{ContentBlock, SamplingParams, StopReason, ToolCall, ToolSpec, Usage};
 use crate::error::{BackendError, ConwayError};
 use crate::ids::{BackendId, ModelId, PrefixKey};
@@ -175,6 +175,62 @@ pub enum TokenCountFidelity {
     Heuristic,
 }
 
+/// Whether a `Backend` instance's wire dialect includes a cache-usage field
+/// at all (board item A5.7, "prompt caching reads zero on every real
+/// session") -- a DECLARED, static fact, answerable before a single request
+/// has been sent, and deliberately distinct from two things it is easy to
+/// conflate it with:
+///
+/// - **Not [`crate::capabilities::CacheMode`].** `CacheMode` answers "does
+///   this backend/model SUPPORT prefix caching at all, and how" (explicit
+///   breakpoints, implicit prefix matching, slot save/restore, or none).
+///   `CacheReporting` answers a materially different question: "IF caching
+///   happens, does this wire dialect have anywhere to say so." The two do
+///   not covary -- `conway-plugin-backends`'s `"kimi"` and `"ollama"`
+///   profiles both declare `CacheMode::ImplicitPrefix`, yet Kimi's Moonshot
+///   platform API documents and reports a `cached_tokens` field
+///   (`Reported`) while Ollama's native `/api/chat` endpoint carries no
+///   cache field in its wire format at all (`NotReported`) -- see
+///   `docs/providers.md`'s "Does Ollama Cloud actually cache prefixes?" for
+///   the investigation that first drew this distinction out in prose,
+///   before this type existed to make it a queryable capability.
+/// - **Not [`crate::content::CacheAccounting`].** `CacheAccounting` is a
+///   PER-RESPONSE fact set by whichever wire decoder actually parsed a
+///   given reply (`Reported` when this exact response carried a cache
+///   field, `NotReported` when it did not) -- necessarily discovered only
+///   AFTER a request has been sent. `CacheReporting` is the declared,
+///   ahead-of-time PREDICTION of what every response from this backend
+///   instance will say: `conway routes explain` needs an answer before
+///   routing a single token, which is exactly what a per-response fact
+///   cannot supply.
+///
+/// Declaration honesty (the same shape [`TokenCountFidelity`] and
+/// [`crate::capabilities::ContextTokensSource`] already established):
+/// [`Backend::cache_reporting`]'s default is [`Self::NotReported`], the
+/// conservative "I have no basis to claim otherwise" answer -- a `Backend`
+/// that overrides neither this method nor its wire decoder declares nothing
+/// it did not earn.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheReporting {
+    /// This backend instance's wire dialect includes a cache-usage field
+    /// (Anthropic's always-present `cache_read_input_tokens`/
+    /// `cache_creation_input_tokens`, OpenAI's
+    /// `usage.prompt_tokens_details.cached_tokens`, Kimi's top-level
+    /// `usage.cached_tokens`, ...) that its decoder reads whenever it is
+    /// present in a response.
+    Reported,
+    /// This backend instance's wire dialect carries no cache-usage field at
+    /// all (Ollama's native `/api/chat`), or its reporting behavior has not
+    /// been verified against real documentation or a real response (every
+    /// built-in `openai-compat` profile except `openai`/`kimi` -- see
+    /// `docs/providers.md`'s `Profile` field table). The honest default:
+    /// claiming [`Self::Reported`] without a verified basis would be the
+    /// exact declaration-honesty defect this type exists to prevent.
+    NotReported,
+}
+
 /// Dialect-neutral fallback estimator for [`Backend::admit`]'s default
 /// implementation: `ceil(chars / 4)` over each segment's serialized content
 /// (roughly `conway-runtime`'s `ContextBuilder::TOKEN_ESTIMATOR`,
@@ -315,6 +371,76 @@ pub trait Backend: Send + Sync + 'static {
     /// chars/4 default.
     fn token_fidelity(&self) -> TokenCountFidelity {
         TokenCountFidelity::Heuristic
+    }
+
+    /// Whether this backend instance's wire dialect includes a cache-usage
+    /// field at all -- see [`CacheReporting`]'s own doc for the full
+    /// reasoning and how it differs from [`crate::capabilities::CacheMode`]
+    /// (support) and [`crate::content::CacheAccounting`] (a per-response
+    /// fact). Default [`CacheReporting::NotReported`], mirroring
+    /// [`Self::token_fidelity`]'s and [`Self::context_window_source`]'s own
+    /// conservative defaults: a `Backend` that overrides neither this
+    /// method nor its wire decoder declares nothing it did not earn.
+    ///
+    /// **`conway-plugin-backends`'s two adapters both override this.**
+    /// `AnthropicBackend` declares [`CacheReporting::Reported`]
+    /// unconditionally (the Messages API's `usage` object always carries
+    /// both cache fields once present at all -- see
+    /// `anthropic::wire::map_usage`'s own doc). `OpenAiCompatBackend`
+    /// declares whichever value its resolved `Profile::reports_cache_usage`
+    /// names -- `true` only for `openai` (OpenAI's documented
+    /// `prompt_tokens_details.cached_tokens`) and `kimi` (Moonshot's
+    /// documented top-level `cached_tokens`, above a 256-token prompt);
+    /// every other built-in profile, including `ollama`, stays at the
+    /// honest default.
+    ///
+    /// This is the seam `conway_core::ports::CapabilityIndex::from_backends`
+    /// reads (alongside [`Self::token_fidelity`]), keyed by [`crate::ids::
+    /// BackendId`] alone -- a `Backend` instance's own declared property,
+    /// not per-model like [`Self::capabilities`] -- from which
+    /// `conway-plugin-routing`'s `RoutingExplain` projects it onto
+    /// `ExplainEntry::cache_reporting`, which `conway routes explain`
+    /// prints: an operator can see, before a single request is sent,
+    /// whether a candidate's backend has anywhere to report a cache hit at
+    /// all -- the declared half of the "is caching actually working" answer
+    /// this board item exists to make visible, alongside the existing
+    /// per-response [`crate::content::CacheAccounting`] the status line and
+    /// turn summary already render.
+    fn cache_reporting(&self) -> CacheReporting {
+        CacheReporting::NotReported
+    }
+
+    /// Where [`Self::capabilities`]'s resolved `max_context_tokens` for
+    /// `model` actually came from — see [`crate::capabilities::
+    /// ContextTokensSource`]'s own doc for the vocabulary and the incident
+    /// this exists to close (hosted OpenAI-compatible models item). Mirrors
+    /// [`Self::token_fidelity`]'s pattern exactly: a PROVIDED method with an
+    /// honest default (`Unverified` — "I have no basis to claim anything
+    /// better"), which any implementation resolving a real
+    /// `max_context_tokens` chain SHOULD override to state what it actually
+    /// established, rather than silently inheriting a claim it did nothing
+    /// to earn.
+    ///
+    /// **`conway-plugin-backends`'s two adapters both override this**, and
+    /// both do so by calling `conway_plugin_backends::capabilities::
+    /// max_context_tokens_source` over the EXACT SAME `CapabilityInputs` their
+    /// own `capabilities()` already builds for `model` (P-14: one
+    /// resolution function, never a second one re-deriving the same
+    /// precedence) — see `OpenAiCompatBackend::capability_inputs`/
+    /// `AnthropicBackend::capability_inputs`, each backend's single
+    /// construction site for that value.
+    ///
+    /// This is the seam `conway_core::ports::CapabilityIndex::from_backends`
+    /// reads (alongside `token_fidelity`) to carry provenance into the
+    /// router's `CapabilityIndex`, from which `conway-plugin-routing`'s
+    /// `RoutingExplain` projects it onto `ExplainEntry::
+    /// context_window_source` (`conway routes explain`'s per-candidate
+    /// `window: ... [<provenance>]`), and `conway_runtime::attempt::
+    /// AttemptEngine::execute` reads it directly (this same trait method,
+    /// no CapabilityIndex indirection needed there) to label the runway
+    /// notice's window-fill note when a floor governs.
+    fn context_window_source(&self, _model: &ModelId) -> ContextTokensSource {
+        ContextTokensSource::Unverified
     }
 }
 
@@ -472,6 +598,20 @@ pub struct BackendBuildContext {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+/// One model's [`Capabilities`], as discovered/composed at startup probe
+/// time, bundled with the SAME [`ContextTokensSource`] provenance
+/// `max_context_tokens_source` already established while composing it —
+/// [`BackendFactory::probe_capabilities`]'s return type (hosted
+/// OpenAI-compatible models item). Bundled into one struct rather than
+/// returned via two separate `BackendFactory` methods so an implementation
+/// never has to run its own (possibly network-bound) discovery step twice
+/// to answer two questions about the same probe result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProbedCapability {
+    pub capabilities: Capabilities,
+    pub context_window_source: ContextTokensSource,
+}
+
 /// Builds one [`Backend`] instance for a provider-adapter KIND named up
 /// front by [`Self::id`] -- the provider-adapter analogue of
 /// [`crate::ports::routing::RouterFactory`], one layer over: read that
@@ -563,7 +703,18 @@ pub trait BackendFactory: Send + Sync {
     /// exactly as any third-party kind is free to do too -- nothing about this
     /// being a first-party kind reaches a private hook a third-party
     /// implementation could not also use -- a built-in gets no privileged API.
-    fn probe_capabilities(&self, _ctx: &BackendBuildContext) -> BTreeMap<ModelId, Capabilities> {
+    ///
+    /// Returns [`ProbedCapability`] (`Capabilities` + [`ContextTokensSource`]),
+    /// not `Capabilities` alone — a probed pair's context-window provenance
+    /// is exactly as real as its `models.json`-declared counterpart's, and
+    /// must reach the router's `CapabilityIndex` the same way (see
+    /// `ConwayBuilder::build`'s overlay step, which now calls
+    /// `CapabilityIndexBuilder::insert_context_window_source` alongside
+    /// `insert` for every entry this returns).
+    fn probe_capabilities(
+        &self,
+        _ctx: &BackendBuildContext,
+    ) -> BTreeMap<ModelId, ProbedCapability> {
         BTreeMap::new()
     }
 }
@@ -823,5 +974,18 @@ mod tests {
             max_context_tokens: 1_000_000,
         };
         assert_eq!(backend.token_fidelity(), TokenCountFidelity::Heuristic);
+    }
+
+    /// A `Backend` that overrides neither `cache_reporting` nor its wire
+    /// decoder must declare `NotReported` -- the honest default this board
+    /// item's declaration-honesty rule requires (see `CacheReporting`'s own
+    /// doc): claiming `Reported` without a verified basis would be exactly
+    /// the defect this type exists to prevent.
+    #[test]
+    fn default_cache_reporting_is_not_reported() {
+        let backend = DefaultAdmitBackend {
+            max_context_tokens: 1_000_000,
+        };
+        assert_eq!(backend.cache_reporting(), CacheReporting::NotReported);
     }
 }

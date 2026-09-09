@@ -1848,6 +1848,23 @@ impl AgentLoop {
                 .tool_calls
                 .saturating_add(outcome.response.tool_calls.len() as u32);
 
+            // Board item A5.6: record what is ABOUT to be dispatched BEFORE
+            // dispatching it, so a cancellation racing in from OUTSIDE this
+            // loop (`supervisor::supervise`'s deadline/hard-cancel arms,
+            // which can fire and `abort()` this very task while `run_batch`
+            // below is still awaiting) always finds a truthful answer to
+            // "what was interrupted" -- see `AgentTree::mark_tools_started`'s
+            // own doc for why this is set on the TREE, not on `state`.
+            self.deps.tree.mark_tools_started(
+                self.agent_id,
+                outcome
+                    .response
+                    .tool_calls
+                    .iter()
+                    .map(|call| crate::tree::InFlightCall::new(call.name.clone(), &call.arguments))
+                    .collect(),
+            );
+
             let outcomes = self
                 .deps
                 .tool_runner
@@ -1857,9 +1874,17 @@ impl AgentLoop {
             if self.cancel.is_cancelled() {
                 // The batch's outcomes are dropped here, including any calls
                 // that completed real side effects before the cancel fired —
-                // their results never reach the session log.
+                // their results never reach the session log. Deliberately
+                // does NOT call `mark_tools_finished`: `finish_cancelled`
+                // (below) still needs to read what was in flight -- see
+                // `AgentTree::mark_tools_finished`'s own doc for why leaving
+                // the marker set is what makes that possible.
                 return Ok(self.finish_cancelled(&state, &result_builder).await);
             }
+            // The batch returned WITHOUT this agent having been cancelled --
+            // every outcome below is about to be processed normally, so
+            // nothing is "in flight" anymore.
+            self.deps.tree.mark_tools_finished(self.agent_id);
 
             let calls = outcome.response.tool_calls.clone();
             for (index, tool_outcome) in outcomes.into_iter().enumerate() {
@@ -1969,6 +1994,7 @@ impl AgentLoop {
                 total_tokens_est: report.total_tokens_est,
                 headroom,
                 max_context_tokens: outcome.max_context_tokens,
+                max_context_tokens_source: outcome.max_context_tokens_source,
                 model: &model_ref,
                 budget: &self.spec.budget,
                 keep_alive: self.spec.keep_alive,
@@ -1983,13 +2009,13 @@ impl AgentLoop {
                 started_at: state.started_at.unwrap_or_else(Utc::now),
                 now: Utc::now(),
             };
-            for text in runway::notes_for_turn(&mut state.runway, &runway_inputs) {
+            for note in runway::notes_for_turn(&mut state.runway, &runway_inputs) {
                 try_rt!(
                     state,
                     self.persist(|seq| LogRecord::SystemNote {
                         seq,
                         ts: Utc::now(),
-                        text,
+                        text: note.text.clone(),
                         reason: "runway".to_string(),
                         prov: Provenance::SystemNote {
                             reason: "runway".to_string(),
@@ -1997,6 +2023,38 @@ impl AgentLoop {
                     })
                     .await
                 );
+                // Board item A5.6: a BUDGET-dimension crossing (never a
+                // context-window-fill note -- see `RunwayNote::is_budget`'s
+                // own doc) is also told to whoever else has a stake in this
+                // agent noticing its own deadline: the live event stream
+                // (so `/agents` -- or any other event consumer -- can mark
+                // the row BEFORE the agent is gone, not just after), and,
+                // when this agent has a parent, the parent's own log (so an
+                // orchestrating model or the operator can extend, steer, or
+                // accept partial work before it is lost -- the whole point
+                // named in this item's own spec). Neither of these re-runs
+                // the threshold arithmetic: both read straight off the
+                // `RunwayNote` `notes_for_turn` already computed above.
+                if let Some(limit) = note.limit_key() {
+                    self.deps.bus.emit(
+                        self.session,
+                        self.agent_id,
+                        Event::BudgetWarning {
+                            agent_id: self.agent_id,
+                            limit: limit.to_string(),
+                            text: note.text.clone(),
+                        },
+                    );
+                    if let Some(parent_mailbox) = &self.parent_mailbox {
+                        parent_mailbox.send(AgentMessage::BudgetNotice {
+                            from: self.agent_id,
+                            text: format!(
+                                "child {} is nearing a budget limit -- {}",
+                                self.agent_id, note.text
+                            ),
+                        });
+                    }
+                }
             }
 
             state.turn += 1;
@@ -2269,28 +2327,87 @@ impl AgentLoop {
     /// top of `run_inner`'s loop), which has always carried its caller-
     /// supplied reason this way.
     ///
-    /// Falls back to the pre-existing literal `"cancelled"` when there is no
-    /// stashed reason -- true for a descendant whose token was tripped only
-    /// by an ancestor's cancellation propagating structurally (that
-    /// descendant was never itself named in a `cancel` call, so there is no
-    /// truthful reason to attach; see `AgentTree::cancel`'s own doc), and
-    /// also true for the pre-existing deadline-triggered token trip
-    /// (`supervisor.rs`'s deadline arm calls `cancel.cancel()` directly, with
-    /// no reason at all -- `check_budget` normally catches a deadline first,
-    /// but this fallback keeps that race harmless either way).
+    /// Falls back to a literal when there is no stashed reason -- true for a
+    /// descendant whose token was tripped only by an ancestor's
+    /// cancellation propagating structurally (that descendant was never
+    /// itself named in a `cancel` call, so there is no truthful reason to
+    /// attach; see `AgentTree::cancel`'s own doc), and also true for the
+    /// deadline-triggered token trip (`supervisor.rs`'s deadline arm calls
+    /// `cancel.cancel()` directly, with no reason at all -- `check_budget`
+    /// normally catches a deadline first, but this race is possible
+    /// whenever a tool call is still in flight when the deadline elapses:
+    /// see the board item A5.6 paragraph below).
+    ///
+    /// **Board item A5.6.** Before this item, that fallback was
+    /// unconditionally the bare literal `"cancelled"` -- true regardless of
+    /// WHY, so a child killed by its own deadline mid-tool-call was
+    /// indistinguishable, in its own terminal result, from one an operator
+    /// (or an ancestor) had genuinely asked to stop. This method now
+    /// recognizes the specific, narrow case that fallback silently covered:
+    /// no stashed reason, AND `self.spec.budget.deadline` is `Some` and has
+    /// already elapsed. Nothing else produces a `None` reason with an
+    /// elapsed deadline at the same time by coincidence -- an ordinary
+    /// external cancel (`AgentTree::cancel`) always stashes a reason for
+    /// its OWN direct target, and a deadline that has not yet elapsed
+    /// cannot be what tripped this token (`check_budget`'s own deadline
+    /// check would have caught an unelapsed one, and nothing else trips
+    /// `self.cancel` on a timer) -- so this reads as "budget", not a guess.
+    /// The reason becomes `"budget: deadline=<dl> elapsed"` instead of the
+    /// bare literal, and [`crate::result::interrupted_call_note`] (reading
+    /// [`crate::tree::AgentTree::in_flight_tools`], still populated because
+    /// `run_inner`'s own cancelled branch deliberately skips clearing it --
+    /// see `AgentTree::mark_tools_finished`'s own doc) is appended to the
+    /// trailing text when this agent was mid-tool-call when it happened.
+    /// `ResultStatus` itself stays `Cancelled`, never reclassified to
+    /// `BudgetExceeded` -- this item's own "no change to what trips a
+    /// budget" constraint, and `check_budget` remains the only place that
+    /// status is ever produced.
     ///
     /// Reports [`Self::terminal_account`] as its trailing text, not `""` --
     /// a cancelled agent that had already written real work
     /// (files, a partial reply) must not read as though it did nothing.
     async fn finish_cancelled(&self, state: &LoopState, builder: &ResultBuilder) -> AgentResult {
-        let reason = self
-            .deps
-            .tree
-            .cancel_reason(self.agent_id)
-            .unwrap_or_else(|| "cancelled".to_string());
+        // A5.6's own attribution narrows to EXACTLY the case its doc above
+        // names: no stashed reason (so this was never an explicit,
+        // attributable `AgentTree::cancel`/hard-cancel-via-mailbox), AND
+        // this agent's own deadline has actually elapsed. Every other
+        // cancellation -- including an ordinary hard cancel that also
+        // happens to have a tool in flight -- keeps its pre-existing
+        // `"cancelled"` fallback and its pre-existing trailing text
+        // UNCHANGED: `interrupted_call_note` is deliberately gated on the
+        // SAME condition as the `"budget: ..."` reason, not appended
+        // whenever `in_flight` happens to be non-empty, so a cancellation
+        // this item was never about (board item `01M1FH114QA3A152W8H6E2YMGJ`'s
+        // extension already covers "report the last thing it actually
+        // said" for a hard cancel, and a summary this item did not ask to
+        // change must not silently change anyway).
+        let stashed = self.deps.tree.cancel_reason(self.agent_id);
+        let budget_elapsed_deadline = match self.spec.budget.deadline {
+            Some(deadline) if Utc::now() >= deadline => Some(deadline),
+            _ => None,
+        };
+        let (reason, in_flight_note) = match (stashed, budget_elapsed_deadline) {
+            (Some(reason), _) => (reason, None),
+            (None, Some(deadline)) => {
+                let in_flight = self.deps.tree.in_flight_tools(self.agent_id);
+                (
+                    format!("budget: deadline={deadline} elapsed"),
+                    crate::result::interrupted_call_note(&in_flight),
+                )
+            }
+            (None, None) => ("cancelled".to_string(), None),
+        };
+        let mut trailing = self.terminal_account(state, builder);
+        if let Some(note) = in_flight_note {
+            if trailing.is_empty() {
+                trailing = note;
+            } else {
+                trailing = format!("{trailing}\n\n{note}");
+            }
+        }
         self.finish(
             ResultStatus::Cancelled { reason },
-            self.terminal_account(state, builder),
+            trailing,
             state.usage,
             state.turn,
             state.turn_steps,
@@ -2387,11 +2504,15 @@ impl AgentLoop {
         .await
     }
 
-    /// Builds the terminal `AgentResult`, persists it (best-effort — a
-    /// store failure here is logged, never propagated, since `finish` must
-    /// always produce a value), publishes it to the tree, and -- only if
-    /// that publication was the first one for this agent -- emits
-    /// `AgentFinished` and delivers it to the parent's mailbox.
+    /// Builds the terminal `AgentResult`, publishes it to the tree, and --
+    /// only if that publication was the first one for this agent -- BOTH
+    /// persists it durably (best-effort — a store failure here is logged,
+    /// never propagated, since `finish` must always produce a value) AND
+    /// emits `AgentFinished`/delivers it to the parent's mailbox. Since
+    /// A5.3, persistence is gated on the identical `is_first` check the
+    /// event/mailbox block already used -- see the durable-persist call
+    /// site's own comment, below, for why unconditional persistence on
+    /// both sides of a publish race would double-write the session's log.
     ///
     /// ## Carried follow-up (/): the tree-publish gate
     ///
@@ -2448,32 +2569,55 @@ impl AgentLoop {
         result.steps_taken = steps_taken;
         result.steps_this_turn = steps_this_turn;
 
-        // `finish` has already committed to a terminal `AgentResult` and
-        // returns it unconditionally below -- there is no `Result` left to
-        // fail into, so unlike every other call site this one handles
-        // `Self::persist`'s `Result` itself (log-and-continue) rather than
-        // routing it through `try_rt!` (see that method's own doc for why
-        // this is still exactly one `append` call either way).
-        if let Err(err) = self
-            .persist(|seq| LogRecord::AgentResultRecord {
-                seq,
-                ts: Utc::now(),
-                result: result.clone(),
-            })
-            .await
-        {
-            tracing::error!(
-                agent = %self.agent_id,
-                error = %err,
-                "failed to persist terminal AgentResult"
-            );
-        }
-
         let is_first = self
             .deps
             .tree
             .publish_result(self.agent_id, result.clone())
             .unwrap_or(true);
+
+        // Durable persistence is now gated on the SAME `is_first` CAS the
+        // event-emission/mailbox-delivery block below already gates on --
+        // see this method's own doc, "the tree-publish gate", for the race
+        // this closes. Before A5.3, `supervisor::supervise`'s own
+        // `Outcome::Synthesized` branch never persisted its synthesized
+        // result at all (the gap A5.3 fixes), so this call was always the
+        // only writer and unconditional persistence was harmless. Now that
+        // the supervisor ALSO persists (through the identical
+        // [`crate::result::persist_agent_result`] this call routes
+        // through -- not a second, hand-rolled `head`-then-`append`
+        // sequence: the supervisor holds no `AgentLoop` to call a method
+        // on, only a `SessionId` and an `Arc<dyn SessionStore>`, so a free
+        // function is the one shared implementation both sites call), an
+        // unconditional persist on BOTH sides of the race would write TWO
+        // `AgentResultRecord`s into one session's log whenever a task
+        // outraces its own `abort()` and reaches this method after the
+        // supervisor already synthesized and won. Gating both sides on
+        // `is_first`/`won` keeps "exactly one terminal `AgentResultRecord`
+        // per session" true, and keeps the log's terminal record identical
+        // to whatever a live awaiter (`AgentTree::await_result`) already
+        // sees -- there is no case where the loser's un-persisted `result`
+        // silently diverges from what the log shows, because the loser's
+        // `result` is never durably written at all.
+        //
+        // `finish` has already committed to a terminal `AgentResult` and
+        // returns it unconditionally below regardless of `is_first` -- see
+        // `Self::finish`'s own doc: the loser's local `result` value is
+        // still returned to ITS OWN caller (`run()`), so a store failure or
+        // a lost persist race here never leaves `run()` with nothing to
+        // return. Persistence is therefore handled here (log-and-continue)
+        // rather than routed through `try_rt!`.
+        if is_first {
+            if let Err(err) =
+                crate::result::persist_agent_result(self.deps.store.as_ref(), self.session, &result)
+                    .await
+            {
+                tracing::error!(
+                    agent = %self.agent_id,
+                    error = %err,
+                    "failed to persist terminal AgentResult"
+                );
+            }
+        }
 
         if is_first {
             let ephemeral = self.deps.tree.ephemeral_of(self.agent_id);

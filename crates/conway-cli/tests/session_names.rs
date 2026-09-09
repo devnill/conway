@@ -36,8 +36,16 @@ fn ok_script() -> Script {
 // sessions name / unname
 // ---------------------------------------------------------------------
 
+/// The auto-title feature changed what an unnamed row shows here: it used
+/// to stay blank (this test's own prior name said exactly that); now it
+/// shows the session's derived first-prompt title instead. The
+/// `conway.names` sidecar itself is unaffected either way -- `name`/
+/// `title` stay two separate JSON fields (see `session_json`'s own doc)
+/// precisely so this distinction is checkable: `name` is `null` for the
+/// unnamed session both before and after, and `title` is the new field
+/// carrying the derived text.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn name_then_list_shows_the_name_and_unnamed_rows_stay_blank() {
+async fn name_then_list_shows_the_name_and_an_unnamed_row_shows_its_auto_title() {
     let mock = MockBackend::start(Script(vec![
         vec![Chunk::Text("ok"), Chunk::Finish("stop")],
         vec![Chunk::Text("ok"), Chunk::Finish("stop")],
@@ -56,9 +64,10 @@ async fn name_then_list_shows_the_name_and_unnamed_rows_stay_blank() {
         String::from_utf8_lossy(&name_out.stderr)
     );
 
-    // A second, unnamed session, so the table has one named row and one
-    // blank row to check.
-    let second = run_conway(&["-p", "hi"], &fixture);
+    // A second, unnamed session -- a distinct first prompt from the named
+    // one's, so its auto-title is unambiguous to find and cannot be
+    // confused with `"daily"` or with the first session's own prompt.
+    let second = run_conway(&["-p", "what is today's date"], &fixture);
     assert!(second.status.success());
 
     let list_out = run_conway(&["sessions", "list", "--json"], &fixture);
@@ -72,15 +81,22 @@ async fn name_then_list_shows_the_name_and_unnamed_rows_stay_blank() {
         .find(|v| v["id"].as_str() == Some(named.to_string().as_str()))
         .unwrap_or_else(|| panic!("no element for {named} in {arr:?}"));
     assert_eq!(named_obj["name"].as_str(), Some("daily"));
+    // The operator-chosen name wins over any derived title -- `title`
+    // mirrors `name` once one is bound, never the first-prompt text.
+    assert_eq!(named_obj["title"].as_str(), Some("daily"));
 
     let other_obj = arr
         .iter()
         .find(|v| v["id"].as_str() != Some(named.to_string().as_str()))
         .expect("the other session");
-    // Blank, not a synthesized placeholder like `null` rendered as text or
-    // `"-"` -- `serde_json::Value::Null` is exactly what an absent `Option`
-    // serializes to, and the text table's own cell is checked below.
-    assert!(other_obj["name"].is_null());
+    // `name` stays `null` -- never synthesized from the prompt, and never
+    // written by the auto-title path. `serde_json::Value::Null` is exactly
+    // what an absent `Option` serializes to.
+    assert!(
+        other_obj["name"].is_null(),
+        "the conway.names store must stay untouched by auto-titling: {other_obj:?}"
+    );
+    assert_eq!(other_obj["title"].as_str(), Some("what is today's date"));
 
     let text_out = run_conway(&["sessions", "list"], &fixture);
     assert!(text_out.status.success());
@@ -103,14 +119,11 @@ async fn name_then_list_shows_the_name_and_unnamed_rows_stay_blank() {
         named_line.starts_with(named_short),
         "the row showing `daily` must be the named session's: {named_line:?}"
     );
-    let blank_rows = text
-        .lines()
-        .skip(1)
-        .filter(|l| !l.trim().is_empty() && !l.contains("daily"))
-        .count();
-    assert_eq!(
-        blank_rows, 1,
-        "the unnamed session's row must stay blank in the NAME column: {text:?}"
+    // The unnamed row now shows its derived title instead of staying
+    // blank.
+    assert!(
+        text.lines().any(|l| l.contains("what is today's date")),
+        "the unnamed session's row must show its auto-title: {text:?}"
     );
 }
 

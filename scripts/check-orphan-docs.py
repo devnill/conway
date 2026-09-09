@@ -103,10 +103,21 @@ ALLOWLIST: dict[str, str] = {
 }
 _FIXTURE_PREFIX = "crates/conway/tests/fixtures/agents/"
 _IDEATE_CORPUS_PREFIX = "crates/conway-cli/tests/fixtures/claude_compat_ideate/"
+_CHANGELOG_FRAGMENTS_PREFIX = ".changelog.d/"
 ALLOWLIST_PREFIXES: dict[str, str] = {
     _FIXTURE_PREFIX:
         "agent-definition test fixtures, loaded by load_agent_defs in tests, "
         "not read as prose",
+    _CHANGELOG_FRAGMENTS_PREFIX:
+        "ephemeral one-entry-per-writer CHANGELOG fragments (board item "
+        "01M1YY14QSB8WA6G1V5KT8NT0B) -- each `.changelog.d/<slug>.md` is "
+        "deleted by scripts/collect-changelog.py the moment it is folded "
+        "into CHANGELOG.md, typically within one build-lane wave gate; "
+        "indexing a file designed to be gone within days would just add a "
+        "reference that goes stale before the next sweep runs. "
+        ".changelog.d/README.md is additionally referenced directly from "
+        "CONTRIBUTING.md's changelog-fragment rule, so this prefix's "
+        "coverage of it is redundant belt-and-suspenders, not load-bearing.",
     _IDEATE_CORPUS_PREFIX:
         "a vendored copy of a REAL third-party plugin's skills/ and agents/ "
         "(ideate 3.2.2), checked in so claude_compat's translation is tested "

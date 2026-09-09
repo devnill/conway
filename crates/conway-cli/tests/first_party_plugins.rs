@@ -340,6 +340,87 @@ async fn search_sessions_tool_is_present_in_the_announced_set_once_installed() {
     );
 }
 
+/// The default-install gate for `conway.web` (board item
+/// `01M1YVDYEBJENX4NFC6NCSD9B9`): with no `[plugins].install` entry, the
+/// real compiled binary never announces `web_fetch` -- the same shape the
+/// `conway.path`/`conway.discover` pairs above prove for their own tools.
+/// Half 1 of the pair immediately below: this test alone would pass against
+/// an implementation that never wired `conway.web` into `bundle()` at all
+/// (the tool would be absent either way), which is exactly why it is paired
+/// with `web_fetch_tool_is_present_in_the_announced_set_once_installed`
+/// rather than standing alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn web_fetch_tool_is_absent_from_the_announced_set_without_plugins_install() {
+    let mock = MockBackend::start(Script(vec![vec![
+        Chunk::Text("hi back"),
+        Chunk::Finish("stop"),
+    ]]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+    // Deliberately no `add_plugins_install` call.
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let names = announced_names(
+        requests
+            .last()
+            .expect("mock must have received one request"),
+    );
+    assert!(
+        !names.iter().any(|n| n == "web_fetch"),
+        "with no [plugins].install, 'web_fetch' must not be in the announced tool set, got \
+         {names:?}"
+    );
+}
+
+/// The other half of the gate: naming `"conway.web"` in `[plugins].install`
+/// against the REAL compiled binary makes `web_fetch` reachable -- direct
+/// evidence that `conway-cli` links `conway-plugin-web` and resolves
+/// `"conway.web"` through this same `[plugins].install` mechanism as every
+/// other first-party id, closing board item `01M1YVDYEBJENX4NFC6NCSD9B9`'s
+/// last acceptance criterion (no dependency line, no `bundle()` entry,
+/// before this change -- `conway plugin install conway.web` reached
+/// nothing). Half 2 of the pair immediately above: this test alone would
+/// pass against an implementation that wrongly announced `web_fetch`
+/// unconditionally (e.g. added to `DEFAULT_OPINION_SET` or announced with
+/// no install entry at all), which is exactly what the control test above
+/// rules out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn web_fetch_tool_is_present_in_the_announced_set_once_installed() {
+    let mock = MockBackend::start(Script(vec![vec![
+        Chunk::Text("hi back"),
+        Chunk::Finish("stop"),
+    ]]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+    add_plugins_install(&fixture, &["conway.web"]);
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let names = announced_names(
+        requests
+            .last()
+            .expect("mock must have received one request"),
+    );
+    assert!(
+        names.iter().any(|n| n == "web_fetch"),
+        "with [plugins].install = [\"conway.web\"], 'web_fetch' must be in the announced tool \
+         set, got {names:?}"
+    );
+}
+
 /// Beyond mere announcement: once installed, the tool actually dispatches
 /// through the real compiled binary to this plugin's own `Tool::invoke`,
 /// and its exact reply text is observable in the finished event's preview.

@@ -118,6 +118,84 @@ pub enum ReliabilityTier {
     Unknown,
 }
 
+/// Where a resolved `max_context_tokens` value actually came from — the
+/// discoverability seam the context-window-declaration-honesty item added
+/// and this item (hosted OpenAI-compatible windows / `routes explain`
+/// provenance) widened with [`ContextTokensSource::Probed`].
+///
+/// **Lives in `conway-core`, not `conway-plugin-backends` where it was
+/// originally defined,** for the same reason [`crate::ports::
+/// TokenCountFidelity`] lives here rather than in the crate that first
+/// needed it (board item 01M0ASX466G3PW3SJJS3KGNS55): every consumer that
+/// needs to SHOW this value — `conway-runtime`'s runway notice,
+/// `conway-plugin-routing`'s `RoutingExplain`, `conway-cli`'s `routes
+/// explain` and status line — depends on `conway-core` but NOT on
+/// `conway-plugin-backends` (a leaf adapter crate, not a shared
+/// dependency), so the type has to live at or below the lowest common
+/// dependency for every reader to reach it without an upward or sideways
+/// crate reference. `conway-plugin-backends::capabilities` re-exports this
+/// exact type for source compatibility — the RESOLUTION LOGIC (which
+/// variant applies to a given `(backend, model)` pair) still lives in
+/// exactly one place, `conway_plugin_backends::capabilities::
+/// max_context_tokens_source`, which is the only function permitted to
+/// construct one of these from first principles; every other site (a
+/// `Backend::context_window_source` impl, `CapabilityProbe::discover_result`)
+/// either calls that function or relays a value it already returned.
+///
+/// The defect this exists for: a rejection or a routing decision citing a
+/// context ceiling was, before the context-window-declaration-honesty item,
+/// textually indistinguishable whether that ceiling was a real,
+/// model-specific figure or the "no one told conway anything" floor — one
+/// operator evening was spent chasing the wrong fix (conversation
+/// compaction) because a 32,768-token refusal looked exactly like a model's
+/// real limit rather than what it actually was. This item's own incident
+/// (a hosted million-token model silently treated as if it had 32k, and
+/// `routes explain` answering `unknown` for every candidate) is the same
+/// failure shape one layer up: not just "was a floor silently used" but
+/// "was the floor even *labelled* anywhere an operator could see it."
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextTokensSource {
+    /// A `models.json`/config-level `ModelOverrides::max_context_tokens`
+    /// named this exact `(backend, model)` pair. This is also where a
+    /// setup-time discover-or-ask answer (live-discovered or
+    /// operator-typed) ends up once persisted — see
+    /// `docs/providers.md`'s "context window" section — so `Override`
+    /// covers both a hand-edited config and one conway itself wrote.
+    Override,
+    /// A `ModelMetadata` entry (bundled `DEFAULTS`, or a `metadata_path`
+    /// file) named this model — the compiled-in, sourced table.
+    Metadata,
+    /// Startup-time (or setup-time) live discovery against the provider's
+    /// OWN endpoint returned a number for this exact model — an OpenAI-
+    /// compatible server's `/v1/models` reporting `context_length` (or a
+    /// dialect-specific equivalent, e.g. Ollama's native `/api/show`).
+    /// Ranked below `Override`/`Metadata` (an operator's or a shipped
+    /// table's explicit word about THIS model always wins over what a
+    /// server happened to report at discovery time) and above the dialect
+    /// floor (a live, named number for this exact model beats a generic
+    /// per-dialect guess even when nothing else said anything).
+    Probed,
+    /// Neither source above said anything about this model, but this
+    /// dialect's `Profile::max_context_tokens` IS a real, sourced figure
+    /// for the provider as a whole (`Profile::context_window_verified` is
+    /// `true` — `openai`'s `128_000`, Anthropic's `200_000`), not a
+    /// per-model fact but not invented either.
+    DialectDefaultFloor,
+    /// Neither source above said anything about this model, AND this
+    /// dialect's own baseline `max_context_tokens` is itself an unsourced
+    /// placeholder (`context_window_verified == false` — every built-in
+    /// profile except `openai`/Anthropic, e.g. Ollama's `32768`, which is
+    /// not a fact about any real Ollama model). A caller MUST treat the
+    /// numeric value that still gets resolved (an internal
+    /// admission-safety clamp — `Capabilities::max_context_tokens` is a
+    /// plain `u32`, not `Option<u32>`) as exactly what it is: nothing
+    /// conway actually established. Rendered "floor (assumed)" wherever an
+    /// operator can see it.
+    Unverified,
+}
+
 /// Tokens reserved for model output and reasoning when no caller supplies a
 /// more specific value. See [`RequiredCaps::headroom_tokens`].
 pub const DEFAULT_HEADROOM_TOKENS: u32 = 8_192;

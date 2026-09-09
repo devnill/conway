@@ -229,12 +229,7 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // (or short of) it -- mirrors `/settings`' own reservation immediately
     // below, one item earlier (`01M1A9M2EVJNR0HBN86A8E40EA`).
     if state.help_open && matches!(state.mode, Mode::Normal) {
-        help::draw(
-            frame,
-            areas.unreserved_transcript,
-            state.modal_scroll,
-            theme,
-        );
+        help::draw(frame, areas.unreserved_transcript, state, theme);
     }
 
     // V4: the `/settings` menu follows the EXACT same gating as `/help`
@@ -338,7 +333,7 @@ fn bottom_modal_reservation(state: &AppState, unreserved_transcript: Rect) -> u1
     if state.settings_open {
         settings::modal_rect(state, unreserved_transcript).height
     } else if state.help_open {
-        help::modal_rect(unreserved_transcript).height
+        help::modal_rect(state, unreserved_transcript).height
     } else if state.plugins_open {
         plugins::modal_rect(state, unreserved_transcript).height
     } else {
@@ -531,11 +526,7 @@ fn draw_permission_overlay(
             .join(" -> ")
     };
 
-    let body = Paragraph::new(Line::from(Span::styled(
-        req.rendered.clone(),
-        theme.emphasized,
-    )))
-    .wrap(Wrap { trim: false });
+    let body = Paragraph::new(permission_body_lines(req, theme)).wrap(Wrap { trim: false });
     let content_rows = body
         .line_count(modal::body_width(transcript_area))
         .min(u16::MAX as usize) as u16;
@@ -624,6 +615,95 @@ fn draw_permission_overlay(
     footer_lines.push(Line::from(format!("agent path: {agent_path}")));
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, frame_areas.footer_area);
+}
+
+/// Board item 01M1YVEJB6GAPST5YZET4KZZE2: the permission prompt's own
+/// body -- a colored unified diff (current on-disk bytes vs. what the call
+/// would produce) for a pending `edit`/`write` whose target file is
+/// readable and whose change is computable, or the pre-existing raw
+/// `req.rendered` dump (unchanged single emphasized line) for every other
+/// tool, or for an `edit`/`write` where no diff could be computed (missing/
+/// unreadable file, non-UTF-8 content, or an `old_string` that is not
+/// currently in the file -- the exact same "nothing to show" case
+/// [`crate::diff::apply_touch`] already handles by leaving content
+/// unchanged, which folds to an empty diff here). The raw arguments stay
+/// reachable even when a diff renders, appended as a trailing dim block
+/// inside the SAME scrollable body -- see this function's own doc below for
+/// why that is a fold, not a dedicated toggle key.
+///
+/// **Disclosed scope note: the one place this render pass touches disk.**
+/// This module's own doc calls [`draw`] "a pure function ... no I/O", a
+/// claim this one call knowingly narrows -- `permission_diff_text`, below,
+/// runs exactly one `std::fs::read_to_string` on exactly the path the
+/// pending call names, and only while THIS prompt is the thing on screen.
+/// The architecturally cleaner place to compute this -- once, when the
+/// request first arrives, cached on the prompt itself rather than
+/// re-derived on every render -- needs a field on
+/// `crate::tui::gate::PendingPrompt`/its promotion path in
+/// `state/modal.rs`, both maintained separately from the TUI's render/view
+/// layer. Reading here keeps the change local to the render layer, at the
+/// cost of repeating a small, local, read-only file read on every render
+/// tick while the prompt is showing (e.g. each `PageUp`/`PageDown`) --
+/// noted as a disclosed trade-off, not a hidden one; a future change that
+/// also touches `gate.rs`/`state/modal.rs` can move the read to
+/// request-arrival time instead.
+///
+/// **Why no dedicated raw-args toggle key.** A per-prompt raw/diff toggle
+/// would need a new `Context::Permission` keybinding -- a new match arm in
+/// `tui/input.rs::handle_permission_key` and a new default in
+/// `tui/keybindings.rs`, both outside the render/view layer this module
+/// belongs to. Folding the raw arguments into the SAME scrollable body
+/// instead (reachable via the EXISTING `PageUp`/`PageDown` scroll, already
+/// wired -- see this function's own module doc) keeps them reachable
+/// without adding a keybinding; a real toggle remains a reasonable future
+/// addition if a diff-heavy prompt makes the fold too long to page through
+/// comfortably.
+fn permission_body_lines(req: &conway::PermissionRequest, theme: &Theme) -> Vec<Line<'static>> {
+    let Some(diff_text) = permission_diff_text(req) else {
+        return vec![Line::from(Span::styled(
+            req.rendered.clone(),
+            theme.emphasized,
+        ))];
+    };
+    let mut lines: Vec<Line<'static>> = diff_text
+        .split('\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| transcript::diff_styled_line(l, theme))
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("raw arguments:", theme.dim)));
+    // THE REQUEST'S OWN ARGUMENTS, not `req.rendered`. `rendered` is a
+    // SUMMARY a tool writes for a one-line prompt -- `EditTool`'s names the
+    // path and omits `old_string`/`new_string` entirely. Showing it here
+    // would mean the operator, having asked to see what was actually
+    // requested, is shown a shorter paraphrase of it. Pretty-printed so a
+    // multi-line `old_string` is readable rather than one escaped ribbon;
+    // falls back to `rendered` only if the arguments will not serialize.
+    let raw = serde_json::to_string_pretty(&req.arguments).unwrap_or_else(|_| req.rendered.clone());
+    for line in raw.split('\n') {
+        lines.push(Line::from(Span::styled(line.to_string(), theme.dim)));
+    }
+    lines
+}
+
+/// Computes the diff [`permission_body_lines`] shows for a pending
+/// `edit`/`write` -- `None` for any other tool, a target `path` the
+/// request's own `arguments` doesn't name, a file that can't be read as
+/// UTF-8 text right now, or a change that folds to no line-level diff at
+/// all (see [`crate::diff::apply_touch`]'s own doc for when that happens,
+/// e.g. an `old_string` not currently in the file -- the SAME thing that
+/// would make the real tool call fail once approved).
+fn permission_diff_text(req: &conway::PermissionRequest) -> Option<String> {
+    let path = req.arguments.get("path")?.as_str()?;
+    let touch = crate::diff::file_touch_from_args(req.tool.as_str(), &req.arguments)?;
+    let before = std::fs::read_to_string(path).unwrap_or_default();
+    let after = crate::diff::apply_touch(&before, &touch.kind);
+    let diff_text = crate::diff::unified_diff(path, path, &before, &after);
+    if diff_text.is_empty() {
+        None
+    } else {
+        Some(diff_text)
+    }
 }
 
 /// Rows the /ask modal's footer reserves when there is NO in-modal error
@@ -1507,6 +1587,142 @@ mod tests {
         state
     }
 
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: an `edit` prompt fixture --
+    /// `arguments` carries the real `path`/`old_string`/`new_string` shape
+    /// `EditTool`/`permission_diff_text` expect, and `render_kind` is
+    /// `Structured` (matching the real `EditTool::render_kind`, never
+    /// `ShellCommand`).
+    fn edit_request(path: &str, old_string: &str, new_string: &str) -> PermissionRequest {
+        PermissionRequest {
+            tool: ToolName::new("edit"),
+            category: ToolCategory::Edit,
+            arguments: serde_json::json!({
+                "path": path,
+                "old_string": old_string,
+                "new_string": new_string,
+            }),
+            render_kind: conway::RenderKind::Structured,
+            ..sample_request(&format!("edit({{\"path\":\"{path}\"}})"))
+        }
+    }
+
+    fn awaiting_edit_permission(path: &str, old_string: &str, new_string: &str) -> AppState {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let (prompt, _rx) = PendingPrompt::new_for_test(edit_request(path, old_string, new_string));
+        state.mode = Mode::AwaitingPermission(prompt);
+        state
+    }
+
+    /// The item's own first required check: an `edit` prompt whose
+    /// `old_string` spans TWO lines shows a unified diff with BOTH removed
+    /// lines (`-`) and BOTH added lines (`+`) -- not just the single-line
+    /// case a less careful implementation (e.g. one that diffed
+    /// `old_string`/`new_string` as bare strings rather than the whole
+    /// file) might still pass.
+    #[test]
+    fn edit_prompt_with_a_two_line_old_string_shows_minus_and_plus_lines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").expect("seed file");
+        let path_str = path.to_string_lossy().to_string();
+
+        let state = awaiting_edit_permission(&path_str, "beta\ngamma", "BETA\nGAMMA");
+        // TALL ENOUGH TO SHOW THE WHOLE HUNK. The overlay caps its height
+        // at a fraction of the transcript area and SCROLLS the remainder
+        // (`PageUp`/`PageDown`), which is the intended design -- so a short
+        // viewport legitimately shows only the first few diff lines. This
+        // test is about the diff's CONTENT, not the overlay's paging, so it
+        // renders somewhere the whole hunk fits.
+        let text = render_text(&state, 100, 60);
+
+        assert!(text.contains("-beta"), "{text}");
+        assert!(text.contains("-gamma"), "{text}");
+        assert!(text.contains("+BETA"), "{text}");
+        assert!(text.contains("+GAMMA"), "{text}");
+    }
+
+    /// The item's own second required check: a multi-byte character sitting
+    /// mid-line in the diffed content must never panic while rendering the
+    /// prompt -- the exact bug class the operator's own uncommitted
+    /// `truncate_chars_with_ellipsis` fix (this file's sibling
+    /// `view/transcript.rs`) exists for (a raw byte-index slice landing
+    /// inside a multi-byte character). Nothing in this diff path slices a
+    /// line by byte offset (`transcript::diff_styled_line`'s own doc), but a
+    /// real end-to-end render is what would actually catch a regression
+    /// here, not just a pure-function assertion.
+    #[test]
+    fn edit_prompt_with_a_multibyte_character_mid_line_never_panics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "price: 10\u{2014}20 dollars\n").expect("seed file"); // em dash
+        let path_str = path.to_string_lossy().to_string();
+
+        let state = awaiting_edit_permission(&path_str, "10\u{2014}20", "15\u{2014}25");
+
+        // HALF ONE: a deliberately tiny, narrow viewport. This is where a
+        // byte-indexed slice or a width calculation that counts bytes
+        // rather than characters actually panics -- wrapping is tightest
+        // and the em dash is most likely to straddle a boundary. The
+        // requirement is that rendering COMPLETES.
+        let _ = render_text(&state, 40, 10);
+
+        // HALF TWO: a viewport large enough to actually show the body, so
+        // "it did not panic" cannot be satisfied by rendering nothing at
+        // all. At 40x10 the overlay has room only for its decision-key
+        // footer, so the character under test never reaches the screen.
+        let text = render_text(&state, 100, 60);
+        assert!(text.contains('\u{2014}'), "{text}");
+    }
+
+    /// The raw arguments stay reachable (scrolled into via the same
+    /// `PageUp`/`PageDown` this overlay already supports) even once a diff
+    /// renders in their place -- see `permission_body_lines`'s own doc for
+    /// why this is a fold rather than a dedicated toggle key.
+    #[test]
+    fn edit_prompt_keeps_the_raw_arguments_reachable_alongside_the_diff() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "alpha\n").expect("seed file");
+        let path_str = path.to_string_lossy().to_string();
+
+        let state = awaiting_edit_permission(&path_str, "alpha", "ALPHA");
+        let text = render_text(&state, 100, 40);
+
+        assert!(text.contains("raw arguments:"), "{text}");
+        assert!(text.contains("\"old_string\""), "{text}");
+    }
+
+    /// A tool with nothing to diff (e.g. `bash`) is entirely unaffected --
+    /// the prompt still shows the raw rendered command directly, the same
+    /// pre-diff-feature rendering every other tool's prompt already used.
+    #[test]
+    fn a_bash_prompt_is_unaffected_by_the_diff_feature() {
+        let state = awaiting_permission("git status --short");
+        let text = render_text(&state, 100, 24);
+        assert!(text.contains("git status --short"), "{text}");
+        assert!(!text.contains("raw arguments:"), "{text}");
+    }
+
+    /// An `edit` prompt whose `old_string` is not currently in the file
+    /// (the call would fail once approved) falls back to the pre-existing
+    /// raw `rendered` dump -- there is nothing sensible to diff.
+    #[test]
+    fn edit_prompt_with_an_old_string_not_in_the_file_falls_back_to_raw_rendered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "alpha\n").expect("seed file");
+        let path_str = path.to_string_lossy().to_string();
+
+        let state = awaiting_edit_permission(&path_str, "does not exist", "x");
+        let text = render_text(&state, 100, 24);
+
+        assert!(
+            text.contains(&format!("edit({{\"path\":\"{path_str}\"}})")),
+            "must fall back to the raw rendered dump: {text}"
+        );
+    }
+
     /// Bug's own reproduction: a huge argument used to clip the
     /// tool/category line, the agent path, and the decision-key hint
     /// entirely off-screen. The hint must now ALWAYS be present, however
@@ -2029,8 +2245,19 @@ mod tests {
         // history and navigation
         assert!(text.contains("Up / Down"), "{text}");
         assert!(text.contains("Home / End"), "{text}");
-        assert!(text.contains("PageUp / PageDown"), "{text}");
-        assert!(text.contains("scroll the transcript by a page"), "{text}");
+        // PAGING IS TWO SEPARATELY REBINDABLE ACTIONS NOW, so the help
+        // lists them on their own rows rather than as one combined
+        // `PageUp / PageDown` entry. That is the honest rendering: an
+        // operator can rebind either direction independently, and a single
+        // combined row would name a binding that does not exist as one
+        // thing. Assert both directions are present and described.
+        assert!(text.contains("PageUp"), "{text}");
+        assert!(text.contains("PageDown"), "{text}");
+        assert!(text.contains("scroll the transcript up one page"), "{text}");
+        assert!(
+            text.contains("scroll the transcript down one page"),
+            "{text}"
+        );
 
         // tools and display
         assert!(text.contains("Ctrl-E"), "{text}");
@@ -2039,7 +2266,8 @@ mod tests {
         // settings menu (V4)
         assert!(text.contains("settings menu"), "{text}");
         assert!(text.contains("toggle a display setting"), "{text}");
-        assert!(text.contains("adjust the numeric setting"), "{text}");
+        assert!(text.contains("step the numeric setting up"), "{text}");
+        assert!(text.contains("step the numeric setting down"), "{text}");
         assert!(text.contains("close the settings menu"), "{text}");
 
         // modal keys
@@ -2052,10 +2280,13 @@ mod tests {
         assert!(text.contains("edit"), "{text}");
         assert!(text.contains("manual"), "{text}");
         assert!(text.contains("permission prompt"), "{text}");
-        assert!(text.contains("allow once"), "{text}");
+        assert!(text.contains("allow this call once"), "{text}");
         assert!(text.contains("allow always"), "{text}");
-        assert!(text.contains("deny with feedback"), "{text}");
-        assert!(text.contains("scroll the command"), "{text}");
+        assert!(
+            text.contains("deny this call, with a typed reason"),
+            "{text}"
+        );
+        assert!(text.contains("scroll the shown command"), "{text}");
 
         // agent panel
         assert!(text.contains("visibility filter"), "{text}");
@@ -2538,7 +2769,7 @@ mod tests {
             open.transcript,
             closed.transcript
         );
-        let overlay_rect = help::modal_rect(open.unreserved_transcript);
+        let overlay_rect = help::modal_rect(&state, open.unreserved_transcript);
         assert_eq!(
             open.transcript.height + overlay_rect.height,
             open.unreserved_transcript.height,

@@ -18,12 +18,17 @@
 //! constructed via field literals across `runtime.rs`, `subagent.rs`, and
 //! the test suite, so a field there is a much wider change than a local.
 
-use conway_core::agent::{Fact, ResultStatus};
+use chrono::Utc;
+use conway_core::agent::{AgentResult, Fact, ResultStatus};
 use conway_core::content::{Artifact, ContentBlock};
-use conway_core::ids::ToolName;
+use conway_core::error::StoreError;
+use conway_core::ids::{LogSeq, SessionId, ToolName};
+use conway_core::log::LogRecord;
+use conway_core::ports::SessionStore;
 use serde::Deserialize;
 
 use crate::tools::ToolOutcome;
+use crate::tree::InFlightCall;
 
 /// The tool name the runtime recognizes as the explicit-finalization call
 /// (`conway-tools`' `ReportPlugin`, the `ReportTool`). Matched by name
@@ -186,6 +191,85 @@ pub(crate) fn status_label(status: &ResultStatus) -> &'static str {
         ResultStatus::Rejected { .. } => "rejected",
         _ => "unknown",
     }
+}
+
+/// Board item A5.6: renders `calls` (`AgentTree::in_flight_tools`'s own
+/// return, read by BOTH `AgentLoop::finish_cancelled` and
+/// `supervisor::supervise`'s grace-timeout synthesis -- see
+/// [`InFlightCall`]'s own doc for why one tree-owned slot serves both) into
+/// the one sentence every terminal-result call site that might have killed
+/// an agent mid-tool-call appends to its own summary text. `None` for the
+/// overwhelmingly common case (`calls` empty: nothing was in flight when
+/// this agent stopped) -- an empty sentence appended to a summary would be
+/// noise, not information.
+///
+/// The single implementation, called from both sites, so "names the
+/// interrupted call" cannot silently hold at one and not the other -- the
+/// exact "a restatement drifts, and the duplicate silently loses a case"
+/// hazard this crate's own conventions warn against (`runway.rs`'s module
+/// doc says the same of the threshold arithmetic this function has nothing
+/// to do with; the principle is the same one).
+pub fn interrupted_call_note(calls: &[InFlightCall]) -> Option<String> {
+    if calls.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = calls
+        .iter()
+        .map(|c| format!("{}({})", c.tool, c.args_summary))
+        .collect();
+    Some(format!("interrupted mid-call: {}", parts.join(", ")))
+}
+
+/// Persists `result` as `session`'s terminal `LogRecord::AgentResultRecord`
+/// -- the ONE function that ever performs this specific append (board item
+/// A5.3: "a child that dies mid-work must still leave a terminal result").
+/// Called from both structurally-necessary sites: `AgentLoop::finish`
+/// (`agent_loop.rs`), on the normal-completion/cancellation/fatal-error
+/// path, and `supervisor::supervise`'s `Outcome::Synthesized` branch
+/// (`supervisor.rs`), on the panic/grace-timeout path, where the task that
+/// would have called `finish` never got the chance to.
+///
+/// **Why a free function, not a second call to `AgentLoop::persist`.** That
+/// method is a generic `impl FnOnce(LogSeq) -> LogRecord` helper on
+/// `AgentLoop` itself (`self.deps.store`/`self.session`) -- the supervisor
+/// holds no `AgentLoop` instance to call a method on by the time it
+/// synthesizes a result (the task is gone, panicked, or aborted), only a
+/// bare `SessionId` and an `Arc<dyn SessionStore>`. Without this shared
+/// function, closing the supervisor's own gap would mean hand-rolling a
+/// SECOND `head`-then-`append` sequence at that call site -- exactly the "a
+/// second writer drifts and silently loses a field" hazard this item's own
+/// spec warns against. This function is that one implementation; both
+/// sites call it, neither reimplements it.
+///
+/// `store.head` immediately followed by `store.append` mirrors
+/// `AgentLoop::persist`'s own sequencing. Both callers of THIS function are
+/// racing to be the first and only writer of a given session's terminal
+/// record, but that race is arbitrated upstream, by `AgentTree::
+/// publish_result`'s set-once CAS -- never by this function, which performs
+/// exactly one unconditional append whenever it is called. A caller that
+/// already lost the CAS (the normal case when `finish` and a supervisor
+/// synthesis race) still persists its own result faithfully; only the
+/// LIVE, in-memory `AgentTree`/parent-delivery side is CAS-gated. This
+/// mirrors `finish`'s own pre-existing behavior (it too persists
+/// unconditionally, before checking whether its publish was the first) --
+/// see that method's own doc for the tree-publish gate's specific
+/// reasoning, unchanged by this function's existence.
+pub(crate) async fn persist_agent_result(
+    store: &dyn SessionStore,
+    session: SessionId,
+    result: &AgentResult,
+) -> Result<LogSeq, StoreError> {
+    let seq = store.head(&session).await?;
+    store
+        .append(
+            &session,
+            LogRecord::AgentResultRecord {
+                seq,
+                ts: Utc::now(),
+                result: result.clone(),
+            },
+        )
+        .await
 }
 
 /// The outcome of validating an agent's `structured` output against a

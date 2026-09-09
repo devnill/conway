@@ -210,6 +210,13 @@ pub struct ThemeConfig {
     /// T7: the key/chord column in the `/help` keybinding overlay's rows
     /// (e.g. `Ctrl-E`, `PageUp/PageDown`).
     pub help_key: Option<ThemeStyleConfig>,
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: an added line in a rendered
+    /// `edit`/`write` diff (the permission prompt, the settled transcript
+    /// entry, `/diff`).
+    pub diff_add: Option<ThemeStyleConfig>,
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: a removed line in a rendered
+    /// `edit`/`write` diff.
+    pub diff_del: Option<ThemeStyleConfig>,
 }
 
 /// One `[tui.theme.<name>]` entry: foreground/background color names plus a
@@ -429,6 +436,89 @@ mod tests {
             "CONWAY_TUI__STATUS_LINE__FIELDS must still reach conway-cli's own TuiSection \
              after Stage 2a moved the type here"
         );
+    }
+
+    /// **Mechanical guard, board item A5.4.** `docs/plugins/statusline.md`'s
+    /// own worked example shipped with a key this schema had already moved
+    /// out from under it (`[plugins].statusline`, when the real section had
+    /// been `[tui.status_line_command]` since Stage 2a/T7) -- a reader who
+    /// copy-pasted it got a config that refused to load, and nothing caught
+    /// it because the example was prose, checked by no one but a reader who
+    /// happened to try it. This test is what replaces "checked by no one":
+    /// it extracts the doc's OWN fenced JSON block, byte for byte, at test
+    /// time (`include_str!`, not a second copy retyped here that could
+    /// drift from the page independently) and deserializes its `tui` key
+    /// through THIS crate's real [`TuiSection`] -- the identical
+    /// `#[serde(deny_unknown_fields)]` schema [`load`] parses `[tui]`
+    /// through at startup. A future edit that reintroduces the wrong key,
+    /// or any other field this schema does not recognize, fails this test
+    /// the moment it lands, not merely a reader's own copy-paste attempt
+    /// weeks later.
+    ///
+    /// Locates the block by its fence markers rather than assuming a line
+    /// number, so a doc edit that moves the example (without changing its
+    /// content) does not spuriously break this guard -- and asserts there is
+    /// EXACTLY one ```json fence in the page, so a second example added
+    /// later is caught here too rather than silently extracting the wrong
+    /// one.
+    #[test]
+    fn the_statusline_doc_example_loads_through_the_real_tui_schema() {
+        let doc = include_str!("../../../../docs/plugins/statusline.md");
+        let fences: Vec<&str> =
+            doc.match_indices("```json")
+                .map(|(i, _)| i)
+                .fold(Vec::new(), |mut acc, start| {
+                    let after_open = start + "```json".len();
+                    let end = doc[after_open..]
+                        .find("```")
+                        .map(|rel| after_open + rel)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "unterminated ```json fence at byte offset {start} in \
+                                 docs/plugins/statusline.md"
+                            )
+                        });
+                    acc.push(doc[after_open..end].trim());
+                    acc
+                });
+        assert_eq!(
+            fences.len(),
+            1,
+            "expected exactly one ```json fence in docs/plugins/statusline.md (this test \
+             extracts the first as THE worked example) -- found {}: {fences:?}",
+            fences.len()
+        );
+
+        let example: serde_json::Value = serde_json::from_str(fences[0]).unwrap_or_else(|e| {
+            panic!(
+                "docs/plugins/statusline.md's example is not even valid JSON: {e}\n{}",
+                fences[0]
+            )
+        });
+        let tui_value = example.get("tui").cloned().expect(
+            "the doc's example must be wrapped in a top-level \"tui\" key -- a bare \
+                     [plugins] key (this page's own past mistake) would silently miss this \
+                     assertion entirely rather than fail it, so this checks the WRAPPER too",
+        );
+        let tui: TuiSection = serde_json::from_value(tui_value).unwrap_or_else(|e| {
+            panic!(
+                "docs/plugins/statusline.md's example must deserialize through the real \
+                 TuiSection schema (the same one `crate::tui::config::load` parses `[tui]` \
+                 through) -- it does not: {e}"
+            )
+        });
+        assert_eq!(
+            tui.status_line_command.command,
+            vec![
+                "git".to_string(),
+                "branch".to_string(),
+                "--show-current".to_string()
+            ],
+            "the doc's example must round-trip its own command argv exactly"
+        );
+        assert_eq!(tui.status_line_command.key, "branch");
+        assert_eq!(tui.status_line_command.refresh_interval_ms, 5000);
+        assert_eq!(tui.status_line_command.timeout_ms, 2000);
     }
 }
 

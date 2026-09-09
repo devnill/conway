@@ -142,6 +142,7 @@ use std::time::Duration;
 
 use conway::backend_usability::{classify_entry, ProbePolicy, Usability, DEFAULT_PROBE_TIMEOUT};
 use conway::config::schema::BackendEntry;
+use conway::plugin::MemoryStore;
 use conway::{ConwayBuilder, ResultStatus, SessionSpec};
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 
@@ -843,6 +844,352 @@ fn read_plain_line() -> Option<String> {
     outcome
 }
 
+// ---- Board item `01M1YS0B0NYTMWM1M5C7250FFT`: first-run warns when the ----
+// ---- chosen model's window cannot comfortably carry the default install ----
+//
+// A new operator who points conway at a small local model spends a chunk
+// of its context window on the install itself -- registered tool schemas,
+// plugin-declared instruction fragments, and (on the very first slash
+// command they run) a real command prompt -- before they type a word.
+// conway can compute all of that ahead of time, the moment a model's own
+// window becomes known, and say so plainly rather than let the operator
+// discover it via a mid-turn runway notice or a multi-minute wait on their
+// first command. [`InstallFootprint`] is the fixed-cost estimate;
+// [`runway_fixed_cost_warning`] is the pure threshold check over it;
+// [`warn_about_runway_if_needed`] is the imperative caller
+// [`handle_context_window_at_setup`] (below) invokes at every point a
+// window becomes known.
+
+/// One configured `[plugins].mcp[]` server's estimated tool-schema cost, in
+/// tokens. Measured on the operator's own install (this board item's own
+/// background section, 2026-09-07): the registered tool registry's
+/// estimated cost rose from roughly 4.4k tokens (the default opinion set
+/// alone) to roughly 9-10k tokens with one MCP server added. This constant
+/// is that observed range's midpoint (9.5k) minus the ~4.4k the default
+/// opinion set already measures for itself via
+/// `measure_default_opinion_set_tool_and_instruction_tokens` -- **never
+/// re-derived live**, because an MCP server's real tool list is only
+/// knowable by spawning the server and completing its handshake, I/O this
+/// setup-time preflight check deliberately never performs.
+pub const MCP_SERVER_TOOL_SCHEMA_TOKENS_EST_PER_SERVER: u32 = 5_100;
+
+/// A representative command-prompt allowance, in tokens -- the third term
+/// of [`InstallFootprint`]. Measured on the operator's own install (this
+/// board item's own background section): a real skill command prompt
+/// (`/ideate:review`) cost 11k-16.5k tokens on its own. This constant is
+/// that range's midpoint (13.75k) rounded to a clean number -- a stated
+/// ALLOWANCE, not a live measurement: unlike the tool-schema/instruction
+/// terms below (which [`measure_default_opinion_set_tool_and_instruction_
+/// tokens`] measures for real, off the actual installed plugin set), which
+/// command an operator's first turn will actually invoke is not knowable
+/// ahead of time.
+pub const COMMAND_PROMPT_ALLOWANCE_TOKENS_EST: u32 = 14_000;
+
+/// Fraction of a model's context window [`InstallFootprint::total_tokens_
+/// est`] may consume before [`runway_fixed_cost_warning`] speaks up. Reuses
+/// `conway_runtime::runway::WINDOW_THRESHOLDS`'s own lowest (and
+/// first-crossed) mid-session threshold -- 50% -- as the natural preflight
+/// line, rather than inventing an unrelated number: the same fill level
+/// that would already print a mid-session runway notice on turn one is
+/// exactly what a fixed cost this large guarantees.
+pub const INSTALL_FOOTPRINT_WARN_FRACTION: f64 = 0.5;
+
+/// `heuristic-chars4`: `ceil(chars / 4)` plus a fixed per-payload overhead
+/// of 4 tokens -- the same shape `conway_core::ports::backend::
+/// default_estimate_tokens` and `conway_runtime::context::builder`'s own
+/// `ContextBuilder` (the estimator every real `ContextReport::tokens_est`
+/// comes from) compute a token estimate with. **An independent copy of
+/// that exact formula, not a second, differently-tuned one**: this crate's
+/// production code may not depend on `conway-core`/`conway-runtime`
+/// directly at all (`crates/conway-cli/tests/cli_surface.rs`'s
+/// `no_forbidden_deps` guard), the identical constraint
+/// `conway_runtime::runway`'s own (also independently copied) `compact_k`
+/// already documents for itself.
+fn chars4_tokens_est(chars: usize) -> u32 {
+    let chars = u32::try_from(chars).unwrap_or(u32::MAX);
+    chars.div_ceil(4).saturating_add(4)
+}
+
+/// Compact token-count formatting -- `< 1000` renders as-is, `>= 1000`
+/// renders as `{k}.{tenths}k`, e.g. `32.7k`. An independent copy of
+/// `conway_runtime::runway`'s own `compact_k` (this crate cannot depend on
+/// that one directly -- see [`chars4_tokens_est`]'s own doc), written the
+/// same fixed shape from the start: a caller interpolates this result
+/// directly (`"{used} of {window} tokens"`), never appending a second
+/// literal `k` after it -- board item `01M1YS0B0NYTMWM1M5C7250FFT`'s own fix for exactly that
+/// defect in `conway_runtime::runway::window_note`'s old `{used}k of
+/// {max_k}k tokens` template, which doubled the suffix any time either
+/// value was already >= 1000 (`10.6kk of 32.7kk` instead of `10.6k of
+/// 32.7k`).
+fn compact_k(n: u32) -> String {
+    if n < 1000 {
+        return n.to_string();
+    }
+    let k = n / 1000;
+    let tenths = (n % 1000) / 100;
+    format!("{k}.{tenths}k")
+}
+
+/// The fixed, per-turn cost of what guided setup is about to install --
+/// registered tool schemas, plugin-declared instruction fragments, and a
+/// representative command-prompt allowance -- all estimated with
+/// `chars4_tokens_est`, the same `heuristic-chars4` shape
+/// `conway_runtime::context::builder::ContextBuilder` uses for every real
+/// `ContextReport::total_tokens_est`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InstallFootprint {
+    /// Registered tool schemas -- the REAL `Tool::spec()` output of every
+    /// [`crate::first_party_plugins::DEFAULT_OPINION_SET`] member, measured
+    /// by `measure_default_opinion_set_tool_and_instruction_tokens`, plus
+    /// [`MCP_SERVER_TOOL_SCHEMA_TOKENS_EST_PER_SERVER`] once per configured
+    /// `[plugins].mcp[]` entry.
+    pub tool_schema_tokens_est: u32,
+    /// Plugin-declared instruction fragments -- the REAL
+    /// `Plugin::instructions()` text of every `DEFAULT_OPINION_SET` member,
+    /// measured the same way.
+    pub instruction_fragment_tokens_est: u32,
+    /// See [`COMMAND_PROMPT_ALLOWANCE_TOKENS_EST`]'s own doc.
+    pub command_prompt_allowance_tokens_est: u32,
+}
+
+impl InstallFootprint {
+    pub fn total_tokens_est(&self) -> u32 {
+        self.tool_schema_tokens_est
+            .saturating_add(self.instruction_fragment_tokens_est)
+            .saturating_add(self.command_prompt_allowance_tokens_est)
+    }
+}
+
+/// Real (not representative) tool-schema and instruction-fragment token
+/// costs for [`crate::first_party_plugins::DEFAULT_OPINION_SET`] -- the
+/// SAME [`crate::first_party_plugins::all_bundle_plugins`] candidate list
+/// [`crate::first_party_plugins::opinion_set_summaries`] already builds for
+/// this exact setup flow's own transcript (`offer_opinion_set_and_shell`,
+/// below), filtered to the ids this item actually installs, with each
+/// candidate's real `Tool::spec()`/`Plugin::instructions()` output measured
+/// through [`chars4_tokens_est`]. `Plugin::instructions()`'s conditional
+/// `parts` are all counted unconditionally here (never filtered by tool
+/// reachability, unlike `ContextBuilder::build`'s own per-turn render) --
+/// this is a setup-time UPPER estimate of what the fragment could cost, not
+/// a specific turn's actual rendered segment.
+fn measure_default_opinion_set_tool_and_instruction_tokens(
+    cwd: &Path,
+    env: &HashMap<String, String>,
+) -> (u32, u32) {
+    let memory_store: Arc<dyn MemoryStore> =
+        Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+    let candidates = crate::first_party_plugins::all_bundle_plugins(cwd, memory_store, env);
+
+    let mut tools = Vec::new();
+    let mut instruction_chars: usize = 0;
+    for plugin in candidates.iter().filter(|p| {
+        crate::first_party_plugins::DEFAULT_OPINION_SET.contains(&p.manifest().id.as_str())
+    }) {
+        for tool in plugin.tools() {
+            tools.push(tool.spec());
+        }
+        for fragment in plugin.instructions() {
+            instruction_chars += fragment.text.chars().count();
+            for part in &fragment.parts {
+                instruction_chars += part.text.chars().count();
+            }
+        }
+    }
+
+    let tool_schema_tokens_est = if tools.is_empty() {
+        0
+    } else {
+        serde_json::to_value(&tools)
+            .map(|v| chars4_tokens_est(v.to_string().chars().count()))
+            .unwrap_or(0)
+    };
+    let instruction_fragment_tokens_est = chars4_tokens_est(instruction_chars);
+    (tool_schema_tokens_est, instruction_fragment_tokens_est)
+}
+
+/// [`InstallFootprint`] for `crate::first_party_plugins::DEFAULT_OPINION_
+/// SET`, with `configured_mcp_servers` (a caller-resolved count of
+/// `[plugins].mcp[]` entries -- see `configured_mcp_server_count` for the
+/// setup-time source) folded into the tool-schema term. `cwd`/`env` are
+/// forwarded to [`measure_default_opinion_set_tool_and_instruction_
+/// tokens`] unchanged -- see that function's own doc for why this reaches
+/// the same plugin candidate list `offer_opinion_set_and_shell` installs
+/// from.
+pub fn default_opinion_set_footprint(
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    configured_mcp_servers: usize,
+) -> InstallFootprint {
+    let (measured_tool_schema_tokens_est, instruction_fragment_tokens_est) =
+        measure_default_opinion_set_tool_and_instruction_tokens(cwd, env);
+    let mcp_tokens_est = MCP_SERVER_TOOL_SCHEMA_TOKENS_EST_PER_SERVER
+        .saturating_mul(u32::try_from(configured_mcp_servers).unwrap_or(u32::MAX));
+    InstallFootprint {
+        tool_schema_tokens_est: measured_tool_schema_tokens_est.saturating_add(mcp_tokens_est),
+        instruction_fragment_tokens_est,
+        command_prompt_allowance_tokens_est: COMMAND_PROMPT_ALLOWANCE_TOKENS_EST,
+    }
+}
+
+/// Board item `01M1YS0B0NYTMWM1M5C7250FFT`: `Some(warning)` when `footprint`'s total exceeds
+/// [`INSTALL_FOOTPRINT_WARN_FRACTION`] of `window`, naming both numbers and
+/// offering both ways out this item's own "WHAT TO BUILD" section states --
+/// a larger-window model, named specifically when `larger_alternative`
+/// supplies one already configured or detected, generic otherwise; and a
+/// narrower tool set for this role. `None` -- silence -- otherwise, and
+/// always when `window` is `0` (an honest "nothing to compare against"
+/// rather than a divide-by-zero guess).
+///
+/// Pure: every number is already resolved by the caller, so a test can
+/// assert this function's own threshold logic directly, without touching a
+/// terminal, a filesystem, or a plugin registry -- the same "pure
+/// formatter, tested directly" split this module's own top doc states for
+/// [`context_window_setup_notice`]/`opinion_set_transcript`.
+///
+/// **This function decides nothing about what the operator does next** --
+/// this item's own "WHAT NOT TO BUILD": no automatic narrowing, no model
+/// substitution. It only names the numbers and the two ways out; the
+/// choice stays the operator's.
+pub fn runway_fixed_cost_warning(
+    model_key: &str,
+    window: u32,
+    footprint: &InstallFootprint,
+    larger_alternative: Option<(&str, u32)>,
+) -> Option<String> {
+    if window == 0 {
+        return None;
+    }
+    let total = footprint.total_tokens_est();
+    if f64::from(total) <= f64::from(window) * INSTALL_FOOTPRINT_WARN_FRACTION {
+        return None;
+    }
+    let pct = ((u64::from(total) * 100) / u64::from(window)).min(u64::from(u32::MAX)) as u32;
+    let larger_offer = match larger_alternative {
+        Some((alt_key, alt_window)) => format!(
+            "point conway at \"{alt_key}\" ({alt_window_k} tokens), a larger-window model \
+             already configured",
+            alt_window_k = compact_k(alt_window),
+        ),
+        None => "point conway at a model with a larger context window (add one now, or later \
+                  via `/settings` -> providers)"
+            .to_string(),
+    };
+    Some(format!(
+        "conway's default install alone would use an estimated {total_k} of {window_k} tokens \
+         ({pct}%) of {model_key}'s context window before you type a word -- there will not be \
+         much room left for a real turn. Two ways out: {larger_offer}; or narrow the tool set \
+         for this role (`conway plugin remove <id>`, or edit plugins.install in settings.json).",
+        total_k = compact_k(total),
+        window_k = compact_k(window),
+    ))
+}
+
+/// How many `[plugins].mcp[]` entries `settings_path`'s document already
+/// declares -- a raw, read-only JSON inspection, never `conway::config::
+/// load`'s full layered merge (this guided-setup call site runs too early
+/// for that: no backend is configured yet, and a merge can fail on that
+/// alone). A missing or unparsable file reads as zero: "nothing configured
+/// yet" is the honest default for a first run, not a guess.
+fn configured_mcp_server_count(settings_path: &Path) -> usize {
+    let Ok(text) = std::fs::read_to_string(settings_path) else {
+        return 0;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return 0;
+    };
+    value
+        .get("plugins")
+        .and_then(|p| p.get("mcp"))
+        .and_then(|m| m.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0)
+}
+
+/// The best (largest-window) OTHER model already recorded in `conway::
+/// config::model_metadata`'s file for this `cwd`/`env` (the SAME resolution
+/// [`persist_context_window_at`] uses -- `cwd` is an explicit parameter
+/// here, not re-read from `std::env::current_dir()`, for the identical
+/// "unsafe to mutate the real process cwd from a parallel test" reason that
+/// function's own doc states) -- named in [`runway_fixed_cost_warning`]'s
+/// "larger-window model" offer when one genuinely clears `min_window`, so
+/// that offer never claims a model exists when none does: naming a real,
+/// already-configured alternative is an honest offer; inventing one would
+/// not be (this item's own "offer, never decide" ruling). `exclude_key` is
+/// the model THIS check is already warning about -- never offered back to
+/// itself. `None` on any resolution failure (no home directory,
+/// unreadable/invalid metadata file, or genuinely nothing clears
+/// `min_window`) -- the caller's own `runway_fixed_cost_warning` degrades
+/// to the generic offer wording in every one of those cases, never an
+/// error.
+fn larger_window_alternative(
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    exclude_key: &str,
+    min_window: u32,
+) -> Option<(String, u32)> {
+    let meta_path = conway::config::metadata_path_for(cwd, env).ok()?;
+    let meta = conway::config::model_metadata::load(&meta_path).ok()?;
+    meta.models
+        .iter()
+        .filter(|(key, _)| key.as_str() != exclude_key)
+        .filter(|(_, entry)| entry.max_context_tokens >= min_window)
+        .max_by_key(|(_, entry)| entry.max_context_tokens)
+        .map(|(key, entry)| (key.clone(), entry.max_context_tokens))
+}
+
+/// The imperative half of board item `01M1YS0B0NYTMWM1M5C7250FFT`: computes
+/// [`InstallFootprint`] for the opinion set guided setup is about to
+/// install (folding in however
+/// many `[plugins].mcp[]` entries `settings_path` already declares), checks
+/// it against `window` via [`runway_fixed_cost_warning`], and prints the
+/// result. Called from every [`handle_context_window_at_setup`] branch that
+/// resolves a real `window` -- a freshly-discovered window, an
+/// already-verified baseline, and an operator's own typed answer all get
+/// the identical check.
+fn warn_about_runway_if_needed(
+    env: &HashMap<String, String>,
+    settings_path: &Path,
+    key: &str,
+    window: u32,
+) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mcp_servers = configured_mcp_server_count(settings_path);
+    let footprint = default_opinion_set_footprint(&cwd, env, mcp_servers);
+    let min_window =
+        (f64::from(footprint.total_tokens_est()) / INSTALL_FOOTPRINT_WARN_FRACTION).ceil();
+    let min_window = if min_window.is_finite() {
+        min_window as u32
+    } else {
+        u32::MAX
+    };
+    let alternative = larger_window_alternative(&cwd, env, key, min_window);
+    let alt_ref = alternative.as_ref().map(|(k, w)| (k.as_str(), *w));
+    if let Some(warning) = runway_fixed_cost_warning(key, window, &footprint, alt_ref) {
+        println!();
+        println!("{warning}");
+    }
+}
+
+/// The BASELINE window for `kind`/`dialect` once [`context_window_is_
+/// verified`] is `true` for it -- `anthropic`'s 200,000, or a built-in
+/// `openai`-dialect profile's 128,000, the same sourced figures that
+/// function's own doc names. `None` only for a `kind`/`dialect` pair that
+/// resolves to nothing at all (never reached in practice: every caller only
+/// asks after `context_window_is_verified` already returned `true` for the
+/// identical pair).
+fn verified_baseline_window(kind: &str, dialect: Option<&str>) -> Option<u32> {
+    if kind == "anthropic" {
+        return Some(conway_plugin_backends::capabilities::anthropic_defaults().max_context_tokens);
+    }
+    // `.ok()` because `ProfileStore::resolve` returns `Result<&T,
+    // ConfigError>`, not an Option: an unknown dialect is a typed error
+    // there, and this function's contract is that such a pair yields `None`.
+    conway_plugin_backends::profile::ProfileStore::built_ins()
+        .resolve(dialect?)
+        .map(|p| p.max_context_tokens)
+        .ok()
+}
+
 /// The ASK half of the operator's "discover, or ask if discovery fails"
 /// setup-time ruling, for the pre-TUI guided-setup entrance (`run_
 /// backend_setup`/`retry_credential_and_finish`, via [`handle_context_
@@ -862,7 +1209,13 @@ fn read_plain_line() -> Option<String> {
 /// which already has an honest name for the resulting state --
 /// `conway_plugin_backends::capabilities::ContextTokensSource::Unverified`
 /// -- rather than a silently invented number.
-fn ask_and_persist_context_window(env: &HashMap<String, String>, key: &str) {
+///
+/// `settings_path` is only threaded through to [`warn_about_runway_if_
+/// needed`] (board item `01M1YS0B0NYTMWM1M5C7250FFT`) on the `Ok(Some(window))` branch -- a typed
+/// window is just as real a setup-time resolution as a discovered or
+/// already-verified one, and skipping the check here would have left
+/// exactly this path uncovered for no reason a caller could see.
+fn ask_and_persist_context_window(env: &HashMap<String, String>, settings_path: &Path, key: &str) {
     println!();
     println!(
         "conway could not determine {key}'s context window automatically -- this profile has \
@@ -881,7 +1234,10 @@ fn ask_and_persist_context_window(env: &HashMap<String, String>, key: &str) {
             );
         }
         Ok(Some(window)) => match persist_context_window(env, key, window) {
-            Ok(path) => println!("{}", context_window_setup_notice(key, window, &path)),
+            Ok(path) => {
+                println!("{}", context_window_setup_notice(key, window, &path));
+                warn_about_runway_if_needed(env, settings_path, key, window);
+            }
             Err(e) => println!("Could not save {key}'s context window: {e}"),
         },
         Err(msg) => println!("{msg} -- {key}'s context window remains unverified."),
@@ -905,8 +1261,15 @@ fn ask_and_persist_context_window(env: &HashMap<String, String>, key: &str) {
 /// nothing is asked either: the fall-through below reaches the `if
 /// context_window_is_verified(...) { return; }` guard exactly as if
 /// discovery had been attempted and found nothing.
+///
+/// `settings_path` is board item `01M1YS0B0NYTMWM1M5C7250FFT`'s own addition -- forwarded to
+/// [`warn_about_runway_if_needed`] on every branch that resolves a real
+/// `window` (a fresh discovery, an already-verified baseline, or an
+/// operator's own typed answer via [`ask_and_persist_context_window`]), so
+/// every entrance to a known window gets the identical fixed-cost check.
 async fn handle_context_window_at_setup(
     env: &HashMap<String, String>,
+    settings_path: &Path,
     key: &str,
     base_url: Option<&str>,
     dialect: Option<&str>,
@@ -923,6 +1286,7 @@ async fn handle_context_window_at_setup(
                      save it: {e}"
                 ),
             }
+            warn_about_runway_if_needed(env, settings_path, key, window);
             return;
         }
     }
@@ -932,9 +1296,12 @@ async fn handle_context_window_at_setup(
         // be exactly the noise the operator's own ruling (a setup-time
         // question is warranted only to avoid an UNSOURCED placeholder,
         // never to double-check a fact conway already has) argues against.
+        if let Some(window) = verified_baseline_window(kind, dialect) {
+            warn_about_runway_if_needed(env, settings_path, key, window);
+        }
         return;
     }
-    ask_and_persist_context_window(env, key);
+    ask_and_persist_context_window(env, settings_path, key);
 }
 
 /// The interactive flow itself: detect, offer, verify, offer to add
@@ -1017,6 +1384,7 @@ async fn run_backend_setup(env: &HashMap<String, String>, path: &Path) -> Guided
                 let entry_json = local_offer_entry_json(&offer);
                 handle_context_window_at_setup(
                     env,
+                    path,
                     &chain_entry(LOCAL_OLLAMA_ID, &offer.model),
                     Some(&offer.base_url),
                     Some("ollama"),
@@ -1100,6 +1468,7 @@ async fn run_backend_setup(env: &HashMap<String, String>, path: &Path) -> Guided
         let entry_json = backend_entry_json(choice, &credential);
         handle_context_window_at_setup(
             env,
+            path,
             &chain_entry(choice.id, choice.default_model),
             choice.base_url,
             choice.dialect,
@@ -1578,6 +1947,7 @@ async fn retry_credential_and_finish(
     let entry_json = backend_entry_json(choice, &CredentialSource::Literal(key));
     handle_context_window_at_setup(
         env,
+        path,
         &chain_entry(choice.id, choice.default_model),
         choice.base_url,
         choice.dialect,
@@ -1777,6 +2147,222 @@ mod tests {
                 .expect("persist must succeed");
 
         assert_eq!(path, dir.path().join("custom-models.json"));
+    }
+
+    // ---- board item `01M1YS0B0NYTMWM1M5C7250FFT`: first run warns when the ----
+    // ---- chosen model's window cannot comfortably carry the default install ----
+
+    #[test]
+    fn chars4_tokens_est_matches_ceil_chars_over_4_plus_the_fixed_overhead() {
+        assert_eq!(chars4_tokens_est(0), 4);
+        assert_eq!(chars4_tokens_est(4), 5);
+        assert_eq!(chars4_tokens_est(5), 6); // ceil(5/4) == 2, + 4
+        assert_eq!(chars4_tokens_est(1000), 254); // ceil(1000/4) == 250, + 4
+    }
+
+    #[test]
+    fn compact_k_never_appends_a_second_k_when_the_caller_interpolates_it() {
+        assert_eq!(compact_k(999), "999");
+        assert_eq!(compact_k(1_000), "1.0k");
+        assert_eq!(compact_k(32_768), "32.7k");
+        let rendered = format!("{} of {} tokens", compact_k(10_600), compact_k(32_700));
+        assert_eq!(rendered, "10.6k of 32.7k tokens");
+        assert!(!rendered.contains("kk"), "{rendered}");
+    }
+
+    #[test]
+    fn install_footprint_total_tokens_est_sums_all_three_terms() {
+        let footprint = InstallFootprint {
+            tool_schema_tokens_est: 4_400,
+            instruction_fragment_tokens_est: 500,
+            command_prompt_allowance_tokens_est: 14_000,
+        };
+        assert_eq!(footprint.total_tokens_est(), 18_900);
+    }
+
+    /// **A check is not established until it has been shown to fail.** This
+    /// is the "fires" half: a fixture footprint whose total genuinely
+    /// exceeds [`INSTALL_FOOTPRINT_WARN_FRACTION`] of a 32k window (24.0k
+    /// of 32,768 is 73%, well past the 50% line, not a borderline value a
+    /// rounding change could flip) -- asserts the warning text names both
+    /// numbers, in the exact `{k} of {k} tokens` shape (never `kk`), AND
+    /// both offers named in this board item's own "WHAT TO BUILD" section:
+    /// a larger-window model (generic wording here -- see the sibling test
+    /// below for the named-alternative wording) and a narrower tool set.
+    #[test]
+    fn runway_fixed_cost_warning_fires_and_names_both_numbers_and_both_offers() {
+        let footprint = InstallFootprint {
+            tool_schema_tokens_est: 9_500,
+            instruction_fragment_tokens_est: 500,
+            command_prompt_allowance_tokens_est: 14_000,
+        };
+        assert_eq!(footprint.total_tokens_est(), 24_000);
+
+        let warning = runway_fixed_cost_warning("ollama/glm-5.2", 32_768, &footprint, None)
+            .expect("24.0k of 32.7k (73%) must cross the 50% line");
+
+        assert!(
+            warning.contains("24.0k of 32.7k tokens"),
+            "must name both numbers, never doubled: {warning}"
+        );
+        assert!(!warning.contains("kk"), "{warning}");
+        assert!(warning.contains("73%"), "{warning}");
+        assert!(warning.contains("ollama/glm-5.2"), "{warning}");
+        assert!(
+            warning.contains("larger context window"),
+            "must offer a larger-window model: {warning}"
+        );
+        assert!(
+            warning.contains("narrow the tool set"),
+            "must offer a narrower tool set: {warning}"
+        );
+    }
+
+    /// The named-alternative half of the "larger-window model" offer: when
+    /// the caller supplies one, the warning names it and its own window
+    /// instead of the generic "point conway at..." wording.
+    #[test]
+    fn runway_fixed_cost_warning_names_a_supplied_larger_alternative_by_key_and_window() {
+        let footprint = InstallFootprint {
+            tool_schema_tokens_est: 9_500,
+            instruction_fragment_tokens_est: 500,
+            command_prompt_allowance_tokens_est: 14_000,
+        };
+        let warning = runway_fixed_cost_warning(
+            "ollama/glm-5.2",
+            32_768,
+            &footprint,
+            Some(("anthropic/claude-haiku-4-5", 200_000)),
+        )
+        .expect("still crosses the line");
+        assert!(warning.contains("anthropic/claude-haiku-4-5"), "{warning}");
+        assert!(warning.contains("200.0k"), "{warning}");
+        assert!(
+            !warning.contains("larger context window (add one now"),
+            "the generic offer must not appear alongside a named alternative: {warning}"
+        );
+    }
+
+    /// **The "never" half of the same check.** An identical footprint
+    /// shape, comfortably under the fraction (24.0k of 200,000 is 12%) --
+    /// silence. Pairing this with the "fires" test above is what
+    /// distinguishes a working threshold from a warning that always fires
+    /// or never does.
+    #[test]
+    fn runway_fixed_cost_warning_stays_silent_under_the_fraction() {
+        let footprint = InstallFootprint {
+            tool_schema_tokens_est: 9_500,
+            instruction_fragment_tokens_est: 500,
+            command_prompt_allowance_tokens_est: 14_000,
+        };
+        assert_eq!(
+            runway_fixed_cost_warning("anthropic/claude-haiku-4-5", 200_000, &footprint, None),
+            None
+        );
+    }
+
+    #[test]
+    fn runway_fixed_cost_warning_stays_silent_when_the_window_is_unknown() {
+        let footprint = InstallFootprint {
+            tool_schema_tokens_est: 9_500,
+            instruction_fragment_tokens_est: 500,
+            command_prompt_allowance_tokens_est: 14_000,
+        };
+        assert_eq!(
+            runway_fixed_cost_warning("ollama/glm-5.2", 0, &footprint, None),
+            None
+        );
+    }
+
+    #[test]
+    fn configured_mcp_server_count_reads_the_plugins_mcp_array_length() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"plugins": {"install": [], "mcp": [{"id": "one"}, {"id": "two"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(configured_mcp_server_count(&path), 2);
+    }
+
+    #[test]
+    fn configured_mcp_server_count_is_zero_for_a_missing_or_mcp_less_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            configured_mcp_server_count(&dir.path().join("does-not-exist.json")),
+            0
+        );
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"plugins": {"install": []}}"#).unwrap();
+        assert_eq!(configured_mcp_server_count(&path), 0);
+    }
+
+    #[test]
+    fn larger_window_alternative_names_the_best_model_that_clears_min_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env();
+        // Two other models on record: one too small, one comfortably
+        // above `min_window` -- the smaller one must never be offered even
+        // though it IS "another model", and among candidates that clear
+        // the bar, the largest wins.
+        persist_context_window_at(dir.path(), &env, "ollama/small", 8_000).unwrap();
+        persist_context_window_at(dir.path(), &env, "anthropic/claude-haiku-4-5", 200_000).unwrap();
+        persist_context_window_at(dir.path(), &env, "ollama/mid", 60_000).unwrap();
+
+        let alt = larger_window_alternative(dir.path(), &env, "ollama/glm-5.2", 50_000);
+        assert_eq!(
+            alt,
+            Some(("anthropic/claude-haiku-4-5".to_string(), 200_000)),
+            "must name the LARGEST model clearing min_window, not merely one that does"
+        );
+    }
+
+    #[test]
+    fn larger_window_alternative_is_none_when_nothing_clears_min_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env();
+        persist_context_window_at(dir.path(), &env, "ollama/small", 8_000).unwrap();
+
+        assert_eq!(
+            larger_window_alternative(dir.path(), &env, "ollama/glm-5.2", 50_000),
+            None
+        );
+    }
+
+    /// **Acceptance 1, end to end (minus the terminal):** the default
+    /// opinion set's REAL tool-schema and instruction-fragment cost
+    /// (measured off the actual linked plugin candidates, not a fixture),
+    /// plus one configured MCP server's representative delta, crosses the
+    /// 50% line on a 32k window and stays silent on a 200k window against
+    /// the identical footprint.
+    #[test]
+    fn default_opinion_set_footprint_with_one_mcp_server_warns_on_32k_and_is_silent_on_200k() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env();
+
+        let footprint = default_opinion_set_footprint(dir.path(), &env, 1);
+        assert!(
+            footprint.total_tokens_est() > 0,
+            "the default opinion set must contribute a nonzero real measurement"
+        );
+
+        let warning = runway_fixed_cost_warning("ollama/small-model", 32_768, &footprint, None);
+        assert!(
+            warning.is_some(),
+            "a real install (default opinion set + one MCP server) must cross 50% of a 32k \
+             window: total_tokens_est={}",
+            footprint.total_tokens_est()
+        );
+        let warning = warning.unwrap();
+        assert!(!warning.contains("kk"), "{warning}");
+
+        assert_eq!(
+            runway_fixed_cost_warning("anthropic/claude-haiku-4-5", 200_000, &footprint, None),
+            None,
+            "the identical footprint against a 200k window must stay silent: total_tokens_est={}",
+            footprint.total_tokens_est()
+        );
     }
 
     // ---- opinion_set_transcript: board item `01M1FS34GNZEVZP4ZBVC90VD6J`, ----

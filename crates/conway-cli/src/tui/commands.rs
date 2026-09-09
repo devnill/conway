@@ -73,17 +73,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use conway::plugin::{Command, CommandCtx};
+use conway::plugin::{Command, CommandCtx, ToolSpec};
 use conway::{
-    AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, ModelRef, PermissionScope,
-    Provenance, RoleAlias, RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode,
-    ToolSelector, TrustPermissionReport, TrustPreview, Usage,
+    AgentId, AgentIntent, ContextReport, Conway, Envelope, Event, ForkSpec, ModelRef,
+    PermissionScope, Provenance, RoleAlias, RoutingReason, SessionHandle, SessionId, SpawnSpec,
+    SubagentMode, ToolName, ToolSelector, TrustPermissionReport, TrustPreview, Usage,
 };
 
 use super::form::PendingFormAsk;
+use super::model_picker;
+use super::session_picker;
 use super::state::{
-    AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode, PluginCommandEntry, TrustDecision,
-    TrustPreviewCard,
+    backfill_entries, AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode,
+    PluginCommandEntry, SpawnRoleOrModel, ToolStatus, TrustDecision, TrustPreviewCard,
 };
 
 /// One parsed slash command. Agent/session identifiers are still raw
@@ -138,6 +140,13 @@ pub enum SlashCommand {
         target: String,
     },
     Tree,
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: the cumulative diff of every
+    /// path this session's agents have `edit`/`write`d so far, against the
+    /// bytes each path had the FIRST time this session touched it -- see
+    /// `render_diff_snapshot`'s own doc for how it is built. A pure
+    /// `AppState` read (`state.transcript`/`state.diff_track`), no facade
+    /// call -- same shape as [`SlashCommand::Tree`] immediately above.
+    Diff,
     /// `agent` is `None` for a bare `/context` (board item
     /// `01M0RWKJD04JBR5NCVKBQXYHV4`: the only way to learn an id from the
     /// TUI was a wrong-on-purpose prefix guess) -- `execute` then resolves
@@ -161,9 +170,22 @@ pub enum SlashCommand {
     /// message -- the interactive child then idles until prompted
     /// (`Effect::FocusNewSession`'s own doc); for the explicit-target form
     /// `directive` is always `Some` (required, exactly as it always was).
+    ///
+    /// `role`/`model` are the operator-side parity surface for the
+    /// model-invoked `conway_fork`/`conway_spawn` tools' own `role`
+    /// argument (a routing role alias, e.g. `--role fast`) and `/model`'s
+    /// own raw pin (`--model <backend/model>`) -- mutually exclusive
+    /// (`parse_role_model_flags`'s own doc), both `None` for the ordinary
+    /// "inherit" form. Neither is resolved/validated here -- `parse` stays
+    /// state-free; `execute` maps `role` to `ForkSpec::role`/
+    /// `RoleAlias::new` and `model` to `ForkSpec::model`/`ModelRef::
+    /// from_str`, the same way `SlashCommand::Model`'s own `Some(model)` arm
+    /// already parses a raw pin string.
     Fork {
         agent: Option<String>,
         directive: Option<String>,
+        role: Option<String>,
+        model: Option<String>,
     },
     /// `agent_def` is `None` when the caller omits it (`/spawn <prompt>`) --
     /// the spawned child then inherits the parent session's role/model (see
@@ -171,12 +193,30 @@ pub enum SlashCommand {
     /// `prompt` is `None` for a BARE `/spawn`/`/spawn @<agent_def>` (this
     /// item): the child is created as a fresh, interactive KEEP-ALIVE
     /// session with no first message -- it idles until prompted.
+    ///
+    /// `role`/`model`: see [`SlashCommand::Fork`]'s own doc on the same two
+    /// fields -- identical meaning, identical mutual exclusion, applied to
+    /// a spawned (not forked) child.
     Spawn {
         agent_def: Option<String>,
         prompt: Option<String>,
+        role: Option<String>,
+        model: Option<String>,
     },
+    /// `/resume [<id|name>]` (board item `01M1YS550T52VR1VW8NMETXQS1`).
+    /// `Some(sid)` is unchanged from before that item: the raw, unresolved
+    /// argument, resolved against `Host::resolve_session_ref` in
+    /// [`execute`]. **`None` (bare `/resume`) is no longer a
+    /// [`ParseError`]** -- it used to be, the same way bare `/model` once
+    /// was (see [`SlashCommand::Model`]'s own doc on that precedent). Now
+    /// it opens a native picker over every session `Host::
+    /// resumable_sessions` currently reports for this project, reusing
+    /// `Mode::UiForm` exactly as `/model` bare's own menu does -- see
+    /// `open_session_picker`'s own doc for the mechanism and
+    /// [`apply_resume`] for the ONE function both a typed `/resume <id>`
+    /// and the picker's own `Enter` answer resolve through.
     Resume {
-        sid: String,
+        sid: Option<String>,
     },
     /// `/model [<backend/model>]` (INTENT.md §5c: "changing model
     /// mid-session is ordinary, and stays cheap"). `Some(model)` is still
@@ -188,8 +228,9 @@ pub enum SlashCommand {
     /// **Board item `01M1A35S609TZ613GAECPEHX8D`: `None` (bare `/model`) is
     /// no longer a [`ParseError`].** It used to be -- `/model` with nothing
     /// after it errored the same way `/resume` with no session id does.
-    /// Now it lists the configured `"backend/model"` pairs instead (a menu,
-    /// when `conway.ui` is installed; a text listing otherwise) -- see
+    /// Now it opens the native model picker instead -- every role-chain
+    /// member and every `.conway/models.json` entry, with no plugin
+    /// required; the `conway.ui` gate this arm once carried is gone. See
     /// [`execute`]'s own `Model { model: None }` arm.
     Model {
         model: Option<String>,
@@ -425,26 +466,34 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             usage: "/why",
             description: "show the last routing decision",
         },
+        SlashCommand::Diff => CommandSpec {
+            name: "/diff",
+            usage: "/diff",
+            description: "show the cumulative diff of every file this session has edited/written",
+        },
         SlashCommand::Fork { .. } => CommandSpec {
             name: "/fork",
-            usage: "/fork [<text>] | @<agent> <directive>",
-            description: "open an interactive fork of the focused agent (or fork a specific agent)",
+            usage: "/fork [--role <alias>|--model <backend/model>] [<text>] | @<agent> <directive>",
+            description: "open an interactive fork of the focused agent (or fork a specific \
+                           agent); --role/--model pick the child's routing (mutually exclusive)",
         },
         SlashCommand::Spawn { .. } => CommandSpec {
             name: "/spawn",
-            usage: "/spawn [@<agent_def>] [<prompt>]",
-            description:
-                "open an interactive spawned agent (inherits parent's role/model if no @agent_def)",
+            usage: "/spawn [--role <alias>|--model <backend/model>] [@<agent_def>] [<prompt>]",
+            description: "open an interactive spawned agent (inherits parent's role/model if no \
+                 @agent_def); --role/--model pick the child's routing (mutually exclusive)",
         },
         SlashCommand::Resume { .. } => CommandSpec {
             name: "/resume",
-            usage: "/resume <session-id>",
-            description: "resume a prior session",
+            usage: "/resume [<id|name>]",
+            description: "resume a prior session, by id or by a name given via `conway \
+                           sessions name` -- or bare, to pick from a list of this \
+                           project's sessions",
         },
         SlashCommand::Model { .. } => CommandSpec {
             name: "/model",
             usage: "/model [<backend/model>]",
-            description: "list configured models (menu, with conway.ui) or switch the focused \
+            description: "pick from every reachable model, or switch the focused \
                            agent to a pinned model (forks; see /why for the reason)",
         },
         SlashCommand::Role { .. } => CommandSpec {
@@ -520,16 +569,21 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
         },
         SlashCommand::Context { agent: None },
         SlashCommand::Tree,
+        SlashCommand::Diff,
         SlashCommand::Why,
         SlashCommand::Fork {
             agent: None,
             directive: None,
+            role: None,
+            model: None,
         },
         SlashCommand::Spawn {
             agent_def: None,
             prompt: None,
+            role: None,
+            model: None,
         },
-        SlashCommand::Resume { sid: String::new() },
+        SlashCommand::Resume { sid: None },
         SlashCommand::Model { model: None },
         SlashCommand::Role {
             role: String::new(),
@@ -628,20 +682,52 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             };
             Ok(SlashCommand::Context { agent })
         }
+        "/diff" => {
+            parse_no_arg(rest, "/diff")?;
+            Ok(SlashCommand::Diff)
+        }
         "/why" => {
             parse_no_arg(rest, "/why")?;
             Ok(SlashCommand::Why)
         }
         "/fork" => {
-            let (agent, directive) = parse_fork(rest, "/fork [@<agent> <directive>] | [<text>]")?;
-            Ok(SlashCommand::Fork { agent, directive })
+            let (role, model, remainder) = parse_role_model_flags(rest)?;
+            let (agent, directive) = parse_fork(
+                remainder,
+                "/fork [--role <alias>|--model <backend/model>] [@<agent> <directive>] | [<text>]",
+            )?;
+            Ok(SlashCommand::Fork {
+                agent,
+                directive,
+                role,
+                model,
+            })
         }
         "/spawn" => {
-            let (agent_def, prompt) = parse_spawn(rest, "/spawn [@<agent_def>] [<prompt>]")?;
-            Ok(SlashCommand::Spawn { agent_def, prompt })
+            let (role, model, remainder) = parse_role_model_flags(rest)?;
+            let (agent_def, prompt) = parse_spawn(
+                remainder,
+                "/spawn [--role <alias>|--model <backend/model>] [@<agent_def>] [<prompt>]",
+            )?;
+            Ok(SlashCommand::Spawn {
+                agent_def,
+                prompt,
+                role,
+                model,
+            })
         }
         "/resume" => {
-            let sid = parse_one_arg(rest, "/resume <session-id>")?;
+            // Board item `01M1YS550T52VR1VW8NMETXQS1`: bare `/resume` (no
+            // argument) is a valid parse now, not a `ParseError` -- mirrors
+            // `/model`'s own identical precedent immediately below (empty
+            // `rest` means "open the picker", handled entirely in
+            // `execute`; `parse` stays state-free either way).
+            let trimmed = rest.trim();
+            let sid = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
             Ok(SlashCommand::Resume { sid })
         }
         "/model" => {
@@ -834,6 +920,72 @@ fn parse_cancel(rest: &str, form: &str) -> Result<(String, Option<String>), Pars
         }
         None => Ok((trimmed.to_string(), None)),
     }
+}
+
+/// Strips one recognized `--role`/`--model` flag, in either order, from
+/// the FRONT of `s`. Requires whitespace immediately after the flag word
+/// (so `--rolex` never matches `--role`) and a non-empty value token right
+/// after that. Returns `(value, remainder)` on a match, `None` if `s`
+/// (after leading whitespace) does not start with `flag`.
+fn strip_leading_flag<'a>(s: &'a str, flag: &str) -> Option<(&'a str, &'a str)> {
+    let s = s.trim_start();
+    let after = s.strip_prefix(flag)?;
+    if !after.starts_with(char::is_whitespace) {
+        // Reject a partial-word match, e.g. `--rolex` against `--role`.
+        return None;
+    }
+    let after = after.trim_start();
+    match after.split_once(char::is_whitespace) {
+        Some((value, remainder)) if !value.is_empty() => Some((value, remainder)),
+        None if !after.is_empty() => Some((after, "")),
+        _ => None,
+    }
+}
+
+/// Strips leading `--role <alias>`/`--model <backend/model>` flags, in
+/// either order, from the front of a `/spawn`/`/fork` argument list --
+/// shared by both parsers (`parse`'s own `"/fork"`/`"/spawn"` arms), since
+/// both commands accept the identical pair with identical meaning (see
+/// [`SlashCommand::Fork`]'s own doc on the `role`/`model` fields this
+/// produces). Mutually exclusive -- `--role` AND `--model` on the same
+/// invocation is a [`ParseError`], the same "pin OR route, never both at
+/// once" rule `conway_fork`/`conway_spawn`'s own `role` argument enforces
+/// against a raw `model` argument neither tool exposes (see this module's
+/// item notes: the operator's `--model` is the parity surface for that
+/// tool-side omission, not a route/pin hybrid).
+///
+/// Returns `(role, model, remainder)` -- `remainder` is everything left
+/// after the recognized flags (still raw, unparsed text), fed to
+/// [`parse_fork`]/[`parse_spawn`]'s existing `@agent`/free-text grammar
+/// completely unchanged. Neither flag is validated against a live
+/// role/model here -- `parse` stays state-free (module notes); `execute`
+/// resolves each the same way `/model`'s own `Some(model)` arm and
+/// `/role`'s own arm already do.
+fn parse_role_model_flags(
+    rest: &str,
+) -> Result<(Option<String>, Option<String>, &str), ParseError> {
+    let mut role: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut remainder = rest;
+    loop {
+        if let Some((value, after)) = strip_leading_flag(remainder, "--role") {
+            role = Some(value.to_string());
+            remainder = after;
+            continue;
+        }
+        if let Some((value, after)) = strip_leading_flag(remainder, "--model") {
+            model = Some(value.to_string());
+            remainder = after;
+            continue;
+        }
+        break;
+    }
+    if role.is_some() && model.is_some() {
+        return Err(ParseError(
+            "--role and --model are mutually exclusive".to_string(),
+        ));
+    }
+    Ok((role, model, remainder))
 }
 
 /// Parses `/spawn`'s argument list, where naming an `agent_def` is optional
@@ -1127,6 +1279,30 @@ pub trait Host {
     /// alike -- gets the fallback for free rather than each needing to know
     /// to ask for it.
     async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport>;
+    /// A thin, synchronous passthrough to `Conway::tool_specs` -- every
+    /// tool THIS PROCESS registered (not narrowed to `agent`'s own
+    /// `ToolSelector`), sorted by name. Board item
+    /// `01M1YS138H8T0HNV5YMZ6KD767` part 2: `/context`'s per-plugin
+    /// tool-registry breakdown zips this against [`Self::tool_plugin_ids`]
+    /// by name to group the announced set by declaring plugin. Sync, not
+    /// async, unlike every other method on this trait -- `Conway::
+    /// tool_specs` performs no I/O and no facade call, only an
+    /// already-compiled in-memory registry read
+    /// (`PluginRegistry::specs`'s own doc), so there is nothing here for a
+    /// caller to `.await`.
+    fn tool_specs(&self) -> Vec<ToolSpec>;
+    /// A thin, synchronous passthrough to `Conway::tool_plugin_ids` --
+    /// every registered tool's declaring plugin id, by name. Mirrors
+    /// [`Self::tool_specs`]'s own "sync, not async" reasoning exactly (the
+    /// same already-compiled registry read, just keyed differently).
+    fn tool_plugin_ids(&self) -> HashMap<ToolName, String>;
+    /// A thin passthrough to `SessionHandle::transcript` -- `agent`'s own
+    /// full record history (its own records, prefixed by its fork
+    /// ancestry). `/context`'s own permission-decision COUNT reads this,
+    /// never `ContextReport::segments` -- see
+    /// `render_permission_decision_count`'s own doc for why those are two
+    /// different sources, not two names for the same one.
+    async fn transcript(&self, agent: AgentId) -> conway::Result<Vec<conway::LogRecord>>;
     /// The focused agent's cumulative token spend -- a thin passthrough to
     /// `SessionHandle::session_usage`, reached through this trait -- like
     /// every other method here -- so `app.rs`'s status-line refresh logic
@@ -1167,7 +1343,34 @@ pub trait Host {
     /// that test fail against a naive inline-await implementation and pass
     /// against the real one).
     async fn await_agent(&self, target: AgentId) -> conway::Result<conway::AgentResult>;
+    /// Board item `01M1YS4FMJH004D1Y619MTBY7A`: resolves `/resume
+    /// <id|name>`'s raw argument exactly the way `--resume` does
+    /// (`crate::session_names::resolve`) -- a bare ULID resolves with no
+    /// I/O; anything else is looked up against this process's
+    /// `conway.names` sidecar. Routed through `Host`, like every other
+    /// facade-touching call in this trait, so `execute`'s
+    /// `SlashCommand::Resume` arm stays unit-testable against `tests::
+    /// FakeHost` (whose own impl can only ever exercise the id-shaped
+    /// half -- see that impl's own doc for why the SUCCESS half of a
+    /// NAMED `/resume` is proven elsewhere, in `tui::app::startup`'s own
+    /// `App::new`/`resolve_handle` tests, not here: `FakeHost::resume`
+    /// cannot construct a real `SessionHandle` at all).
+    async fn resolve_session_ref(&self, raw: &str) -> conway::Result<SessionId>;
     async fn resume(&self, sid: SessionId) -> conway::Result<SessionHandle>;
+    /// Board item `01M1YS550T52VR1VW8NMETXQS1`: every session bare
+    /// `/resume`'s picker should list -- `open_session_picker`'s one data
+    /// source. `LiveHost`'s own impl loads `conway.names` once, lists this
+    /// PROJECT's own sessions (`Conway::sessions`, the exact facade call
+    /// `conway sessions list` already makes, so the picker and the
+    /// plain-text listing agree on which sessions exist), and resolves
+    /// each row's title through `commands::sessions::display_title` --
+    /// see `session_picker`'s own module doc for why `first_prompt`/
+    /// `last_activity`/`seq_count` are NOT resolved through a second call
+    /// to that module's `auto_title_for`. Sorted most-recently-active
+    /// first. Scoped to the CURRENT project's own session-root key only --
+    /// see `open_session_picker`'s own doc for the disclosed cross-project
+    /// gap and exactly what already exists, unwired, to close it.
+    async fn resumable_sessions(&self) -> conway::Result<Vec<session_picker::ResumableSessionRow>>;
     /// The `/ask` modal's three fates (B5) -- one facade op each: promote
     /// (B3, `[f]` keep), pull_in (B4, `[p]` merge into the parent), purge
     /// (`[esc]` discard, and the quit-with-modal-open fallback). Routed
@@ -1267,6 +1470,18 @@ impl Host for LiveHost<'_> {
         self.handle.context_report_current(agent).await
     }
 
+    fn tool_specs(&self) -> Vec<ToolSpec> {
+        self.conway.tool_specs()
+    }
+
+    fn tool_plugin_ids(&self) -> HashMap<ToolName, String> {
+        self.conway.tool_plugin_ids()
+    }
+
+    async fn transcript(&self, agent: AgentId) -> conway::Result<Vec<conway::LogRecord>> {
+        self.handle.transcript(agent).await
+    }
+
     async fn session_usage(&self, agent: AgentId) -> conway::Result<Usage> {
         self.handle.session_usage(agent).await
     }
@@ -1295,8 +1510,78 @@ impl Host for LiveHost<'_> {
         self.handle.await_agent(target).await
     }
 
+    async fn resolve_session_ref(&self, raw: &str) -> conway::Result<SessionId> {
+        let names = crate::session_names::NamesStore::load(&crate::session_names::session_root(
+            self.conway,
+        ))
+        .map_err(|e| crate::model_pin::usage_error(e.to_string()))?;
+        crate::session_names::resolve(raw, &names)
+            .map_err(|e| crate::model_pin::usage_error(e.to_string()))
+    }
+
     async fn resume(&self, sid: SessionId) -> conway::Result<SessionHandle> {
         self.conway.resume(sid).await
+    }
+
+    async fn resumable_sessions(&self) -> conway::Result<Vec<session_picker::ResumableSessionRow>> {
+        let names = crate::session_names::NamesStore::load(&crate::session_names::session_root(
+            self.conway,
+        ))
+        .map_err(|e| crate::model_pin::usage_error(e.to_string()))?;
+        let metas = self
+            .conway
+            .sessions(conway::SessionFilter::default())
+            .await?;
+        let mut rows = Vec::with_capacity(metas.len());
+        for meta in &metas {
+            let title = crate::commands::sessions::display_title(self.conway, &names, meta).await;
+            // `first_prompt`/`last_activity`/`seq_count` all come from the
+            // SAME resolved-transcript read -- see `resumable_sessions`'s
+            // own trait-level doc for why this does not also go through
+            // `commands::sessions::auto_title_for` (which would pay for a
+            // second, identical `resume` + read just to get `first_prompt`
+            // alone). Best-effort: a session that cannot be resumed or
+            // whose transcript cannot be read still gets a row (its own
+            // title, if any, still came from `display_title` above) with
+            // these three fields left at their empty defaults, rather than
+            // dropping the row -- an operator should still see (and be
+            // able to resume) a session even if this extra read fails.
+            let (first_prompt, last_activity, seq_count) = match self.conway.resume(meta.id).await {
+                Ok(handle) => match handle.transcript(handle.root()).await {
+                    Ok(records) => {
+                        let first_prompt = records.iter().find_map(|record| match record {
+                            conway::LogRecord::UserTurn { text, .. } => {
+                                Some(crate::commands::sessions::auto_title(text))
+                            }
+                            _ => None,
+                        });
+                        let last_activity =
+                            records.iter().rev().find_map(session_picker::record_ts);
+                        (first_prompt, last_activity, records.len())
+                    }
+                    Err(_) => (None, None, 0),
+                },
+                Err(_) => (None, None, 0),
+            };
+            rows.push(session_picker::ResumableSessionRow {
+                id: meta.id,
+                title,
+                first_prompt,
+                last_activity,
+                seq_count,
+                labels: meta.labels.clone(),
+            });
+        }
+        // Most-recently-active first -- ties (including "never active",
+        // both `None`) broken by id, matching `conway_session::discovery::
+        // search_all_projects`'s own ordering convention for the identical
+        // "most recent first" property over a different data source.
+        rows.sort_by(|a, b| {
+            b.last_activity
+                .cmp(&a.last_activity)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        Ok(rows)
     }
 
     async fn promote(&self, agent: AgentId) -> conway::Result<SessionId> {
@@ -1512,6 +1797,77 @@ fn interactive_keep_alive_tools() -> ToolSelector {
     ToolSelector::Except(vec!["report".into()])
 }
 
+/// Applies an operator-supplied `--role`/`--model` pair (already checked
+/// mutually exclusive by [`parse_role_model_flags`]) to `spec`, mirroring
+/// `/model <backend/model>`'s own `Some(model)` arm and `/role <alias>`'s
+/// own arm exactly: `role` becomes a routing role alias
+/// ([`ForkSpec::role`]), `model` is parsed as a raw pin the same way
+/// `apply_model_switch` parses one (`ModelRef::from_str`) -- a malformed
+/// value is returned as `Err` (a plain message, not silently ignored),
+/// never as a panic or a silently-dropped flag. Neither is admission-
+/// checked here; that happens on the child's own first turn, exactly like
+/// `/model`/`/role`'s existing switch mechanism.
+fn apply_fork_role_or_model(
+    mut spec: ForkSpec,
+    role: Option<String>,
+    model: Option<String>,
+) -> Result<ForkSpec, String> {
+    if let Some(role) = role {
+        spec = spec.role(RoleAlias::new(role));
+    } else if let Some(model) = model {
+        let model_ref = model
+            .parse::<ModelRef>()
+            .map_err(|e| format!("--model {model}: {e}"))?;
+        spec = spec.model(model_ref);
+    }
+    Ok(spec)
+}
+
+/// [`apply_fork_role_or_model`]'s `SpawnSpec` counterpart. `SpawnSpec` has
+/// no `.model(..)` builder method (`SpawnSpec`'s own doc: a model pin was
+/// deliberately fork-only when that struct was first built) -- `knobs.model`
+/// is nonetheless a public field of the SAME shared `AgentKnobs` type
+/// `ForkSpec::model` writes to, and `conway_runtime::SubagentHost::start`
+/// already reads `spec.knobs.model` identically regardless of fork/spawn
+/// mode (see that method's own `pin` resolution) -- so setting it directly
+/// here is using existing public surface, not inventing new behavior the
+/// runtime does not already support for a spawned child.
+fn apply_spawn_role_or_model(
+    mut spec: SpawnSpec,
+    role: Option<String>,
+    model: Option<String>,
+) -> Result<SpawnSpec, String> {
+    if let Some(role) = role {
+        spec = spec.role(RoleAlias::new(role));
+    } else if let Some(model) = model {
+        let model_ref = model
+            .parse::<ModelRef>()
+            .map_err(|e| format!("--model {model}: {e}"))?;
+        spec.knobs.model = Some(model_ref);
+    }
+    Ok(spec)
+}
+
+/// Board item A1b: extracts the [`SpawnRoleOrModel`] a `--role`/`--model`
+/// flag on `/spawn`/`/fork` produced, if either was given -- read back off
+/// the ALREADY-BUILT spec's own `knobs` (never re-parsed from the raw
+/// strings a second time) so this can never disagree with what
+/// [`apply_fork_role_or_model`]/[`apply_spawn_role_or_model`] actually put
+/// there. `role`/`model` are mutually exclusive by construction (both of
+/// those functions refuse both at once), so `role`, when present, always
+/// wins the match arm ordering below -- never actually racing `model` for a
+/// spec either of them built.
+fn spawn_role_or_model_of(
+    role: &Option<RoleAlias>,
+    model: &Option<ModelRef>,
+) -> Option<SpawnRoleOrModel> {
+    match (role, model) {
+        (Some(role), _) => Some(SpawnRoleOrModel::Role(role.clone())),
+        (None, Some(model)) => Some(SpawnRoleOrModel::Model(model.clone())),
+        (None, None) => None,
+    }
+}
+
 /// The bare/implicit `/fork` execution path (WI "bare /spawn & /fork open an
 /// interactive session"): a fresh, interactive KEEP-ALIVE fork of `focused`
 /// with an EMPTY directive (the child inherits context at head and idles);
@@ -1522,26 +1878,45 @@ fn interactive_keep_alive_tools() -> ToolSelector {
 /// manual flow with the raw text) reuses the exact same path, and the
 /// `IntentChoice::Manual`/`Confirm` arms in [`execute_intent_confirm`] can
 /// dispatch back through it via a synthetic `SlashCommand::Fork`.
+///
+/// `role`/`model` (`/fork --role <alias>|--model <backend/model>`): applied
+/// via [`apply_fork_role_or_model`] -- both `None` for the ordinary
+/// "inherit" form, exactly the classifier-fallback/`IntentChoice` call
+/// sites below (neither carries an operator-typed `role`/`model` through
+/// the confirmation card, so both always pass `None, None` here).
 async fn bare_fork<H: Host>(
     state: &mut AppState,
     host: &H,
     focused: AgentId,
     first_message: Option<String>,
+    role: Option<String>,
+    model: Option<String>,
 ) -> Effect {
-    match host
-        .fork(
-            focused,
-            ForkSpec::new("")
-                .keep_alive(true)
-                .tools(interactive_keep_alive_tools()),
-        )
-        .await
-    {
-        Ok(child) => Effect::FocusNewSession {
-            child,
-            parent: focused,
-            first_message,
-        },
+    let spec = match apply_fork_role_or_model(
+        ForkSpec::new("")
+            .keep_alive(true)
+            .tools(interactive_keep_alive_tools()),
+        role,
+        model,
+    ) {
+        Ok(spec) => spec,
+        Err(e) => {
+            notice(state, e);
+            return Effect::None;
+        }
+    };
+    let role_or_model = spawn_role_or_model_of(&spec.knobs.role, &spec.knobs.model);
+    match host.fork(focused, spec).await {
+        Ok(child) => {
+            if let Some(rom) = role_or_model {
+                state.spawn_role_or_model.insert(child, rom);
+            }
+            Effect::FocusNewSession {
+                child,
+                parent: focused,
+                first_message,
+            }
+        }
         Err(e) => {
             notice(state, e.to_string());
             Effect::None
@@ -1594,6 +1969,18 @@ async fn switch_session<H: Host>(
     match host.fork(focused, spec).await {
         Ok(child) => {
             notice(state, format!("{}: {focused} -> {child}", describe.into()));
+            // Board item A1d ("say why a turn fell back"), the "switch-forks
+            // do not pile up" half: this IS the one call site that knows
+            // `child` exists purely because of a `/model`/`/role` switch off
+            // `focused` -- record it before anything else can observe
+            // `child` (in particular, before `AppState::apply` sees this
+            // child's own `Event::AgentSpawned` and inserts its `TreeNode`),
+            // so `/agents` never renders even one frame of `child` as its
+            // own uncollapsed row. See `AppState::switch_lineage`'s own doc
+            // for why this lives only here, and
+            // `agent_panel::AppState::visible_agent_nodes`/`switch_history`
+            // for how it is read.
+            state.switch_lineage.insert(child, focused);
             Effect::FocusNewSession {
                 child,
                 parent: focused,
@@ -1643,6 +2030,194 @@ pub async fn apply_model_switch<H: Host>(model: String, state: &mut AppState, ho
     }
 }
 
+/// Resolves and reattaches to `sid` (a raw id or a `conway.names` name) --
+/// the ONE function `execute`'s `SlashCommand::Resume { sid: Some(_) }` arm
+/// and `app/run.rs`'s `Action::UiFormDecision` dispatch (bare `/resume`'s
+/// own picker's `Enter` answer, gated on `AppState::session_picker_active`,
+/// board item `01M1YS550T52VR1VW8NMETXQS1`) both call -- so a session
+/// chosen from the picker resumes through the exact same path a hand-typed
+/// `/resume <id>` always has, never a second, independently-maintained
+/// reattachment mechanism. Factored verbatim out of what used to be the
+/// `Resume` arm's own inline body; every comment on `state`'s
+/// reset/carry-across below predates this factoring and still applies
+/// unchanged.
+pub async fn apply_resume<H: Host>(sid: String, state: &mut AppState, host: &H) -> Effect {
+    match host.resolve_session_ref(&sid).await {
+        Ok(id) => match host.resume(id).await {
+            Ok(handle) => {
+                // Module notes: "replace the active handle, resubscribe
+                // events, reset AppState from handle.transcript(root)".
+                // `state` is reset to a clean `AppState` scoped to the new
+                // root first (below), then backfilled from this SAME
+                // session's own persisted history
+                // (`crate::tui::state::backfill_entries`, board item
+                // `01M1YS4FMJH004D1Y619MTBY7A` -- the LogRecord -> Entry
+                // mapping this arm's own comment used to name as an
+                // unresolved gap; see that function's own doc for why it is
+                // a NEW mapping, not a reuse of `conway::SessionHandle`'s
+                // `record_to_event`).
+                //
+                // the installed
+                // plugin command list is process-lifetime configuration
+                // (which plugins were installed at startup), not
+                // session-scoped state -- `AppState::new` seeds it empty
+                // (every OTHER field reset here genuinely IS
+                // session-scoped), so it is carried across the reset by
+                // hand, the one field `/resume` intentionally does not
+                // clear.
+                // The installed agent-name store is carried across for the
+                // identical reason (board item `01M0TV5BSE98S16SFYECG9G9WP`):
+                // which plugins this process installed is startup
+                // configuration, not session state, so `/resume` must not
+                // silently strip `/steer <name>` of its ability to resolve.
+                // The NAMES themselves are per-agent and the resumed
+                // session has new agents, so nothing stale carries over --
+                // only the store handle does.
+                //
+                // The plugin status-contribution snapshot is carried across
+                // for the SAME reason as its two siblings above (board item
+                // `01M0XDEDBR5YDF71Q7ZRXYMT85`, closing the third link in
+                // the chain those two items opened): `Conway::
+                // plugin_status_contributions()` is a `Conway`-level,
+                // build-time value -- exactly as process-lifetime as
+                // `plugin_commands`/`agent_names`, not session-scoped state
+                // -- so `AppState::new`'s empty default is the wrong value
+                // to leave it at here. This does NOT make the snapshot
+                // live: it is still the same frozen, typically-empty value
+                // `App::new` copied once at TUI startup (see `AppState::
+                // plugin_status_contributions`'s own doc for the caveat,
+                // restated rather than silently dropped by this
+                // carry-across).
+                let agent_names = state.agent_names.clone();
+                let plugin_commands = state.plugin_commands.clone();
+                let plugin_status_contributions = state.plugin_status_contributions.clone();
+                *state = AppState::new(handle.root());
+                state.plugin_commands = plugin_commands;
+                state.agent_names = agent_names;
+                state.plugin_status_contributions = plugin_status_contributions;
+                // Board item `01M1YS4FMJH004D1Y619MTBY7A`: draw this
+                // session's own history BEFORE the "resumed session" notice
+                // below, so the past reads as the past and the notice reads
+                // as the present, appended after it -- matching `App::new`'s
+                // own backfill-then-notices ordering at startup exactly.
+                // Best-effort: a failed fetch (store I/O) leaves the
+                // transcript empty rather than failing the whole `/resume`.
+                if let Ok(records) = host.transcript(handle.root()).await {
+                    state.transcript.extend(backfill_entries(&records));
+                }
+                notice(state, format!("resumed session {id}"));
+                Effect::Resumed(handle)
+            }
+            Err(e) => {
+                notice(state, e.to_string());
+                Effect::None
+            }
+        },
+        Err(e) => {
+            notice(
+                state,
+                format!(
+                    "unknown session `{sid}`: {e} -- run `conway sessions list` to see \
+                     known sessions and their names"
+                ),
+            );
+            Effect::None
+        }
+    }
+}
+
+/// Opens `/model`'s own interactive picker over `options` (never empty --
+/// both call sites in [`execute`] already guard that) -- reuses `Mode::
+/// UiForm`/`draw_ui_form`/`handle_ui_form_key` exactly as `ask_question`
+/// (a model-called tool) already does; this is that mechanism's second real
+/// consumer. `Up`/`Down` move the highlighted option,
+/// `Enter` answers with it (`run.rs`'s `Action::UiFormDecision` arm, gated
+/// on [`AppState::model_picker_active`], runs [`apply_model_switch`] on the
+/// answer), `Esc` cancels with no switch at all.
+///
+/// **The focused agent's own current model is named in the PROMPT, not
+/// marked inline per-row the way the old plain-text listing did.**
+/// `AskSelectRequest::options` are returned to the caller VERBATIM on
+/// `Enter` (`conway_plugin_ui::AskSelectAnswer::selected` is "never an
+/// index"), and that returned string is what [`apply_model_switch`] parses
+/// -- decorating an option's own text (e.g. appending `"  (active)"`) would
+/// make choosing THAT ONE row fail to parse as a `ModelRef` and refuse the
+/// switch. Naming it in `prompt` instead keeps every option round-trip-safe
+/// and still answers "which one is this session already running" before a
+/// single key is pressed.
+///
+/// **What this does NOT do, and why: there is no typed live-filter box
+/// inside the open picker, and no second key that promotes the highlighted
+/// entry to the persistent default.** Both would need a new key handler
+/// (`input.rs`) and either a new `Mode` variant or a new `AppState` field
+/// to remember what has been typed/highlighted between keystrokes
+/// (`state.rs`); this change does not touch either file (see this
+/// module's own file-ownership note in the accompanying change). What
+/// ships instead: [`SlashCommand::Model`]'s `Some(_)` arm already applies a
+/// typed, non-matching argument as a filter BEFORE opening the picker
+/// (`model_picker::filter_models`), so retyping `/model <narrower text>`
+/// re-filters one keystroke-group at a time even without a live filter box
+/// inside the modal itself.
+fn open_model_picker(state: &mut AppState, options: Vec<String>) {
+    let prompt = match state.focused_model.as_deref() {
+        Some(current) => format!("select a model -- currently running {current}"),
+        None => "select a model".to_string(),
+    };
+    let ask = PendingFormAsk::new_local(conway_plugin_ui::AskSelectRequest { prompt, options });
+    state.offer_ui_form(ask);
+    state.model_picker_active = true;
+}
+
+/// Board item `01M1YS550T52VR1VW8NMETXQS1`: opens bare `/resume`'s own
+/// picker over `rows` (never empty -- the one call site, `execute`'s
+/// `Resume { sid: None }` arm, already guards that below) -- reuses `Mode::
+/// UiForm`/`draw_ui_form`/`handle_ui_form_key` exactly as [`open_model_picker`]
+/// does immediately above (the SAME furniture, a second consumer of it, not
+/// a second list widget). `Up`/`Down` move the highlighted row, `Enter`
+/// answers with it (`app/run.rs`'s `Action::UiFormDecision` arm, gated on
+/// [`AppState::session_picker_active`], runs [`apply_resume`] on the
+/// row's own id, recovered via `session_picker::session_id_from_option`),
+/// `Esc` cancels with no resume at all.
+///
+/// Each row is formatted by `session_picker::format_row` -- title/auto
+/// -title, first prompt, last activity, message count, labels, with the
+/// row's own [`conway::SessionId`] appended last for `Enter` to recover
+/// (`AskSelectRequest::options` are returned to the caller VERBATIM, the
+/// identical "never an index" contract [`open_model_picker`]'s own doc
+/// leans on).
+///
+/// **What this does NOT do, and why: there is no typed live-filter box
+/// inside the open picker, and no key that widens the listing to sessions
+/// under a DIFFERENT project's own session-root key.** Both would need a
+/// new key handler (`input.rs`) to capture a character while `Mode::UiForm`
+/// is open, which today swallows every `Char` key except the model
+/// picker's own designated `d` (`input::handle_ui_form_key`'s own body) --
+/// a file this change does not touch (see the accompanying change's own
+/// file-ownership note). The cross-project half has a second blocker: the
+/// mechanics already exist (`conway_session::discovery::
+/// search_all_projects`/`SessionSearchScope::AllProjects`, wired today only
+/// into `ToolCtx::session_discovery` for the model-facing `conway.discover`
+/// tool -- see `conway_core::ports::discovery`'s own module doc), but
+/// reaching them from here would need a new `Conway`-level method
+/// (`crates/conway/src/conway.rs`), a file this change also does not
+/// touch. Both are disclosed gaps, not silently dropped requirements --
+/// see the accompanying change's own completion report for the exact
+/// unblocking edit each one needs.
+///
+/// Never called with an empty `rows` -- the one call site (`execute`'s
+/// `Resume { sid: None }` arm) checks that first and pushes a clear
+/// `Entry::Notice` instead of opening an empty picker, mirroring
+/// [`open_model_picker`]'s own call site's identical guard.
+fn open_session_picker(state: &mut AppState, rows: Vec<session_picker::ResumableSessionRow>) {
+    let options = session_picker::format_rows(&rows);
+    let ask = PendingFormAsk::new_local(conway_plugin_ui::AskSelectRequest {
+        prompt: "resume which session?".to_string(),
+        options,
+    });
+    state.offer_ui_form(ask);
+    state.session_picker_active = true;
+}
+
 /// The bare/implicit `/spawn` execution path (WI "bare /spawn & /fork open an
 /// interactive session"): a fresh, interactive KEEP-ALIVE session with an
 /// EMPTY prompt (the child idles until `first_message`, if given, is
@@ -1653,12 +2228,19 @@ pub async fn apply_model_switch<H: Host>(model: String, state: &mut AppState, ho
 /// the same reason [`bare_fork`] is -- the C2 fallback and the
 /// `IntentChoice::Manual`/`Confirm` arms reuse it via synthetic
 /// `SlashCommand::Spawn`s.
+///
+/// `role`/`model` (`/spawn --role <alias>|--model <backend/model>`):
+/// applied via [`apply_spawn_role_or_model`] -- see [`bare_fork`]'s own doc
+/// on the identical pair for why the classifier-fallback/`IntentChoice`
+/// call sites below always pass `None, None`.
 async fn bare_spawn<H: Host>(
     state: &mut AppState,
     host: &H,
     root: AgentId,
     agent_def: Option<String>,
     first_message: Option<String>,
+    role: Option<String>,
+    model: Option<String>,
 ) -> Effect {
     let mut spec = SpawnSpec::new("")
         .keep_alive(true)
@@ -1666,12 +2248,25 @@ async fn bare_spawn<H: Host>(
     if let Some(def) = &agent_def {
         spec = spec.agent_def(def.clone());
     }
+    let spec = match apply_spawn_role_or_model(spec, role, model) {
+        Ok(spec) => spec,
+        Err(e) => {
+            notice(state, e);
+            return Effect::None;
+        }
+    };
+    let role_or_model = spawn_role_or_model_of(&spec.knobs.role, &spec.knobs.model);
     match host.spawn(root, spec).await {
-        Ok(child) => Effect::FocusNewSession {
-            child,
-            parent: root,
-            first_message,
-        },
+        Ok(child) => {
+            if let Some(rom) = role_or_model {
+                state.spawn_role_or_model.insert(child, rom);
+            }
+            Effect::FocusNewSession {
+                child,
+                parent: root,
+                first_message,
+            }
+        }
         Err(e) => {
             notice(state, e.to_string());
             Effect::None
@@ -1737,7 +2332,15 @@ pub async fn execute_intent_confirm<H: Host>(
             let focused = state.focused_agent;
             match card.intent.recipe {
                 SubagentMode::Fork => {
-                    bare_fork(state, host, focused, Some(card.intent.prompt.clone())).await
+                    bare_fork(
+                        state,
+                        host,
+                        focused,
+                        Some(card.intent.prompt.clone()),
+                        None,
+                        None,
+                    )
+                    .await
                 }
                 SubagentMode::Spawn => {
                     let root = host.root();
@@ -1747,6 +2350,8 @@ pub async fn execute_intent_confirm<H: Host>(
                         root,
                         card.intent.agent_def.clone(),
                         Some(card.intent.prompt.clone()),
+                        None,
+                        None,
                     )
                     .await
                 }
@@ -1757,15 +2362,38 @@ pub async fn execute_intent_confirm<H: Host>(
             // Fall back to today's pre-classification flow with the ORIGINAL
             // command's `default_recipe` and the user's raw text (untouched)
             // -- verbatim. Also via `bare_fork`/`bare_spawn` directly (no
-            // re-classify).
+            // re-classify). Neither `role` nor `model` reaches the classifier
+            // card at all (`IntentConfirm` carries no such field) -- an
+            // operator-typed `--role`/`--model` never reaches this arm in the
+            // first place, since `execute`'s own `Fork`/`Spawn` arms skip
+            // classification entirely whenever either flag was given (see
+            // those arms' own comments) -- so `None, None` here is always
+            // correct, never a silent drop of something the operator typed.
             let focused = state.focused_agent;
             match card.default_recipe {
                 SubagentMode::Fork => {
-                    bare_fork(state, host, focused, Some(card.raw_text.clone())).await
+                    bare_fork(
+                        state,
+                        host,
+                        focused,
+                        Some(card.raw_text.clone()),
+                        None,
+                        None,
+                    )
+                    .await
                 }
                 SubagentMode::Spawn => {
                     let root = host.root();
-                    bare_spawn(state, host, root, None, Some(card.raw_text.clone())).await
+                    bare_spawn(
+                        state,
+                        host,
+                        root,
+                        None,
+                        Some(card.raw_text.clone()),
+                        None,
+                        None,
+                    )
+                    .await
                 }
             }
         }
@@ -1876,13 +2504,26 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 None => Ok(state.focused_agent),
             };
             match resolved {
-                Ok(agent_id) => match host.context_report(agent_id).await {
-                    Ok(report) => {
-                        render_instruction_preamble(&report, state);
-                        render_context_report(&report, state);
+                Ok(agent_id) => {
+                    match host.context_report(agent_id).await {
+                        Ok(report) => {
+                            render_instruction_preamble(&report, state);
+                            // Board item `01M1YS138H8T0HNV5YMZ6KD767` part
+                            // 2: `Host::tool_specs`/`tool_plugin_ids` are
+                            // sync, in-memory registry reads (their own
+                            // doc), so no `.await` and no error path here --
+                            // unlike `host.context_report` just above, there
+                            // is nothing that can fail.
+                            let tool_registry_breakdown = summarize_tool_registry_by_plugin(
+                                &host.tool_specs(),
+                                &host.tool_plugin_ids(),
+                            );
+                            render_context_report(&report, &tool_registry_breakdown, state);
+                        }
+                        Err(e) => notice(state, e.to_string()),
                     }
-                    Err(e) => notice(state, e.to_string()),
-                },
+                    render_permission_decision_count(agent_id, state, host).await;
+                }
                 Err(e) => notice(state, e),
             }
             Effect::None
@@ -1891,22 +2532,45 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             render_why(state);
             Effect::None
         }
-        SlashCommand::Fork { agent, directive } => match agent {
+        SlashCommand::Diff => {
+            render_diff_snapshot(state);
+            Effect::None
+        }
+        SlashCommand::Fork {
+            agent,
+            directive,
+            role,
+            model,
+        } => match agent {
             // Explicit target (`/fork @<agent> <directive>`): the
             // pre-existing autonomous, non-keep-alive fork-of-a-named-agent
             // behavior, unchanged in substance -- `parse_fork` guarantees
             // `directive` is `Some` whenever `agent` is. Explicit `@<agent>`
             // syntax skips inference entirely (C2: only FREE TEXT is
-            // classified; the user already named the target).
+            // classified; the user already named the target). `role`/`model`
+            // apply here exactly as they do everywhere else on this command
+            // ([`apply_fork_role_or_model`]).
             Some(token) => {
                 let directive_text = directive.unwrap_or_default();
-                match resolve_agent(state, &token) {
-                    Ok(agent_id) => {
-                        match host.fork(agent_id, ForkSpec::new(directive_text)).await {
-                            Ok(child) => notice(state, format!("forked {agent_id} -> {child}")),
-                            Err(e) => notice(state, e.to_string()),
+                let spec =
+                    match apply_fork_role_or_model(ForkSpec::new(directive_text), role, model) {
+                        Ok(spec) => spec,
+                        Err(e) => {
+                            notice(state, e);
+                            return Effect::None;
                         }
-                    }
+                    };
+                let role_or_model = spawn_role_or_model_of(&spec.knobs.role, &spec.knobs.model);
+                match resolve_agent(state, &token) {
+                    Ok(agent_id) => match host.fork(agent_id, spec).await {
+                        Ok(child) => {
+                            if let Some(rom) = role_or_model {
+                                state.spawn_role_or_model.insert(child, rom);
+                            }
+                            notice(state, format!("forked {agent_id} -> {child}"));
+                        }
+                        Err(e) => notice(state, e.to_string()),
+                    },
                     Err(e) => notice(state, e),
                 }
                 Effect::None
@@ -1924,6 +2588,20 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             // today's manual flow with a notice; the card must not appear
             // for a hard error. Bare `/fork` (no text) is unchanged: no
             // classify, no card, inherited model.
+            //
+            // An explicit `--role`/`--model` SKIPS classification entirely,
+            // the same way the explicit `@<agent>` target above does (C2:
+            // "only FREE TEXT is classified" -- the operator has already
+            // been maximally explicit about routing, so there is nothing
+            // left to infer). `IntentConfirm` carries no `role`/`model`
+            // field (module notes on [`bare_fork`]), so routing either flag
+            // through the classify path would silently drop it the moment
+            // the confirmation card opened -- skipping classify here is what
+            // keeps that from happening, not an oversight.
+            None if role.is_some() || model.is_some() => {
+                let focused = state.focused_agent;
+                bare_fork(state, host, focused, directive, role, model).await
+            }
             None => {
                 let focused = state.focused_agent;
                 match directive {
@@ -1948,14 +2626,19 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                                      falling back to manual"
                                 ),
                             );
-                            bare_fork(state, host, focused, Some(text)).await
+                            bare_fork(state, host, focused, Some(text), None, None).await
                         }
                     },
-                    None => bare_fork(state, host, focused, None).await,
+                    None => bare_fork(state, host, focused, None, None, None).await,
                 }
             }
         },
-        SlashCommand::Spawn { agent_def, prompt } => {
+        SlashCommand::Spawn {
+            agent_def,
+            prompt,
+            role,
+            model,
+        } => {
             // Always a fresh, interactive keep-alive session:
             // empty prompt (the child idles until `prompt`, if given, is
             // delivered separately by the app loop -- see `Effect::
@@ -1963,13 +2646,23 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             // exactly as every spawn always has been (spawn never named a
             // "from" agent). C2: when free text follows the command
             // (`prompt` is `Some`) AND no explicit `@<agent_def>` was
-            // named (`agent_def` is `None`), the facade classifier runs
+            // named (`agent_def` is `None`) AND no `--role`/`--model` was
+            // given (see the `role.is_some() || model.is_some()` guard
+            // below -- mirrors `Fork`'s own arm, and for the identical
+            // reason: `IntentConfirm` has nowhere to carry either flag
+            // through the confirmation card), the facade classifier runs
             // and a confirmation card opens on `Ok` (including the
-            // verbatim passthrough). Explicit `@<agent_def>` syntax and
-            // bare `/spawn` are unchanged: no classify, no card.
+            // verbatim passthrough). Explicit `@<agent_def>` syntax, an
+            // explicit `--role`/`--model`, and bare `/spawn` are all
+            // unchanged: no classify, no card.
             let root = host.root();
             match (agent_def, prompt) {
-                (Some(def), prompt) => bare_spawn(state, host, root, Some(def), prompt).await,
+                (Some(def), prompt) => {
+                    bare_spawn(state, host, root, Some(def), prompt, role, model).await
+                }
+                (None, Some(text)) if role.is_some() || model.is_some() => {
+                    bare_spawn(state, host, root, None, Some(text), role, model).await
+                }
                 (None, Some(text)) => {
                     let focused = state.focused_agent;
                     match host
@@ -1993,119 +2686,110 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                                      falling back to manual"
                                 ),
                             );
-                            bare_spawn(state, host, root, None, Some(text)).await
+                            bare_spawn(state, host, root, None, Some(text), None, None).await
                         }
                     }
                 }
-                (None, None) => bare_spawn(state, host, root, None, None).await,
+                (None, None) => bare_spawn(state, host, root, None, None, role, model).await,
             }
         }
-        SlashCommand::Resume { sid } => match sid.parse::<SessionId>() {
-            Ok(id) => match host.resume(id).await {
-                Ok(handle) => {
-                    // Module notes: "replace the active handle, resubscribe
-                    // events, reset AppState from handle.transcript(root)".
-                    // The full LogRecord -> Entry backfill is left out here
-                    // (disclosed): no LogRecord -> Entry mapping exists
-                    // anywhere in this crate today, and nothing exercises
-                    // it -- `conway::SessionHandle`'s
-                    // own `record_to_event` doc names the analogous
-                    // LogRecord -> Event gap as unresolved for the same
-                    // reason (mismatched cardinality). `state` is reset to
-                    // a clean `AppState` scoped to the new root instead, so
-                    // resumed browsing starts from a known-empty transcript
-                    // rather than a stale one from the old session.
-                    //
-                    // the installed
-                    // plugin command list is process-lifetime configuration
-                    // (which plugins were installed at startup), not
-                    // session-scoped state -- `AppState::new` seeds it empty
-                    // (every OTHER field reset here genuinely IS
-                    // session-scoped), so it is carried across the reset by
-                    // hand, the one field `/resume` intentionally does not
-                    // clear.
-                    // The installed agent-name store is carried across
-                    // for the identical reason (board item
-                    // `01M0TV5BSE98S16SFYECG9G9WP`): which plugins this
-                    // process installed is startup configuration, not
-                    // session state, so `/resume` must not silently strip
-                    // `/steer <name>` of its ability to resolve. The NAMES
-                    // themselves are per-agent and the resumed session has
-                    // new agents, so nothing stale carries over -- only the
-                    // store handle does.
-                    //
-                    // The plugin status-contribution snapshot is carried
-                    // across for the SAME reason as its two siblings above
-                    // (board item `01M0XDEDBR5YDF71Q7ZRXYMT85`, closing the
-                    // third link in the chain those two items opened):
-                    // `Conway::plugin_status_contributions()` is a
-                    // `Conway`-level, build-time value -- exactly as
-                    // process-lifetime as `plugin_commands`/`agent_names`,
-                    // not session-scoped state -- so `AppState::new`'s empty
-                    // default is the wrong value to leave it at here. This
-                    // does NOT make the snapshot live: it is still the same
-                    // frozen, typically-empty value `App::new` copied once
-                    // at TUI startup (see `AppState::
-                    // plugin_status_contributions`'s own doc for the
-                    // caveat, restated rather than silently dropped by this
-                    // carry-across).
-                    let agent_names = state.agent_names.clone();
-                    let plugin_commands = state.plugin_commands.clone();
-                    let plugin_status_contributions = state.plugin_status_contributions.clone();
-                    *state = AppState::new(handle.root());
-                    state.plugin_commands = plugin_commands;
-                    state.agent_names = agent_names;
-                    state.plugin_status_contributions = plugin_status_contributions;
-                    notice(state, format!("resumed session {sid}"));
-                    Effect::Resumed(handle)
-                }
-                Err(e) => {
-                    notice(state, e.to_string());
-                    Effect::None
-                }
-            },
+        // Board item `01M1YS550T52VR1VW8NMETXQS1`: `sid: None` (bare
+        // `/resume`) opens the session picker instead of the
+        // `parse_one_arg` error it used to be -- see
+        // [`open_session_picker`]'s own doc for the mechanism.
+        SlashCommand::Resume { sid: None } => match host.resumable_sessions().await {
+            Ok(rows) if rows.is_empty() => {
+                notice(
+                    state,
+                    "no sessions to resume in this project yet -- start one, then bare \
+                     `/resume` opens a picker over it",
+                );
+                Effect::None
+            }
+            Ok(rows) => {
+                open_session_picker(state, rows);
+                Effect::None
+            }
             Err(e) => {
-                notice(state, format!("invalid session id `{sid}`: {e}"));
+                notice(state, format!("could not list sessions to resume: {e}"));
                 Effect::None
             }
         },
+        // `Some(sid)` behaves exactly as it always has, factored into
+        // [`apply_resume`], the ONE function this arm and the picker's own
+        // `Enter` answer (`app/run.rs`'s `Action::UiFormDecision` dispatch,
+        // gated on `AppState::session_picker_active`) both resolve through
+        // -- see that function's own doc.
+        SlashCommand::Resume { sid: Some(sid) } => apply_resume(sid, state, host).await,
         // `/model <backend/model>` -- see [`switch_session`]'s own doc for
         // the fork-based mechanism and why it, not a live mutation of the
         // focused agent's own running task, is what actually reaches a LIVE
         // session (INTENT.md §5c). The actual switch is factored into
         // [`apply_model_switch`] -- the SAME function `run.rs`'s
         // `Action::UiFormDecision` arm calls once the operator answers
-        // `/model` bare's own menu (board item
-        // `01M1A35S609TZ613GAECPEHX8D`), so there is exactly ONE place that
+        // `/model` bare's own picker, so there is exactly ONE place that
         // turns a chosen `"backend/model"` string into a live switch,
         // whichever surface produced it (steering P-14).
-        SlashCommand::Model { model: Some(model) } => apply_model_switch(model, state, host).await,
-        // Board item `01M1A35S609TZ613GAECPEHX8D`: bare `/model` lists the
-        // configured `"backend/model"` pairs rather than erroring -- see
-        // `AppState::configured_models`'s own doc for where the list comes
-        // from (`[roles]`'s own chains, refreshed just before this call by
-        // `App::submit`'s own `/model`-bare seam -- never a live provider
-        // API call: "what is configured", not a remote roster).
         //
-        // **With `conway.ui` installed, this is a MENU**, not a text dump --
-        // `AskSelectRequest { prompt, options }` is exactly the
-        // pick-one-from-a-list shape board item `01M19NH39AE2D5AMJK0RZRQY86`
-        // already built for a model-called `ask_question` tool; this is
-        // that mechanism's SECOND real consumer, reusing `Mode::UiForm`/
-        // `draw_ui_form`/`handle_ui_form_key` exactly as they already are.
-        // The one thing a model-raised question never needs and this one
-        // does: the app itself (not a blocked tool call) is the asker, so
-        // `state.model_picker_active` is set here to tell `run.rs`'s
-        // `Action::UiFormDecision` arm to run [`apply_model_switch`] once
-        // answered -- see that field's own doc.
+        // `/model`'s own picker, native and no-plugin-required: an argument
+        // that does NOT parse as a `ModelRef` used to be a bare error
+        // (`apply_model_switch`'s own `Err` arm, naming the parse failure
+        // and stopping there). It is now treated as a filter instead --
+        // [`model_picker::filter_models`] narrows the SAME candidate list
+        // bare `/model` builds (below) by the typed text, and opens the
+        // picker with whatever matches, rather than making the operator
+        // retype the exact pair from memory. A syntactically valid
+        // `ModelRef` (today's "exact configured pair" case, and any other
+        // well-formed `"backend/model"` string -- admission, not this
+        // parse, is what would refuse an unconfigured one, per
+        // `apply_model_switch`'s own doc) still switches directly, exactly
+        // as before: this arm only decides which of the two paths to take,
+        // never how the switch itself happens.
+        SlashCommand::Model { model: Some(model) } => {
+            if model.parse::<ModelRef>().is_ok() {
+                apply_model_switch(model, state, host).await
+            } else {
+                let candidates = model_picker::candidate_models(
+                    &state.configured_models,
+                    state.model_max_context.keys().cloned(),
+                );
+                let filtered = model_picker::filter_models(&candidates, &model);
+                if filtered.is_empty() {
+                    notice(
+                        state,
+                        format!(
+                            "no configured model matches \"{model}\" -- try /model with no \
+                             argument to see everything configured"
+                        ),
+                    );
+                } else {
+                    open_model_picker(state, filtered);
+                }
+                Effect::None
+            }
+        }
+        // Bare `/model` opens [`open_model_picker`] -- an
+        // interactive list, `Up`/`Down`/`Enter`/`Esc`, built from
+        // EVERY reachable model, not just what a role's `chain` names --
+        // see [`model_picker::candidate_models`]'s own doc for exactly
+        // which sources that covers and the one it does not.
         //
-        // **Without `conway.ui`, this is plain transcript text** -- the
-        // degrade path, not a fallback bolted on afterward: `conway.ui` is
-        // opt-in and absent by default (`docs/plugins/trust-and-security.md`),
-        // so the text listing is the MAIN path most sessions take, and the
-        // menu is the enhancement, not the reverse.
+        // **No plugin required, unconditionally now** -- this used to open
+        // a plain-text listing unless `conway.ui` happened to be installed
+        // (a modal a model-called `ask_question` tool ALSO uses, reused
+        // here as its second real consumer). That gate is gone: `/model` no
+        // longer asks whether `conway.ui` is installed at all, so a fresh
+        // install with no plugins configured still gets the interactive
+        // picker, not a text dump. `ask_question` itself is completely
+        // unaffected -- this arm still only ever calls
+        // [`PendingFormAsk::new_local`]/`AppState::offer_ui_form`, the same
+        // calls it already made; nothing about the tool-raised path changed.
         SlashCommand::Model { model: None } => {
-            if state.configured_models.is_empty() {
+            let candidates = model_picker::candidate_models(
+                &state.configured_models,
+                state.model_max_context.keys().cloned(),
+            );
+            if candidates.is_empty() {
                 notice(
                     state,
                     "no models are configured -- add a provider and a role chain first \
@@ -2114,32 +2798,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 );
                 return Effect::None;
             }
-            let ui_available = state
-                .plugin_browser
-                .iter()
-                .any(|entry| entry.id == "conway.ui" && entry.installed);
-            if ui_available {
-                let ask = PendingFormAsk::new_local(conway_plugin_ui::AskSelectRequest {
-                    prompt: "select a model".to_string(),
-                    options: state.configured_models.clone(),
-                });
-                state.offer_ui_form(ask);
-                state.model_picker_active = true;
-            } else {
-                let focused = state.focused_model.clone();
-                let lines: Vec<String> = state
-                    .configured_models
-                    .iter()
-                    .map(|m| {
-                        if focused.as_deref() == Some(m.as_str()) {
-                            format!("  {m}  (active)")
-                        } else {
-                            format!("  {m}")
-                        }
-                    })
-                    .collect();
-                notice(state, format!("configured models:\n{}", lines.join("\n")));
-            }
+            open_model_picker(state, candidates);
             Effect::None
         }
         // `/role <alias>` -- same mechanism as `Model` above, naming a role
@@ -2537,12 +3196,13 @@ fn resolve_agent(state: &AppState, token: &str) -> Result<AgentId, String> {
 
 /// Renders `state.tree` (the `/agents` panel's own `AgentTreeView`) into the
 /// transcript as one `Notice` line per agent. Item A3: `/tree` is an
-/// alias for the panel, so its text derives from the SAME nodes and
-/// recipe labels (`view::agents::recipe_parts`) the panel draws -- never
+/// alias for the panel, so its text derives from the SAME nodes, recipe
+/// labels (`view::agents::recipe_parts`), and (board item A1b)
+/// `state.spawn_role_or_model` side-map lookups the panel draws -- never
 /// from the runtime's `AgentTreeSnapshot`, so `execute` makes no facade
-/// call for it at all. `TreeNode` carries no `steps`/`budget`/`role`, so a
-/// line is exactly what the panel row shows (indent, label, recipe parts,
-/// status).
+/// call for it at all. `TreeNode` carries no `steps`/`budget`/`role` of its
+/// own, so a line is exactly what the panel row shows (indent, label,
+/// recipe parts, status).
 ///
 /// **The agent id is deliberately NOT what the panel shows** (board item
 /// `01M0TNCAP1HH4YNC5K9753YG26`, which found the two had drifted and this
@@ -2579,7 +3239,10 @@ fn render_tree_snapshot(state: &mut AppState) {
                 .agent_def
                 .clone()
                 .unwrap_or_else(|| "agent".to_string());
-            let parts = super::view::agents::recipe_parts(node);
+            let parts = super::view::agents::recipe_parts(
+                node,
+                state.spawn_role_or_model.get(&node.agent_id),
+            );
             let recipe = if parts.is_empty() {
                 String::new()
             } else {
@@ -2593,6 +3256,55 @@ fn render_tree_snapshot(state: &mut AppState) {
         .collect();
     for line in lines {
         notice(state, line);
+    }
+}
+
+/// Board item 01M1YVEJB6GAPST5YZET4KZZE2: `/diff`'s own snapshot -- walks
+/// `state.transcript` in order for every settled, successful `edit`/
+/// `write` `Entry::Tool` (an `Entry::Tool` this session actually applied,
+/// never a proposed-but-not-yet-decided or failed one), extracts each
+/// call's own `(path, change)` from its stored compact-JSON `args`, and
+/// folds them through `crate::diff::cumulative_diffs` -- the SAME fold
+/// this module's own doc points at `conway sessions show --diff` for, so
+/// the two surfaces can never show a different answer for the same
+/// session. Pushed as ONE `Entry::Notice` per touched path (mirroring
+/// `render_tree_snapshot`'s own one-notice-per-line convention, but here
+/// one notice per FILE section so `/tree`-style scrolling lands on whole
+/// diffs, not split mid-hunk), each headed by a plain `## {path}` line (no
+/// box-drawing -- the same clean-copy rule every other transcript entry
+/// follows). A session with nothing touched yet gets one honest notice
+/// saying so, never a silent no-op the operator would read as "the command
+/// did nothing."
+fn render_diff_snapshot(state: &mut AppState) {
+    let touches: Vec<crate::diff::FileTouch> = state
+        .transcript
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Tool {
+                name,
+                status: ToolStatus::Finished { is_error: false },
+                args,
+                ..
+            } => {
+                let value: serde_json::Value = serde_json::from_str(args).ok()?;
+                crate::diff::file_touch_from_args(name, &value)
+            }
+            _ => None,
+        })
+        .collect();
+
+    let diffs = crate::diff::cumulative_diffs(&touches);
+    if diffs.is_empty() {
+        notice(
+            state,
+            "no files edited or written yet in this session".to_string(),
+        );
+        return;
+    }
+    for (path, diff_text) in diffs {
+        let mut section = format!("## {path}\n");
+        section.push_str(&diff_text);
+        notice(state, section);
     }
 }
 
@@ -2824,7 +3536,7 @@ fn provenance_kind_label(p: &Provenance) -> String {
         Provenance::UserPrompt => "user prompt".to_string(),
         Provenance::AgentDef { .. } => "agent def".to_string(),
         Provenance::Skill { .. } => "skill".to_string(),
-        Provenance::ToolRegistry { .. } => "tool registry".to_string(),
+        Provenance::ToolRegistry { .. } => TOOL_REGISTRY_KIND_LABEL.to_string(),
         Provenance::Inherited { .. } => "inherited".to_string(),
         Provenance::ForkDirective { .. } => "fork directive".to_string(),
         Provenance::ParentSteer { .. } => "parent steer".to_string(),
@@ -2850,6 +3562,115 @@ fn provenance_kind_label(p: &Provenance) -> String {
     }
 }
 
+/// [`ContextKindSummary::label`]'s value for a `Provenance::ToolRegistry`
+/// row -- named once so [`provenance_kind_label`]'s arm and
+/// [`render_context_summary`]'s per-plugin-breakdown insertion point (which
+/// must match it exactly to know WHICH kind row to nest under) cannot drift
+/// apart.
+const TOOL_REGISTRY_KIND_LABEL: &str = "tool registry";
+
+/// One row of the tool registry's per-plugin breakdown (board item
+/// `01M1YS138H8T0HNV5YMZ6KD767` part 2) -- "who costs what" beneath the
+/// single combined `"tool registry"` [`ContextKindSummary`] row.
+///
+/// **Distinct from [`ContextKindSummary`] on purpose.** That type groups
+/// [`ContextReport::segments`] entries, one per `Provenance`; the tool
+/// registry is always exactly ONE segment (`Provenance::ToolRegistry`, a
+/// single blake3 hash over the WHOLE announced set --
+/// `conway_runtime::context::builder`'s own construction), so there is
+/// nothing inside a `ContextReport` to group by plugin. This row's
+/// `tokens` is therefore a SEPARATE estimate, computed directly from a
+/// plugin's own slice of [`Host::tool_specs`], never read off any segment.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ToolRegistryPluginRow {
+    pub plugin_id: String,
+    pub tool_count: usize,
+    pub tokens: u32,
+}
+
+/// Groups `specs` (typically [`Host::tool_specs`]'s full, unfiltered,
+/// process-wide registered set) by `plugin_ids` ([`Host::tool_plugin_ids`])
+/// into one row per declaring plugin, sorted by `tokens` descending then
+/// `plugin_id` ascending -- the same tiebreak [`ContextSummary::kinds`]
+/// already uses (`summarize_context_report`'s own `sort_by`). A tool name
+/// absent from `plugin_ids` groups under `"unknown"` rather than being
+/// silently dropped -- defensive only; every name `Conway::tool_specs`
+/// returns is drawn from the identical `PluginRegistry` `Conway::
+/// tool_plugin_ids` reads, so this arm is unreachable against a live
+/// registry, never against a hand-built test fixture that omits an entry
+/// on purpose.
+///
+/// **Whole-process, not this-agent-narrowed.** `specs`/`plugin_ids` (via
+/// `Host`/`Conway::tool_specs`/`tool_plugin_ids`) describe every tool THIS
+/// PROCESS registered, exactly like `conway tools list`'s own existing
+/// unfiltered view (`Runtime::tool_specs`'s own doc: "not one agent's
+/// already-narrowed view of it") -- neither `ContextReport` nor any
+/// existing facade surface exposes ONE agent's own already-narrowed
+/// `ToolSelector` view for the CLI to filter against instead. A role or
+/// `AgentDef` that narrows a given agent's own announced set (board item
+/// `01M1YS138H8T0HNV5YMZ6KD767` part 1) therefore makes this breakdown's
+/// own total drift from the parent `"tool registry"` row's `tokens` for
+/// THAT agent -- an honest, disclosed limitation of the same kind
+/// `/context`'s per-segment `tokens_est` already carries throughout (every
+/// figure here is an estimate, never a claim of exact wire-byte parity).
+///
+/// **Per-plugin token estimate, not a slice of a real total, for a second,
+/// independent reason.** Each row's `tokens` is computed by running the
+/// same heuristic-chars4 formula `conway_runtime::context::builder::
+/// estimate_tool_schemas_tokens` uses for the combined segment
+/// (`ceil(chars(json(specs))/4) + 4`) over just that plugin's own tool
+/// slice -- reimplemented here (`estimate_tool_specs_tokens` below) rather
+/// than reused because that function is `conway-runtime`-private and this
+/// crate is mechanically forbidden from depending on `conway-runtime`
+/// directly (`architecture_invariants.rs`'s `no_forbidden_deps`). JSON
+/// array framing means these rows will not sum to EXACTLY even a
+/// same-agent parent row's total (each row pays its own `[`/`]` bracket
+/// chars a single combined array would not) -- the same order of
+/// approximation the parent row already is, not a new one.
+pub(crate) fn summarize_tool_registry_by_plugin(
+    specs: &[ToolSpec],
+    plugin_ids: &HashMap<ToolName, String>,
+) -> Vec<ToolRegistryPluginRow> {
+    let mut by_plugin: HashMap<String, Vec<ToolSpec>> = HashMap::new();
+    for spec in specs {
+        let plugin_id = plugin_ids
+            .get(&spec.name)
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+        by_plugin.entry(plugin_id).or_default().push(spec.clone());
+    }
+    let mut rows: Vec<ToolRegistryPluginRow> = by_plugin
+        .into_iter()
+        .map(|(plugin_id, tools)| ToolRegistryPluginRow {
+            tool_count: tools.len(),
+            tokens: estimate_tool_specs_tokens(&tools),
+            plugin_id,
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.tokens
+            .cmp(&a.tokens)
+            .then_with(|| a.plugin_id.cmp(&b.plugin_id))
+    });
+    rows
+}
+
+/// `ceil(chars(json(specs))/4) + 4` -- the same heuristic-chars4 shape
+/// `conway_runtime::context::builder::estimate_tool_schemas_tokens` uses
+/// for the combined `[2] ToolSchemas` segment (see
+/// [`summarize_tool_registry_by_plugin`]'s own doc for why it is
+/// reimplemented here rather than reused).
+fn estimate_tool_specs_tokens(specs: &[ToolSpec]) -> u32 {
+    if specs.is_empty() {
+        return 0;
+    }
+    let rendered = serde_json::to_value(specs)
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let chars = u32::try_from(rendered.chars().count()).unwrap_or(u32::MAX);
+    chars.div_ceil(4) + 4
+}
+
 /// `1234567` -> `"1,234,567"`. No external crate for this one thing.
 fn format_thousands(n: u32) -> String {
     let digits: Vec<char> = n.to_string().chars().collect();
@@ -2866,11 +3687,20 @@ fn format_thousands(n: u32) -> String {
 
 /// Renders [`ContextSummary`] as the notice lines [`render_context_report`]
 /// prints before the per-segment listing: the `context: ... tok est across
-/// ... segments` header, one line per [`ContextSummary::kinds`] row, then a
-/// `largest:` header and one line per [`ContextSummary::largest`] entry.
-/// Not called when `summary.segment_count == 0` -- `render_context_report`
-/// keeps today's bare `empty context` notice for that case instead.
-fn render_context_summary(summary: &ContextSummary, state: &mut AppState) {
+/// ... segments` header, one line per [`ContextSummary::kinds`] row (the
+/// `"tool registry"` row followed immediately by one indented line per
+/// `tool_registry_breakdown` entry, board item `01M1YS138H8T0HNV5YMZ6KD767`
+/// part 2 -- see [`summarize_tool_registry_by_plugin`]'s own doc for what
+/// this breaks down and why it can drift from the parent row's own total),
+/// then a `largest:` header and one line per [`ContextSummary::largest`]
+/// entry. Not called when `summary.segment_count == 0` --
+/// `render_context_report` keeps today's bare `empty context` notice for
+/// that case instead.
+fn render_context_summary(
+    summary: &ContextSummary,
+    tool_registry_breakdown: &[ToolRegistryPluginRow],
+    state: &mut AppState,
+) {
     notice(
         state,
         format!(
@@ -2892,6 +3722,28 @@ fn render_context_summary(summary: &ContextSummary, state: &mut AppState) {
                 kind.percent.round() as i64,
             ),
         );
+        // Nested immediately beneath its own parent row, never after the
+        // WHOLE kinds table -- an operator reading top-to-bottom sees "tool
+        // registry costs N tok" immediately followed by who inside it costs
+        // what, exactly where the question arises. Gated on the label match
+        // (via the shared `TOOL_REGISTRY_KIND_LABEL` const, not a second
+        // string literal) rather than always printing after the loop, since
+        // `kinds` is sorted by `tokens` descending -- the tool registry row
+        // is not reliably last.
+        if kind.label == TOOL_REGISTRY_KIND_LABEL {
+            for row in tool_registry_breakdown {
+                notice(
+                    state,
+                    format!(
+                        "    {}  {} tool{}  ~{}tok",
+                        row.plugin_id,
+                        row.tool_count,
+                        if row.tool_count == 1 { "" } else { "s" },
+                        format_thousands(row.tokens),
+                    ),
+                );
+            }
+        }
     }
     if !summary.largest.is_empty() {
         notice(state, "largest:");
@@ -2904,13 +3756,21 @@ fn render_context_summary(summary: &ContextSummary, state: &mut AppState) {
     }
 }
 
-fn render_context_report(report: &ContextReport, state: &mut AppState) {
+fn render_context_report(
+    report: &ContextReport,
+    tool_registry_breakdown: &[ToolRegistryPluginRow],
+    state: &mut AppState,
+) {
     if report.segments.is_empty() && report.dropped.is_empty() {
         notice(state, "empty context");
         return;
     }
     if !report.segments.is_empty() {
-        render_context_summary(&summarize_context_report(report), state);
+        render_context_summary(
+            &summarize_context_report(report),
+            tool_registry_breakdown,
+            state,
+        );
     }
     for entry in &report.segments {
         notice(
@@ -2971,6 +3831,40 @@ fn render_context_report(report: &ContextReport, state: &mut AppState) {
     }
 }
 
+/// `/context`'s own permission-decision count -- a durable audit fact, read
+/// from `agent`'s own SESSION RECORD HISTORY (`Host::transcript`, a thin
+/// passthrough to `SessionHandle::transcript`), never from
+/// `ContextReport::segments`. Those are two genuinely different sources:
+/// `conway_runtime::context::builder::ContextBuilder` deliberately excludes
+/// `conway::LogRecord::PermissionDecisionRecord` from context assembly at
+/// all (that record's own doc, in `conway-core`: "does not participate in
+/// context assembly at all... a durable AUDIT fact... not a message meant
+/// for the model to read back") -- so a count taken from `segments` would
+/// read zero FOREVER, on every session, regardless of how many decisions
+/// were actually made, which would be indistinguishable from "this session
+/// made no permission decisions" and would misleadingly imply the record
+/// participates in context (it never has and never will). Counting the
+/// session's own record history instead is what makes the count actually
+/// move.
+///
+/// A transcript-read failure renders its own notice rather than replacing
+/// or blocking whatever `context_report` already rendered above it (the
+/// two are independent facade calls over the SAME agent, each reported on
+/// its own line, exactly like `context_report`'s own `Err` arm just above
+/// this function's one call site).
+async fn render_permission_decision_count<H: Host>(agent: AgentId, state: &mut AppState, host: &H) {
+    match host.transcript(agent).await {
+        Ok(records) => {
+            let count = records
+                .iter()
+                .filter(|r| matches!(r, conway::LogRecord::PermissionDecisionRecord { .. }))
+                .count();
+            notice(state, format!("permission decisions: {count}"));
+        }
+        Err(e) => notice(state, format!("could not read permission decisions: {e}")),
+    }
+}
+
 fn provenance_label(p: &Provenance) -> String {
     match p {
         Provenance::UserPrompt => "user prompt".to_string(),
@@ -3011,21 +3905,28 @@ fn provenance_label(p: &Provenance) -> String {
     }
 }
 
-/// `/why`: renders `state.last_model_decision` (populated by `app.rs` on
-/// `Event::ModelDecision` -- this module never writes it). No facade call
-/// at all (module notes: "reads cached state with no facade call").
+/// `/why`: renders `state.model_decision_history` (populated by `app.rs` on
+/// every `Event::ModelDecision` -- this module never writes it). No facade
+/// call at all (module notes: "reads cached state with no facade call").
 ///
 /// **Shows what changed** (INTENT.md §5c: "changing model
-/// mid-session is ordinary"): when `state.previous_model_decision` is also
-/// `Some` (i.e. this is at least the second routing decision this session
-/// has seen -- ordinarily the child's first turn after a `/model`/`/role`
-/// switch), a changed `role`/`chosen` is rendered as `X -> Y` instead of
-/// bare `Y`, naming exactly what a `/model`/`/role` switch (or, equally, an
-/// ordinary fallback the router itself chose) actually changed. A field
-/// that did NOT change renders bare, as it always has --
-/// there is nothing to contrast it against.
+/// mid-session is ordinary"): the latest decision's `role`/`chosen` is
+/// diffed against the one immediately before it (when this session has seen
+/// at least two) and rendered `X -> Y` instead of bare `Y`, naming exactly
+/// what a `/model`/`/role` switch (or, equally, an ordinary fallback the
+/// router itself chose) actually changed. A field that did NOT change
+/// renders bare, as it always has -- there is nothing to contrast it
+/// against.
+///
+/// **Board item A1d ("say why a turn fell back"): keeps a short history,
+/// not only the latest decision.** When this session has seen MORE than the
+/// two decisions the diff above already needs, every earlier one is listed
+/// too -- one line each, oldest first, timestamped -- so a `/model`/`/role`
+/// switch history stays recoverable rather than reachable only for the
+/// single most recent change.
 fn render_why(state: &mut AppState) {
-    let Some(env) = state.last_model_decision.clone() else {
+    let history: Vec<Envelope> = state.model_decision_history.iter().cloned().collect();
+    let Some(env) = history.last().cloned() else {
         notice(state, "no routing decision yet");
         return;
     };
@@ -3036,30 +3937,56 @@ fn render_why(state: &mut AppState) {
         attempt,
     } = env.event
     else {
-        // `last_model_decision` is only ever assigned an `Event::ModelDecision`
-        // envelope (app.rs's own invariant) -- this arm exists so a future
-        // widening of that invariant degrades to the same "nothing to show
-        // yet" message rather than panicking.
+        // `model_decision_history` is only ever populated with
+        // `Event::ModelDecision` envelopes (app.rs's own invariant) -- this
+        // arm exists so a future widening of that invariant degrades to the
+        // same "nothing to show yet" message rather than panicking.
         notice(state, "no routing decision yet");
         return;
     };
-    // `previous_model_decision` is only ever assigned an `Event::
-    // ModelDecision` envelope too (the SAME invariant as `last_model_
-    // decision`, `app.rs`'s run loop) -- a mismatched shape there degrades
-    // to "no previous decision to compare against" (`None`), same as a
-    // genuinely absent one, rather than panicking.
-    let previous = state.previous_model_decision.clone().and_then(|env| {
-        if let Event::ModelDecision {
+    // The SAME invariant as above -- a mismatched shape degrades to "no
+    // previous decision to compare against" (`None`), same as a genuinely
+    // absent one, rather than panicking.
+    let previous = history.len().checked_sub(2).and_then(|i| {
+        let Event::ModelDecision {
             role: prev_role,
             chosen: prev_chosen,
             ..
-        } = env.event
-        {
-            Some((prev_role, prev_chosen))
-        } else {
-            None
-        }
+        } = &history[i].event
+        else {
+            return None;
+        };
+        Some((prev_role.clone(), prev_chosen.clone()))
     });
+
+    if history.len() > 2 {
+        notice(
+            state,
+            format!(
+                "routing history ({} decisions this session):",
+                history.len()
+            ),
+        );
+        for earlier in &history[..history.len() - 1] {
+            if let Event::ModelDecision {
+                role: earlier_role,
+                chosen: earlier_chosen,
+                reason: earlier_reason,
+                ..
+            } = &earlier.event
+            {
+                notice(
+                    state,
+                    format!(
+                        "  {} -- role: {earlier_role}, model: {earlier_chosen}, reason: {}",
+                        earlier.ts.to_rfc3339(),
+                        render_routing_reason(earlier_reason),
+                    ),
+                );
+            }
+        }
+    }
+
     let role_text = match &previous {
         Some((prev_role, _)) if *prev_role != role => format!("{prev_role} -> {role}"),
         _ => role.to_string(),
@@ -3101,7 +4028,7 @@ fn render_routing_reason(reason: &RoutingReason) -> String {
 mod tests {
     use std::sync::Mutex;
 
-    use conway::plugin::{CommandOutcome, CommandSpec};
+    use conway::plugin::{CommandOutcome, CommandSpec, PermissionClass, ToolCategory};
     use conway::{AgentId, FacadeError, SessionId, SubagentMode};
     // Test-only: `ContextReportEntry`/`SegmentId` are not part of this
     // crate's curated `conway` re-export list -- constructing
@@ -3240,6 +4167,8 @@ mod tests {
             Ok(SlashCommand::Fork {
                 agent: Some("a7".to_string()),
                 directive: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             })
         );
     }
@@ -3259,6 +4188,8 @@ mod tests {
             Ok(SlashCommand::Fork {
                 agent: None,
                 directive: None,
+                role: None,
+                model: None,
             })
         );
     }
@@ -3272,6 +4203,8 @@ mod tests {
             Ok(SlashCommand::Fork {
                 agent: None,
                 directive: Some("please review this".to_string()),
+                role: None,
+                model: None,
             })
         );
     }
@@ -3286,6 +4219,8 @@ mod tests {
             Ok(SlashCommand::Spawn {
                 agent_def: None,
                 prompt: Some("reviewer review the diff".to_string()),
+                role: None,
+                model: None,
             })
         );
     }
@@ -3297,6 +4232,8 @@ mod tests {
             Ok(SlashCommand::Spawn {
                 agent_def: Some("reviewer".to_string()),
                 prompt: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             })
         );
     }
@@ -3310,6 +4247,8 @@ mod tests {
             Ok(SlashCommand::Spawn {
                 agent_def: None,
                 prompt: None,
+                role: None,
+                model: None,
             })
         );
     }
@@ -3323,6 +4262,8 @@ mod tests {
             Ok(SlashCommand::Spawn {
                 agent_def: Some("reviewer".to_string()),
                 prompt: None,
+                role: None,
+                model: None,
             })
         );
     }
@@ -3336,6 +4277,107 @@ mod tests {
             Ok(SlashCommand::Spawn {
                 agent_def: None,
                 prompt: Some("@channel please refactor the parser".to_string()),
+                role: None,
+                model: None,
+            })
+        );
+    }
+
+    #[test]
+    fn spawn_role_flag_is_stripped_before_the_ordinary_agent_def_prompt_grammar() {
+        assert_eq!(
+            parse("/spawn --role fast do X"),
+            Ok(SlashCommand::Spawn {
+                agent_def: None,
+                prompt: Some("do X".to_string()),
+                role: Some("fast".to_string()),
+                model: None,
+            })
+        );
+    }
+
+    #[test]
+    fn spawn_model_flag_is_stripped_the_same_way() {
+        assert_eq!(
+            parse("/spawn --model anthropic/claude-haiku"),
+            Ok(SlashCommand::Spawn {
+                agent_def: None,
+                prompt: None,
+                role: None,
+                model: Some("anthropic/claude-haiku".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn spawn_role_and_agent_def_compose_when_the_flag_comes_first() {
+        // Flags must lead: `parse_role_model_flags` only strips a LEADING
+        // `--role`/`--model`, before `parse_spawn`'s own `@agent_def`
+        // grammar runs on the remainder.
+        assert_eq!(
+            parse("/spawn --role fast @reviewer look closer"),
+            Ok(SlashCommand::Spawn {
+                agent_def: Some("reviewer".to_string()),
+                prompt: Some("look closer".to_string()),
+                role: Some("fast".to_string()),
+                model: None,
+            })
+        );
+    }
+
+    #[test]
+    fn fork_role_flag_is_stripped_before_the_ordinary_at_agent_directive_grammar() {
+        assert_eq!(
+            parse("/fork --role fast @a7 review the diff"),
+            Ok(SlashCommand::Fork {
+                agent: Some("a7".to_string()),
+                directive: Some("review the diff".to_string()),
+                role: Some("fast".to_string()),
+                model: None,
+            })
+        );
+    }
+
+    #[test]
+    fn fork_model_flag_with_bare_text_first_message() {
+        assert_eq!(
+            parse("/fork --model anthropic/claude-haiku please review this"),
+            Ok(SlashCommand::Fork {
+                agent: None,
+                directive: Some("please review this".to_string()),
+                role: None,
+                model: Some("anthropic/claude-haiku".to_string()),
+            })
+        );
+    }
+
+    /// **The mutual-exclusion pin**: `--role` and `--model` on the SAME
+    /// invocation is a [`ParseError`], never a "last one wins" silent
+    /// resolution and never a value that reaches `execute` with both
+    /// `Some` (which nothing downstream is written to disambiguate).
+    #[test]
+    fn spawn_role_and_model_together_is_a_parse_error() {
+        let err = parse("/spawn --role fast --model anthropic/claude-haiku do X").unwrap_err();
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn fork_role_and_model_together_is_a_parse_error() {
+        let err = parse("/fork --role fast --model anthropic/claude-haiku go").unwrap_err();
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    /// A word that merely starts with `--role`'s own letters (`--rolex`)
+    /// must NOT be mistaken for the flag -- it is ordinary prompt text.
+    #[test]
+    fn a_partial_word_match_is_not_mistaken_for_the_role_flag() {
+        assert_eq!(
+            parse("/spawn --rolex is a watch brand"),
+            Ok(SlashCommand::Spawn {
+                agent_def: None,
+                prompt: Some("--rolex is a watch brand".to_string()),
+                role: None,
+                model: None,
             })
         );
     }
@@ -3345,15 +4387,23 @@ mod tests {
         assert_eq!(
             parse("/resume 01ARZ3NDEKTSV4RRFFQ69G5FAV"),
             Ok(SlashCommand::Resume {
-                sid: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+                sid: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
             })
         );
     }
 
+    /// **VERIFICATION ANCHOR, board item `01M1YS550T52VR1VW8NMETXQS1`.**
+    /// Bare `/resume` used to be a `ParseError` naming the form -- it is
+    /// now a valid parse carrying `sid: None`, which `execute`'s own
+    /// `Resume { sid: None }` arm turns into the session picker rather
+    /// than an error. Mirrors `model_with_no_argument_parses_as_a_bare_
+    /// listing_request` exactly, the identical precedent extended here to
+    /// a second command.
     #[test]
-    fn resume_missing_sid_is_a_parse_error_naming_the_form() {
-        let err = parse("/resume").unwrap_err();
-        assert!(err.to_string().contains("/resume <session-id>"));
+    fn resume_with_no_argument_parses_as_a_bare_picker_request() {
+        assert_eq!(parse("/resume"), Ok(SlashCommand::Resume { sid: None }));
+        // Bare whitespace after the command name is the same as none at all.
+        assert_eq!(parse("/resume   "), Ok(SlashCommand::Resume { sid: None }));
     }
 
     #[test]
@@ -3832,6 +4882,12 @@ mod tests {
         /// never the focused/root agent) into `CommandCtx::session_id`.
         session: SessionId,
         context: Option<ContextReport>,
+        /// `Host::transcript`'s own scripted response -- `Ok(...)` by
+        /// default (empty), never the `context` field's `ContextReport`
+        /// above: `/context`'s permission-decision count is read from THIS
+        /// (the session's own record history), not from `context.segments`
+        /// -- see `render_permission_decision_count`'s own doc.
+        transcript: Vec<conway::LogRecord>,
         /// The most recent `agent` `execute` actually passed to
         /// `context_report` -- lets a `/context` test assert a BARE
         /// command resolved against `AppState::focused_agent`, not just
@@ -3888,6 +4944,27 @@ mod tests {
         /// the three `TrustStatus` cases) and the read-failure path
         /// (`Entry::Error`, no card opened).
         preview_result: Option<TrustPreview>,
+        /// `Host::tool_specs`'s scripted response -- empty by default (no
+        /// `/context` test exercising the per-plugin breakdown needs a
+        /// fixture; every OTHER `/context` test's `context` field carries
+        /// its own segments independently, so an empty tool set here does
+        /// not affect them). Board item `01M1YS138H8T0HNV5YMZ6KD767` part
+        /// 2. See [`Self::with_tool_registry`].
+        tool_specs: Vec<ToolSpec>,
+        /// `Host::tool_plugin_ids`'s scripted response -- paired with
+        /// `tool_specs` above, set together by
+        /// [`Self::with_tool_registry`] so a test can never script one
+        /// without the other and silently get an "unknown"-bucketed
+        /// breakdown by accident.
+        tool_plugin_ids: HashMap<ToolName, String>,
+        /// Board item `01M1YS550T52VR1VW8NMETXQS1`: `Host::
+        /// resumable_sessions`'s scripted response, mirroring `trust_
+        /// result`/`preview_result`'s own shape exactly -- `Some(rows)`
+        /// succeeds with `rows` VERBATIM (an empty `Vec` is a legitimate,
+        /// distinct scripted value: "this project has zero sessions",
+        /// exercised by `bare_resume_with_no_sessions_gives_a_clear_
+        /// notice`), `None` fails with `fake_error()`.
+        resumable_sessions_result: Option<Vec<session_picker::ResumableSessionRow>>,
     }
 
     impl FakeHost {
@@ -3897,6 +4974,7 @@ mod tests {
                 root,
                 session: SessionId::new(),
                 context: None,
+                transcript: Vec::new(),
                 last_context_agent: Mutex::new(None),
                 fork_child: None,
                 spawn_child: None,
@@ -3908,6 +4986,9 @@ mod tests {
                 plugin_commands: HashMap::new(),
                 trust_result: None,
                 preview_result: None,
+                tool_specs: Vec::new(),
+                tool_plugin_ids: HashMap::new(),
+                resumable_sessions_result: None,
             }
         }
 
@@ -3940,9 +5021,32 @@ mod tests {
             self
         }
 
+        /// Scripts `resumable_sessions` to succeed with `rows` -- see that
+        /// field's own doc.
+        fn with_resumable_sessions(
+            mut self,
+            rows: Vec<session_picker::ResumableSessionRow>,
+        ) -> Self {
+            self.resumable_sessions_result = Some(rows);
+            self
+        }
+
         /// Scripts `cancel` to succeed -- see the `cancel_ok` field's own doc.
         fn with_cancel_ok(mut self) -> Self {
             self.cancel_ok = true;
+            self
+        }
+
+        /// Scripts `Host::tool_specs`/`tool_plugin_ids` together -- see
+        /// those fields' own docs for why this crate never scripts one
+        /// without the other.
+        fn with_tool_registry(
+            mut self,
+            specs: Vec<ToolSpec>,
+            plugin_ids: HashMap<ToolName, String>,
+        ) -> Self {
+            self.tool_specs = specs;
+            self.tool_plugin_ids = plugin_ids;
             self
         }
     }
@@ -3968,6 +5072,19 @@ mod tests {
             self.calls.lock().unwrap().push("context_report");
             *self.last_context_agent.lock().unwrap() = Some(agent);
             self.context.clone().ok_or_else(fake_error)
+        }
+
+        fn tool_specs(&self) -> Vec<ToolSpec> {
+            self.tool_specs.clone()
+        }
+
+        fn tool_plugin_ids(&self) -> HashMap<ToolName, String> {
+            self.tool_plugin_ids.clone()
+        }
+
+        async fn transcript(&self, _agent: AgentId) -> conway::Result<Vec<conway::LogRecord>> {
+            self.calls.lock().unwrap().push("transcript");
+            Ok(self.transcript.clone())
         }
 
         async fn session_usage(&self, _agent: AgentId) -> conway::Result<Usage> {
@@ -4022,6 +5139,18 @@ mod tests {
             unreachable!("pending() never resolves")
         }
 
+        /// A bare ULID resolves with no I/O, matching the real
+        /// `LiveHost` impl's own no-lookup-needed fast path exactly (`crate::
+        /// session_names::resolve`'s own first branch) -- this fake has no
+        /// `conway.names` sidecar to consult, so a NAME argument always
+        /// fails here (`fake_error()`); see `resolve_session_ref`'s own
+        /// trait-level doc for why that's the disclosed, sufficient half
+        /// for this fake to cover.
+        async fn resolve_session_ref(&self, raw: &str) -> conway::Result<SessionId> {
+            self.calls.lock().unwrap().push("resolve_session_ref");
+            raw.parse::<SessionId>().map_err(|_| fake_error())
+        }
+
         async fn resume(&self, _sid: SessionId) -> conway::Result<SessionHandle> {
             self.calls.lock().unwrap().push("resume");
             // A live `SessionHandle` has no public constructor reachable
@@ -4031,6 +5160,15 @@ mod tests {
             // `/resume` criterion from outside `conway`, disclosed here
             // rather than silently skipped.
             Err(fake_error())
+        }
+
+        async fn resumable_sessions(
+            &self,
+        ) -> conway::Result<Vec<session_picker::ResumableSessionRow>> {
+            self.calls.lock().unwrap().push("resumable_sessions");
+            self.resumable_sessions_result
+                .clone()
+                .ok_or_else(fake_error)
         }
 
         async fn promote(&self, _agent: AgentId) -> conway::Result<SessionId> {
@@ -4916,6 +6054,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: None,
                 prompt: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -4961,6 +6101,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: None,
                 prompt: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -4993,6 +6135,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: None,
                 prompt: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -5039,6 +6183,8 @@ mod tests {
             SlashCommand::Fork {
                 agent: None,
                 directive: Some("please review this".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -5070,6 +6216,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: Some("reviewer".to_string()),
                 prompt: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -5094,6 +6242,8 @@ mod tests {
             SlashCommand::Fork {
                 agent: Some(root.to_string()),
                 directive: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -5120,6 +6270,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: None,
                 prompt: None,
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -5145,6 +6297,8 @@ mod tests {
             SlashCommand::Fork {
                 agent: None,
                 directive: None,
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -5418,6 +6572,118 @@ mod tests {
         assert!(
             child_line.contains("worker") && child_line.contains("[Running]"),
             "the line renders label + status from the TreeNode: {child_line:?}"
+        );
+    }
+
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2's own acceptance check: after
+    /// THREE edits across TWO files, `/diff` shows both files' cumulative
+    /// changes -- one against a temp file edited twice, one against a temp
+    /// file written once. No facade call: `/diff` reads `state.transcript`
+    /// alone, the same shape as `/tree` immediately above.
+    #[tokio::test]
+    async fn diff_command_shows_cumulative_changes_across_two_files_after_three_edits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path_a = dir.path().join("a.txt");
+        let path_b = dir.path().join("b.txt");
+        std::fs::write(&path_a, "alpha\nbeta\n").expect("seed a");
+        std::fs::write(&path_b, "old\n").expect("seed b");
+        let a_str = path_a.to_string_lossy().to_string();
+        let b_str = path_b.to_string_lossy().to_string();
+
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        fn tool_entry(call_id: &str, name: &str, args: serde_json::Value) -> Entry {
+            Entry::Tool {
+                call_id: call_id.to_string(),
+                name: name.to_string(),
+                status: ToolStatus::Finished { is_error: false },
+                preview: "ok".to_string(),
+                args: args.to_string(),
+                progress: String::new(),
+                expanded: false,
+                ts: None,
+            }
+        }
+        state.transcript.push(tool_entry(
+            "tc_1",
+            "edit",
+            serde_json::json!({"path": a_str, "old_string": "alpha", "new_string": "ALPHA"}),
+        ));
+        state.transcript.push(tool_entry(
+            "tc_2",
+            "edit",
+            serde_json::json!({"path": a_str, "old_string": "beta", "new_string": "BETA"}),
+        ));
+        state.transcript.push(tool_entry(
+            "tc_3",
+            "write",
+            serde_json::json!({"path": b_str, "content": "new\n"}),
+        ));
+        let host = FakeHost::new(root);
+
+        execute(SlashCommand::Diff, &mut state, &host).await;
+
+        assert!(host.calls().is_empty(), "/diff must not consult the facade");
+        let combined = notice_lines(&state).join("\n");
+        assert!(combined.contains(&format!("## {a_str}")), "{combined}");
+        assert!(combined.contains(&format!("## {b_str}")), "{combined}");
+        assert!(combined.contains("-alpha"), "{combined}");
+        assert!(combined.contains("+ALPHA"), "{combined}");
+        assert!(combined.contains("-beta"), "{combined}");
+        assert!(combined.contains("+BETA"), "{combined}");
+        assert!(combined.contains("-old"), "{combined}");
+        assert!(combined.contains("+new"), "{combined}");
+    }
+
+    /// A session with nothing edited/written yet gets an honest notice, not
+    /// a silent no-op.
+    #[tokio::test]
+    async fn diff_command_with_nothing_touched_says_so_honestly() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        execute(SlashCommand::Diff, &mut state, &host).await;
+
+        let combined = notice_lines(&state).join("\n");
+        assert!(
+            combined.contains("no files edited or written"),
+            "{combined}"
+        );
+    }
+
+    /// A failed `edit` call contributes nothing to `/diff` -- nothing
+    /// actually changed on disk.
+    #[tokio::test]
+    async fn diff_command_ignores_failed_calls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "alpha\n").expect("seed");
+        let path_str = path.to_string_lossy().to_string();
+
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.transcript.push(Entry::Tool {
+            call_id: "tc_1".to_string(),
+            name: "edit".to_string(),
+            status: ToolStatus::Finished { is_error: true },
+            preview: "old_string not found".to_string(),
+            args: serde_json::json!({
+                "path": path_str, "old_string": "nope", "new_string": "x"
+            })
+            .to_string(),
+            progress: String::new(),
+            expanded: false,
+            ts: None,
+        });
+        let host = FakeHost::new(root);
+
+        execute(SlashCommand::Diff, &mut state, &host).await;
+
+        let combined = notice_lines(&state).join("\n");
+        assert!(
+            combined.contains("no files edited or written"),
+            "a failed call must not count as a touch: {combined}"
         );
     }
 
@@ -6003,7 +7269,12 @@ mod tests {
         )
         .await;
 
-        assert_eq!(host.calls(), vec!["context_report"]);
+        assert_eq!(
+            host.calls(),
+            vec!["context_report", "transcript"],
+            "the permission-decision count's own read (Host::transcript) is a SECOND facade \
+             call, distinct from context_report"
+        );
     }
 
     /// Acceptance 1 (`01M0RWKJD04JBR5NCVKBQXYHV4`): a bare `/context`
@@ -6026,7 +7297,12 @@ mod tests {
         let effect = execute(SlashCommand::Context { agent: None }, &mut state, &host).await;
 
         assert!(matches!(effect, Effect::None));
-        assert_eq!(host.calls(), vec!["context_report"]);
+        assert_eq!(
+            host.calls(),
+            vec!["context_report", "transcript"],
+            "the permission-decision count's own read (Host::transcript) is a SECOND facade \
+             call, distinct from context_report"
+        );
         assert_eq!(
             host.last_context_agent(),
             Some(child),
@@ -6051,6 +7327,8 @@ mod tests {
             SlashCommand::Fork {
                 agent: Some(root.to_string()),
                 directive: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -6085,6 +7363,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: Some("reviewer".to_string()),
                 prompt: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -6108,6 +7388,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: None,
                 prompt: Some("review the diff".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -6133,6 +7415,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: None,
                 prompt: None,
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -6165,6 +7449,19 @@ mod tests {
             Some(ToolSelector::Except(vec!["report".into()])),
             "a bare, interactive keep-alive spawn must exclude `report`"
         );
+        // Board item A1b, the negative half (pairs with
+        // `spawn_role_flag_reaches_the_spawn_spec_and_skips_classification`
+        // above): a bare spawn with NO `--role`/`--model` must record
+        // NOTHING for this child -- a wrong implementation that always
+        // inserts an entry (even a placeholder/empty one) regardless of
+        // whether a flag was given would still pass every `--role`/
+        // `--model` test above (they only ever check for `Some(..)`); this
+        // is the one that catches it.
+        assert_eq!(
+            state.spawn_role_or_model.get(&child),
+            None,
+            "no --role/--model flag was given, so nothing must be recorded for this child"
+        );
     }
 
     #[tokio::test]
@@ -6183,6 +7480,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: None,
                 prompt: Some("hello there".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -6213,6 +7512,145 @@ mod tests {
         );
     }
 
+    /// `/spawn --role fast do X`: reaches [`SpawnSpec::knobs`]'s `role`
+    /// field with NO classifier call in between -- an explicit `--role`
+    /// skips C2's intent classification entirely (`execute`'s own `Spawn`
+    /// arm, the `role.is_some() || model.is_some()` guard), the same way
+    /// an explicit `@<agent_def>` already does. `host.calls()` asserting
+    /// `["spawn"]` (not `["classify_agent_intent", "spawn"]`) is what
+    /// catches a wrong implementation that ran the flag through the
+    /// classify path anyway and would have silently dropped it the moment
+    /// a confirmation card opened (`IntentConfirm` has no `role`/`model`
+    /// field at all).
+    #[tokio::test]
+    async fn spawn_role_flag_reaches_the_spawn_spec_and_skips_classification() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.spawn_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Spawn {
+                agent_def: None,
+                prompt: Some("do X".to_string()),
+                role: Some("fast".to_string()),
+                model: None,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert_eq!(
+            host.calls(),
+            vec!["spawn"],
+            "an explicit --role must skip the C2 intent classifier entirely"
+        );
+        assert!(matches!(effect, Effect::FocusNewSession { .. }));
+        let spec = host
+            .last_spawn_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("spawn should have been called");
+        assert_eq!(spec.knobs.role, Some(RoleAlias::new("fast")));
+        assert_eq!(spec.knobs.model, None, "--role must not also pin a model");
+        // Board item A1b: the SAME flag must also land in the side-map the
+        // `/agents` panel reads (`state.spawn_role_or_model`'s own doc),
+        // keyed by the actual child id the fake host handed back -- not
+        // some other agent, and not left unset.
+        assert_eq!(
+            state.spawn_role_or_model.get(&child),
+            Some(&SpawnRoleOrModel::Role(RoleAlias::new("fast"))),
+            "an explicit --role must be recorded for the /agents panel to read back"
+        );
+    }
+
+    /// `/fork --model anthropic/claude-haiku go`: reaches
+    /// [`ForkSpec::knobs`]'s `model` field as a parsed [`ModelRef`], again
+    /// with no classifier call in between.
+    #[tokio::test]
+    async fn fork_model_flag_reaches_the_fork_spec_and_skips_classification() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.fork_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Fork {
+                agent: None,
+                directive: Some("go".to_string()),
+                role: None,
+                model: Some("anthropic/claude-haiku".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert_eq!(
+            host.calls(),
+            vec!["fork"],
+            "an explicit --model must skip the C2 intent classifier entirely"
+        );
+        assert!(matches!(effect, Effect::FocusNewSession { .. }));
+        let spec = host
+            .last_fork_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fork should have been called");
+        assert_eq!(
+            spec.knobs.model,
+            Some("anthropic/claude-haiku".parse::<ModelRef>().unwrap())
+        );
+        assert_eq!(spec.knobs.role, None, "--model must not also name a role");
+        // Board item A1b: the pinned model must also land in the side-map
+        // the `/agents` panel reads.
+        assert_eq!(
+            state.spawn_role_or_model.get(&child),
+            Some(&SpawnRoleOrModel::Model(
+                "anthropic/claude-haiku".parse::<ModelRef>().unwrap()
+            )),
+            "an explicit --model must be recorded for the /agents panel to read back"
+        );
+    }
+
+    /// A malformed `--model` value on `/spawn`/`/fork` is reported as a
+    /// `Notice`, not a panic and not a silently-ignored flag -- mirrors
+    /// `apply_model_switch`'s own malformed-value handling for bare
+    /// `/model <value>`.
+    #[tokio::test]
+    async fn spawn_with_a_malformed_model_flag_pushes_a_notice_and_makes_no_facade_call() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Spawn {
+                agent_def: None,
+                prompt: Some("do X".to_string()),
+                role: None,
+                model: Some("not-a-valid-model-ref".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "a malformed --model must be rejected before any facade call"
+        );
+        assert!(
+            matches!(state.transcript.last(), Some(Entry::Notice { .. })),
+            "a malformed --model must push a Notice, not fail silently"
+        );
+    }
+
     #[tokio::test]
     async fn bare_fork_builds_a_keep_alive_empty_directive_spec_targeting_the_focused_agent() {
         let root = AgentId::new();
@@ -6227,6 +7665,8 @@ mod tests {
             SlashCommand::Fork {
                 agent: None,
                 directive: None,
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -6282,6 +7722,8 @@ mod tests {
             SlashCommand::Fork {
                 agent: None,
                 directive: Some("please review".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -6313,7 +7755,7 @@ mod tests {
 
         let effect = execute(
             SlashCommand::Resume {
-                sid: SessionId::new().to_string(),
+                sid: Some(SessionId::new().to_string()),
             },
             &mut state,
             &host,
@@ -6321,7 +7763,169 @@ mod tests {
         .await;
 
         assert!(matches!(effect, Effect::None), "the fake resume errors");
-        assert_eq!(host.calls(), vec!["resume"]);
+        // Board item `01M1YS4FMJH004D1Y619MTBY7A`: `/resume` now resolves
+        // its argument (`resolve_session_ref`) before reattaching
+        // (`resume`) -- a ULID-shaped argument resolves through the fake
+        // with no error, so both calls happen in order.
+        assert_eq!(host.calls(), vec!["resolve_session_ref", "resume"]);
+    }
+
+    /// Board item `01M1YS4FMJH004D1Y619MTBY7A`, acceptance 2: an unknown
+    /// `/resume <name>` errors clearly and names `conway sessions list` --
+    /// and never calls `resume` at all once resolution itself failed (a
+    /// wrong implementation that resolved-then-still-called-resume-anyway
+    /// with the raw text would leave `host.calls()` containing `"resume"`
+    /// too, failing the second assertion below).
+    #[tokio::test]
+    async fn resume_with_an_unresolvable_name_errors_naming_sessions_list() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Resume {
+                sid: Some("not-a-ulid-and-not-a-known-name".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(host.calls(), vec!["resolve_session_ref"]);
+        let text = match state.transcript.last() {
+            Some(Entry::Notice { text }) => text.clone(),
+            other => panic!("expected a Notice, got {other:?}"),
+        };
+        assert!(
+            text.contains("conway sessions list"),
+            "must name the remedy: {text:?}"
+        );
+    }
+
+    fn resumable_row(title: &str) -> session_picker::ResumableSessionRow {
+        session_picker::ResumableSessionRow {
+            id: SessionId::new(),
+            title: Some(title.to_string()),
+            first_prompt: Some("let's get started".to_string()),
+            last_activity: Some(chrono::Utc::now()),
+            seq_count: 3,
+            labels: Vec::new(),
+        }
+    }
+
+    /// **VERIFICATION ANCHOR, board item `01M1YS550T52VR1VW8NMETXQS1`,
+    /// PAIRING half 1.** Bare `/resume` with two sessions opens `Mode::
+    /// UiForm` listing both, by title. Catches a wrong implementation that
+    /// leaves `/resume` bare an error (never opens anything), that opens
+    /// the picker but drops a row, or that shows a generic label instead of
+    /// each row's own title -- paired below with the zero-session case,
+    /// which must NOT take this same "open a picker" branch.
+    #[tokio::test]
+    async fn bare_resume_with_two_sessions_opens_the_picker_listing_both_by_title() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let rows = vec![resumable_row("daily standup"), resumable_row("bug triage")];
+        let host = FakeHost::new(root).with_resumable_sessions(rows);
+
+        let effect = execute(SlashCommand::Resume { sid: None }, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.session_picker_active,
+            "must mark the session picker active"
+        );
+        match &state.mode {
+            Mode::UiForm(form) => {
+                assert_eq!(form.ask.request.options.len(), 2);
+                assert!(form.ask.request.options[0].contains("daily standup"));
+                assert!(form.ask.request.options[1].contains("bug triage"));
+            }
+            other => panic!("expected Mode::UiForm, got {other:?}"),
+        }
+    }
+
+    /// **VERIFICATION ANCHOR, board item `01M1YS550T52VR1VW8NMETXQS1`,
+    /// PAIRING half 2.** Bare `/resume` with NO sessions gives a clear
+    /// `Entry::Notice` rather than opening an empty picker -- catches a
+    /// wrong implementation that always opens `Mode::UiForm` regardless of
+    /// row count (which the pairing test above cannot catch on its own,
+    /// since it only ever exercises the non-empty case).
+    #[tokio::test]
+    async fn bare_resume_with_no_sessions_gives_a_clear_notice_not_an_empty_picker() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root).with_resumable_sessions(Vec::new());
+
+        let effect = execute(SlashCommand::Resume { sid: None }, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            !state.session_picker_active,
+            "must not mark the session picker active when nothing was opened"
+        );
+        assert!(
+            !matches!(state.mode, Mode::UiForm(_)),
+            "an empty row list must never open Mode::UiForm"
+        );
+        let text = match state.transcript.last() {
+            Some(Entry::Notice { text }) => text.clone(),
+            other => panic!("expected a Notice, got {other:?}"),
+        };
+        assert!(
+            text.contains("no sessions"),
+            "must clearly say there was nothing to resume: {text:?}"
+        );
+    }
+
+    /// **VERIFICATION ANCHOR, board item `01M1YS550T52VR1VW8NMETXQS1`.**
+    /// The session picker's own `Enter` answer (`app/run.rs`'s
+    /// `Action::UiFormDecision` dispatch, gated on `AppState::
+    /// session_picker_active`) calls [`apply_resume`] directly with the id
+    /// recovered from the chosen row's own option text -- this test calls
+    /// it the identical way and shows it produces the EXACT SAME
+    /// `Host` call sequence a hand-typed `/resume <id>` (`execute`'s
+    /// `SlashCommand::Resume { sid: Some(_) }` arm) produces, because that
+    /// arm is ITSELF a call to `apply_resume`. Catches a wrong
+    /// implementation that gave the picker's `Enter` its own,
+    /// independently-written reattachment logic (e.g. calling
+    /// `host.resume` directly, skipping `resolve_session_ref`, or in a
+    /// different order) -- any such divergence would fail the
+    /// `assert_eq!(picker_host.calls(), typed_host.calls())` below.
+    #[tokio::test]
+    async fn resume_picker_enter_and_a_typed_resume_id_go_through_the_same_apply_resume_path() {
+        let root = AgentId::new();
+        let sid = SessionId::new().to_string();
+
+        let mut picker_state = AppState::new(root);
+        let picker_host = FakeHost::new(root);
+        let picker_effect = apply_resume(sid.clone(), &mut picker_state, &picker_host).await;
+
+        let mut typed_state = AppState::new(root);
+        let typed_host = FakeHost::new(root);
+        let typed_effect = execute(
+            SlashCommand::Resume {
+                sid: Some(sid.clone()),
+            },
+            &mut typed_state,
+            &typed_host,
+        )
+        .await;
+
+        assert_eq!(
+            picker_host.calls(),
+            typed_host.calls(),
+            "both must resolve then resume, in the same order"
+        );
+        assert_eq!(picker_host.calls(), vec!["resolve_session_ref", "resume"]);
+        assert!(
+            matches!(picker_effect, Effect::None),
+            "the fake resume errors"
+        );
+        assert!(
+            matches!(typed_effect, Effect::None),
+            "the fake resume errors"
+        );
     }
 
     #[tokio::test]
@@ -6385,10 +7989,21 @@ mod tests {
             Some(Entry::Notice { text })
                 if text.contains("anthropic/claude-haiku") && text.contains(&child_focus.to_string())
         ));
+        // Board item A1d ("switch-forks do not pile up"): `switch_session`
+        // records this fork as a pure `/model` switch off `child_focus`
+        // before returning, so `/agents` can collapse it.
+        assert_eq!(state.switch_lineage.get(&child), Some(&child_focus));
     }
 
+    /// A typed argument that does not parse as a
+    /// `ModelRef` AND matches nothing in the (here, empty) candidate list
+    /// is a named notice, never a fork call -- the direct successor of the
+    /// old "malformed ref is a bare parse-error notice" case, now routed
+    /// through the picker's own zero-match path
+    /// (`model_picker::filter_models`) instead of `apply_model_switch`'s
+    /// own `Err` arm.
     #[tokio::test]
-    async fn model_with_a_malformed_ref_is_a_notice_and_never_calls_fork() {
+    async fn model_with_no_match_for_the_typed_text_is_a_notice_and_never_calls_fork() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
         let host = FakeHost::new(root);
@@ -6405,12 +8020,61 @@ mod tests {
         assert!(matches!(effect, Effect::None));
         assert!(
             host.calls().is_empty(),
-            "a malformed --model must never reach fork"
+            "a non-matching /model argument must never reach fork"
+        );
+        assert!(
+            !matches!(state.mode, Mode::UiForm(_)),
+            "an empty filter result must fall back to a notice, never an unusable empty picker"
         );
         assert!(matches!(
             state.transcript.last(),
             Some(Entry::Notice { text }) if text.contains("not-a-valid-ref")
         ));
+    }
+
+    /// **VERIFICATION ANCHOR (acceptance 3).** `/model <text>`
+    /// that does not parse as a `ModelRef` AND does not match nothing --
+    /// it matches SOME configured models -- opens the picker pre-filtered
+    /// to just those, instead of either erroring (the old behaviour) or
+    /// switching outright.
+    #[tokio::test]
+    async fn model_with_no_exact_match_opens_the_picker_prefiltered_by_the_typed_text() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.configured_models = vec![
+            "anthropic/claude-haiku".to_string(),
+            "anthropic/claude-sonnet-4-6".to_string(),
+            "openai/gpt-5".to_string(),
+        ];
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Model {
+                model: Some("claude".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "opening the picker makes no facade call yet -- only Enter does"
+        );
+        match &state.mode {
+            Mode::UiForm(form) => {
+                assert_eq!(
+                    form.ask.request.options,
+                    vec![
+                        "anthropic/claude-haiku".to_string(),
+                        "anthropic/claude-sonnet-4-6".to_string(),
+                    ],
+                    "must offer only the entries matching \"claude\", not every configured model"
+                );
+            }
+            other => panic!("expected Mode::UiForm, got {other:?}"),
+        }
     }
 
     fn ui_installed_browser() -> Vec<PluginBrowserEntry> {
@@ -6422,19 +8086,25 @@ mod tests {
         }]
     }
 
-    /// **VERIFICATION ANCHOR, board item `01M1A35S609TZ613GAECPEHX8D`
-    /// acceptance 4.** Bare `/model` with `conway.ui` ABSENT (the default --
-    /// `state.plugin_browser` empty) lists the configured pairs as plain
-    /// transcript text, marking the focused agent's own model `(active)` --
-    /// never a facade call, since nothing is being switched yet.
+    /// **VERIFICATION ANCHOR (acceptance 1/4).** Bare
+    /// `/model` opens the interactive picker (`Mode::UiForm`) even with
+    /// `conway.ui` ABSENT (`state.plugin_browser` empty, the default) --
+    /// the whole point of the picker: no plugin install is needed to get a
+    /// real picker instead of a text dump. The candidate list unions every
+    /// configured chain member AND every `.conway/models.json` entry
+    /// (`AppState::model_max_context`'s own keys) -- a model known only to
+    /// the metadata file, never a chain, still shows up.
     #[tokio::test]
-    async fn model_bare_lists_configured_pairs_and_marks_the_active_one() {
+    async fn model_bare_opens_the_picker_without_conway_ui_installed() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
         state.configured_models = vec![
             "anthropic/claude-haiku".to_string(),
             "anthropic/claude-sonnet-4-6".to_string(),
         ];
+        state
+            .model_max_context
+            .insert("local/qwen3.8:27b-mlx".to_string(), 32_000);
         state.focused_model = Some("anthropic/claude-sonnet-4-6".to_string());
         let host = FakeHost::new(root);
 
@@ -6443,28 +8113,33 @@ mod tests {
         assert!(matches!(effect, Effect::None));
         assert!(
             host.calls().is_empty(),
-            "listing what's configured must never touch the facade"
+            "opening the picker makes no facade call yet"
         );
         assert!(
-            !matches!(state.mode, Mode::UiForm(_)),
-            "with conway.ui absent this must be plain text, never a menu"
+            state.model_picker_active,
+            "the picker flag must be set so answering it runs the switch"
         );
-        match state.transcript.last() {
-            Some(Entry::Notice { text }) => {
-                assert!(text.contains("anthropic/claude-haiku"), "{text}");
-                let active_lines: Vec<&str> =
-                    text.lines().filter(|l| l.contains("(active)")).collect();
+        match &state.mode {
+            Mode::UiForm(form) => {
                 assert_eq!(
-                    active_lines.len(),
-                    1,
-                    "exactly the focused agent's own model must be marked: {text}"
+                    form.ask.request.options,
+                    vec![
+                        "anthropic/claude-haiku".to_string(),
+                        "anthropic/claude-sonnet-4-6".to_string(),
+                        "local/qwen3.8:27b-mlx".to_string(),
+                    ],
+                    "must include the models.json-only entry alongside the chain members"
                 );
                 assert!(
-                    active_lines[0].contains("anthropic/claude-sonnet-4-6"),
-                    "{text}"
+                    form.ask
+                        .request
+                        .prompt
+                        .contains("anthropic/claude-sonnet-4-6"),
+                    "the currently-running model must be named in the prompt: {}",
+                    form.ask.request.prompt
                 );
             }
-            other => panic!("expected a Notice listing, got {other:?}"),
+            other => panic!("expected Mode::UiForm, got {other:?}"),
         }
     }
 
@@ -6483,14 +8158,14 @@ mod tests {
         ));
     }
 
-    /// **VERIFICATION ANCHOR, board item `01M1A35S609TZ613GAECPEHX8D`
-    /// acceptance 5 (menu half).** With `conway.ui` installed, bare
-    /// `/model` opens `Mode::UiForm` -- the SAME surface a model-called
-    /// `ask_question` opens -- rather than printing text, and marks
-    /// `AppState::model_picker_active` so `run.rs`'s dispatch arm knows to
-    /// run the switch once answered.
+    /// **VERIFICATION ANCHOR (acceptance 4).** `conway.ui`
+    /// installed changes nothing about `/model`'s own picker -- proving
+    /// `/model` no longer depends on that plugin at all (it takes the
+    /// identical `Mode::UiForm` path whether the plugin is installed or
+    /// not; contrast [`model_bare_opens_the_picker_without_conway_ui_installed`]
+    /// just above, which asserts the SAME outcome with the plugin absent).
     #[tokio::test]
-    async fn model_bare_opens_a_menu_when_conway_ui_is_installed() {
+    async fn model_bare_opens_the_picker_when_conway_ui_is_installed_too() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
         state.configured_models = vec![
@@ -6505,7 +8180,7 @@ mod tests {
         assert!(matches!(effect, Effect::None));
         assert!(
             host.calls().is_empty(),
-            "opening the menu makes no facade call yet"
+            "opening the picker makes no facade call yet"
         );
         assert!(
             state.model_picker_active,
@@ -6513,7 +8188,6 @@ mod tests {
         );
         match &state.mode {
             Mode::UiForm(form) => {
-                assert_eq!(form.ask.request.prompt, "select a model");
                 assert_eq!(
                     form.ask.request.options,
                     vec![
@@ -6526,12 +8200,12 @@ mod tests {
         }
     }
 
-    /// **VERIFICATION ANCHOR, board item `01M1A35S609TZ613GAECPEHX8D`
-    /// acceptance 4.** "A pair shown is accepted verbatim by `/model
-    /// <pair>`" -- takes a string straight out of `AppState::
-    /// configured_models` (exactly what the bare listing shows) and feeds
-    /// it back through `parse` + `execute` as a normal `/model <pair>`
-    /// invocation.
+    /// **VERIFICATION ANCHOR (acceptance 3).** "A pair shown
+    /// is accepted verbatim by `/model <pair>`" -- takes a string straight
+    /// out of `AppState::configured_models` (exactly what the picker
+    /// offers) and feeds it back through `parse` + `execute` as a normal
+    /// `/model <pair>` invocation; a syntactically valid `ModelRef` still
+    /// switches directly, exactly as it always has.
     #[tokio::test]
     async fn a_configured_pair_is_accepted_verbatim_by_model_with_an_argument() {
         let root = AgentId::new();
@@ -6622,7 +8296,7 @@ mod tests {
             backend: "anthropic".into(),
             model: "claude-sonnet-4-6".into(),
         };
-        state.last_model_decision = Some(conway::Envelope {
+        state.model_decision_history.push_back(conway::Envelope {
             seq: 1,
             ts: chrono::Utc::now(),
             session: SessionId::new(),
@@ -6669,7 +8343,7 @@ mod tests {
             backend: "anthropic".into(),
             model: "claude-haiku".into(),
         };
-        state.previous_model_decision = Some(conway::Envelope {
+        state.model_decision_history.push_back(conway::Envelope {
             seq: 1,
             ts: chrono::Utc::now(),
             session: SessionId::new(),
@@ -6681,7 +8355,7 @@ mod tests {
                 attempt: 1,
             },
         });
-        state.last_model_decision = Some(conway::Envelope {
+        state.model_decision_history.push_back(conway::Envelope {
             seq: 2,
             ts: chrono::Utc::now(),
             session: SessionId::new(),
@@ -6716,6 +8390,60 @@ mod tests {
                 .any(|t| t.starts_with("role:") && t.contains("->")),
             "role did not change and must render bare"
         );
+    }
+
+    /// Board item A1d ("say why a turn fell back"): `/why` keeps a short
+    /// session HISTORY of routing changes, not only the latest one. Three
+    /// `ModelDecision`s (mirroring three `/model` switches, or the real
+    /// six-flip session the item's own background cites) must all be
+    /// individually recoverable, not collapsed down to the newest.
+    #[tokio::test]
+    async fn why_lists_every_earlier_decision_when_the_session_has_more_than_two() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        for (seq, model_name) in [(1, "m1"), (2, "m2"), (3, "m3")] {
+            state.model_decision_history.push_back(conway::Envelope {
+                seq,
+                ts: chrono::Utc::now(),
+                session: SessionId::new(),
+                agent: root,
+                event: Event::ModelDecision {
+                    role: "planner".into(),
+                    chosen: conway::ModelRef {
+                        backend: "anthropic".into(),
+                        model: model_name.into(),
+                    },
+                    reason: RoutingReason::PinnedByApi,
+                    attempt: 1,
+                },
+            });
+        }
+
+        execute(SlashCommand::Why, &mut state, &host).await;
+
+        let texts: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.starts_with("routing history (")),
+            "expected a history summary line, got: {texts:?}"
+        );
+        // All three models are individually recoverable: m1/m2 in the
+        // history lines above the diffed latest decision, m3 in the
+        // `model:` line itself.
+        for needle in ["m1", "m2", "m3"] {
+            assert!(
+                texts.iter().any(|t| t.contains(needle)),
+                "expected {needle} to be recoverable in /why output, got: {texts:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -6782,8 +8510,12 @@ mod tests {
         // The context-summary header/kind-table/`largest:` block (this
         // item) now renders BEFORE the per-segment listing this test is
         // actually about -- exactly two lines carry a segment id, one per
-        // segment, and (since `dropped` is empty here) they are the LAST
-        // two lines of the notice stream.
+        // segment, and (since `dropped` is empty here) they are the last
+        // two lines of the notice stream BEFORE the trailing
+        // `render_permission_decision_count` line (a separate, later
+        // addition -- see that function's own doc -- that always trails
+        // everything else `/context` renders, exactly like `dropped`/
+        // `not_admitted` already trail the per-segment listing itself).
         let per_segment_lines: Vec<&str> = lines
             .iter()
             .copied()
@@ -6795,9 +8527,15 @@ mod tests {
             "expected one line per segment, got: {lines:?}"
         );
         assert_eq!(
-            &lines[lines.len() - 2..],
+            lines.last().copied(),
+            Some("permission decisions: 0"),
+            "the permission-decision count always trails everything else: {lines:?}"
+        );
+        assert_eq!(
+            &lines[lines.len() - 3..lines.len() - 1],
             per_segment_lines.as_slice(),
-            "per-segment lines must be last, after the summary block: {lines:?}"
+            "per-segment lines must be last, after the summary block (and before the \
+             trailing permission-decision count): {lines:?}"
         );
         // Each line must carry the segment id, a provenance label, and the
         // token estimate -- not just be present.
@@ -6815,6 +8553,287 @@ mod tests {
             "line 1 missing id/provenance/tokens: {:?}",
             per_segment_lines[1]
         );
+    }
+
+    /// A minimal `ToolSpec` fixture -- board item
+    /// `01M1YS138H8T0HNV5YMZ6KD767` part 2's per-plugin breakdown tests'
+    /// own fixture, used below.
+    fn tool_spec_fixture(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new(name),
+            description: "test tool".into(),
+            schema: serde_json::from_value(serde_json::json!({"type": "object"})).unwrap(),
+            category: ToolCategory::Read,
+            permission: PermissionClass::Safe,
+        }
+    }
+
+    /// A `ContextReport` carrying exactly one `Provenance::ToolRegistry`
+    /// segment (plus a `UserPrompt` segment so `segments` is not
+    /// vacuously singleton) -- the minimum shape that makes
+    /// `summarize_context_report`'s `kinds` table actually carry a
+    /// `"tool registry"` row at all, which is what makes
+    /// `render_context_summary`'s per-plugin-breakdown nesting fire.
+    fn context_report_with_tool_registry(agent: AgentId, tool_tokens: u32) -> ContextReport {
+        ContextReport {
+            agent_id: agent,
+            turn: 1,
+            tokenizer: "heuristic-chars4".to_string(),
+            segments: vec![
+                ContextReportEntry {
+                    segment: SegmentId::new(),
+                    provenance: Provenance::UserPrompt,
+                    tokens_est: 12,
+                    estimated: true,
+                },
+                ContextReportEntry {
+                    segment: SegmentId::new(),
+                    provenance: Provenance::ToolRegistry {
+                        hash: "deadbeef".to_string(),
+                    },
+                    tokens_est: tool_tokens,
+                    estimated: true,
+                },
+            ],
+            total_tokens_est: 12 + tool_tokens,
+            dropped: Vec::new(),
+            curator_failed: None,
+            instruction_fragments: Vec::new(),
+            not_admitted: Vec::new(),
+        }
+    }
+
+    /// Every indented `"    <plugin_id>  N tool(s)  ~Ktok"` breakdown line
+    /// `/context` printed, in order.
+    fn tool_registry_breakdown_lines(state: &AppState) -> Vec<&str> {
+        state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } if text.starts_with("    ") => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The positive half of the item's own test bar: two plugins each
+    /// contributing tools get two distinct, plausibly-attributed breakdown
+    /// rows beneath the combined `"tool registry"` row -- not merged into
+    /// one opaque total, and not dropped. Catches a breakdown that renders
+    /// nothing at all, that collapses every plugin into a single row, or
+    /// that mis-attributes one plugin's tools to another.
+    #[tokio::test]
+    async fn context_tool_registry_breaks_down_by_two_distinct_plugins() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root).with_tool_registry(
+            vec![
+                tool_spec_fixture("mcp_search"),
+                tool_spec_fixture("mcp_write"),
+                tool_spec_fixture("read"),
+            ],
+            HashMap::from([
+                (ToolName::new("mcp_search"), "acme.mcp".to_string()),
+                (ToolName::new("mcp_write"), "acme.mcp".to_string()),
+                (ToolName::new("read"), "conway.fs".to_string()),
+            ]),
+        );
+        host.context = Some(context_report_with_tool_registry(root, 400));
+
+        execute(
+            SlashCommand::Context {
+                agent: Some(root.to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let lines = tool_registry_breakdown_lines(&state);
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected one row per distinct plugin, got: {lines:?}"
+        );
+        let acme = lines
+            .iter()
+            .find(|l| l.contains("acme.mcp"))
+            .unwrap_or_else(|| panic!("no acme.mcp row in: {lines:?}"));
+        assert!(
+            acme.contains("2 tools") && acme.contains("tok"),
+            "acme.mcp row missing its 2-tool count/token estimate: {acme:?}"
+        );
+        let fs = lines
+            .iter()
+            .find(|l| l.contains("conway.fs"))
+            .unwrap_or_else(|| panic!("no conway.fs row in: {lines:?}"));
+        assert!(
+            fs.contains("1 tool") && fs.contains("tok"),
+            "conway.fs row missing its 1-tool count/token estimate: {fs:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("unknown")),
+            "every tool here has a scripted plugin id; no row should fall back to \
+             \"unknown\": {lines:?}"
+        );
+    }
+
+    /// The negative half, paired with the test above: a session whose
+    /// registered tools all belong to ONE plugin (the "only built-ins"
+    /// shape the item's own test bar names) renders EXACTLY one breakdown
+    /// row -- no phantom second row, no "unknown" bucket splitting it
+    /// further, no row for a plugin that contributed nothing. Catches a
+    /// grouping bug that fabricates extra rows (e.g. mis-keying by tool
+    /// name instead of plugin id, which would render three rows here, one
+    /// per tool, instead of one).
+    #[tokio::test]
+    async fn context_tool_registry_with_one_plugin_shows_no_spurious_extra_rows() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root).with_tool_registry(
+            vec![
+                tool_spec_fixture("read"),
+                tool_spec_fixture("write"),
+                tool_spec_fixture("bash"),
+            ],
+            HashMap::from([
+                (ToolName::new("read"), "conway.tools".to_string()),
+                (ToolName::new("write"), "conway.tools".to_string()),
+                (ToolName::new("bash"), "conway.tools".to_string()),
+            ]),
+        );
+        host.context = Some(context_report_with_tool_registry(root, 300));
+
+        execute(
+            SlashCommand::Context {
+                agent: Some(root.to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let lines = tool_registry_breakdown_lines(&state);
+        assert_eq!(
+            lines.len(),
+            1,
+            "one plugin contributing every tool must render exactly one row, got: {lines:?}"
+        );
+        assert!(
+            lines[0].contains("conway.tools") && lines[0].contains("3 tools"),
+            "the single row must name the one real plugin and its full 3-tool count: {:?}",
+            lines[0]
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("unknown")),
+            "every tool here has a scripted plugin id; no row should fall back to \
+             \"unknown\": {lines:?}"
+        );
+    }
+
+    /// A minimal, valid `conway::LogRecord::PermissionDecisionRecord` --
+    /// `render_permission_decision_count`'s own test fixture, used below.
+    fn permission_decision_record(seq: u64, call_id: &str) -> conway::LogRecord {
+        conway::LogRecord::PermissionDecisionRecord {
+            seq: conway::LogSeq(seq),
+            ts: chrono::Utc::now(),
+            call_id: call_id.to_string(),
+            tool: ToolName::new("bash"),
+            decision: conway_core::log::PermissionDecisionRecordKind::Allow,
+            source: conway_core::log::PermissionDecisionSource::Operator,
+            waited_ms: Some(1_200),
+            feedback: None,
+        }
+    }
+
+    /// `/context` counts `LogRecord::PermissionDecisionRecord` entries from
+    /// the agent's own RECORD HISTORY (`Host::transcript`), never from
+    /// `ContextReport::segments` -- this test deliberately never sets
+    /// `host.context` at all (it stays `None`, so `context_report` itself
+    /// fails and only pushes its own error notice), isolating the count to
+    /// its real source: if the count were (wrongly) derived from
+    /// `ContextReport::segments` instead, this would read 0 regardless of
+    /// how many decisions `host.transcript` carries -- a permanent
+    /// "reports zero forever" failure, since `ContextBuilder` deliberately
+    /// never puts this record kind in `segments` at all.
+    #[tokio::test]
+    async fn context_counts_permission_decisions_from_the_record_history_not_segments() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        host.transcript = vec![
+            permission_decision_record(1, "tc_1"),
+            permission_decision_record(2, "tc_2"),
+            // A non-decision record in the SAME history must not be
+            // miscounted either way.
+            conway::LogRecord::UserTurn {
+                seq: conway::LogSeq(3),
+                ts: chrono::Utc::now(),
+                text: "hi".to_string(),
+                prov: Provenance::UserPrompt,
+            },
+        ];
+
+        execute(
+            SlashCommand::Context {
+                agent: Some(root.to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let count_line = state
+            .transcript
+            .iter()
+            .find_map(|e| match e {
+                Entry::Notice { text } if text.starts_with("permission decisions:") => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .expect("a permission-decisions count line");
+        assert_eq!(count_line, "permission decisions: 2");
+    }
+
+    /// PAIRING: a session with NO permission-decision records at all counts
+    /// zero -- proving the count is a real count, not a constant that
+    /// merely happens to equal 2 whenever any records exist. Combined with
+    /// the test above, a wrong implementation that always reported a fixed
+    /// non-zero number (or that counted every record regardless of kind)
+    /// would fail this one.
+    #[tokio::test]
+    async fn context_counts_zero_permission_decisions_for_a_session_with_none() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        host.transcript = vec![conway::LogRecord::UserTurn {
+            seq: conway::LogSeq(1),
+            ts: chrono::Utc::now(),
+            text: "hi".to_string(),
+            prov: Provenance::UserPrompt,
+        }];
+
+        execute(
+            SlashCommand::Context {
+                agent: Some(root.to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let count_line = state
+            .transcript
+            .iter()
+            .find_map(|e| match e {
+                Entry::Notice { text } if text.starts_with("permission decisions:") => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .expect("a permission-decisions count line");
+        assert_eq!(count_line, "permission decisions: 0");
     }
 
     /// Board item `01M0K5MD59YZRSHE31JKZKFRMY`: `/context` renders a
@@ -6953,9 +8972,25 @@ mod tests {
         )
         .await;
 
+        // "empty context" is no longer the literal LAST transcript entry --
+        // `render_permission_decision_count`'s own trailing line now
+        // follows it unconditionally (see that function's own doc) -- so
+        // this checks the second-to-last entry instead, and pins the new
+        // trailing line explicitly rather than silently dropping the
+        // "last entry" shape of this assertion.
+        let len = state.transcript.len();
+        assert!(
+            len >= 2,
+            "expected at least the empty-context notice plus the trailing count: {:?}",
+            state.transcript
+        );
+        assert!(matches!(
+            &state.transcript[len - 2],
+            Entry::Notice { text } if text == "empty context"
+        ));
         assert!(matches!(
             state.transcript.last(),
-            Some(Entry::Notice { text }) if text == "empty context"
+            Some(Entry::Notice { text }) if text == "permission decisions: 0"
         ));
     }
 
@@ -7621,6 +9656,8 @@ mod tests {
             SlashCommand::Spawn {
                 agent_def: None,
                 prompt: None,
+                role: None,
+                model: None,
             },
             &mut state,
             &host,
@@ -7692,6 +9729,8 @@ mod tests {
             SlashCommand::Fork {
                 agent: None,
                 directive: Some("go".to_string()),
+                role: None,
+                model: None,
             },
             &mut state,
             &host,

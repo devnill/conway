@@ -129,8 +129,24 @@ impl App {
                                 .get(model.model.as_str())
                                 .copied()
                         });
+                    // Board item 01M1ZJ796E0YP6Y8QWS8HB0AVB: the identical
+                    // lookup (same key, same bare-model-id fallback) against
+                    // `model_max_context_source` -- see `AppState::apply`'s
+                    // `ModelDecision` arm for the sibling site this mirrors.
+                    let source = self
+                        .state
+                        .model_max_context_source
+                        .get(&name)
+                        .copied()
+                        .or_else(|| {
+                            self.state
+                                .model_max_context_source
+                                .get(model.model.as_str())
+                                .copied()
+                        });
                     self.state.focused_model = Some(name);
                     self.state.focused_model_max_context = max;
+                    self.state.focused_model_max_context_source = source;
                 }
                 Some(stream)
             }

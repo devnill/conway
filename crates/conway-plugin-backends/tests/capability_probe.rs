@@ -577,17 +577,21 @@ async fn discover_context_window_returns_the_probed_architecture_ceiling_for_oll
     assert_eq!(window, Some(1_048_576));
 }
 
-/// A dialect with no known discovery endpoint (every built-in profile
-/// except `"ollama"`) returns `None` immediately -- no network call at
-/// all, so the caller's discover-or-ask flow falls straight through to
-/// asking without waiting on a doomed request.
+/// A dialect with no dialect-SPECIFIC discovery endpoint and no verified
+/// baseline of its own (`"vllm_hermes"`, `"lm_studio"`, `"llama_cpp_server"`)
+/// still falls through to the generic `/models` step every OpenAI-compatible
+/// dialect shares -- see the sibling positive test
+/// `discover_context_window_returns_the_generic_v1_models_context_length_for_a_non_ollama_dialect`
+/// for the case a server actually reports something there. Here, the
+/// server reports NOTHING at `/models` either (no mock registered; wiremock
+/// answers an unmatched request with a 404, which `fetch_models` treats as
+/// "found nothing"), so every dialect must resolve `None`, not a fabricated
+/// number. `"openai"` is included too, but for a DIFFERENT reason -- its
+/// verified baseline skips the network step entirely, covered explicitly by
+/// `discover_context_window_skips_the_network_entirely_for_a_dialect_with_a_verified_baseline`.
 #[tokio::test]
 async fn discover_context_window_returns_none_for_a_dialect_with_no_known_endpoint() {
     let server = MockServer::start().await;
-    // No mock registered at all: if this function made a request, wiremock
-    // would panic on an unmatched request once `.verify()`-style strictness
-    // applies, or the request would simply 404 -- either way `None` must
-    // come back either without a call or from a failed one, never `Some`.
     let base = server.uri().parse().unwrap();
     for dialect in [
         Dialect::OpenAi,
@@ -602,8 +606,76 @@ async fn discover_context_window_returns_none_for_a_dialect_with_no_known_endpoi
             "any-model",
         )
         .await;
-        assert_eq!(window, None, "{dialect:?} has no known discovery endpoint");
+        assert_eq!(
+            window, None,
+            "{dialect:?} must not invent a window when nothing was actually reported"
+        );
     }
+}
+
+/// **Hosted OpenAI-compatible models item, acceptance criterion 1:** a
+/// non-`"ollama"` dialect with no verified baseline of its own (no
+/// dialect-specific discovery step, and `context_window_verified == false`
+/// -- `"vllm_hermes"`, not `"openai"`, whose baseline IS verified and is
+/// covered by the sibling test
+/// `discover_context_window_skips_the_network_entirely_for_a_dialect_with_a_verified_baseline`
+/// below) still resolves a real, live window when the server's generic
+/// `/v1/models` response reports `context_length` for the exact model asked
+/// about -- the mechanism that closes the reported incident (a hosted
+/// million-token model silently falling to the 32,768-token dialect floor
+/// because nothing but `"ollama"`'s native step was ever consulted).
+#[tokio::test]
+async fn discover_context_window_returns_the_generic_v1_models_context_length_for_a_non_ollama_dialect(
+) {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                {"id": "other-model", "context_length": 8_192},
+                {"id": "glm-5.3", "context_length": 1_048_576}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let base = server.uri().parse().unwrap();
+    let window = conway_plugin_backends::probe::discover_context_window(
+        &base,
+        &Dialect::VllmHermes.profile(),
+        None,
+        "glm-5.3",
+    )
+    .await;
+    assert_eq!(window, Some(1_048_576));
+}
+
+/// A dialect whose OWN baseline is already a sourced fact
+/// (`context_window_verified == true` -- `"openai"`, `128_000`) skips
+/// discovery ENTIRELY: no network call at all, not even the generic
+/// `/models` step -- discovering a number here would be pure noise, since
+/// the caller's own `context_window_is_verified` guard (`conway-cli`'s
+/// `first_run.rs`) never acts on it anyway. No mock registered at all: a
+/// stray request here would 404, which this test would not distinguish
+/// from "found nothing" if it only checked the return value -- proven
+/// instead by asserting the server received nothing.
+#[tokio::test]
+async fn discover_context_window_skips_the_network_entirely_for_a_dialect_with_a_verified_baseline()
+{
+    let server = MockServer::start().await;
+    let base = server.uri().parse().unwrap();
+    let window = conway_plugin_backends::probe::discover_context_window(
+        &base,
+        &Dialect::OpenAi.profile(),
+        None,
+        "any-model",
+    )
+    .await;
+    assert_eq!(window, None);
+    assert!(
+        server.received_requests().await.unwrap().is_empty(),
+        "a verified dialect must make no discovery request at all"
+    );
 }
 
 /// A model `/api/show` doesn't recognize (e.g. retired -- confirmed live

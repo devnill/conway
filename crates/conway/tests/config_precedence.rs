@@ -7,9 +7,10 @@ mod support;
 use std::collections::HashMap;
 
 use conway::config::discovery;
-use conway::config::schema::{ConwayConfig, PermissionsConfigMode};
+use conway::config::schema::ConwayConfig;
 use conway::config::{load, load_ignoring_user_config, CliOverrides, LoadOptions};
 use conway_core::ids::RoleAlias;
+use conway_core::permission_mode::PermissionMode;
 
 const FULL_SCHEMA_JSON: &str = r#"
 {
@@ -27,9 +28,7 @@ const FULL_SCHEMA_JSON: &str = r#"
     "max_parallel_tools": 4
   },
   "permissions": {
-    "mode": "prompt",
-    "allowed_tools": [],
-    "denied_tools": []
+    "default_mode": "prompt"
   },
   "backends": {
     "anthropic": {
@@ -83,25 +82,108 @@ fn conway_config_round_trips_the_full_documented_schema() {
     assert_eq!(cfg.backends["local"].stream_tools, Some(false));
 }
 
-/// Board item `01M1FS46ZGP0FG6CTWPZP44P94`:
-/// `conway::config::schema::PermissionMode` was renamed to
-/// `PermissionsConfigMode` (Rust identifier only -- the serde wire value
-/// `"prompt"` is untouched, `#[serde(rename_all = "lowercase")]` unchanged).
-/// P-15 evidence the wire form survived: parses the exact JSON shape
-/// `"permissions":{"mode":"prompt"}` a hand-written settings file uses,
-/// not the Rust type name in isolation. Written before the rename landed;
-/// it passes identically before and after, the expected shape of a pure
-/// rename.
+/// `permissions.default_mode`'s wire shape: parses directly into
+/// `PermissionsConfig`, and each of its three values round-trips (proves
+/// `#[serde(rename_all = "snake_case")]` on `PermissionMode`, not merely
+/// that the "prompt" default parses).
 #[test]
-fn permissions_mode_prompt_wire_string_still_parses_after_the_rename() {
-    let json = r#"{ "mode": "prompt", "allowed_tools": [], "denied_tools": [] }"#;
-    let cfg: conway::config::schema::PermissionsConfig =
-        serde_json::from_str(json).expect("\"mode\": \"prompt\" must still parse");
-    assert_eq!(cfg.mode, PermissionsConfigMode::Prompt);
+fn permissions_default_mode_wire_values_all_parse() {
+    for (wire, want) in [
+        ("prompt", PermissionMode::Prompt),
+        ("plan", PermissionMode::Plan),
+        ("auto_allow", PermissionMode::AutoAllow),
+    ] {
+        let json = format!(r#"{{ "default_mode": "{wire}" }}"#);
+        let cfg: conway::config::schema::PermissionsConfig =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("{wire:?} must parse: {e}"));
+        assert_eq!(cfg.default_mode, want, "wire value {wire:?}");
+    }
+}
+
+/// Board item 01M1YVP3FDPHY4WZ72SXMWAN2D (acceptance 3): a settings file
+/// still naming `permissions.allowed_tools` -- one of the three keys this
+/// item removed -- is refused with a message naming `permissions.json`,
+/// not a bare `serde_json` "unknown field" error. This is the negative
+/// half of the wire-values test just above: that test alone would pass
+/// against an implementation that never removed the old keys at all (they
+/// would simply parse silently, doing nothing, the exact defect this item
+/// exists to close); this test fails unless the keys are GONE and the
+/// refusal points somewhere useful.
+#[test]
+fn permissions_allowed_tools_in_settings_json_is_refused_pointing_at_permissions_json() {
+    let root = support::unique_temp_dir("removed-permissions-key");
+    let config_home = root.join("config_dir-home");
+    std::fs::create_dir_all(&config_home).unwrap();
+    std::fs::write(
+        config_home.join("settings.json"),
+        r#"{ "permissions": { "allowed_tools": ["bash"] } }"#,
+    )
+    .unwrap();
+
+    let mut env = HashMap::new();
+    env.insert(
+        "CONWAY_CONFIG_DIR".to_string(),
+        config_home.to_string_lossy().to_string(),
+    );
+
+    let err = load(LoadOptions {
+        cwd: root.join("empty-project"),
+        explicit_path: None,
+        env,
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .expect_err("permissions.allowed_tools must be refused, not silently accepted");
+    let message = err.to_string();
+    assert!(
+        message.contains("permissions.json"),
+        "refusal must point at permissions.json for allow/deny rules, got: {message}"
+    );
+    assert!(
+        !message.to_lowercase().contains("unknown field"),
+        "refusal must be the friendly, pointing message, not serde_json's bare one: {message}"
+    );
+}
+
+/// The `permissions.mode`/`default_mode` half of the same acceptance: the
+/// removed key's refusal points at `default_mode` specifically, not at
+/// `permissions.json` (mode selection and allow/deny rules live in two
+/// different places, and the message must send an operator to the right
+/// one).
+#[test]
+fn permissions_mode_in_settings_json_is_refused_pointing_at_default_mode() {
+    let root = support::unique_temp_dir("removed-permissions-mode-key");
+    let config_home = root.join("config_dir-home");
+    std::fs::create_dir_all(&config_home).unwrap();
+    std::fs::write(
+        config_home.join("settings.json"),
+        r#"{ "permissions": { "mode": "deny" } }"#,
+    )
+    .unwrap();
+
+    let mut env = HashMap::new();
+    env.insert(
+        "CONWAY_CONFIG_DIR".to_string(),
+        config_home.to_string_lossy().to_string(),
+    );
+
+    let err = load(LoadOptions {
+        cwd: root.join("empty-project"),
+        explicit_path: None,
+        env,
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .expect_err("permissions.mode must be refused, not silently accepted");
+    let message = err.to_string();
+    assert!(
+        message.contains("default_mode"),
+        "refusal must point at permissions.default_mode, got: {message}"
+    );
 }
 
 /// Precedence test: default < user < project < env < CLI, proven for
-/// `default_role`, `limits.max_steps`, and `permissions.mode` across all
+/// `default_role`, `limits.max_steps`, and `permissions.default_mode` across all
 /// five sources, and for `backends.<id>.base_url` across the four sources
 /// that have a documented path (see the module-level disclosure below for
 /// why CLI is excluded for that one key).
@@ -131,7 +213,7 @@ fn five_source_precedence_across_representative_keys() {
     "anthropic": { "kind": "anthropic", "base_url": "https://config_dir.example.com" }
   },
   "limits": { "max_steps": 11 },
-  "permissions": { "mode": "deny" }
+  "permissions": { "default_mode": "plan" }
 }
 "#,
     )
@@ -148,7 +230,7 @@ fn five_source_precedence_across_representative_keys() {
     "anthropic": { "base_url": "https://project.example.com" }
   },
   "limits": { "max_steps": 22 },
-  "permissions": { "mode": "prompt" }
+  "permissions": { "default_mode": "prompt" }
 }
 "#,
     )
@@ -167,12 +249,15 @@ fn five_source_precedence_across_representative_keys() {
         "https://env.example.com".to_string(),
     );
     full_env.insert("CONWAY_LIMITS__MAX_STEPS".to_string(), "33".to_string());
-    full_env.insert("CONWAY_PERMISSIONS__MODE".to_string(), "deny".to_string());
+    full_env.insert(
+        "CONWAY_PERMISSIONS__DEFAULT_MODE".to_string(),
+        "plan".to_string(),
+    );
 
     let full_cli = CliOverrides {
         default_role: Some(RoleAlias::new("role-c")),
         max_steps: Some(44),
-        permission_mode: Some("prompt".to_string()),
+        default_mode: Some(PermissionMode::Prompt),
         ..Default::default()
     };
 
@@ -189,15 +274,18 @@ fn five_source_precedence_across_representative_keys() {
     assert_eq!(outcome.config.default_role.as_str(), "role-c");
     assert_eq!(outcome.config.limits.max_steps, 44);
     assert_eq!(
-        outcome.config.permissions.mode,
-        PermissionsConfigMode::Prompt
+        outcome.config.permissions.default_mode,
+        PermissionMode::Prompt
     );
 
     // Stage 2: remove CLI -> env wins.
     let outcome = load(opts(full_env.clone(), CliOverrides::default())).unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-e");
     assert_eq!(outcome.config.limits.max_steps, 33);
-    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Deny);
+    assert_eq!(
+        outcome.config.permissions.default_mode,
+        PermissionMode::Plan
+    );
     assert_eq!(
         outcome.config.backends["anthropic"].base_url,
         "https://env.example.com"
@@ -208,8 +296,8 @@ fn five_source_precedence_across_representative_keys() {
     assert_eq!(outcome.config.default_role.as_str(), "role-p");
     assert_eq!(outcome.config.limits.max_steps, 22);
     assert_eq!(
-        outcome.config.permissions.mode,
-        PermissionsConfigMode::Prompt
+        outcome.config.permissions.default_mode,
+        PermissionMode::Prompt
     );
     assert_eq!(
         outcome.config.backends["anthropic"].base_url,
@@ -226,7 +314,10 @@ fn five_source_precedence_across_representative_keys() {
     .unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-x");
     assert_eq!(outcome.config.limits.max_steps, 11);
-    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Deny);
+    assert_eq!(
+        outcome.config.permissions.default_mode,
+        PermissionMode::Plan
+    );
     assert_eq!(
         outcome.config.backends["anthropic"].base_url,
         "https://config_dir.example.com"
@@ -251,8 +342,8 @@ fn five_source_precedence_across_representative_keys() {
     // `conway_core::agent`'s own tests.
     assert_eq!(outcome.config.limits.max_steps, 0);
     assert_eq!(
-        outcome.config.permissions.mode,
-        PermissionsConfigMode::Prompt
+        outcome.config.permissions.default_mode,
+        PermissionMode::Prompt
     );
     assert!(!outcome.config.backends.contains_key("anthropic"));
 }

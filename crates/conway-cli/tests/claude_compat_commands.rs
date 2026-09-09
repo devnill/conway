@@ -226,6 +226,7 @@ mod registry_wiring {
             id: entry_id.to_string(),
             dir: dir.to_path_buf(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
         config
     }

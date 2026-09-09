@@ -13,14 +13,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use conway_core::capabilities::{
-    CacheMode, Capabilities, HeadroomPolicy, ReliabilityTier, RequiredCaps, StructuredOutput,
-    ToolCallSupport,
+    CacheMode, Capabilities, ContextTokensSource, HeadroomPolicy, ReliabilityTier, RequiredCaps,
+    StructuredOutput, ToolCallSupport,
 };
 use conway_core::error::RoutingError;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{HealthRegistry, Router, TokenCountFidelity};
 use conway_core::routing::{
-    BreakerKind, BreakerState, HealthConfig, RouteRequest, RoutingConfig, RoutingReason,
+    AttemptFailure, BreakerKind, BreakerState, HealthConfig, RouteRequest, RoutingConfig,
+    RoutingReason,
 };
 use conway_testkit::FakeHealth;
 
@@ -276,6 +277,92 @@ fn token_fidelity_present_when_indexed_absent_when_not() {
     );
 }
 
+/// **Hosted OpenAI-compatible models item:** `ExplainEntry::
+/// context_window_source` mirrors `capabilities`/`token_fidelity` above --
+/// present (and per-`(backend, model)`, unlike `token_fidelity`'s
+/// per-backend keying) for a pair the index has an entry for, `None` for
+/// one it does not.
+#[test]
+fn context_window_source_present_when_indexed_absent_when_not() {
+    let known = model_ref("anthropic", "claude-sonnet-4-6");
+    let unknown = model_ref("ollama-cloud", "glm-5.2");
+    let config = routing_config(
+        vec![("planner", vec![known.clone(), unknown.clone()], None)],
+        4_096,
+    );
+    let index = CapabilityIndex::builder()
+        .insert(known.backend.clone(), known.model.clone(), caps(100_000))
+        .insert_context_window_source(
+            known.backend.clone(),
+            known.model.clone(),
+            ContextTokensSource::Probed,
+        )
+        .build();
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let report = RoutingExplain::new(&router).explain(&request("planner", 1_000));
+    assert_eq!(report.entries.len(), 2);
+    assert_eq!(
+        report.entries[0].context_window_source,
+        Some(ContextTokensSource::Probed),
+        "`(anthropic, claude-sonnet-4-6)` was indexed with a declared source"
+    );
+    assert_eq!(
+        report.entries[1].context_window_source, None,
+        "`(ollama-cloud, glm-5.2)` was never indexed at all"
+    );
+}
+
+/// **Board item A5.7:** `ExplainEntry::cache_reporting` mirrors
+/// `token_fidelity` above exactly -- per-backend keying (not per-model:
+/// both entries below share backend `known.backend`, so both must report
+/// the same declared cache-reporting value), present for an indexed
+/// backend, `None` for one the index was never told about.
+#[test]
+fn cache_reporting_present_when_indexed_absent_when_not() {
+    let known = model_ref("anthropic", "claude-sonnet-4-6");
+    let known_second_model = model_ref("anthropic", "claude-haiku-5");
+    let unknown = model_ref("ollama-cloud", "glm-5.2");
+    let config = routing_config(
+        vec![(
+            "planner",
+            vec![known.clone(), known_second_model.clone(), unknown.clone()],
+            None,
+        )],
+        4_096,
+    );
+    let index = CapabilityIndex::builder()
+        .insert(known.backend.clone(), known.model.clone(), caps(100_000))
+        .insert(
+            known_second_model.backend.clone(),
+            known_second_model.model.clone(),
+            caps(100_000),
+        )
+        .insert_cache_reporting(
+            known.backend.clone(),
+            conway_core::ports::CacheReporting::Reported,
+        )
+        .build();
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let report = RoutingExplain::new(&router).explain(&request("planner", 1_000));
+    assert_eq!(report.entries.len(), 3);
+    assert_eq!(
+        report.entries[0].cache_reporting,
+        Some(conway_core::ports::CacheReporting::Reported),
+        "backend `anthropic` was indexed with a declared cache-reporting value"
+    );
+    assert_eq!(
+        report.entries[1].cache_reporting,
+        Some(conway_core::ports::CacheReporting::Reported),
+        "cache_reporting is per-backend, not per-model: the second `anthropic` model shares it"
+    );
+    assert_eq!(
+        report.entries[2].cache_reporting, None,
+        "backend `ollama-cloud` was never indexed at all"
+    );
+}
+
 #[test]
 fn breaker_snapshot_reflects_health_state_at_explain_time() {
     let a = model_ref("anthropic", "claude-sonnet-4-6");
@@ -386,6 +473,31 @@ fn render_text_matches_golden_file_byte_for_byte() {
 ///), `explain` likewise has zero
 /// `Selected` entries and its named model appears among the (necessarily
 /// all-`Skipped`) entries.
+/// Board item A1d: `RoutingReason::Fallback::after` now carries a real
+/// `AttemptFailure::at` (`Utc::now()`, captured once per `evaluate()` call
+/// -- see `router.rs`'s own doc). `resolve` and `explain` below each run
+/// their OWN `evaluate()`, so their two timestamps for the same logical
+/// skip legitimately differ by microseconds; this test's invariant is that
+/// `explain` reports the SAME candidate skipped for the SAME reason,
+/// never that the two calls raced to an identical clock read. Zeroing every
+/// `at` before comparing keeps the exact-equality assertion honest for
+/// everything the two calls MUST agree on.
+fn normalize_reason(reason: RoutingReason) -> RoutingReason {
+    match reason {
+        RoutingReason::Fallback { position, after } => RoutingReason::Fallback {
+            position,
+            after: after
+                .into_iter()
+                .map(|f| AttemptFailure {
+                    at: chrono::DateTime::UNIX_EPOCH,
+                    ..f
+                })
+                .collect(),
+        },
+        other => other,
+    }
+}
+
 fn assert_explain_agrees_with_resolve(router: &DeclarativeRouter, req: &RouteRequest) {
     let resolved = router.resolve(req);
     let report = RoutingExplain::new(router).explain(req);
@@ -394,7 +506,9 @@ fn assert_explain_agrees_with_resolve(router: &DeclarativeRouter, req: &RouteReq
         .entries
         .iter()
         .filter_map(|e| match &e.outcome {
-            EntryOutcome::Selected { reason } => Some((e.model_ref.clone(), reason.clone())),
+            EntryOutcome::Selected { reason } => {
+                Some((e.model_ref.clone(), normalize_reason(reason.clone())))
+            }
             EntryOutcome::Skipped { .. } => None,
         })
         .collect();
@@ -409,7 +523,7 @@ fn assert_explain_agrees_with_resolve(router: &DeclarativeRouter, req: &RouteReq
                             backend: r.backend.clone(),
                             model: r.model.clone(),
                         },
-                        r.reason.clone(),
+                        normalize_reason(r.reason.clone()),
                     )
                 })
                 .collect();

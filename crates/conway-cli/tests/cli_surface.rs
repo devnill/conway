@@ -6,12 +6,13 @@ use std::io::Write;
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-/// A minimal, valid `conway.json`: one `deny`-mode permissions block (so
-/// `build()` never hits the undocumented "mode = prompt requires a handler"
-/// gap -- this layer wires no gate override, that's a later one's job), one
-/// `openai-compat` backend (never actually dialed -- these tests only need
-/// `build()` to succeed, not a live connection), and one role so
-/// `default_role` resolves.
+/// A minimal, valid `conway.json`: one `openai-compat` backend (never
+/// actually dialed -- these tests only need `build()` to succeed, not a
+/// live connection) and one role so `default_role` resolves. No
+/// `permissions` key: `settings.json` has not selected a gate at all
+/// since board item 01M1YVP3FDPHY4WZ72SXMWAN2D, and every dispatch target
+/// these tests exercise (`sessions`/`routes`/`--help`) already carries its
+/// own deny-all gate in `main.rs` regardless (its own comment there).
 ///
 /// `default_document()` bakes in a `roles.coder = { chain = [] }` at the
 /// lowest merge layer, and routing validation rejects an empty chain on ANY
@@ -21,7 +22,6 @@ use predicates::prelude::*;
 const MINIMAL_CONFIG: &str = r#"
 {
   "default_role": "default",
-  "permissions": { "mode": "deny" },
   "backends": {
     "local": { "kind": "openai-compat", "base_url": "http://127.0.0.1:1", "dialect": "ollama" }
   },

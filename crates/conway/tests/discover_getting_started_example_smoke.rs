@@ -66,9 +66,9 @@ async fn discover_getting_started_example_flow_reaches_an_answer() {
     // `discover()?` -- see that example's own comments for why each call is
     // here.
     let conway = ConwayBuilder::from_parts(outcome.config)
-        .with_cli_overrides(CliOverrides {
-            permission_mode: Some("deny".to_string()),
-            ..CliOverrides::default()
+        .with_gate_config(conway::gates::GateConfig {
+            mode: conway::gates::GateMode::Deny,
+            ..conway::gates::GateConfig::default()
         })
         .with_builtin_plugins(PluginSelection::None)
         .with_backend(backend)
@@ -141,9 +141,9 @@ async fn unmodified_default_role_still_fails_to_route_with_a_named_no_candidate_
     // exactly as a real embedder who called `discover()` unmodified would
     // get.
     let conway = ConwayBuilder::from_parts(outcome.config)
-        .with_cli_overrides(CliOverrides {
-            permission_mode: Some("deny".to_string()),
-            ..CliOverrides::default()
+        .with_gate_config(conway::gates::GateConfig {
+            mode: conway::gates::GateMode::Deny,
+            ..conway::gates::GateConfig::default()
         })
         .with_builtin_plugins(PluginSelection::None)
         .with_session_store(Arc::new(FakeStore::new()))

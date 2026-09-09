@@ -161,6 +161,56 @@ pub(crate) fn resolve_instructions(
     instructions.to_vec()
 }
 
+/// Narrows `base` (the caller/`AgentDef`-precedence-resolved tool selector
+/// every `start_root`/`resume_root`/`subagent::start` call site already
+/// computes -- `spec.knobs.tools.clone().or_else(|| agent_def.map(|d| d
+/// .tools.clone()))`) by `role_selector` (`Runtime::role_tools().get(role)`)
+/// into the single `ToolSelector` `AgentSpec.tools` actually carries (board
+/// item `01M1YS138H8T0HNV5YMZ6KD767` part 2: `[roles.<alias>.tools]`
+/// actually narrowing a live agent's announced tools, not merely parsing).
+///
+/// **`role_selector: None` returns `base` UNCHANGED.** This is the
+/// unconditional-narrowing trap the item's own test bar calls out: a role
+/// that names no `[roles.<alias>.tools]` table (or an empty one --
+/// `RoleToolsConfig::is_unset`) contributes no entry to `Runtime::
+/// role_tools` at all (see `Runtime::set_role_tools`'s own doc), so every
+/// agent routed to it announces exactly what it always did -- a wrong
+/// implementation that narrows unconditionally (e.g. defaulting an absent
+/// entry to "select nothing" or re-deriving a selector from an empty
+/// include/exclude pair) is exactly what this branch, and the paired test
+/// asserting an ordinary role still announces everything, catches.
+///
+/// **`Some(role_selector)`** is always a concrete `ToolSelector::Only`
+/// (`RoleToolsConfig::resolve`'s own contract), already resolved against
+/// the FULL installed-plugin tool universe at build time -- but `base` may
+/// independently be `All`/`Only`/`Except`/`None` (`None` meaning "no
+/// selector", i.e. everything, per `PluginRegistry::specs`'s own `selector
+/// .is_none_or(..)` convention), so the two cannot be combined as a single
+/// `ToolSelector` value (that enum's `Only`/`Except` variants are each one
+/// pattern list, with no variant expressing "selector A AND selector B" --
+/// see `RoleToolsConfig::resolve`'s own doc for the identical problem it
+/// solves the identical way). This function computes that AND explicitly,
+/// against `registry`'s own registered tool names -- the actual set an
+/// agent could ever be announced -- and hands back the explicit surviving
+/// list as a fresh `ToolSelector::Only`.
+pub(crate) fn narrow_tools_for_role(
+    base: Option<ToolSelector>,
+    role_selector: Option<&ToolSelector>,
+    registry: &PluginRegistry,
+) -> Option<ToolSelector> {
+    let Some(role_selector) = role_selector else {
+        return base;
+    };
+    let survivors: Vec<String> = registry
+        .specs(None)
+        .into_iter()
+        .map(|spec| spec.name)
+        .filter(|name| base.as_ref().is_none_or(|s| s.selects(name)) && role_selector.selects(name))
+        .map(|name| name.as_str().to_string())
+        .collect();
+    Some(ToolSelector::Only(survivors))
+}
+
 /// The complete specification for starting a new root agent (i.e. one with
 /// no parent — the entry point of a fresh agent tree).
 pub struct RootSpec {
@@ -378,6 +428,23 @@ impl Runtime {
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
+        // `[roles.<alias>.tools]` (board item `01M1YS138H8T0HNV5YMZ6KD767`
+        // part 2) -- see `narrow_tools_for_role`'s own doc for the AND and
+        // the "no entry -> unchanged" contract. Applied AFTER the
+        // caller/`agent_def` precedence above, never instead of it: a role
+        // narrows what a root's own knobs/def would otherwise announce, it
+        // does not replace that resolution.
+        // SCOPED, not dropped by hand. The guard must not be alive at any
+        // `.await` below -- this function has several, and a lock held
+        // across one can deadlock another task waiting on the same table.
+        // An explicit `drop()` achieved that too, but only for as long as
+        // nobody inserted a line beneath it; a block makes the guard's
+        // lifetime a property of the code's shape rather than of a call
+        // that a later edit could move or lose.
+        let tools = {
+            let role_tools = self.role_tools.read().expect("role_tools lock poisoned");
+            narrow_tools_for_role(tools, role_tools.get(&role), &self.loop_deps.registry)
+        };
         // `spec.knobs.model` (a caller-supplied pin, e.g. `--model`) takes
         // precedence over the `agent_def`'s own configured model.
         let pin = spec
@@ -678,6 +745,7 @@ impl Runtime {
             // back to (`AgentLoop::finish`'s identical check, and this
             // agent's own `parent: None` a few lines above).
             parent: None,
+            store: self.store.clone(),
         });
 
         let handle = AgentHandle {
@@ -850,6 +918,20 @@ impl Runtime {
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
+        // `[roles.<alias>.tools]` (board item `01M1YS138H8T0HNV5YMZ6KD767`
+        // part 2) -- mirrors `start_root`'s identical narrowing step just
+        // above; see `narrow_tools_for_role`'s own doc.
+        // SCOPED, not dropped by hand. The guard must not be alive at any
+        // `.await` below -- this function has several, and a lock held
+        // across one can deadlock another task waiting on the same table.
+        // An explicit `drop()` achieved that too, but only for as long as
+        // nobody inserted a line beneath it; a block makes the guard's
+        // lifetime a property of the code's shape rather than of a call
+        // that a later edit could move or lose.
+        let tools = {
+            let role_tools = self.role_tools.read().expect("role_tools lock poisoned");
+            narrow_tools_for_role(tools, role_tools.get(&role), &self.loop_deps.registry)
+        };
         // `spec.knobs.model` (a caller-supplied pin, e.g. `--model` combined
         // with `--resume`) takes precedence over the `agent_def`'s own
         // configured model -- mirroring `start_root`'s identical precedence

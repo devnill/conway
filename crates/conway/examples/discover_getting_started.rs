@@ -50,10 +50,11 @@
 //!
 //! Everything else below `discover()` -- session storage, limits, tool
 //! registration, headroom -- comes from its own layered defaults, or from
-//! the two lightweight PER-FIELD overrides used here
-//! ([`conway::config::CliOverrides`], [`conway::PluginSelection`]) rather
-//! than a second, competing construction path: both are existing
-//! `ConwayBuilder`/`config` mechanisms, not new API this item added.
+//! the two lightweight overrides used here
+//! ([`conway::gates::GateConfig`] via `ConwayBuilder::with_gate_config`,
+//! [`conway::PluginSelection`]) rather than a second, competing
+//! construction path: both are existing `ConwayBuilder` mechanisms, not
+//! new API this item added.
 //!
 //! ## A note on what "discover" reads here
 //!
@@ -79,7 +80,6 @@
 use std::sync::Arc;
 
 use conway::backend::{BackendId, ModelId};
-use conway::config::CliOverrides;
 use conway::{ConwayBuilder, ModelRef, PluginSelection, SessionSpec};
 // `conway_testkit` is a normal, unconditional dev-dependency of this crate
 // (`crates/conway/Cargo.toml`'s `[dev-dependencies]`) -- unlike
@@ -119,16 +119,16 @@ async fn main() -> conway::Result<()> {
     };
 
     let conway = ConwayBuilder::discover()?
-        // Per-field overrides over discover()'s own defaults -- not a
-        // second config. `permission_mode = "deny"` lets this build without
-        // a permission gate at all (discover()'s default, "prompt", needs
-        // one -- see `ConwayBuilder::with_prompt_handler`'s own doc for the
-        // real-embedding alternative to this offline example's shortcut).
+        // `with_gate_config(GateMode::Deny)` lets this build without a
+        // permission gate at all (discover()'s own fallback default,
+        // `GateMode::Prompt`, needs one -- see `ConwayBuilder::
+        // with_prompt_handler`'s own doc for the real-embedding
+        // alternative to this offline example's shortcut).
         // `PluginSelection::None` mirrors it: no tools registered, nothing
         // for "deny" to ever have to refuse.
-        .with_cli_overrides(CliOverrides {
-            permission_mode: Some("deny".to_string()),
-            ..CliOverrides::default()
+        .with_gate_config(conway::gates::GateConfig {
+            mode: conway::gates::GateMode::Deny,
+            ..conway::gates::GateConfig::default()
         })
         .with_builtin_plugins(PluginSelection::None)
         .with_backend(backend)

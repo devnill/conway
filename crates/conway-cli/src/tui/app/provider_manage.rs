@@ -174,8 +174,9 @@ use super::defaults::load_default_role_lax;
 use super::App;
 use crate::first_run::{
     backend_entry_json, chain_entry, context_window_is_verified, context_window_setup_notice,
-    discover_setup_context_window, persist_context_window_at, resolve_credential_plan,
-    CredentialPlan, CredentialSource, HOSTED_CHOICES,
+    default_opinion_set_footprint, discover_setup_context_window, persist_context_window_at,
+    resolve_credential_plan, runway_fixed_cost_warning, CredentialPlan, CredentialSource,
+    HOSTED_CHOICES,
 };
 use crate::tui::state::Entry;
 
@@ -471,9 +472,12 @@ impl App {
             if let Some(window) = discover_setup_context_window(base_url, dialect, model).await {
                 window_found = true;
                 match persist_context_window_at(cwd, env, &key, window) {
-                    Ok(path) => self.state.transcript.push(Entry::Notice {
-                        text: context_window_setup_notice(&key, window, &path),
-                    }),
+                    Ok(path) => {
+                        self.state.transcript.push(Entry::Notice {
+                            text: context_window_setup_notice(&key, window, &path),
+                        });
+                        self.push_runway_warning_if_needed(&key, window, env, cwd);
+                    }
                     Err(e) => self.state.transcript.push(Entry::Error {
                         text: format!(
                             "discovered a {window}-token context window for {key} but could \
@@ -567,14 +571,46 @@ impl App {
                 });
             }
             Some(window) => match persist_context_window_at(cwd, env, model_key, window) {
-                Ok(path) => self.state.transcript.push(Entry::Notice {
-                    text: context_window_setup_notice(model_key, window, &path),
-                }),
+                Ok(path) => {
+                    self.state.transcript.push(Entry::Notice {
+                        text: context_window_setup_notice(model_key, window, &path),
+                    });
+                    self.push_runway_warning_if_needed(model_key, window, env, cwd);
+                }
                 Err(e) => self.state.transcript.push(Entry::Error {
                     text: format!("could not save {model_key}'s context window: {e}"),
                     fatal: false,
                 }),
             },
+        }
+    }
+
+    /// Board item `01M1YS0B0NYTMWM1M5C7250FFT`'s own runway preflight, at
+    /// its second disclosed call site: the SAME `default_opinion_set_
+    /// footprint`/`runway_fixed_cost_warning` pair `conway routes explain`
+    /// and guided setup's own first-run flow already call, never a second
+    /// implementation. Called from both places above that just learned (or
+    /// were told) a model's context window -- discovery and the typed ASK
+    /// answer alike -- so `/settings` -> providers carries the identical
+    /// warning guided setup already shows at the equivalent moment.
+    /// `self.conway.config()`'s build-time snapshot supplies the MCP count;
+    /// unlike the "stale snapshot" hazard flagged above
+    /// (`apply_remove_provider`'s own doc) for role-chain membership, this
+    /// call site itself never writes `[plugins].mcp[]`, so staleness here
+    /// cannot make this warning wrong about what THIS write just changed --
+    /// only, at worst, about an MCP server added or removed by some other
+    /// means earlier in the same session.
+    fn push_runway_warning_if_needed(
+        &mut self,
+        model_key: &str,
+        window: u32,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+    ) {
+        let mcp_count = self.conway.config().plugins.mcp.len();
+        let footprint = default_opinion_set_footprint(cwd, env, mcp_count);
+        if let Some(warning) = runway_fixed_cost_warning(model_key, window, &footprint, None) {
+            self.state.transcript.push(Entry::Notice { text: warning });
         }
     }
 
@@ -1492,6 +1528,78 @@ mod tests {
         assert!(
             parsed_after["models"]["mock/other-model"].is_null(),
             "a skip must never write anything for that model: {text_after}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Board item `01M1YS0B0NYTMWM1M5C7250FFT`'s second disclosed call
+    // site: `push_runway_warning_if_needed`, wired into
+    // `apply_provider_context_window`'s typed-answer branch. Both tests
+    // drive the SAME real, measured `default_opinion_set_footprint` (no
+    // injected fixture -- this function computes it internally off
+    // `self.conway`), varying only the window, mirroring `first_run.rs`'s
+    // own "fires"/"silent" pair for the identical threshold.
+    // ---------------------------------------------------------------
+
+    /// **The "fires" half.** A 4,096-token window cannot possibly clear
+    /// half of the default opinion set's own real footprint (`first_run.
+    /// rs`'s own end-to-end test asserts that same footprint is already
+    /// nonzero and crosses a 32,768-token window). Paired with the
+    /// "silent" test below (identical call, an enormous window): together
+    /// they catch an implementation that always warns or never does,
+    /// which this test alone could not. Matched on `"default install
+    /// alone"`, a phrase unique to `runway_fixed_cost_warning`'s own
+    /// wording -- `context_window_setup_notice`'s confirmation notice
+    /// (also present in this transcript) contains the words "context
+    /// window" too, so that alone would not distinguish the two.
+    #[tokio::test]
+    async fn apply_provider_context_window_warns_when_the_window_cannot_carry_the_default_install()
+    {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.apply_provider_context_window("mock/tiny-model", Some(4_096), &env, cwd.path());
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("mock/tiny-model")
+                    && text.contains("default install alone")
+            )),
+            "a window far too small for the default install must produce a runway warning: {:?}",
+            app.state.transcript
+        );
+    }
+
+    /// **The "silent" half.** The identical call, but with the same huge
+    /// window `apply_provider_context_window_persists_a_typed_answer_and_
+    /// reports_a_skip_honestly` above uses (1,048,576 tokens) -- must NOT
+    /// produce a runway warning.
+    #[tokio::test]
+    async fn apply_provider_context_window_stays_silent_on_a_window_that_easily_carries_the_default_install(
+    ) {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.apply_provider_context_window("mock/huge-model", Some(1_048_576), &env, cwd.path());
+
+        assert!(
+            !app.state.transcript.iter().any(
+                |e| matches!(e, Entry::Notice { text } if text.contains("default install alone"))
+            ),
+            "a window that easily carries the default install must not produce a runway \
+             warning: {:?}",
+            app.state.transcript
         );
     }
 }

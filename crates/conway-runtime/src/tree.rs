@@ -51,7 +51,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::Utc;
 use conway_core::agent::{
@@ -60,7 +60,7 @@ use conway_core::agent::{
 };
 use conway_core::error::{RuntimeError, ToolError};
 use conway_core::event::Event;
-use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
+use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId, ToolName};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -99,6 +99,53 @@ pub struct AgentNode {
     /// either (only `conway`'s facade-level `SessionHandle::ask` constructs a
     /// child `SessionMeta` with `ephemeral: true`).
     pub ephemeral: bool,
+}
+
+/// One tool call an agent has dispatched to `ToolRunner::run_batch` and not
+/// yet seen a result for -- board item A5.6 ("a child dies mid-verification
+/// with no warning ... the synthesized result names the interrupted call").
+///
+/// Tracked here, on the TREE, rather than on `AgentLoop`'s own `LoopState`
+/// (turn-loop-local, `agent_loop.rs`'s module doc): the whole reason this
+/// needs to exist at all is that the two places that most need to READ it
+/// -- `AgentLoop::finish_cancelled` (still on the owning task, but reading
+/// state that must survive a race it did not initiate) and
+/// `supervisor::supervise`'s grace-timeout synthesis (which never had an
+/// `AgentLoop`/`LoopState` to read from in the first place -- the task it
+/// is synthesizing FOR was just `abort()`'d) -- are not always the same
+/// place that SET it. A tree-owned, `AgentId`-keyed slot both can reach is
+/// the one shared answer; a per-loop field would leave the supervisor with
+/// nothing to read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InFlightCall {
+    pub tool: ToolName,
+    /// A short, truncated rendering of this call's arguments -- enough for
+    /// a human or a model to recognize WHICH invocation was interrupted
+    /// (e.g. which file, which command), never the full JSON: an
+    /// unbounded argument (a large file write, a long shell script) must
+    /// not make a terminal `AgentResult`'s summary unbounded in turn.
+    pub args_summary: String,
+}
+
+/// How many characters [`InFlightCall::new`] keeps of a call's rendered
+/// arguments before truncating -- generous enough to recognize a file path
+/// or the start of a shell command, short enough that even a batch of
+/// several calls stays a reasonable addition to a terminal summary.
+const ARGS_SUMMARY_LIMIT: usize = 120;
+
+impl InFlightCall {
+    /// Builds one entry from a real dispatched `ToolCall`'s name and
+    /// arguments -- the ONE place this crate ever formats an
+    /// `InFlightCall::args_summary`, so `agent_loop.rs`'s dispatch site and
+    /// any future caller never drift on truncation width or rendering.
+    pub fn new(tool: ToolName, arguments: &serde_json::Value) -> Self {
+        let rendered = arguments.to_string();
+        let args_summary = match rendered.char_indices().nth(ARGS_SUMMARY_LIMIT) {
+            Some((byte_idx, _)) => format!("{}…", &rendered[..byte_idx]),
+            None => rendered,
+        };
+        Self { tool, args_summary }
+    }
 }
 
 /// Tree-internal bookkeeping for one attached agent: the caller-supplied
@@ -161,6 +208,13 @@ struct TreeEntry {
     /// always calls `publish_result` exactly once -- the one place every
     /// exit path, however the loop leaves it, is guaranteed to pass through.
     turn_in_flight: AtomicBool,
+    /// Board item A5.6: the tool call(s) this agent has dispatched to
+    /// `ToolRunner::run_batch` and not yet processed a result for -- empty
+    /// at `attach` and for every agent not currently between "dispatched"
+    /// and "processed results / observed its own cancellation" in
+    /// `agent_loop.rs`'s `run_inner`. See [`InFlightCall`]'s own doc for
+    /// why this lives here rather than on `LoopState`.
+    in_flight_tools: Mutex<Vec<InFlightCall>>,
 }
 
 /// The multi-agent tree: attachment, structural lookups, cancellation
@@ -219,6 +273,7 @@ impl AgentTree {
                 resolved: AtomicBool::new(false),
                 cancel_reason: std::sync::Mutex::new(None),
                 turn_in_flight: AtomicBool::new(false),
+                in_flight_tools: Mutex::new(Vec::new()),
             },
         );
         // Released before emitting: `EventBus::emit` is synchronous and
@@ -412,6 +467,65 @@ impl AgentTree {
             .get(&agent)
             .map(|entry| entry.turn_in_flight.load(Ordering::SeqCst))
             .unwrap_or(false)
+    }
+
+    /// Board item A5.6: records that `agent` has just dispatched `calls` to
+    /// `ToolRunner::run_batch` and is now awaiting their results. Called
+    /// from `agent_loop.rs` immediately BEFORE that dispatch -- so a
+    /// cancellation racing in from OUTSIDE the loop (`supervisor::
+    /// supervise`'s deadline/hard-cancel arms) can never observe a gap
+    /// where a batch is genuinely in flight but this reads empty. A no-op
+    /// for an unknown agent, matching [`Self::mark_turn_started`]'s same
+    /// best-effort posture.
+    pub fn mark_tools_started(&self, agent: AgentId, calls: Vec<InFlightCall>) {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        if let Some(entry) = nodes.get(&agent) {
+            *entry
+                .in_flight_tools
+                .lock()
+                .expect("in-flight tools lock poisoned") = calls;
+        }
+    }
+
+    /// The success-path twin of [`Self::mark_tools_started`]: called once
+    /// `run_batch` has returned AND the loop has confirmed it was NOT
+    /// cancelled out from under that dispatch (`agent_loop.rs`'s own
+    /// `self.cancel.is_cancelled()` check, immediately after `run_batch`
+    /// returns) -- i.e. every outcome in the batch is about to be
+    /// processed normally. Deliberately NOT called on the cancelled branch:
+    /// leaving the marker set through a cancellation is what lets
+    /// [`Self::in_flight_tools`] still answer "what was interrupted" for
+    /// [`crate::result::interrupted_call_note`]'s callers (`AgentLoop::
+    /// finish_cancelled`, `supervisor::supervise`'s synthesis) even though
+    /// the batch itself already returned -- the loop simply never reaches
+    /// this call on that path.
+    pub fn mark_tools_finished(&self, agent: AgentId) {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        if let Some(entry) = nodes.get(&agent) {
+            entry
+                .in_flight_tools
+                .lock()
+                .expect("in-flight tools lock poisoned")
+                .clear();
+        }
+    }
+
+    /// `agent`'s currently-tracked in-flight tool calls -- empty for an
+    /// agent with none dispatched right now, and for an unknown agent
+    /// (matching this module's other read-only lookups' default-rather-
+    /// than-error convention).
+    pub fn in_flight_tools(&self, agent: AgentId) -> Vec<InFlightCall> {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        nodes
+            .get(&agent)
+            .map(|entry| {
+                entry
+                    .in_flight_tools
+                    .lock()
+                    .expect("in-flight tools lock poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
     }
 
     /// Reads `agent`'s `ephemeral` flag from its attached [`AgentNode`], for

@@ -8,7 +8,7 @@ use std::fs;
 use std::sync::Arc;
 
 use conway::config::schema::BackendEntry;
-use conway::config::schema::{ConwayConfig, PermissionsConfig, PermissionsConfigMode, RoleEntry};
+use conway::config::schema::{ConwayConfig, RoleEntry};
 use conway::{Conway, ConwayBuilder, FacadeError, SessionSpec};
 // Only named by the `builtin-tools`-gated tests below.
 use conway::test_support::{base_config, test_builder_without_router};
@@ -633,19 +633,16 @@ fn build_succeeds_for_a_conventionally_named_anthropic_backend() {
 }
 
 /// Indirect but discriminating proof that `with_permission_gate` overrides
-/// config-derived gate selection: `permissions.mode = "prompt"` with no
-/// injected gate and no `with_prompt_handler` handler always fails
-/// `build()`, so a `build()` success with mode `"prompt"` *and* an injected
-/// gate can only be explained by the injected gate having been used instead
-/// of `gates::from_config`.
+/// config-derived gate selection: the default `GateMode::Prompt` (no
+/// `with_gate_config` override) with no injected gate and no
+/// `with_prompt_handler` handler always fails `build()`, so a `build()`
+/// success under that same default *and* an injected gate can only be
+/// explained by the injected gate having been used instead of
+/// `gates::from_config`.
 #[cfg(feature = "jsonl-store")]
 #[test]
 fn injected_permission_gate_overrides_config_derived_selection() {
-    let mut cfg = base_config();
-    cfg.permissions = PermissionsConfig {
-        mode: PermissionsConfigMode::Prompt,
-        ..PermissionsConfig::default()
-    };
+    let cfg = base_config();
     let backend = fake_backend("fake");
     let store = Arc::new(FakeStore::new());
 
@@ -672,25 +669,22 @@ fn injected_permission_gate_overrides_config_derived_selection() {
         .expect("an injected gate must bypass config-derived prompt-mode selection");
 }
 
-/// `with_prompt_handler` is the direct path a `permissions.mode = "prompt"`
-/// config needs when a host has ONE closure to answer permission requests,
+/// `with_prompt_handler` is the direct path the default `GateMode::Prompt`
+/// needs when a host has ONE closure to answer permission requests,
 /// not a reason to hand-roll a whole `PermissionGate`. Discriminating the
 /// same way the pre-existing `injected_permission_gate_overrides_config_
 /// derived_selection` test above does: `gates::from_config` (step 9 of
-/// `build()`) errors synchronously, at construction, when `permissions.mode
-/// = "prompt"` and it receives no handler -- proven above by the identical
-/// config failing `build()` with no override at all. `build()` succeeding
+/// `build()`) errors synchronously, at construction, under the default
+/// `GateMode::Prompt` when it receives no handler -- proven above by the
+/// identical config failing `build()` with no override at all. `build()`
+/// succeeding
 /// here, with only `with_prompt_handler` (no `with_permission_gate`) set,
 /// can only be explained by this handler having reached `gates::from_config`
 /// and let it construct a `PromptingGate` instead of erroring.
 #[cfg(feature = "jsonl-store")]
 #[test]
 fn with_prompt_handler_satisfies_prompt_mode_with_no_injected_gate() {
-    let mut cfg = base_config();
-    cfg.permissions = PermissionsConfig {
-        mode: PermissionsConfigMode::Prompt,
-        ..PermissionsConfig::default()
-    };
+    let cfg = base_config();
     let handler: conway::gates::PromptHandler =
         Arc::new(|_req| Box::pin(async { PermissionDecision::AllowOnce }));
 
@@ -713,11 +707,7 @@ fn with_prompt_handler_satisfies_prompt_mode_with_no_injected_gate() {
 #[cfg(feature = "jsonl-store")]
 #[test]
 fn with_permission_gate_wins_over_with_prompt_handler() {
-    let mut cfg = base_config();
-    cfg.permissions = PermissionsConfig {
-        mode: PermissionsConfigMode::Prompt,
-        ..PermissionsConfig::default()
-    };
+    let cfg = base_config();
     let denying_handler: conway::gates::PromptHandler = Arc::new(|_req| {
         Box::pin(async {
             PermissionDecision::Deny {

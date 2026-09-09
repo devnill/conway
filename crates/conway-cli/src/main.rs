@@ -36,6 +36,23 @@ async fn main() -> std::process::ExitCode {
         }
     }
 
+    // Board item `01M1YS4FMJH004D1Y619MTBY7A`: `--continue`/`-c` is TUI-only
+    // (`tui::app::startup::App::resolve_handle` is its one reader; unlike
+    // `--resume`/`--fork-from`/`--session`, `oneshot::resolve_session` has
+    // no arm for it at all). Combined with `-p`, silently ignoring it would
+    // recreate the exact "accepted and ignored" defect this same item's own
+    // `cli.rs` module doc calls out for `--session`/`--resume`/
+    // `--fork-from` before their own fix -- refused here, at this binary's
+    // one dispatch choke point, before either mode's own `resolve_session`/
+    // `resolve_handle` ever runs.
+    if cli.print.is_some() && cli.continue_session {
+        diag::error(
+            "--continue is not supported with -p/--print: one-shot mode has no notion of \
+             \"the session I was last in\" -- pass --resume <id|name> instead",
+        );
+        return to_process_code(ExitCode::Usage);
+    }
+
     // Board item `01M0W5Q569F0T97HSEP6F0MPCR`: this process's real
     // environment, resolved ONCE, here, at this binary's single entry point
     // -- mirroring `ConwayBuilder::build`'s own `std::env::vars()` read for
@@ -102,7 +119,7 @@ async fn main() -> std::process::ExitCode {
         // agent and never propose a tool call, so whatever gate they carry is
         // never consulted. They used to supply none, which left
         // `ConwayBuilder::build` falling through to `gates::from_config` --
-        // and that errors under `permissions.mode = "prompt"`, because no
+        // and that errors under the default `GateMode::Prompt`, because no
         // subcommand can supply the interactive handler that mode needs. The
         // effect was that `conway routes explain` refused to run under an
         // ordinary interactive config, for want of a permission decision it

@@ -82,7 +82,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use conway_core::capabilities::{Capabilities, ToolCallSupport};
+use chrono::Utc;
+use conway_core::capabilities::{Capabilities, ContextTokensSource, ToolCallSupport};
 use conway_core::content::{ContentBlock, ToolSpec};
 use conway_core::error::{BackendError, RoutingError, RuntimeError};
 use conway_core::event::Event;
@@ -92,7 +93,7 @@ use conway_core::ids::{
 };
 use conway_core::ports::{Backend, GenerateRequest, GenerateResponse, HealthRegistry, StreamChunk};
 use conway_core::retry::{max_jitter, MAX_RETRIES};
-use conway_core::routing::{BreakerState, Observation, Route, RoutingReason};
+use conway_core::routing::{AttemptFailure, BreakerState, Observation, Route, RoutingReason};
 use conway_core::segment::{CacheTtl, PromptSegment};
 use futures::StreamExt;
 use rand::RngExt;
@@ -150,12 +151,18 @@ pub struct AttemptOutcome {
     /// reads this to compute the window-fill note.
     ///
     /// `None` only for the one sentinel value no real backend/dialect ever
-    /// legitimately returns, `u32::MAX` -- see `crate::runway`'s own module
-    /// doc ("The 'is the window even known' gap, disclosed") for why this
-    /// crate cannot yet see `conway-plugin-backends`'
-    /// `ContextTokensSource::Unverified` directly, and why this sentinel is
-    /// today's honestly-scoped stand-in for it rather than a full wire-up.
+    /// legitimately returns, `u32::MAX` -- see `window_of`'s own doc.
     pub max_context_tokens: Option<u32>,
+    /// The winning route's [`ContextTokensSource`] -- `backend.
+    /// context_window_source(&route.model)`, read directly from the SAME
+    /// `Arc<dyn Backend>` this fn already holds (hosted OpenAI-compatible
+    /// models item; closes the gap `crate::runway`'s own module doc used to
+    /// disclose: "this crate cannot yet see `conway-plugin-backends`'
+    /// `ContextTokensSource::Unverified` directly" -- it can, now, through
+    /// this same `Backend` trait method every other capability question
+    /// already goes through). `crate::runway` reads this to label the
+    /// window-fill note's provenance when a floor governs.
+    pub max_context_tokens_source: ContextTokensSource,
 }
 
 /// Which shape of backend call one attempt uses, resolved from the
@@ -180,12 +187,40 @@ fn strategy_for(caps: &Capabilities, has_tools: bool) -> Strategy {
     }
 }
 
-/// `caps.max_context_tokens`, unless it is the `u32::MAX` sentinel --
-/// `crate::runway`'s honestly-scoped stand-in for "this crate cannot see
-/// `ContextTokensSource::Unverified`" (see `AttemptOutcome::
-/// max_context_tokens`'s own doc).
+/// `caps.max_context_tokens`, unless it is the `u32::MAX` sentinel -- no
+/// real backend/dialect ever legitimately returns that value (every dialect
+/// floor and every declared window is far below `u32::MAX`), so a test
+/// double that sets it is declaring "I have no number to offer" without
+/// this crate needing an `Option<u32>` on `Capabilities` itself (a
+/// `conway-core` type constructed by field literal at ~40 call sites
+/// across the workspace -- widening it is out of this fn's scope). Distinct
+/// from, and orthogonal to, `AttemptOutcome::max_context_tokens_source`:
+/// this answers "is there a number at all", that answers "how much can the
+/// number be trusted" -- a real backend's `Unverified`-sourced floor still
+/// has a real, usable `u32` here.
 fn window_of(caps: &Capabilities) -> Option<u32> {
     (caps.max_context_tokens != u32::MAX).then_some(caps.max_context_tokens)
+}
+
+/// Board item A1d ("say why a turn fell back"): appends `extra` (this
+/// candidate's own predecessors' `Backend::admit` refusals, in the order
+/// they were discovered) onto the winning `route`'s `RoutingReason::
+/// Fallback::after`, WITHOUT disturbing whatever the router itself already
+/// placed there (`conway_plugin_routing::DeclarativeRouter::evaluate`'s own
+/// pre-filter skips, board item A1d's other half) -- the two lists never
+/// name the same candidate: a router-level `CapabilitySkip`/`HealthSkip`
+/// never reaches this engine's `req.routes` at all, and an admission
+/// refusal can only happen to a candidate the router already selected. A
+/// no-op for every other `RoutingReason` variant (`AliasPrimary`,
+/// `PinnedByApi`/`PinnedByAgentDef`) -- `extra` is empty for the winning
+/// route in every one of those cases anyway, since nothing before it could
+/// have been skipped, but the match still names the reason explicitly
+/// rather than reaching into an enum variant that cannot carry `after`.
+fn with_admission_failures(mut route: Route, extra: &[AttemptFailure]) -> Route {
+    if let RoutingReason::Fallback { after, .. } = &mut route.reason {
+        after.extend(extra.iter().cloned());
+    }
+    route
 }
 
 /// Concatenates every `ContentBlock::Text` in `blocks`, in order — used to
@@ -287,6 +322,18 @@ impl AttemptEngine {
         let mut attempt: u8 = 0;
         let mut considered: Vec<(ModelRef, String)> = Vec::new();
         let mut skipped: Vec<(ModelRef, RoutingReason)> = Vec::new();
+        // Board item A1d ("say why a turn fell back"): the SAME admission
+        // refusals `skipped` above already records, reshaped as
+        // `AttemptFailure` (`model`/`error`/`at`) so the eventual winning
+        // route's `RoutingReason::Fallback::after` can name them WITH the
+        // refusal's own numbers (`BackendError::ContextTooLarge`'s
+        // `Display`) -- never a second, independently-worded reason.
+        // Distinct from `skipped` itself: that field stays `(ModelRef,
+        // RoutingReason)` for its existing consumers (`AttemptOutcome::
+        // skipped`, unit-tested by name in `attempt_fallback.rs`); this one
+        // exists solely to enrich the reason already carried on the route
+        // that ultimately succeeds.
+        let mut skip_failures: Vec<AttemptFailure> = Vec::new();
         // The raw refusals `Backend::admit` produced, kept alongside
         // `skipped` (whose `missing` is already a rendered `String`) so the
         // all-refused aggregate below can source its numbers directly from
@@ -337,13 +384,19 @@ impl AttemptEngine {
             // skips this ONE candidate -- never a backend call, never a
             // health `Observation` -- and the chain advances.
             if let Err(err) = backend.admit(&gen_req, req.headroom) {
+                let error_text = err.to_string();
                 skipped.push((
                     model_ref.clone(),
                     RoutingReason::CapabilitySkip {
                         skipped: model_ref.clone(),
-                        missing: vec![err.to_string()],
+                        missing: vec![error_text.clone()],
                     },
                 ));
+                skip_failures.push(AttemptFailure {
+                    model: model_ref.clone(),
+                    error: error_text,
+                    at: Utc::now(),
+                });
                 admission_refusals.push((model_ref, err));
                 continue;
             }
@@ -409,11 +462,12 @@ impl AttemptEngine {
                         );
                         return Ok(AttemptOutcome {
                             response,
-                            route: route.clone(),
+                            route: with_admission_failures(route.clone(), &skip_failures),
                             attempts: attempt,
                             latency,
                             skipped: skipped.clone(),
                             max_context_tokens: window_of(&caps),
+                            max_context_tokens_source: backend.context_window_source(&route.model),
                         });
                     }
                     Err(err) => match classify(&err) {

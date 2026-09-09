@@ -28,8 +28,8 @@ plugin being linked.
 
 ```json
 {
-  "plugins": {
-    "statusline": {
+  "tui": {
+    "status_line_command": {
       "command": ["git", "branch", "--show-current"],
       "key": "branch",
       "refresh_interval_ms": 5000,
@@ -38,6 +38,16 @@ plugin being linked.
   }
 }
 ```
+
+**This example is not decorative prose — a copy of it, verbatim, loads
+through the real schema in a test.** `crates/conway-cli/src/tui/config.rs`'s
+`tests::the_statusline_doc_example_loads_through_the_real_tui_schema` extracts
+this exact fenced block from this file at test time and deserializes its
+`tui` key through the real `TuiSection` (`#[serde(deny_unknown_fields)]`) —
+the same schema `crate::tui::config::load` parses at startup. A future edit
+that reintroduces the wrong key (`[plugins].statusline`, this page's own
+past mistake) or any other field this schema rejects fails that test, not
+merely a reader's copy-paste.
 
 - `command` — argv-shaped (program, then its arguments), **never a single
   shell string** — the same shape and reasoning `[hooks].rules[].command`
@@ -144,8 +154,11 @@ plugin does not carry that extra weight for it.
 
 ## Why this is not a `[plugins].install` entry
 
-Every one of the eleven plugins `first_party_plugins::bundle()` resolves
-(`docs/plugins/README.md`'s "Eleven shipped first-party plugins") is named in
+Every one of the twelve plugins `first_party_plugins::bundle()` resolves
+(`docs/plugins/README.md`'s "Twelve shipped first-party plugins" — verify
+this count against that heading directly rather than trusting a number
+restated here; `conway.confine` is the newest of the twelve and is the
+plugin most likely to make a stale count drift again) is named in
 `[plugins].install` against a closed candidate set this binary happens to
 link, and ships with **no `settings.json` field of its own** — naming the id
 is the whole of the opt-in.

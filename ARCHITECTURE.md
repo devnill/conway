@@ -265,6 +265,27 @@ Members today:
   conway-cli/src/tui/form.rs`); every other dispatch target refuses
   immediately instead of blocking. See `docs/plugins/ui.md`.
 
+- **`crates/conway-plugin-checkpoint`** (`conway.checkpoint`) — snapshots a
+  file's bytes around every `write`/`edit` tool call and restores them by
+  sequence number, with a diff first and an operator's own hand edits
+  preserved by default. In the default opinion set. It observes only those
+  two tools, so a change made through `bash` leaves no snapshot, and the
+  first edit to a path in a session has no earlier capture to chain from —
+  both stated in the plugin's own `you_lose` text rather than discovered.
+- **`crates/conway-plugin-web`** (`conway.web`) — an opt-in `web_fetch` (and,
+  behind a configured provider, `web_search`): the first tool in this
+  workspace that reaches the network on the model's behalf. GET only,
+  bounded redirects and bytes, and a scheme/address guard that refuses
+  loopback, private, link-local and IPv4-in-IPv6 targets. Its remaining
+  gaps — DNS rebinding, tunnelled address forms — are named in
+  `docs/plugins/web.md`.
+- **`crates/conway-plugin-toolindex`** (`conway.toolindex`) — an opt-in
+  `ContextHook` that replaces a deferrable tool's full schema in the
+  announced set with a one-line index entry, plus a `describe_tool` that
+  reveals the real schema on demand and keeps it revealed. The tool stays
+  ANNOUNCED throughout, so the wire never offers a name it would then
+  refuse. Built-in tools are never narrowed.
+
 Compaction remains separate, later work — the sole member of this list not
 yet written; see `PHILOSOPHY.md` §6's own "Where the tree is today" note.
 

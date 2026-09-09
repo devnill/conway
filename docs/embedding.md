@@ -129,16 +129,24 @@ comes from `discover()`'s own layered defaults, or from the two lightweight
 PER-FIELD overrides used above (`CliOverrides`, `PluginSelection`), never a
 second, competing construction path.
 
-**Permissions default to `"prompt"`, which needs a handler.** Discovery's
-built-in default sets `permissions.mode = "prompt"` — the friendliest
-default, "ask," rather than "deny" or "allow everything" — and `build()`
-fails with a named `FacadeError::Config` if it resolves to `"prompt"` with
-neither a handler nor an injected gate, rather than silently picking one
-for you. Two ways to satisfy it: `ConwayBuilder::with_prompt_handler(..)`
-(the direct path — hand it the one closure your host already has for "may
-this proceed?", no need to implement `PermissionGate` yourself for that),
-or override `permissions.mode` to `"allowlist"`/`"deny"` (what the example
-above does, via `CliOverrides`, since it stays offline and has no UI to ask
+**Fallback gate selection defaults to `Prompt`, which needs a handler.**
+`build()`'s own step-9 fallback (used only when you never call
+`with_permission_gate` yourself) defaults to `gates::GateMode::Prompt` —
+the friendliest default, "ask," rather than "deny" or "allow everything" —
+and `build()` fails with a named `FacadeError::Config` if it resolves to
+`Prompt` with neither a handler nor an injected gate, rather than silently
+picking one for you. **This is no longer a `settings.json` concern at
+all**: `ConwayBuilder::with_gate_config(GateConfig)` is the explicit,
+Rust-constructed selection an embedder passes (board item
+`01M1YVP3FDPHY4WZ72SXMWAN2D` removed the `permissions.mode`/
+`allowed_tools`/`denied_tools` keys that used to do this from a config
+file, because they parsed and did nothing for the real `conway` binary —
+see "Permissions" below). Two ways to satisfy the default `Prompt`
+selection: `ConwayBuilder::with_prompt_handler(..)` (the direct path —
+hand it the one closure your host already has for "may this proceed?", no
+need to implement `PermissionGate` yourself for that), or
+`with_gate_config(GateConfig { mode: GateMode::Allowlist, .. })`/`Deny`
+(what the example above does, since it stays offline and has no UI to ask
 through). See "Permissions" below for both, and
 `crates/conway/examples/custom_permission_gate.rs` for a full
 `PermissionGate` implementation when a handler closure isn't expressive
@@ -278,8 +286,8 @@ or use `from_parts(ConwayConfig)` directly.
 `load`'s five merge sources (default < user < project < env < CLI-overrides),
 and the only one that isn't a settings-file-shaped table: a struct of
 `Option<T>` fields shaped like command-line flags (`default_role`,
-`cwd`, `permission_mode`, `allowed_tools`, `denied_tools`, `max_steps`,
-`session_root`, `headroom_tokens`) that a host application constructs
+`default_mode`, `cwd`, `max_steps`, `session_root`, `headroom_tokens`)
+that a host application constructs
 programmatically — say, from its own CLI parser, a web request, or a
 config UI — and layers onto whatever `discover()`/`from_config()` already
 found. Pass one via `LoadOptions::cli_overrides` (before `load()` runs) or
@@ -300,35 +308,39 @@ an embedder: your own flags are typically `Option`-shaped from the start
 
 ### Permissions
 
-`PermissionsConfig` (`conway::config::schema`):
-`mode` (`"prompt"` | `"allowlist"` | `"deny"`), `allowed_tools`,
-`denied_tools` — `build()` turns that into an `AllowListGate`/`DenyAllGate`/
-`PromptingGate` via `gates::from_config`, but **only when you never call
-`with_permission_gate` yourself**. The CLI's own `-p` and TUI paths always
-call `with_permission_gate` (each needs behavior `gates::from_config` can't
-express from config alone — `-p`'s stricter fail-closed default, the TUI's
-real interactive channel), so `gates::from_config` is what an embedder gets
-for free from a plain config file, not what conway's own binary actually
-runs on. **This is a distinct type from `conway::PermissionMode`** (the
-facade's top-level re-export of `conway_core::permission_mode::
-PermissionMode` — `Prompt`/`Plan`/`AutoAllow`, the *runtime* behavior mode a
-live `Conway` is in, read via `Conway::permission_mode()`/set via
-`Conway::set_permission_mode()`): same word, two different enums at two
-different layers, easy to conflate.
+**`gates::GateConfig` (`conway::gates`), NOT a `settings.json` key.** Board
+item `01M1YVP3FDPHY4WZ72SXMWAN2D` removed `PermissionsConfig`'s old
+`mode`/`allowed_tools`/`denied_tools` fields — they used to select the
+`AllowListGate`/`DenyAllGate`/`PromptingGate` `build()`'s step-9 fallback
+builds via `gates::from_config`, but parsed and did nothing for the real
+`conway` binary: the CLI's own `-p` and TUI paths always call
+`with_permission_gate` themselves (each needs behavior `gates::from_config`
+can't express from config alone — `-p`'s stricter fail-closed default, the
+TUI's real interactive channel), so that fallback — and therefore whatever
+selected it — never ran for anyone running the actual binary. `GateConfig`
+replaces those three keys as an ordinary, explicit Rust value: construct
+one and pass it to `ConwayBuilder::with_gate_config(GateConfig)` (not
+called at all: the default, `GateMode::Prompt`). **This is a distinct type
+from `conway::PermissionMode`** (the facade's top-level re-export of
+`conway_core::permission_mode::PermissionMode` — `Prompt`/`Plan`/
+`AutoAllow`, the *runtime* behavior mode a live `Conway` is in, read via
+`Conway::permission_mode()`/set via `Conway::set_permission_mode()`, and
+what `PermissionsConfig::default_mode` now configures instead — see
+below): similarly-named types at two different layers, easy to conflate.
 
-`mode = "prompt"` — discovery's own default — needs SOMETHING to answer
-"may this proceed?" with, and conway ships no built-in implementation of
-that decision itself (only the three modes' *selection* machinery). Two
-ways to supply one, in order of how much you need to write:
+`GateMode::Prompt` — the default — needs SOMETHING to answer "may this
+proceed?" with, and conway ships no built-in implementation of that
+decision itself (only the three modes' *selection* machinery). Two ways to
+supply one, in order of how much you need to write:
 
 - **`ConwayBuilder::with_prompt_handler(handler)`** — the direct path, for
   the common case where you have exactly one closure: `Arc<dyn
   Fn(PermissionRequest) -> BoxFuture<'static, PermissionDecision> + Send +
   Sync>` (`conway::gates::PromptHandler`). `gates::from_config` wraps it in
   a `PromptingGate` for you. Not calling this (and not calling
-  `with_permission_gate` either) leaves `mode = "prompt"` failing `build()`
-  with a named `FacadeError::Config` — never a silent `AllowAlways`/`DenyAll`
-  substitute.
+  `with_permission_gate` either) leaves the default `GateMode::Prompt`
+  failing `build()` with a named `FacadeError::Config` — never a silent
+  `AllowAlways`/`DenyAll` substitute.
 - **`ConwayBuilder::with_permission_gate(gate)`** — supply your own gate
   outright, for policy a single closure can't express (per-tool audit
   logging, an allow-list keyed off your own data). Implement
@@ -338,6 +350,20 @@ ways to supply one, in order of how much you need to write:
   reachable" below). Wins unconditionally over a prompt handler if both are
   set. `crates/conway/examples/custom_permission_gate.rs` is a complete,
   runnable one.
+
+**`PermissionsConfig::default_mode`, the `settings.json` key that
+survived** — but answering a different question. `permissions.default_mode`
+(`"prompt"` | `"plan"` | `"auto_allow"`, default `"prompt"`) selects which
+`conway::PermissionMode` a new *interactive TUI session* starts in — the
+same three runtime modes `/settings`/`Shift-Tab` cycle after that, unrelated
+to which `PermissionGate` implementation `build()` wires up. An embedder
+building a `Conway` directly (not through `conway-cli`) reads it off
+`config.permissions.default_mode` and, if it has an interactive session
+concept of its own, calls `Conway::set_permission_mode(..)` after `build()`
+— `conway-cli`'s own TUI startup (`tui::app::startup`) is the reference
+implementation, including the project-scope trust gate (see
+[`docs/permissions.md`](permissions.md#setting-the-starting-mode-
+permissionsdefault_mode)).
 
 ### Confinement
 

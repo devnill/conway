@@ -60,46 +60,54 @@
 //! { "plugins": { "install": ["conway.trim"] } }
 //! ```
 //!
-//! # No `settings.json` knob for the window
+//! # Configuring the window: `[plugins.config.conway.trim]`
 //!
-//! `DEFAULT_KEEP_TURNS` is not reachable from `settings.json` -- installing
-//! `"conway.trim"` always gets the 8-turn window. Considered and declined,
-//! not an oversight, and the general reason lives one level up rather than
-//! being re-argued here: `docs/plugins/README.md`'s "What
-//! `[plugins].install` decides, and what it does not" paragraph and
-//! `PHILOSOPHY.md` §6 state it once -- a first-party plugin ships an
-//! opinionated default and no `settings.json` field of its own,
-//! `[plugins].install` decides whether one runs rather than how, and the
-//! one config surface below that tier
-//! (`conway_core::ports::PluginConfig`/`Plugin::narrowable_keys`) is an
-//! embedder-only mechanism for a different problem (`[S1.5]`) -- narrowing
-//! what a CHILD agent may do relative to its parent, not a channel for an
-//! operator to name a top-level number.
+//! `DEFAULT_KEEP_TURNS` (8) is only the DEFAULT now, not the only value
+//! reachable from `settings.json` (board item `01M1YVM9CHFCJ6112XDYHCFS84`).
+//! An operator who wants a smaller window (a small context budget) or a
+//! larger one (a session worth keeping more of) sets `keep_turns` directly:
 //!
-//! What is specific to this window, on top of that general rule: even
-//! where a `settings.json` field could reach a first-party plugin, this
-//! constant would be a poor candidate for it. It is a curation heuristic,
-//! not a budget -- nothing this plugin curates is a choice with a right
-//! answer an operator can state (unlike, say, which memory directory to
-//! use, or which skills to load); it is "how aggressively should stale
-//! tool output be dropped", a number with no feedback loop an operator can
-//! evaluate it against. `conway_plugin_memory::MemoryConfig`'s
-//! `max_memories`/`max_bytes` are the nearest first-party comparison -- an
-//! actual per-turn injection budget, not a heuristic -- and still land on
-//! the same no-knob answer today (`first_party_plugins::bundle` constructs
-//! it with `Default::default()` unconditionally).
+//! ```json
+//! { "plugins": {
+//!     "install": ["conway.trim"],
+//!     "config": { "conway.trim": { "keep_turns": 3 } }
+//! } }
+//! ```
 //!
-//! An embedder who genuinely needs a different window keeps the reachable
-//! path this crate always had: constructing `TrimPlugin::with_keep_turns`
-//! directly in Rust, the same way `conway_plugin_memory::MemoryPlugin::new`
-//! takes a caller-supplied `MemoryConfig` today.
+//! `keep_turns` must be a JSON integer `>= 1` -- `0` would mean "keep
+//! nothing", which is not what this plugin does (it always keeps at least
+//! the newest round-trip; see `curate`'s own doc). Any OTHER key under
+//! `conway.trim`'s own table is refused BY NAME
+//! (`conway_core::ports::PluginConfigureError::UnknownKey`), never silently
+//! dropped -- see [`TrimPlugin::configure`]'s own doc for the exact
+//! validation this performs, and `conway_core::ports::Plugin::configure`'s
+//! own doc for the general seam this is the first real implementor of.
+//!
+//! **This is the general answer, not an exception argued for this one
+//! constant.** Earlier revisions of this doc comment argued the opposite --
+//! that `[plugins].install` deciding *whether* a first-party plugin runs,
+//! never *how*, was settled policy, and that this specific constant was
+//! additionally a poor candidate even if the mechanism existed (a curation
+//! heuristic with no feedback loop, unlike an actual budget). That
+//! blanket rule is what board item `01M1YVM9CHFCJ6112XDYHCFS84` changed:
+//! `docs/plugins/authoring.md`'s "Configuration" section and `PHILOSOPHY.md`
+//! §6 now describe the built `[plugins.config.<id>]`/`Plugin::configure`
+//! seam this crate is the first real consumer of, and this crate's own
+//! `TrimPlugin::configure` is the worked example a future plugin author
+//! copies from -- see `docs/plugins/trim.md`.
+//!
+//! An embedder who wants a different window with no `settings.json` at all
+//! still has the reachable path this crate always had: constructing
+//! `TrimPlugin::with_keep_turns` directly in Rust, the same way
+//! `conway_plugin_memory::MemoryPlugin::new` takes a caller-supplied
+//! `MemoryConfig` today.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use conway::plugin::{
-    ContentBlock, CurateCtx, CurateOutcome, Curator, Plugin, PluginDescription, PluginManifest,
-    Tool,
+    ContentBlock, CurateCtx, CurateOutcome, Curator, Plugin, PluginConfigureError,
+    PluginDescription, PluginManifest, Tool,
 };
 use conway::{LogRecord, PathOp, ValidatedPath};
 
@@ -258,13 +266,91 @@ impl Plugin for TrimPlugin {
     fn curators(&self) -> Vec<Arc<dyn Curator>> {
         vec![self.0.clone() as Arc<dyn Curator>]
     }
+
+    /// The first real implementor of `conway_core::ports::Plugin::configure`
+    /// (board item `01M1YVM9CHFCJ6112XDYHCFS84`) -- see the module doc's
+    /// "Configuring the window" section for the `settings.json` shape this
+    /// answers.
+    ///
+    /// `value` must be a JSON object; every key it carries is validated
+    /// before anything is applied, so a value that is partly valid and
+    /// partly not changes nothing (`&mut self` is only mutated once
+    /// validation of the WHOLE object has already succeeded, at the bottom
+    /// of this method -- never incrementally as each key is read).
+    ///
+    /// - `"keep_turns"`: must be a JSON integer `>= 1` and `<= u32::MAX`.
+    ///   `0` is refused rather than silently clamped to `1` -- a value that
+    ///   plainly means something other than what the operator intended
+    ///   (this plugin never keeps *nothing*; see `curate`'s own doc) should
+    ///   fail the load loudly, not be quietly reinterpreted.
+    /// - Any other key -- a typo (`"keep_trns"`), a renamed field, a key
+    ///   belonging to a DIFFERENT plugin pasted into the wrong table -- is
+    ///   refused BY NAME (`PluginConfigureError::UnknownKey`), never
+    ///   silently ignored. This is the check `tests::configure_refuses_an_
+    ///   unknown_key_by_name` establishes never regresses to a no-op.
+    fn configure(&mut self, value: &serde_json::Value) -> Result<(), PluginConfigureError> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| PluginConfigureError::NotAnObject {
+                actual: json_value_kind(value).to_string(),
+            })?;
+        let mut keep_turns = self.0.keep_turns;
+        for (key, raw) in object {
+            match key.as_str() {
+                "keep_turns" => {
+                    let n = raw
+                        .as_u64()
+                        .ok_or_else(|| PluginConfigureError::InvalidValue {
+                            key: key.clone(),
+                            message: "must be a JSON integer".to_string(),
+                        })?;
+                    if n == 0 {
+                        return Err(PluginConfigureError::InvalidValue {
+                            key: key.clone(),
+                            message: "must be >= 1".to_string(),
+                        });
+                    }
+                    keep_turns =
+                        u32::try_from(n).map_err(|_| PluginConfigureError::InvalidValue {
+                            key: key.clone(),
+                            message: format!("must fit in a u32, got {n}"),
+                        })?;
+                }
+                other => {
+                    return Err(PluginConfigureError::UnknownKey {
+                        key: other.to_string(),
+                    });
+                }
+            }
+        }
+        self.0 = Arc::new(TrimOldToolResults::new(keep_turns));
+        Ok(())
+    }
+}
+
+/// The JSON type-name `PluginConfigureError::NotAnObject` reports --
+/// `serde_json::Value` has no built-in `Display` for "which variant is
+/// this", so this names the six wire kinds by hand rather than leaking a
+/// `{...full value...}` dump into an error message a config file's author
+/// has to read.
+fn json_value_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use conway::plugin::TranscriptResolver;
-    use conway::{AgentId, SessionId, SessionStore};
+    use conway::{
+        AgentId, NodeProvenance, NodeStamp, PathNode, RecordRef, Selector, SessionId, SessionStore,
+    };
 
     /// Installs the SAME way an operator's `plugins.install` does: through
     /// `Plugin::curators`, never a constructor a third party couldn't reach.
@@ -303,5 +389,233 @@ mod tests {
         let base = ValidatedPath::default_path(Vec::new());
         let outcome = curator.curate(&ctx, &base).await;
         assert!(matches!(outcome, CurateOutcome::Unchanged));
+    }
+
+    /// One synthetic tool call/result round-trip at turn `turn_idx`, as the
+    /// two raw JSON records `LogRecord` decodes from (the same shape
+    /// `tests/curates_a_synthetic_session.rs`'s own fixture uses) --
+    /// `seq_base`/`seq_base + 1` are the assistant record's and its
+    /// answering tool result's own sequence numbers.
+    fn round_trip_turn(seq_base: u32, turn_idx: u32) -> Vec<serde_json::Value> {
+        let call_id = format!("call_{turn_idx}");
+        vec![
+            serde_json::json!({
+                "kind": "assistant",
+                "seq": seq_base,
+                "ts": "2026-09-08T00:00:00Z",
+                "content": [
+                    { "type": "tool_use", "call_id": call_id, "name": "read_file", "arguments": {} }
+                ],
+                "model": { "backend": "kimi", "model": "k3" },
+                "route_reason": null,
+                "usage": {
+                    "input_tokens": 1, "output_tokens": 1, "cache_read_tokens": 0,
+                    "cache_write_tokens": 0, "reasoning_tokens": 0
+                },
+                "stop": "tool_use"
+            }),
+            serde_json::json!({
+                "kind": "tool_result",
+                "seq": seq_base + 1,
+                "ts": "2026-09-08T00:00:00Z",
+                "call_id": call_id,
+                "tool": "read_file",
+                "blocks": [{ "type": "text", "text": "ok" }],
+                "is_error": false,
+                "truncated": null
+            }),
+        ]
+    }
+
+    /// A `ValidatedPath` over `turns` synthetic round-trips (turn 0 oldest,
+    /// `turns - 1` newest), built directly -- no `SessionStore` round trip
+    /// needed, since `TrimOldToolResults::curate` never reads `ctx.store`.
+    fn synthetic_transcript(session: SessionId, turns: u32) -> ValidatedPath {
+        let records: Vec<LogRecord> = (0..turns)
+            .flat_map(|t| round_trip_turn(1 + t * 2, t))
+            .map(|v| serde_json::from_value(v).expect("valid synthetic record"))
+            .collect();
+        let now = chrono::Utc::now();
+        let nodes: Vec<(PathNode, Arc<LogRecord>)> = records
+            .iter()
+            .enumerate()
+            .map(|(i, rec)| {
+                let seq = rec.seq().expect("non-header record has a seq");
+                let node = PathNode {
+                    record: RecordRef { session, seq },
+                    stamp: if i == 0 {
+                        NodeStamp::Head
+                    } else {
+                        NodeStamp::Own
+                    },
+                    prov: NodeProvenance {
+                        selected_by: Selector::DefaultRule,
+                        at: now,
+                    },
+                };
+                (node, Arc::new(rec.clone()))
+            })
+            .collect();
+        ValidatedPath::default_path(nodes)
+    }
+
+    /// Every `call_id` a `ToolResultRecord` still present in `path` answers
+    /// -- reads `Derivation::path`'s own nodes back, so this asserts on
+    /// trim's ACTUAL output (what a next request would actually see), not
+    /// merely on the `PathOp` list an implementation could get right while
+    /// still building the wrong final path.
+    fn surviving_result_call_ids(path: &ValidatedPath) -> std::collections::BTreeSet<String> {
+        path.nodes()
+            .filter_map(|(_, rec)| match rec.as_ref() {
+                LogRecord::ToolResultRecord { result, .. } => Some(result.call_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Required pair, half 1 (acceptance 1): `[plugins.config.conway.trim]
+    /// keep_turns = 3` must change what `conway.trim` actually omits from a
+    /// real transcript, not merely parse. Six synthetic round-trips, current
+    /// turn = 6: the unconfigured default (8) leaves the whole transcript
+    /// untouched (nothing is old enough yet, `threshold =
+    /// 6.saturating_sub(8) == 0`); configuring `keep_turns = 3` makes
+    /// `threshold = 6 - 3 == 3`, so the THREE OLDEST round-trips (turns 0,
+    /// 1, 2) age out and the three most recent (turns 3, 4, 5) survive --
+    /// asserted by name, on the derived path's own surviving tool results,
+    /// not on the op count alone.
+    ///
+    /// **What a wrong `configure` implementation this catches:** one that
+    /// parses `keep_turns` but never actually stores it back onto the
+    /// curator (e.g. validates and discards) would leave EVERY assertion in
+    /// this test identical to `an_empty_path_is_unchanged`'s -- the
+    /// configured run would stay `Unchanged` exactly like the default one,
+    /// which the `CurateOutcome::Derived` match below refuses to accept.
+    #[tokio::test]
+    async fn configuring_keep_turns_changes_what_conway_trim_actually_omits() {
+        let session = SessionId::new();
+        let base = synthetic_transcript(session, 6);
+        let store: Arc<dyn SessionStore> = Arc::new(conway_testkit::FakeStore::new());
+        let ctx = CurateCtx {
+            agent_id: AgentId::new(),
+            session_id: session,
+            turn: 6,
+            model: None,
+            store,
+            resolver: Arc::new(TranscriptResolver::new(8)),
+        };
+
+        // Baseline: the unconfigured default (8) leaves a 6-turn transcript
+        // entirely untouched.
+        let default_curator = TrimPlugin::new()
+            .curators()
+            .into_iter()
+            .next()
+            .expect("TrimPlugin always contributes exactly one curator");
+        let default_outcome = default_curator.curate(&ctx, &base).await;
+        assert!(
+            matches!(default_outcome, CurateOutcome::Unchanged),
+            "default keep_turns=8 should leave a 6-turn transcript unchanged, got \
+             {default_outcome:?}"
+        );
+
+        // Configured: keep_turns=3 ages the three oldest round-trips out.
+        let mut plugin = TrimPlugin::new();
+        plugin
+            .configure(&serde_json::json!({ "keep_turns": 3 }))
+            .expect("keep_turns=3 is a valid config value");
+        let configured_curator = plugin
+            .curators()
+            .into_iter()
+            .next()
+            .expect("TrimPlugin always contributes exactly one curator");
+        let configured_outcome = configured_curator.curate(&ctx, &base).await;
+        let derivation = match configured_outcome {
+            CurateOutcome::Derived(d) => d,
+            other => panic!("keep_turns=3 must actually change a 6-turn transcript, got {other:?}"),
+        };
+
+        let surviving = surviving_result_call_ids(&derivation.path);
+        for turn in 0..3u32 {
+            let call_id = format!("call_{turn}");
+            assert!(
+                !surviving.contains(&call_id),
+                "turn {turn} is one of the three oldest and must have aged out under \
+                 keep_turns=3, but {call_id}'s tool result survived: {surviving:?}"
+            );
+        }
+        for turn in 3..6u32 {
+            let call_id = format!("call_{turn}");
+            assert!(
+                surviving.contains(&call_id),
+                "turn {turn} is one of the three most recent and must survive \
+                 keep_turns=3, but {call_id}'s tool result is missing: {surviving:?}"
+            );
+        }
+    }
+
+    /// Required pair, half 2 (acceptance 1): an unknown key under
+    /// `[plugins.config.conway.trim]` must fail `configure`, naming the
+    /// offending key -- never silently ignored.
+    ///
+    /// **What this catches that the other half of the pair does not:** the
+    /// companion test above would pass unchanged even if `configure`
+    /// accepted (and silently dropped) any key it did not recognize, so
+    /// long as it still applied `keep_turns` correctly -- a plugin that
+    /// merges only the keys it understands and ignores the rest is exactly
+    /// the "typo parses as a harmless no-op" defect this method exists to
+    /// refuse. This test would fail against that implementation (no `Err`
+    /// at all), and would also fail against one that returns a generic
+    /// error not naming the key (the `UnknownKey { key }` match below).
+    #[test]
+    fn configure_refuses_an_unknown_key_by_name() {
+        let mut plugin = TrimPlugin::new();
+        let err = plugin
+            .configure(&serde_json::json!({ "keep_tuns": 3 }))
+            .expect_err("a typo'd/unrecognized key must be refused, not silently ignored");
+        match err {
+            PluginConfigureError::UnknownKey { key } => {
+                assert_eq!(key, "keep_tuns", "the error must name the offending key");
+            }
+            other => panic!("expected UnknownKey naming 'keep_tuns', got {other:?}"),
+        }
+    }
+
+    /// `keep_turns = 0` is refused rather than silently clamped -- this
+    /// plugin never keeps *nothing* (see `curate`'s own doc), so a
+    /// configured `0` means the operator's intent could not be honoured
+    /// honestly.
+    #[test]
+    fn configure_refuses_a_keep_turns_of_zero() {
+        let mut plugin = TrimPlugin::new();
+        let err = plugin
+            .configure(&serde_json::json!({ "keep_turns": 0 }))
+            .expect_err("keep_turns = 0 must be refused");
+        assert!(
+            matches!(err, PluginConfigureError::InvalidValue { ref key, .. } if key == "keep_turns"),
+            "expected InvalidValue naming 'keep_turns', got {err:?}"
+        );
+    }
+
+    /// The plugin browser's own read surface (`Plugin::description`)
+    /// already interpolates `self.0.keep_turns` into `you_get` -- this pins
+    /// that a `configure`d window is what that text reports, not the
+    /// constructor default, so a browser/`/context`-style summary shows the
+    /// ACTIVE window rather than a stale one once this method is called.
+    #[test]
+    fn description_reflects_a_configured_window_not_the_default() {
+        let mut plugin = TrimPlugin::new();
+        plugin
+            .configure(&serde_json::json!({ "keep_turns": 3 }))
+            .expect("keep_turns=3 is a valid config value");
+        let you_get = plugin.description().you_get;
+        assert!(
+            you_get.contains('3'),
+            "description().you_get must reflect the configured window (3), got: {you_get}"
+        );
+        assert!(
+            !you_get.contains('8'),
+            "description().you_get must not still report the unconfigured default (8), got: \
+             {you_get}"
+        );
     }
 }

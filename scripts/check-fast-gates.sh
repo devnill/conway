@@ -55,6 +55,16 @@
 # -- but is NOT enforced on a PR the way the other five are. Whoever wires the
 # CI job should delete this paragraph and fold it into the list above.
 #
+# AN EIGHTH GATE, SAME STANDING AS THE SIXTH. `changelog fragments (subsection
+# vocabulary + collision)` (board item 01M1YY14QSB8WA6G1V5KT8NT0B) validates
+# every `.changelog.d/*.md` fragment before `scripts/collect-changelog.py`
+# ever folds one into `CHANGELOG.md` -- see that script's and the gate
+# script's own module docs for the mechanism this replaces. Network-free, no
+# extra toolchain, fast: belongs here on the same merits as `orphan docs`
+# above, and like it, has no matching job in `.github/workflows/ci.yml` yet.
+# NOT enforced on a PR. Whoever wires the CI job should delete this paragraph
+# and fold it into the list above.
+#
 # SINGLE SOURCE OF TRUTH FOR THE INVOCATIONS. `.github/workflows/ci.yml`'s
 # `fmt`, `design-claims`, `board-citations`, `doc`, and `clippy` jobs each
 # call `scripts/check-fast-gates.sh --gate "<name>"` rather than repeating
@@ -114,6 +124,21 @@ gate_orphan_docs() {
   python3 scripts/check-orphan-docs.py
 }
 
+# Two things under one gate name, deliberately. The first validates the
+# fragments actually pending in `.changelog.d/`; the second runs the merge's
+# own regression tests, which take milliseconds and guard the ONLY code in
+# this repository that writes to `CHANGELOG.md`. Its first version silently
+# deleted published entries in two ordinary shapes and exited 0 (see
+# `scripts/collect-changelog.py`'s `BLOCK_HEADING_RE` comment), so the tests
+# run wherever the gate runs rather than waiting for someone to remember
+# them. They are folded in here rather than given a ninth gate name because
+# a gate name is a contract with `.github/workflows/ci.yml`'s job names, and
+# these two checks fail for the same reason and get fixed in the same file.
+gate_changelog_fragments() {
+  python3 scripts/check-changelog-fragments.py || return 1
+  python3 scripts/test_collect_changelog.py || return 1
+}
+
 # Board item 01M12CHKAC21BP6H5GCYCTZ984. An ideate record append that
 # resolved its path against the invoking shell's cwd instead of the project
 # root created a `record/` tree wherever the shell happened to be standing
@@ -160,6 +185,7 @@ GATE_NAMES=(
   "cargo clippy (-D warnings)"
   "orphan docs (docs/vision index + reachability)"
   "ideate record layout (no stray record/ trees)"
+  "changelog fragments (subsection vocabulary + collision)"
 )
 GATE_FUNCS=(
   gate_fmt
@@ -169,6 +195,7 @@ GATE_FUNCS=(
   gate_clippy
   gate_orphan_docs
   gate_ideate_record_layout
+  gate_changelog_fragments
 )
 
 usage() {

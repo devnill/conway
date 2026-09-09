@@ -112,6 +112,7 @@ pub(crate) fn build_request_body(
             json!({ "type": "enabled", "budget_tokens": budget_tokens }),
         );
     }
+    warn_ignored_params(req);
 
     if stream {
         body.insert("stream".into(), json!(true));
@@ -135,6 +136,30 @@ fn reasoning_budget_tokens(req: &GenerateRequest) -> Option<u32> {
         .get("reasoning_budget_tokens")
         .and_then(Value::as_u64)
         .and_then(|tokens| u32::try_from(tokens).ok())
+}
+
+/// Warns, once per request, about a `SamplingParams` field this adapter's
+/// wire body construction above never reads. A `roles.<alias>.params`
+/// setting that reaches this far and then does nothing is the
+/// declaration-honesty defect this project keeps paying for -- see
+/// `conway::config::schema::RoleParams`'s own doc. `temperature`, `top_p`,
+/// `max_tokens`, and `stop` are all read above (unconditionally, or via
+/// `default_max_tokens` for `max_tokens`); `seed` is the one typed field
+/// with no Anthropic Messages API equivalent, so it is the one checked
+/// here. Extra keys are exempt by design (`RoleParams::extra`'s own doc):
+/// `extra` is a free map for provider-specific keys precisely because no
+/// fixed struct can enumerate them, so a key this adapter does not
+/// recognize among `extra` is not, on its own, evidence of a
+/// misconfiguration the way an ignored TYPED field is.
+fn warn_ignored_params(req: &GenerateRequest) {
+    if req.params.seed.is_some() {
+        tracing::warn!(
+            field = "seed",
+            backend = "anthropic",
+            "params field \"seed\" ignored by backend \"anthropic\": the Anthropic Messages \
+             API has no seed parameter"
+        );
+    }
 }
 
 /// Maps every segment to zero-or-more `system`/`messages` entries, in
@@ -784,6 +809,115 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // `warn_ignored_params` -- minimal, dependency-free tracing WARN
+    // capture. `tracing-test` is not a dependency of this crate; this
+    // reuses the same hand-rolled `Subscriber` pattern
+    // `conway-session/tests/recovery_tests.rs`/`index_tests.rs` already
+    // established for the identical need.
+    // -----------------------------------------------------------------
+
+    #[derive(Clone, Default)]
+    struct CaptureLog {
+        entries: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl CaptureLog {
+        fn contains(&self, needle: &str) -> bool {
+            self.entries
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.contains(needle))
+        }
+        fn count(&self) -> usize {
+            self.entries.lock().unwrap().len()
+        }
+    }
+
+    struct CaptureSubscriber {
+        log: CaptureLog,
+    }
+
+    struct MessageVisitor(String);
+
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    impl tracing::Subscriber for CaptureSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            self.log.entries.lock().unwrap().push(visitor.0);
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    fn install_capture() -> (CaptureLog, tracing::subscriber::DefaultGuard) {
+        let log = CaptureLog::default();
+        let guard = tracing::subscriber::set_default(CaptureSubscriber { log: log.clone() });
+        (log, guard)
+    }
+
+    fn seed_request(seed: Option<u64>) -> GenerateRequest {
+        GenerateRequest {
+            model: ModelId::new("claude-sonnet-4-6"),
+            segments: vec![],
+            tools: vec![],
+            params: SamplingParams {
+                seed,
+                ..SamplingParams::default()
+            },
+            prefix_key: None,
+        }
+    }
+
+    /// ACCEPTANCE: `params.seed` -- a typed `SamplingParams` field this
+    /// adapter's wire body never reads -- logs exactly one WARN naming
+    /// both the ignored field and this backend. Fires from body
+    /// construction itself (once per `build_request_body` call), not from
+    /// anywhere per-segment or per-chunk, so one request produces exactly
+    /// one warning even though the request may carry many segments.
+    #[test]
+    fn seed_param_ignored_by_anthropic_logs_exactly_one_warning_naming_field_and_backend() {
+        let (log, _guard) = install_capture();
+        let req = seed_request(Some(42));
+        build_request_body(&req, 8192, false);
+
+        assert_eq!(
+            log.count(),
+            1,
+            "exactly one warning must be logged for one ignored field"
+        );
+        assert!(log.contains("seed"), "warning must name the ignored field");
+        assert!(log.contains("anthropic"), "warning must name the backend");
+    }
+
+    /// A request naming no `seed` logs no warning at all -- the check is
+    /// conditional on the field actually being set, never unconditional
+    /// noise on every request.
+    #[test]
+    fn no_seed_param_logs_no_warning() {
+        let (log, _guard) = install_capture();
+        let req = seed_request(None);
+        build_request_body(&req, 8192, false);
+        assert_eq!(log.count(), 0);
+    }
+
     #[test]
     fn map_usage_reads_all_four_wire_fields() {
         let usage = map_usage(Some(UsageWire {
@@ -826,6 +960,152 @@ mod tests {
         assert_eq!(
             map_usage(None).cache_accounting,
             CacheAccounting::NotReported
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Byte stability (board item A5.7, acceptance criterion 4): the
+    // precondition every prefix cache depends on. Churn at the FRONT of a
+    // conversation -- a reordered field, a reformatted earlier message, an
+    // extra segment -- breaks a provider's prefix match silently; conway's
+    // own request construction must never be the source of that churn.
+    // -----------------------------------------------------------------
+
+    fn shared_conversation_prefix() -> Vec<PromptSegment> {
+        vec![
+            PromptSegment::new(
+                Role::System,
+                vec![ContentBlock::Text {
+                    text: "You are a helpful assistant.".into(),
+                }],
+                Provenance::AgentDef {
+                    name: "assistant".into(),
+                },
+            ),
+            PromptSegment::new(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "what's 2+2?".into(),
+                }],
+                Provenance::UserPrompt,
+            ),
+            PromptSegment::new(
+                Role::Assistant,
+                vec![ContentBlock::Text { text: "4".into() }],
+                Provenance::SystemNote {
+                    reason: "turn".into(),
+                },
+            ),
+        ]
+    }
+
+    /// **The load-bearing byte-stability check.** Two conversations sharing
+    /// an identical prefix, differing ONLY in the LAST user turn, must
+    /// render byte-identical `system`/`messages` content up to (not
+    /// including) that turn -- proven at the level of the wire body
+    /// `build_request_body` actually produces, not a proxy for it.
+    #[test]
+    fn two_conversations_differing_only_in_the_final_user_turn_render_byte_identical_up_to_that_turn(
+    ) {
+        let mut conversation_a = shared_conversation_prefix();
+        conversation_a.push(PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "and 3+3?".into(),
+            }],
+            Provenance::UserPrompt,
+        ));
+        let mut conversation_b = shared_conversation_prefix();
+        conversation_b.push(PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "what about 10-1?".into(),
+            }],
+            Provenance::UserPrompt,
+        ));
+
+        let (system_a, messages_a, _) = segments_to_body_parts(&conversation_a);
+        let (system_b, messages_b, _) = segments_to_body_parts(&conversation_b);
+
+        assert_eq!(
+            system_a, system_b,
+            "the system array must never depend on the final turn's content"
+        );
+        assert_eq!(
+            messages_a.len(),
+            messages_b.len(),
+            "both conversations have the same NUMBER of turns -- only the last one's content \
+             differs"
+        );
+        let (last_a, prefix_a) = messages_a.split_last().expect("at least one message");
+        let (last_b, prefix_b) = messages_b.split_last().expect("at least one message");
+        assert_eq!(
+            prefix_a, prefix_b,
+            "every message strictly before the final user turn must be byte-identical on the \
+             wire -- this is the exact precondition prefix caching depends on: a=({prefix_a:?}) \
+             b=({prefix_b:?})"
+        );
+        // Sanity: the two conversations actually differ where this test
+        // claims they do, or the assertions above would pass vacuously.
+        assert_ne!(
+            last_a, last_b,
+            "the two conversations must genuinely differ in their final turn"
+        );
+    }
+
+    /// **Companion to the test above, proving it is discriminating rather
+    /// than tautological** ("a check is not established until it has been
+    /// shown to fail" -- board item A5.7's own verification anchor).
+    /// Two conversations differing in the FIRST user turn (not the last)
+    /// must NOT compare equal on the messages-strictly-before-the-final-turn
+    /// prefix the sibling test above asserts on: churn at the FRONT of a
+    /// conversation is exactly the failure mode that test exists to catch,
+    /// and this proves the comparison technique actually catches it rather
+    /// than passing regardless of what changed.
+    #[test]
+    fn the_prefix_comparison_actually_catches_front_churn_not_just_a_changed_last_turn() {
+        let mut conversation_a = shared_conversation_prefix();
+        conversation_a[1] = PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "what's 2+2? (variant A)".into(),
+            }],
+            Provenance::UserPrompt,
+        );
+        conversation_a.push(PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "and 3+3?".into(),
+            }],
+            Provenance::UserPrompt,
+        ));
+
+        let mut conversation_b = shared_conversation_prefix();
+        conversation_b[1] = PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "what's 2+2? (variant B)".into(),
+            }],
+            Provenance::UserPrompt,
+        );
+        conversation_b.push(PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "and 3+3?".into(),
+            }],
+            Provenance::UserPrompt,
+        ));
+
+        let (_system_a, messages_a, _) = segments_to_body_parts(&conversation_a);
+        let (_system_b, messages_b, _) = segments_to_body_parts(&conversation_b);
+        let (_last_a, prefix_a) = messages_a.split_last().expect("at least one message");
+        let (_last_b, prefix_b) = messages_b.split_last().expect("at least one message");
+
+        assert_ne!(
+            prefix_a, prefix_b,
+            "a change at the FRONT of the conversation (the first user turn, not the last) must \
+             be visible in the shared-prefix comparison -- if this ever started passing, the \
+             sibling byte-stability test above would no longer be proving anything"
         );
     }
 }

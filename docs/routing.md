@@ -152,8 +152,9 @@ conway routes explain coder
 
 ```text
 role: coder  (est_tokens=0, headroom_tokens=4096)
-  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed, tokens: heuristic)
-  [1] local/qwen3:4b               SELECTED fallback #1 after:   (breaker: closed, tokens: heuristic)
+params: default
+  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed, tokens: heuristic, window: 200000 [verified], cache: reported, fixed_cost: 18900/200000 tokens (9%))
+  [1] local/qwen3:4b               SELECTED fallback #1 after:   (breaker: closed, tokens: heuristic, window: 1048576 [models.json], cache: not reported, fixed_cost: 18900/1048576 tokens (1%))
 ```
 
 Each `SELECTED`/`SKIPPED` line is real router output, one per chain
@@ -162,9 +163,36 @@ names exactly what disqualified it:
 
 ```text
 role: coder  (est_tokens=0, headroom_tokens=4096)
-  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed, tokens: heuristic)
-  [1] local/qwen3:4b               SKIPPED  skipped `local/qwen3:4b`: missing capabilities: unknown (backend, model) pair  (breaker: closed, tokens: unknown)
+params: default
+  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed, tokens: heuristic, window: 200000 [verified], cache: reported, fixed_cost: 18900/200000 tokens (9%))
+  [1] local/qwen3:4b               SKIPPED  skipped `local/qwen3:4b`: missing capabilities: unknown (backend, model) pair  (breaker: closed, tokens: unknown, window: not indexed [unknown], cache: unknown, fixed_cost: unknown)
 ```
+
+`params:`, on its own line right after the header, is that role's
+effective `[roles.<alias>.params]` — see ["Sampling and reasoning
+params"](#sampling-and-reasoning-params) below for what it means and how
+to set it. `default` means nothing is configured for this role (never an
+empty line, so "nothing configured" reads as a distinct, deliberate
+fact rather than a blank you might mistake for a rendering bug); otherwise
+every `Some`/non-empty field renders `key=value`, comma-separated,
+including `extra`'s own entries (`reasoning_budget_tokens=8000`). Unlike
+every per-candidate column below, this line is read straight from your
+`settings.json`, not from the `ExplainReport` the router produced — so it
+shows a real value even under the `MinimalRouter` fallback (see below)
+that leaves every per-candidate column `unknown`.
+
+`fixed_cost:` is the same fixed, per-turn cost guided setup's own
+runway preflight computes — the default opinion set's real tool-schema and
+instruction-fragment tokens, plus a fixed per-server allowance for each
+configured `[plugins].mcp[]` entry and a representative command-prompt
+allowance — checked against THIS candidate's resolved window. The shape is
+`<total>/<window> tokens (<pct>%)`, with `, over half the window` appended
+when the total crosses half of `window` (the identical
+`INSTALL_FOOTPRINT_WARN_FRACTION` threshold guided setup's own warning
+uses). `unknown` — never a bogus percentage — is exactly the case
+`window:` itself reports as `not indexed`: there is no window to compare
+the fixed cost against. `--json` carries the identical string as each
+chain entry's `"fixed_cost"` key.
 
 `tokens:` is that candidate's backend's declared `Backend::token_fidelity`
 (`exact` / `calibrated` / `heuristic`) — the operator-visible answer to "how
@@ -175,9 +203,66 @@ answer at all, not that the answer was bad — see the `MinimalRouter`
 paragraph below. `--json` carries the identical value as each chain entry's
 `"token_fidelity"` key.
 
-`--json` renders the same report machine-readably. Two things worth
-knowing about what this command actually evaluates (both verified
-against `conway::Conway::explain_routing`):
+`window:` is that candidate's resolved `max_context_tokens`, and the
+bracketed tag beside it is where that number actually came from
+(`ContextTokensSource`, `conway-core`'s `capabilities` module) — never a
+bare `unknown` for a candidate this report actually indexed:
+
+- `verified` — a compiled-in, sourced metadata table entry, or a dialect's
+  own documented per-provider figure (Anthropic's 200,000, `"openai"`'s
+  128,000).
+- `models.json` — an operator-editable override: a `.conway/models.json`
+  entry, hand-edited or written by conway's own discover-or-ask setup flow
+  (see [`docs/providers.md`'s "Establishing the window at
+  setup"](providers.md#establishing-the-window-at-setup)).
+- `probed` — a live discovery result for this exact model (a
+  `probe_on_startup` capability probe, or the setup-time discover step).
+- `floor (assumed)` — this dialect's own baseline governs, and that
+  baseline is not a sourced fact about any real model of this provider
+  (`conway-plugin-backends`'s built-in `"32768"` floor for most dialects) —
+  see [`docs/providers.md`'s "Where a context ceiling comes
+  from"](providers.md#where-a-context-ceiling-comes-from) for the full
+  precedence chain this label reflects.
+- `unknown` — this candidate has no capability-index entry at all (an
+  undeclared model, or the `MinimalRouter` fallback below); `window:` itself
+  reads `not indexed` in this case.
+
+`--json` carries the same two facts per entry as `"context_window_tokens"`
+(a number or `null`) and `"context_window_source"` (one of the five strings
+above).
+
+`cache:` is that candidate's backend's declared `Backend::cache_reporting`
+(board item A5.7, "prompt caching reads zero on every real session") --
+whether this backend's wire dialect has ANYWHERE to say "the cache was
+hit" at all, answered before a single request is sent. `reported`
+(Anthropic; the `openai`/`kimi` `openai-compat` profiles) means this
+backend's decoder reads a real cache-usage field whenever the wire response
+carries one; `not reported` (every other built-in `openai-compat` profile,
+including `ollama`) means either the wire dialect carries no such field at
+all (Ollama's native `/api/chat`), or its reporting behavior has not been
+verified against real documentation or a real response -- see
+[`docs/providers.md`'s "Does Ollama Cloud actually cache
+prefixes?"](providers.md#does-ollama-cloud-actually-cache-prefixes) for the
+disclosed gap this second case names rather than guesses at; `unknown`
+means the producing router could not answer at all (the `MinimalRouter`
+fallback below), the identical shape `tokens:`/`window:` already use for
+the same reason. **This is a different fact from the per-response
+`Usage::cache_accounting`** the status line and turn-end summary render
+(see ["Prompt caching: economics, not
+correctness"](#prompt-caching-economics-not-correctness) below): that one
+is discovered only after a request was sent and answers "did THIS response
+say anything"; `cache_reporting` is a declared, ahead-of-time prediction
+answering "will ANY response from this backend ever have anywhere to say
+so." `--json` carries the identical value as each chain entry's
+`"cache_reporting"` key (`"reported"`/`"not reported"`/`"unknown"`).
+
+`--json` renders the same report machine-readably: an object with a
+top-level `"params"` string (the `params:` line above) alongside `"chain"`,
+`"skipped"`, and `"health"`, each chain/skipped entry additionally carrying
+`"fixed_cost"` (the `fixed_cost:` column above). Four things worth
+knowing about what this command actually evaluates (the first three
+verified against `conway::Conway::explain_routing`; the fourth is NOT part
+of that method's own output at all):
 
 - It always runs with `est_tokens = 0` — a synthetic, content-free probe
   of eligibility right now, not a re-evaluation of any real conversation.
@@ -193,11 +278,23 @@ against `conway::Conway::explain_routing`):
   somewhere, and as of the per-role floor above that somewhere can now be
   `roles.<alias>`'s own configured fields, not just a caller-supplied
   requirement.
+- `params:` and `fixed_cost:` are the `conway routes explain` CLI command's
+  own additions, layered on top of `ExplainReport` rather than fields on
+  it: `params` is read straight off `ConwayConfig::roles` (see above), and
+  `fixed_cost` is computed the same way guided setup's own runway preflight
+  is (`crate::first_run::default_opinion_set_footprint` /
+  `runway_fixed_cost_warning`, `conway-cli`-internal, reused rather than
+  re-derived) against each candidate's resolved window. Neither widens
+  `ExplainEntry`'s or `ExplainReport`'s own wire shape, so an embedder
+  reading `Conway::explain_routing` directly never sees them — only this
+  CLI command's own text/`--json` output does.
 
 For the routing decision an actual turn just made, the TUI's `/why`
-command shows the last live `Event::ModelDecision` for the focused agent
-instead (see [`interactive.md`](interactive.md)) — that one carries the
-turn's real `est_tokens`.
+command shows a short session HISTORY of live `Event::ModelDecision`s for
+the focused agent instead (see [`interactive.md`](interactive.md) and
+["What you see when a route is skipped"](#what-you-see-when-a-route-is-skipped)
+below) — those carry the turn's real `est_tokens`, and a decision's own
+`Fallback::after` (when non-empty) names what it skipped past.
 
 **Where the report type lives, and what happens with a non-default
 router.** `ExplainReport` (and the field types it's built from --
@@ -213,11 +310,12 @@ one automatically: `Conway::explain_routing` falls back to
 report is honestly *degenerate*, not empty and not fabricated-rich: one
 entry per configured chain candidate (position `0` `SELECTED`, the rest
 `SKIPPED`), every `capabilities` field `None`, every `token_fidelity` field
-`None` (rendered `tokens: unknown`), and every `breaker` field
+`None` (rendered `tokens: unknown`), every `cache_reporting` field `None`
+(rendered `cache: unknown`), and every `breaker` field
 `Closed` -- because a `MinimalRouter` genuinely indexes no capabilities,
-holds no `Arc<dyn Backend>` to ask about token fidelity, and tracks no real
-breaker state, and inventing any of the three would be claiming a
-capability the harness doesn't have. Critically, `conway routes explain` still
+holds no `Arc<dyn Backend>` to ask about token fidelity or cache
+reporting, and tracks no real breaker state, and inventing any of the four
+would be claiming a capability the harness doesn't have. Critically, `conway routes explain` still
 distinguishes "unknown role" from "configured role, empty report" in this
 configuration: it checks `roles` directly against your configuration,
 not whether the report came back with zero entries -- a configured role
@@ -312,6 +410,111 @@ two demands more wins; neither side can weaken the other. `conway-plugin-routing
 result, headroom last, exactly as before; a candidate that fails one shows
 up as an ordinary `RoutingReason::CapabilitySkip` / `context: ...`-style
 entry, e.g. `reliability_tier: requires Verified, has Community`.
+
+## Sampling and reasoning params
+
+`roles.<alias>.params` is a different knob than everything in ["Capability
+matching"](#capability-matching) above: those six fields (`tool_calling`,
+`structured_output`, `parallel_tool_calls`, `reasoning`, `min_reliability`,
+`min_context`) are a FLOOR a candidate model must clear before it is routed
+to at all. `params` is what conway actually SENDS once a candidate is
+chosen — temperature, top-p, a token cap, stop sequences, a sampling seed,
+and a free `extra` map for whatever provider-specific key that request
+needs, e.g. Anthropic's extended-thinking token budget or an
+OpenAI-compatible server's `reasoning_effort`:
+
+```json
+// .conway/settings.json
+{
+  "roles": {
+    "thinking": {
+      "chain": ["anthropic/claude-sonnet-4-6"],
+      "params": {
+        "extra": { "reasoning_budget_tokens": 8000 }
+      }
+    },
+    "fast": {
+      "chain": ["anthropic/claude-haiku-4-5"],
+      "params": {
+        "temperature": 0
+      }
+    }
+  }
+}
+```
+
+`thinking` turns a hard problem's effort up: `extra.reasoning_budget_tokens`
+reaches the Anthropic Messages API's `thinking: {type: "enabled",
+budget_tokens: ...}` field verbatim (see `conway-plugin-backends`'
+`anthropic::wire` module). `fast` turns a mechanical one's effort down —
+a smaller model, and `temperature: 0` for deterministic output — the exact
+inverse case. Switch between them with `/role`, the same top-level,
+session-scoped command ["Viewing and changing the default from the
+TUI"](#viewing-and-changing-the-default-from-the-tui) already covers for
+`default_role`: `/role thinking` for the next hard problem, `/role fast`
+once it's mechanical again. There is no separate `/effort` command and no
+harness-level effort enum — the role IS the effort switch, because a
+reasoning budget is provider-shaped (Anthropic's token budget and an
+OpenAI-compatible server's `reasoning_effort` string are not the same
+value on the same scale), and a role's routing config is already where
+every other provider-shaped setting for that chain lives.
+
+`ConwayConfig::routing()` is the one place `roles.<alias>.params` is
+resolved into `conway_core::routing::RoleConfig::params` — every backend
+adapter reads the resolved value off its request; none re-derives it from
+`settings.json`. An `extra` key a backend's own wire layer does not
+recognize is passed through untouched (no validation at this layer; the
+provider's own request either accepts or rejects it, exactly as if you'd
+sent it by hand). A TYPED field a backend has no equivalent for — today,
+`seed`, on both shipped adapters' primary request path — logs one
+`tracing::warn!` naming the field and the backend the first time that
+request is built, rather than silently doing nothing: a setting that has
+no effect and no explanation is exactly the kind of gap this project tries
+not to leave standing.
+
+To see what a role's effective `params` actually resolved to without
+sending a real request, `conway routes explain <role>` prints it on its own
+`params:` line (`--json`'s `"params"` key) — see ["Asking why a route was
+chosen"](#asking-why-a-route-was-chosen) above.
+
+## Narrowing a role's own tool set
+
+`roles.<alias>.tools` is a different question again from both "Capability
+matching" and "Sampling and reasoning params" above: not "which model", not
+"what to send it", but "which tools that model ever sees at all" — an
+allow/deny filter over the announced tool set, evaluated once, at spawn
+time, for every agent routed through this role:
+
+```json
+// .conway/settings.json
+{
+  "roles": {
+    "reviewer": {
+      "chain": ["anthropic/claude-sonnet-4-6"],
+      "tools": {
+        "exclude": ["mcp_*"]
+      }
+    }
+  }
+}
+```
+
+Both `include` and `exclude` are glob patterns in the same vocabulary an
+`AgentDef`'s own frontmatter `tools:` list already uses — an exact tool
+name, or a trailing `*` for a prefix match. Absent (the default for every
+role that names no `tools` table at all) narrows nothing: an agent routed
+through such a role announces exactly what its own `agent_def`/call-site
+`tools` override would already narrow it to, unchanged. When both `include`
+and `exclude` are set, `include` narrows to an allowlist first and
+`exclude` then removes any of its own matches from that allowlist —
+`exclude` always wins a name matched by both.
+
+This narrows what a root or a fork/spawn child ever ANNOUNCES, on top of
+whatever its own `agent_def.tools`/call-site `tools` override already
+narrows it to — the two compose (an AND, not an override): a role's own
+`tools` table can only ever shrink what an agent would otherwise see, never
+widen it. A forked or spawned child routed through a narrowing role gets
+the identical narrowing a root started with that same role would.
 
 ## Headroom
 
@@ -726,14 +929,50 @@ all.)
 
 ### What you see when a route is skipped
 
-A skip that happens mid-turn, silently advancing to the next chain
-candidate without tripping a breaker, produces no dedicated notice —
-you'll just see the eventual successful model. The moment a breaker
-actually *opens* is the one point this becomes visible live: a
-`BackendDegraded` event fires, which the TUI renders as a transcript
-notice and one-shot mode prints to stderr as `backend degraded:
-<endpoint>`. A captured example, chain `[anthropic, local]` with the
-first candidate unreachable:
+Board item A1d ("say why a turn fell back") closed a real gap here: a
+skip that happened mid-turn used to advance to the next chain candidate
+completely silently — `route_reason.after` (the field below) recorded
+nothing, and the TUI showed no notice at all beyond the eventual
+successful model's name. It now names both WHAT was skipped and WHY,
+with numbers.
+
+**`route_reason` (persisted per turn).** Every assistant turn's log
+record carries a `route_reason` naming the model AND the reason it was
+chosen. When that reason is `Fallback`, its `after` field lists every
+earlier-in-chain candidate this turn's routing actually passed over
+before reaching the one that ran — each entry naming the model and the
+exact reason, reusing the identical vocabulary `conway routes explain`
+already renders (a capability floor, a headroom shortfall, a breaker
+open, or an admission refusal discovered once the real request was
+built). Two distinct sources feed it, both surfaced the same way:
+candidates the ROUTER itself pre-filtered before a single backend call
+was made, and candidates that passed routing but were then refused by
+`Backend::admit`'s own authoritative check over the actually-built
+request. `after` is `[]` exactly when nothing was skipped to reach this
+candidate (an ordinary primary selection, or a pin) — never a
+placeholder for "not implemented."
+
+**In the TUI.** A turn that routed past a named candidate shows a
+one-line dim notice naming it, e.g.:
+
+```text
+routed to local/qwen3-coder-80b — anthropic/claude-sonnet-4-6 skipped: context too large: 24614 input tokens + 8192 headroom = 32806 exceeds anthropic/claude-sonnet-4-6's window of 32768 tokens (short by 38); not trimmed or escalated
+```
+
+**`/why`.** The interactive `/why` command now keeps a short, bounded
+session HISTORY of routing decisions (INTENT.md §5c: "changing model
+mid-session is ordinary") rather than only the latest one — three
+consecutive `/model` switches, or a session that genuinely flip-flopped
+between a primary and a fallback several times, are all individually
+recoverable, not collapsed down to the newest.
+
+**A breaker actually opening is still separately visible, unchanged.**
+The moment a breaker *opens* (as opposed to an ordinary per-turn skip
+that never trips one) remains its own live signal: a `BackendDegraded`
+event fires, which the TUI renders as a transcript notice and one-shot
+mode prints to stderr as `backend degraded: <endpoint>`. A captured
+example, chain `[anthropic, local]` with the first candidate
+unreachable:
 
 ```text
 conway: routed role 'coder' to anthropic/claude-sonnet-4-6
@@ -776,6 +1015,30 @@ just a claim:
 A profile's `cache` field (see [`providers.md`](providers.md)) is
 informational for exactly this reason — it tells `conway-runtime`
 whether it's worth marking a hint at all, never how a request is built.
+
+**The precondition every cache depends on, proven directly (board item
+A5.7).** Byte-for-byte identity across whole segments is necessary but not
+sufficient: a real, growing conversation adds a new turn to the END of the
+prompt on every step, and if anything upstream of the wire layer re-derives
+or reorders an EARLIER segment, the shared leading run a provider's cache
+lookup depends on breaks silently, with no error and no visible sign —
+just a `0%`/`not reported` figure nobody can explain.
+`two_conversations_differing_only_in_the_final_user_turn_render_byte_identical_up_to_that_turn`
+(both `conway-plugin-backends/src/anthropic/wire.rs` and its
+`openai_compat/wire.rs` counterpart) renders the SAME conversation twice
+with only the last user turn's content changed, and asserts every message
+strictly before that turn is byte-identical between the two renders — the
+literal operationalization of "churn at the front breaks caching." Each has
+a companion test proving the comparison technique is discriminating rather
+than vacuous: changing the FIRST user turn instead of the last must (and
+does) make the same prefix comparison fail.
+`a_second_turn_over_the_cached_prefix_reports_a_real_hit_and_the_first_turn_placed_the_breakpoint`
+(`anthropic_cache_mapping.rs`) closes the loop end to end against wiremock
+fixtures: a first turn places the Anthropic breakpoint on a static prefix,
+and a second turn reusing that exact prefix — replayed against a response
+reporting `cache_read_input_tokens > 0` — both decodes into a nonzero
+`Usage::cache_read_tokens` AND still carries the identical breakpoint on
+the identical prefix. No live API call gates any of this.
 
 ### Tool schemas are sent once, not twice
 
@@ -890,8 +1153,8 @@ conway routes explain coder
 
 ```text
 role: coder  (est_tokens=0, headroom_tokens=4096)
-  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed, tokens: heuristic)
-  [1] local/qwen3:4b               SELECTED fallback #1 after:   (breaker: closed, tokens: heuristic)
+  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed, tokens: heuristic, window: 200000 [verified])
+  [1] local/qwen3:4b               SELECTED fallback #1 after:   (breaker: closed, tokens: heuristic, window: 32768 [models.json])
 ```
 
 Both candidates are eligible right now, in the order they'll be tried.

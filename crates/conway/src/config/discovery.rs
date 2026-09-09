@@ -288,6 +288,49 @@ pub fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
+/// Walks up from `dir`, INCLUSIVE, looking for a `.git` entry -- directory
+/// OR file (`dir.join(".git").exists()` matches both: an ordinary clone's
+/// `.git` is a directory, a linked worktree's or a submodule's `.git` is a
+/// FILE containing a `gitdir:` pointer elsewhere, and this walk only cares
+/// that *something* is there, never resolving where a pointer leads).
+/// Returns `None` when no such entry exists anywhere above `dir`, including
+/// the ordinary case of `dir` not being inside a git repository at all --
+/// the walk does NOT fall back to the filesystem root as a boundary; a
+/// caller that mistook "no repository found" for "the root IS the
+/// filesystem root" would pool every non-repository project on the machine
+/// into one shared key, exactly the harm [`session_root`]'s own doc warns
+/// against.
+///
+/// **Deliberately the identical rule**
+/// `conway_plugin_idiom::find_enclosing_git_root` (private to that crate,
+/// its own project-instructions walk) already uses -- a session-store key
+/// and an instructions-file walk disagreeing about where a project starts
+/// would be a real, user-visible split. This module cannot depend on that
+/// crate to share the one implementation -- the dependency direction runs
+/// the other way, every first-party plugin crate depends on `conway`,
+/// never the reverse -- so this is a second, independently maintained
+/// copy. Keep the two in sync by hand if either rule ever changes.
+///
+/// **Not handled, on purpose, matching that sibling function's own
+/// disclosure:** a bare-repository checkout, where `dir` sits inside the
+/// bare repository's own directory (`HEAD`/`objects`/`refs` directly
+/// present) rather than under a nested `.git`. Nothing marks that
+/// directory as a boundary here, so the walk falls back to `None` (and
+/// [`session_root`] falls back to the exact `dir`) exactly as for a plain
+/// non-repository directory.
+fn find_enclosing_git_root(dir: &Path) -> Option<PathBuf> {
+    let mut current = dir.to_path_buf();
+    loop {
+        if current.join(".git").exists() {
+            return Some(current);
+        }
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => return None,
+        }
+    }
+}
+
 /// Encodes an absolute project directory into a single, filesystem-safe,
 /// human-readable path component -- the project key `session_root`'s
 /// central-default branch names its subdirectory with.
@@ -352,10 +395,32 @@ pub fn encode_project_key(path: &Path) -> String {
 /// `settings.json`/`history` -- the same directory, just a `sessions/
 /// <project-key>/` subtree instead of a bare file).
 ///
+/// **The project key is keyed off the enclosing git repository root when
+/// `project_dir` sits inside one** (`find_enclosing_git_root`), falling
+/// back to `project_dir` itself, exactly as before, when it does not. This
+/// is what makes `conway` invoked from a repository's root and from one of
+/// its subdirectories (no subdirectory `.conway/settings.json` of its own)
+/// resolve to the SAME sessions directory -- the two used to diverge,
+/// silently splitting one project's history across two disjoint stores
+/// keyed by whichever directory happened to be the invocation cwd. A
+/// launch outside any git repository is unaffected: the key is still the
+/// exact cwd, matching the pre-existing default precisely.
+///
+/// **Migrates nothing.** This only changes where a *newly created*
+/// session's directory resolves to; a session directory that already
+/// exists under an old, cwd-keyed path is left exactly where it is --
+/// nothing here reads, moves, or deletes an existing `sessions/<old-key>/`
+/// tree. An operator who already has history split across a repo-root key
+/// and one or more subdirectory keys keeps all of it, reachable exactly as
+/// it was; only sessions created from here on share the repo-root key.
+///
 /// Falls back to the OLD, pre-this-item default (`<project_dir>/.conway/
 /// sessions`) only if [`user_config_path`] itself returns `None` -- no home
 /// directory discoverable AND `CONWAY_CONFIG_DIR` unset, an extreme edge
-/// case this function refuses to hard-fail over.
+/// case this function refuses to hard-fail over. That fallback branch does
+/// not use a project key at all (it names the directory directly, relative
+/// to `project_dir`), so the git-root preference above does not apply to
+/// it.
 ///
 /// `project_dir` should already be absolute and normalized
 /// ([`normalize_lexically`]) -- callers resolving `[session].root` at
@@ -373,10 +438,11 @@ pub fn session_root(
             project_dir.join(root)
         };
     }
+    let key_dir = find_enclosing_git_root(&project_dir).unwrap_or_else(|| project_dir.clone());
     match user_config_path(env).and_then(|p| p.parent().map(Path::to_path_buf)) {
         Some(config_dir) => config_dir
             .join("sessions")
-            .join(encode_project_key(&project_dir)),
+            .join(encode_project_key(&key_dir)),
         None => project_dir.join(".conway").join("sessions"),
     }
 }
@@ -759,6 +825,93 @@ mod tests {
         let b = session_root(Path::new("/Users/dan/project-b"), None, &env);
         assert_ne!(a, b);
         assert_eq!(a.parent(), b.parent(), "both still share the central root");
+    }
+
+    #[test]
+    fn find_enclosing_git_root_finds_an_ordinary_directory_dot_git_at_an_ancestor() {
+        let repo = tempfile_dir();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        let nested = repo.join("src").join("deep");
+        fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(find_enclosing_git_root(&nested), Some(repo));
+    }
+
+    /// A linked worktree's or a submodule's `.git` is a FILE, not a
+    /// directory -- matching `conway_plugin_idiom::find_enclosing_git_root`'s
+    /// own doc, which names this exact shape. A `.exists()` check that
+    /// somehow required a directory (e.g. `is_dir()` instead) would miss
+    /// this and disagree with that sibling function about where a
+    /// worktree's project starts.
+    #[test]
+    fn find_enclosing_git_root_matches_a_file_dot_git_not_just_a_directory() {
+        let worktree = tempfile_dir();
+        fs::write(worktree.join(".git"), "gitdir: /elsewhere/.git/worktrees/x").unwrap();
+
+        assert_eq!(find_enclosing_git_root(&worktree), Some(worktree));
+    }
+
+    /// No `.git` anywhere above `dir`: the walk must not run all the way to
+    /// the filesystem root and treat IT as a boundary -- see this
+    /// function's own doc for the harm that would cause (pooling every
+    /// non-repository project on the machine under one key). Catches an
+    /// implementation whose loop returns `Some(current)` unconditionally
+    /// once `current.parent()` is `None`, instead of `None`.
+    #[test]
+    fn find_enclosing_git_root_returns_none_outside_any_repository() {
+        let dir = tempfile_dir();
+        assert_eq!(find_enclosing_git_root(&dir), None);
+    }
+
+    /// Required check: launching from a project's root and from a
+    /// subdirectory of that same project (no `.git` of its own) must
+    /// resolve to the SAME project key. Catches reverting `session_root` to
+    /// key off the raw, unwalked `project_dir` (the old cwd-only behavior,
+    /// with no git-root preference at all) -- that version keys `repo` and
+    /// `repo/docs` differently, so this assertion fails against it.
+    #[test]
+    fn session_root_subdirectory_launch_resolves_to_the_same_key_as_the_repo_root() {
+        let repo = tempfile_dir();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        let sub = repo.join("docs");
+        fs::create_dir_all(&sub).unwrap();
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/custom/config_dir".to_string(),
+        );
+
+        let from_root = session_root(&repo, None, &env);
+        let from_sub = session_root(&sub, None, &env);
+        assert_eq!(
+            from_root, from_sub,
+            "a subdirectory launch must share the repo root's project key: \
+             {from_root:?} vs {from_sub:?}"
+        );
+    }
+
+    /// Required check: outside any git repository, the project key must be
+    /// the exact cwd -- unchanged from the old cwd-only default. Catches a
+    /// git-root walk that, on finding nothing, substitutes some OTHER
+    /// directory (the filesystem root, or an unrelated ancestor) instead of
+    /// falling back to `dir` itself -- that would pool every
+    /// non-repository project under one shared key, the harm
+    /// `find_enclosing_git_root`'s own doc names.
+    #[test]
+    fn session_root_outside_a_repository_keys_off_the_exact_cwd() {
+        let dir = tempfile_dir();
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/custom/config_dir".to_string(),
+        );
+
+        let resolved = session_root(&dir, None, &env);
+        let expected = PathBuf::from("/custom/config_dir")
+            .join("sessions")
+            .join(encode_project_key(&normalize_lexically(&dir)));
+        assert_eq!(resolved, expected);
     }
 
     fn tempfile_dir() -> PathBuf {

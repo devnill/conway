@@ -75,8 +75,15 @@ struct BashArgs {
 }
 
 /// Executes `command` with `bash -c`, streaming stdout/stderr line-by-line as
-/// `Event::ToolProgress` and killing the whole process group — including any
-/// backgrounded children — on cancellation or timeout.
+/// `Event::ToolProgress`. The call returns as soon as the launched `bash -c`
+/// process itself exits — it does not wait for a backgrounded (`cmd &`)
+/// grandchild that inherited its pipes to release them (see `unix::run`'s
+/// own doc for why waiting for that would be wrong). The whole process
+/// group — including any backgrounded children — is killed only on
+/// cancellation or timeout; a normal, successful return leaves backgrounded
+/// children running and names them in the result text instead. See
+/// `docs/tools.md`'s "What `&` does inside `bash`" section for the full
+/// contract.
 ///
 /// No sandboxing, no command allow/deny list, no argument sanitization
 /// (process-group setup here is execution plumbing, not a security
@@ -238,7 +245,9 @@ mod unix {
     use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Stdio};
 
-    use tokio::io::{AsyncBufReadExt, BufReader};
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    use tokio::io::{AsyncBufReadExt, BufReader, Lines};
     use tokio::time::{Duration, Instant};
 
     use conway_core::content::ContentBlock;
@@ -255,9 +264,19 @@ mod unix {
     const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
     enum Outcome {
+        /// The launched `bash -c` process itself exited. Its stdout/stderr
+        /// may still be held open by a backgrounded grandchild — that is
+        /// not this call's problem to wait out (see `run`'s own doc).
         Completed(ExitStatus),
         Cancelled,
         TimedOut,
+        /// `child.wait()` itself returned an OS-level error (not the child
+        /// exiting — the wait syscall failing). Rare, and not something
+        /// this item's fix introduces, but left unhandled it used to spin
+        /// the loop until the deadline; treating it as a definite failure
+        /// (after a defensive group kill, since the child's true state is
+        /// unknown) is strictly safer than that.
+        WaitFailed(std::io::Error),
     }
 
     pub(super) async fn run(
@@ -303,19 +322,29 @@ mod unix {
         let mut stderr_buf: Vec<String> = Vec::new();
         let mut stdout_done = false;
         let mut stderr_done = false;
-        let mut exit_status: Option<ExitStatus> = None;
 
         let deadline = Instant::now() + Duration::from_millis(args.timeout_ms);
 
         // `ctx.cancel` is a poll-based flag (conway-core cannot depend on
         // tokio, so it has no async `.cancelled()` future) — this loop polls
         // it, and the deadline, at least once per `POLL_INTERVAL` tick.
+        //
+        // **Why this loop no longer waits for `stdout_done && stderr_done`
+        // before declaring the call complete.** It used to: the previous
+        // shape only broke to `Completed` once BOTH the child had exited AND
+        // both pipes had reached EOF. A backgrounded grandchild (`cmd &`)
+        // inherits these same pipe fds — non-interactive `bash -c` has job
+        // control off, so `&` does not fork a new process group, and the
+        // fds are inherited exactly like any other open descriptor across
+        // `fork` — so the pipe's write end stays open, and EOF never
+        // arrives, until either the grandchild exits or this call's own
+        // deadline does. That made a deliberately-backgrounded `sleep 30 &`
+        // hold the tool to its FULL timeout and then, on the timeout path,
+        // `kill_group` the very job the model asked to keep running. The
+        // fix: the launched `bash -c` child's own exit (`child.wait()`
+        // resolving) IS this call's completion, full stop — reached for
+        // below the moment it's ready, not gated on the pipes too.
         let outcome = loop {
-            if let Some(status) = exit_status {
-                if stdout_done && stderr_done {
-                    break Outcome::Completed(status);
-                }
-            }
             if ctx.cancel.is_cancelled() {
                 break Outcome::Cancelled;
             }
@@ -348,8 +377,11 @@ mod unix {
                         _ => stderr_done = true,
                     }
                 }
-                status = child.wait(), if exit_status.is_none() => {
-                    exit_status = status.ok();
+                status = child.wait() => {
+                    match status {
+                        Ok(status) => break Outcome::Completed(status),
+                        Err(err) => break Outcome::WaitFailed(err),
+                    }
                 }
                 _ = tokio::time::sleep(POLL_INTERVAL) => {}
             }
@@ -357,27 +389,134 @@ mod unix {
 
         match outcome {
             Outcome::Completed(status) => {
+                // The shell itself is done; take whatever is ALREADY sitting
+                // in the pipe buffers (a zero-wait drain — see
+                // `drain_available`'s own doc for why this is deterministic,
+                // not a race), then stop reading. A backgrounded grandchild
+                // that still holds these pipes open keeps them open — this
+                // only closes conway's OWN read ends, which is not a signal
+                // to the grandchild in any way.
+                drain_available(&mut stdout_lines, &mut stdout_buf, call_id, &ctx).await;
+                drain_available(&mut stderr_lines, &mut stderr_buf, call_id, &ctx).await;
+                drop(stdout_lines);
+                drop(stderr_lines);
+
+                // Never killed on a successful return (that remains
+                // exclusively a timeout/cancellation behavior, below) — so
+                // any OTHER live member of the process group is a
+                // deliberately backgrounded job the model started and this
+                // result names rather than silently drops on the floor.
+                let still_running = still_running_group_members(pgid).await;
                 let (code, is_error) = describe_exit(status);
-                Ok(finish(&stdout_buf, &stderr_buf, &code, is_error, None))
+                Ok(finish(
+                    &stdout_buf,
+                    &stderr_buf,
+                    Some(&code),
+                    is_error,
+                    None,
+                    &still_running,
+                ))
             }
             Outcome::Cancelled => {
                 kill_group(&mut child, pgid).await;
                 Err(ToolError::Cancelled)
             }
             Outcome::TimedOut => {
-                let status = kill_group(&mut child, pgid).await;
-                let code = status
-                    .map(|s| describe_exit(s).0)
-                    .unwrap_or_else(|| "unknown".to_string());
+                // The whole group dies here — this is the ONE case (with
+                // `Cancelled`, above) where a backgrounded child does not
+                // survive the call, per this tool's documented safety
+                // property. The killed process's own exit code/signal is
+                // deliberately NOT reported alongside `timed out after
+                // ...ms`: a call that timed out never validly completed, so
+                // there is no exit code to report — reporting the SIGTERM/
+                // SIGKILL that ended it would just be a second, misleading
+                // way of saying the same "it didn't finish" fact this
+                // result already states once.
+                kill_group(&mut child, pgid).await;
                 Ok(finish(
                     &stdout_buf,
                     &stderr_buf,
-                    &code,
+                    None,
                     true,
                     Some(args.timeout_ms),
+                    &[],
                 ))
             }
+            Outcome::WaitFailed(err) => {
+                kill_group(&mut child, pgid).await;
+                Err(ToolError::Io {
+                    detail: format!("failed to wait for bash: {err}"),
+                })
+            }
         }
+    }
+
+    /// Reads whatever lines are ALREADY buffered on `lines`, right now,
+    /// without waiting for more to arrive.
+    ///
+    /// `tokio::time::timeout(Duration::ZERO, fut)` is deterministic here, not
+    /// a "usually fast enough" race: `Timeout::poll` polls the wrapped
+    /// future FIRST and returns its result immediately if it's `Ready`,
+    /// checking the deadline only when it isn't (see
+    /// `tokio::time::timeout`'s own implementation) — so if the OS already
+    /// delivered a line into the pipe buffer, this returns it every time; if
+    /// it hasn't, this returns promptly rather than blocking on a
+    /// grandchild that may never write again.
+    async fn drain_available<R>(
+        lines: &mut Lines<R>,
+        buf: &mut Vec<String>,
+        call_id: &str,
+        ctx: &ToolCtx,
+    ) where
+        R: tokio::io::AsyncBufRead + Unpin,
+    {
+        while let Ok(Ok(Some(text))) = tokio::time::timeout(Duration::ZERO, lines.next_line()).await
+        {
+            ctx.events.emit(Event::ToolProgress {
+                call_id: call_id.to_string(),
+                note: text.clone(),
+            });
+            buf.push(text);
+        }
+    }
+
+    /// Lists the pids of every OTHER live member of process group `pgid` —
+    /// i.e. a backgrounded (`cmd &`) grandchild still running after the
+    /// launched `bash -c` leader itself has exited and been reaped.
+    ///
+    /// Two-step, cheapest-first: `kill(-pgid, 0)` is a single syscall that
+    /// fails with `ESRCH` the instant nothing is left in the group — the
+    /// overwhelmingly common case (nothing was backgrounded), so the vast
+    /// majority of calls never do more than that. Only when the group DOES
+    /// still have a live member does this shell out to `ps` for the actual
+    /// pid(s), because listing "which pids share this pgid" has no portable
+    /// syscall — `/proc` would need a Linux-only branch, and this runs on
+    /// the operator's macOS dev box too (CI is Linux-only; this box is not).
+    /// `ps -eo pid=,pgid=` is the one flag set both `ps` implementations
+    /// (BSD `ps` on macOS, procps-ng on Linux) answer identically —
+    /// verified against both, not assumed.
+    async fn still_running_group_members(pgid: i32) -> Vec<i32> {
+        if kill(Pid::from_raw(-pgid), None).is_err() {
+            return Vec::new();
+        }
+
+        let Ok(output) = tokio::process::Command::new("ps")
+            .args(["-eo", "pid=,pgid="])
+            .output()
+            .await
+        else {
+            return Vec::new();
+        };
+
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let pid: i32 = fields.next()?.parse().ok()?;
+                let group: i32 = fields.next()?.parse().ok()?;
+                (group == pgid).then_some(pid)
+            })
+            .collect()
     }
 
     fn describe_exit(status: ExitStatus) -> (String, bool) {
@@ -387,12 +526,21 @@ mod unix {
         }
     }
 
+    /// Builds the result text. `exit_code` and `timed_out_after_ms` are
+    /// mutually exclusive by construction — every call site above passes
+    /// exactly one as `Some` — because a call that reports an exit code
+    /// completed, and a call that timed out never validly completed to
+    /// report one; the two facts are never true at once, so this never
+    /// prints both (the bug this item exists to fix: a backgrounded call
+    /// used to report `exit code: 0` AND `timed out after ...ms` on the
+    /// same line, describing an outcome that never happened).
     fn finish(
         stdout: &[String],
         stderr: &[String],
-        exit_code: &str,
+        exit_code: Option<&str>,
         is_error: bool,
         timed_out_after_ms: Option<u64>,
+        still_running: &[i32],
     ) -> ToolOutput {
         let stdout_body = if stdout.is_empty() {
             "(empty)".to_string()
@@ -404,10 +552,24 @@ mod unix {
         } else {
             stderr.join("\n")
         };
-        let mut text =
-            format!("stdout:\n{stdout_body}\n\nstderr:\n{stderr_body}\n\nexit code: {exit_code}");
-        if let Some(ms) = timed_out_after_ms {
-            text.push_str(&format!("\ntimed out after {ms}ms"));
+        let mut text = format!("stdout:\n{stdout_body}\n\nstderr:\n{stderr_body}\n\n");
+        match (exit_code, timed_out_after_ms) {
+            (Some(code), None) => text.push_str(&format!("exit code: {code}")),
+            (None, Some(ms)) => text.push_str(&format!("timed out after {ms}ms")),
+            (Some(_), Some(_)) | (None, None) => {
+                unreachable!("bash.rs: exit_code and timed_out_after_ms are mutually exclusive")
+            }
+        }
+        if !still_running.is_empty() {
+            let pids = still_running
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            text.push_str(&format!(
+                "\n{} background process(es) still running: pid {pids}",
+                still_running.len()
+            ));
         }
         ToolOutput {
             blocks: vec![ContentBlock::Text { text }],

@@ -19,6 +19,7 @@ use ratatui::crossterm::event::{Event as CEvent, EventStream as CrosstermEventSt
 use ratatui::Terminal;
 
 use super::ask::AskUpdate;
+use super::editor;
 use super::App;
 use super::SubmitOutcome;
 use crate::exit::ExitCode;
@@ -26,7 +27,8 @@ use crate::tui::commands::{self, Effect, Host};
 use crate::tui::form::FormReceiver;
 use crate::tui::gate::GateReceiver;
 use crate::tui::input::{self, Action};
-use crate::tui::state::{should_animate, AskModal, Entry};
+use crate::tui::session_picker;
+use crate::tui::state::{should_animate, AskModal, Entry, MODEL_DECISION_HISTORY_CAP};
 use crate::tui::view;
 
 /// The app loop's redraw cap (module notes: "60 fps cap / redraw-on-change").
@@ -369,17 +371,19 @@ impl App {
                 maybe_env = events.next() => {
                     match maybe_env {
                         Some(env) => {
-                            // the `/why` reads this back; `AppState::apply`
-                            // (state.rs) does
-                            // not populate it -- see the field's own doc.
-                            // The OLD value shifts into `previous_model_
-                            // decision` first (its own doc) so `/why` can
-                            // report what changed after a `/model`/`/role`
-                            // switch, not just the latest decision alone.
+                            // `/why` reads this back (`AppState::
+                            // model_decision_history`, its own doc);
+                            // `AppState::apply` (state.rs) does not
+                            // populate it -- pushed here, capped at
+                            // `MODEL_DECISION_HISTORY_CAP`, oldest dropped
+                            // first.
                             if matches!(env.event, conway::Event::ModelDecision { .. }) {
-                                self.state.previous_model_decision =
-                                    self.state.last_model_decision.take();
-                                self.state.last_model_decision = Some(env.clone());
+                                self.state.model_decision_history.push_back(env.clone());
+                                if self.state.model_decision_history.len()
+                                    > MODEL_DECISION_HISTORY_CAP
+                                {
+                                    self.state.model_decision_history.pop_front();
+                                }
                             }
                             // whether
                             // this envelope marks the end of a turn/agent
@@ -816,6 +820,31 @@ impl App {
                                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
                                     );
                                 }
+                                // The `/model` picker's own "make default"
+                                // key -- mirrors `Action::CycleDefaultRole`/
+                                // `Action::PromoteSessionModelToDefault`
+                                // immediately above in every respect
+                                // (`env_vars`/`cwd` collected HERE for the
+                                // identical hermetic-testing reason; the
+                                // decision and write live in
+                                // `app/defaults.rs`'s
+                                // `App::apply_make_model_default`). No new
+                                // `commands::Effect` variant needed: this
+                                // key never goes through `commands::execute`
+                                // at all (`input::handle_ui_form_key` fires
+                                // it directly), so it needs exactly the same
+                                // direct-dispatch door those two siblings
+                                // already opened, not a second mechanism.
+                                Action::MakeModelDefault(model) => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    self.apply_make_model_default(
+                                        model,
+                                        &env_vars,
+                                        &std::env::current_dir()
+                                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                    );
+                                }
                                 Action::GrantPermissionPattern(rule, scope) => {
                                     // The granting agent is the one whose
                                     // call is being decided -- NOT
@@ -948,9 +977,18 @@ impl App {
                                 // completely unaffected by the branch below.
                                 Action::UiFormDecision(decision) => {
                                     let is_model_picker = self.state.model_picker_active;
+                                    // Board item `01M1YS550T52VR1VW8NMETXQS1`:
+                                    // `AppState::model_picker_active`'s own
+                                    // sibling flag for bare `/resume`'s
+                                    // picker -- read and cleared on the
+                                    // identical schedule, for the identical
+                                    // reason (see that field's own doc).
+                                    let is_session_picker = self.state.session_picker_active;
                                     self.state.model_picker_active = false;
+                                    self.state.session_picker_active = false;
                                     let chosen = self.state.resolve_ui_form(decision);
-                                    if let (true, Some(model)) = (is_model_picker, chosen) {
+                                    if let (true, Some(model)) = (is_model_picker, chosen.clone())
+                                    {
                                         let host = commands::LiveHost {
                                             handle: &self.handle,
                                             conway: &self.conway,
@@ -1049,6 +1087,134 @@ impl App {
                                                     plugin_id, &env, &cwd,
                                                 );
                                             }
+                                        }
+                                    } else if let (true, Some(option)) =
+                                        (is_session_picker, chosen)
+                                    {
+                                        // Board item `01M1YS550T52VR1VW8NMETXQS1`:
+                                        // the session picker's own `Enter`
+                                        // answer -- `option` is the FULL
+                                        // formatted row `session_picker::
+                                        // format_row` built, not a bare id
+                                        // (`AskSelectRequest::options` come
+                                        // back verbatim, the same contract
+                                        // the model picker leans on just
+                                        // above), so the row's own id is
+                                        // recovered first via
+                                        // `session_picker::
+                                        // session_id_from_option` before
+                                        // reaching `commands::apply_resume`
+                                        // -- the SAME function `execute`'s
+                                        // `SlashCommand::Resume { sid:
+                                        // Some(_) }` arm calls for a
+                                        // hand-typed `/resume <id>`, so a
+                                        // session chosen here resumes
+                                        // through the exact same path.
+                                        if let Some(id) =
+                                            session_picker::session_id_from_option(&option)
+                                        {
+                                            let host = commands::LiveHost {
+                                                handle: &self.handle,
+                                                conway: &self.conway,
+                                                commands: &self.command_registry,
+                                            };
+                                            match commands::apply_resume(
+                                                id.to_string(),
+                                                &mut self.state,
+                                                &host,
+                                            )
+                                            .await
+                                            {
+                                                Effect::None => {}
+                                                Effect::Quit => return Ok(ExitCode::Completed),
+                                                Effect::Resumed(handle) => {
+                                                    self.handle = handle;
+                                                    events = self.handle.events();
+                                                }
+                                                // Every other `Effect` variant
+                                                // is structurally unreachable
+                                                // from `apply_resume` (it only
+                                                // ever returns `None`/
+                                                // `Resumed`, per that
+                                                // function's own doc), but
+                                                // handled anyway rather than
+                                                // with a wildcard drop --
+                                                // mirroring the model-picker
+                                                // arm's own "no silent loss"
+                                                // comment above.
+                                                Effect::FocusNewSession {
+                                                    child,
+                                                    parent,
+                                                    first_message,
+                                                } => {
+                                                    self.state
+                                                        .ensure_agent_tracked(child, parent);
+                                                    let on_fail_extra =
+                                                        first_message.is_some().then_some(
+                                                            "; your message was not sent",
+                                                        );
+                                                    if let Some(stream) = self
+                                                        .try_focus_agent(child, on_fail_extra)
+                                                        .await
+                                                    {
+                                                        events = stream;
+                                                        if let Some(text) = first_message {
+                                                            self.deliver_first_message(
+                                                                child, text,
+                                                            )
+                                                            .await;
+                                                        }
+                                                    }
+                                                }
+                                                Effect::RunPluginCommand(invocation) => {
+                                                    self.spawn_plugin_command(invocation);
+                                                }
+                                                Effect::RunModalAsk { question } => {
+                                                    self.spawn_modal_ask(question);
+                                                }
+                                                Effect::RunAwait { agent } => {
+                                                    self.spawn_await(agent);
+                                                }
+                                                Effect::RunMarketplaceInstall {
+                                                    marketplace_url,
+                                                    plugin_id,
+                                                } => {
+                                                    let env = self.env.clone();
+                                                    let cwd = self.cwd.clone();
+                                                    self.apply_marketplace_install(
+                                                        marketplace_url,
+                                                        plugin_id,
+                                                        &env,
+                                                        &cwd,
+                                                    )
+                                                    .await;
+                                                }
+                                                Effect::RunMarketplaceUninstall { plugin_id } => {
+                                                    let env = self.env.clone();
+                                                    let cwd = self.cwd.clone();
+                                                    self.apply_marketplace_uninstall(
+                                                        plugin_id, &env, &cwd,
+                                                    );
+                                                }
+                                            }
+                                        } else {
+                                            // Unreachable in practice: every
+                                            // option this picker ever offers
+                                            // comes from `session_picker::
+                                            // format_row`, whose own id
+                                            // suffix `session_id_from_option`
+                                            // always recovers (see
+                                            // `session_picker`'s own round
+                                            // -trip test). Fails closed with
+                                            // a visible notice rather than a
+                                            // silently dropped `Enter` should
+                                            // that invariant ever break.
+                                            self.state.transcript.push(Entry::Notice {
+                                                text: format!(
+                                                    "session picker: could not recover a \
+                                                     session id from {option:?}"
+                                                ),
+                                            });
                                         }
                                     }
                                 }
@@ -1223,6 +1389,41 @@ impl App {
                                     // relies on.
                                     if let Some(stream) = self.try_focus_agent(agent, None).await {
                                         events = stream;
+                                    }
+                                }
+                                // Board item `01M1YVJ4RA5V7FF95MFRQMTQW3`:
+                                // `Ctrl-G` -- the ONE place this crate
+                                // suspends the terminal around a child
+                                // process (`app::editor`'s own doc for the
+                                // exact enter/leave pairing it reuses from
+                                // `tui/mod.rs`, and every failure path).
+                                // `resolve_editor_command` reads
+                                // `$VISUAL`/`$EDITOR`/`vi` HERE, at the one
+                                // production call site -- `edit_prompt_
+                                // externally` itself never touches
+                                // `std::env`, which is what keeps its own
+                                // tests free of process-global env
+                                // mutation (`app::editor`'s own doc).
+                                Action::OpenExternalEditor => {
+                                    let editor_command = editor::resolve_editor_command();
+                                    let outcome = editor::edit_prompt_externally(
+                                        terminal,
+                                        &self.state.input,
+                                        &editor_command,
+                                    );
+                                    match outcome {
+                                        editor::EditorOutcome::Replace(text) => {
+                                            self.state.input = text;
+                                            self.state.cursor =
+                                                self.state.input.chars().count();
+                                            self.state.sync_palette_stem();
+                                        }
+                                        editor::EditorOutcome::Unchanged => {}
+                                        editor::EditorOutcome::Failed { notice } => {
+                                            self.state
+                                                .transcript
+                                                .push(Entry::Notice { text: notice });
+                                        }
                                     }
                                 }
                             }

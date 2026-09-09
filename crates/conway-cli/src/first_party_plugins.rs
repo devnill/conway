@@ -144,13 +144,14 @@ use conway_plugin_names::AgentNames;
 /// value until BOTH are installed together, this module's own doc), and
 /// `conway.trim`/`conway.ui` are not opinions this item's ruling reaches --
 /// see decision `01M1FQFP5D0R3M9GC8R8Z24F5N` for the six that are.
-pub const DEFAULT_OPINION_SET: [&str; 6] = [
+pub const DEFAULT_OPINION_SET: [&str; 7] = [
     conway_plugin_idiom::PLUGIN_ID,
     conway_plugin_stepguard::PLUGIN_ID,
     conway_plugin_skills::PLUGIN_ID,
     conway_plugin_memory::PLUGIN_ID,
     conway_plugin_names::PLUGIN_ID,
     conway_plugin_history::PLUGIN_ID,
+    conway_plugin_checkpoint::PLUGIN_ID,
 ];
 
 /// Every first-party plugin this binary links, in no particular order.
@@ -346,13 +347,16 @@ fn bundle(
         // unknown-id error no matter what, the exact defect this entry
         // closes (`tests/first_party_plugins.rs`'s
         // `conway_trim_curator_omits_old_tool_round_trips_once_installed`
-        // is the reachability proof). Needs no constructor argument --
-        // `TrimPlugin::new()` is `TrimOldToolResults::default()`
+        // is the reachability proof). Constructed here with the plain
+        // default -- `TrimPlugin::new()` is `TrimOldToolResults::default()`
         // (`DEFAULT_KEEP_TURNS`), the same default an embedder gets from
-        // `TrimPlugin::default()`; `TrimPlugin::with_keep_turns` exists for
-        // a caller that wants a different window, but this bundle has no
-        // config surface to thread a per-operator value through yet, so it
-        // is not reached from here.
+        // `TrimPlugin::default()` -- and `apply_plugin_config`, called by
+        // every real caller of `bundle` immediately after it returns
+        // (board item `01M1YVM9CHFCJ6112XDYHCFS84`), overwrites it with an
+        // operator's own `[plugins.config.conway.trim].keep_turns` when one
+        // is present. `TrimPlugin::with_keep_turns` still exists for an
+        // embedder with no `settings.json` at all -- see
+        // `conway_plugin_trim`'s own module doc, "Configuring the window".
         Arc::new(conway_plugin_trim::TrimPlugin::new()),
         // `conway.names` -- operator-chosen, renameable names for agents
         // (board item `01M0TV5BSE98S16SFYECG9G9WP`, decision
@@ -406,7 +410,106 @@ fn bundle(
         // `"conway.confine"` in `[plugins].install` is the whole of the
         // wiring. See `docs/plugins/confine.md`.
         confine_plugin,
+        // `conway.checkpoint` -- rolls back the model's own file changes:
+        // snapshots a file's bytes around every `write`/`edit` tool call
+        // into a shadow store under `.conway/checkpoints`, and
+        // `/conway.checkpoint.list`/`.diff`/`.rollback` to preview and
+        // undo them, preserving an operator's
+        // own hand edit by default. In `DEFAULT_OPINION_SET` above (a
+        // fresh operator gets it unprompted) -- see
+        // `docs/plugins/checkpoint.md` and this plugin's own module doc
+        // for the full "bash is not captured" disclosure and the
+        // three-way conflict contract.
+        Arc::new(conway_plugin_checkpoint::CheckpointPlugin::new(cwd)),
+        // `conway.web` (board item `01M1YVDYEBJENX4NFC6NCSD9B9`) -- a
+        // `web_fetch` tool (GET an http(s) URL, reduced to readable text,
+        // bounded and SSRF-guarded), plus an optional `web_search` tool that
+        // registers only when an operator configures a search provider
+        // (`[plugins.config."conway.web"].search`, applied below by
+        // `apply_plugin_config` exactly like every other configurable
+        // candidate in this bundle). Needs no constructor argument beyond
+        // its own default config -- unlike `idiom_plugin`/`confine_plugin`
+        // immediately above, this candidate has no operator-file or
+        // host-primitive resolution to thread in, so it is constructed bare
+        // here, the same footing `conway.trim`/`conway.path` already take.
+        // Opt-in like every other member of this bundle, and deliberately
+        // NOT in `DEFAULT_OPINION_SET`: this plugin gives the model outbound
+        // network reach, a materially different trust posture from every
+        // other candidate here -- see `conway-plugin-web`'s own `lib.rs`
+        // module doc and `Cargo.toml` doc for the full reasoning.
+        Arc::new(conway_plugin_web::WebPlugin::default()),
+        // `conway.toolindex` (board item `01M1YS138H8T0HNV5YMZ6KD767` part
+        // 1) -- deferred tool schemas: narrows every non-built-in tool's
+        // announced JSON schema down to a one-line index entry, plus a
+        // `describe_tool` tool that fetches the full schema on demand and
+        // keeps that tool fully announced for the rest of the session.
+        // Needs no constructor argument -- unlike `conway.memory`/
+        // `conway.names` above, it reads its own always-announced name set
+        // from `conway::presets::builtin_plugins()` at construction time
+        // (`conway_plugin_toolindex`'s own module doc), never from
+        // anything this bundle threads in. Installs through the SAME
+        // `Plugin::tools`/`Plugin::context_hooks`/`with_plugin` surface
+        // every other plugin capability uses, exactly like
+        // `conway.skills`/`conway.memory` above -- `[plugins].install =
+        // ["conway.toolindex"]` is the whole of the wiring. Opt-in,
+        // deliberately NOT in `DEFAULT_OPINION_SET`: unlike `conway.skills`
+        // (whose narrowing is author-controlled and uniformly safe), this
+        // plugin changes model-facing tool-calling behavior for every
+        // non-built-in tool (a deferred tool's first call may cost one
+        // extra `describe_tool` round trip) -- a tradeoff
+        // `DEFAULT_OPINION_SET`'s own operator ruling
+        // (`01M1FQFP5D0R3M9GC8R8Z24F5N`) never evaluated, the same posture
+        // `conway.web` takes for a different (trust, not reliability)
+        // reason. See `conway_plugin_toolindex`'s own module doc, "Default
+        // set or opt-in", for the full reasoning.
+        Arc::new(conway_plugin_toolindex::ToolIndexPlugin::new()),
     ]
+}
+
+/// Applies each candidate's own slice of an operator's
+/// `[plugins.config.<id>]` table (`conway::config::schema::PluginsConfig::
+/// config`) via `conway_core::ports::Plugin::configure` -- board item
+/// `01M1YVM9CHFCJ6112XDYHCFS84`, the CLI-specific half of the seam
+/// `crates/conway-core/src/ports/plugin.rs` opens. Only a candidate NAMED
+/// in `config` is touched at all: an operator who configured `conway.trim`
+/// and installed nothing else pays this call for `conway.trim` alone, not
+/// for the other candidates `bundle` always constructs regardless of
+/// `[plugins].install` selection.
+///
+/// **Called immediately after `bundle()` returns, before anything else
+/// touches its `Vec`.** `Plugin::configure` takes `&mut self` specifically
+/// so it can run before a plugin is shared -- see that method's own doc,
+/// "before it is wrapped in the `Arc<dyn Plugin>` every other seam on this
+/// trait receives." `bundle()` already did that wrapping (`Arc::new(...)`
+/// per candidate), so this function reaches back through `Arc::get_mut`,
+/// which returns `Some` exactly when nothing else has cloned that `Arc`
+/// yet -- true here because every caller of this function calls it as the
+/// very next line after `bundle()` returns, before the `Vec` is filtered,
+/// extended, or handed anywhere a clone could happen. A refcount other
+/// than one at this point would mean a future edit inserted a clone before
+/// this call; caught as a named `FacadeError::Build` rather than a panic,
+/// since a config-application failure is exactly the kind of build-time
+/// error this whole seam otherwise reports.
+fn apply_plugin_config(
+    plugins: &mut [Arc<dyn Plugin>],
+    config: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<(), FacadeError> {
+    for plugin in plugins.iter_mut() {
+        let id = plugin.manifest().id;
+        let Some(value) = config.get(&id) else {
+            continue;
+        };
+        let exclusive = Arc::get_mut(plugin).ok_or_else(|| FacadeError::Build {
+            message: format!(
+                "conway: internal error -- \"{id}\" was not exclusively owned when applying its \
+                 own [plugins.config.\"{id}\"] value"
+            ),
+        })?;
+        exclusive.configure(value).map_err(|e| FacadeError::Build {
+            message: format!("[plugins.config.\"{id}\"]: {e}"),
+        })?;
+    }
+    Ok(())
 }
 
 /// Every first-party `Plugin` this binary links, REGARDLESS of
@@ -817,6 +920,15 @@ fn resolve_agent_names(install_ids: &[String]) -> Result<Arc<dyn AgentNames>, Fa
 /// `sessions`, and `routes` all see the same installed set from the same
 /// config.
 ///
+/// **Also applies `[plugins.config.<id>]` (board item
+/// `01M1YVM9CHFCJ6112XDYHCFS84`), between `bundle` and
+/// `install_selected`.** `apply_plugin_config` walks every candidate
+/// `bundle` just constructed and, for each one an operator's own
+/// `plugins.config` table names, calls its `Plugin::configure` -- BEFORE
+/// selection, so a malformed value fails this call the same way any other
+/// "selected but broken" resolver in this module fails closed, whether or
+/// not the named plugin ends up in `[plugins].install` at all.
+///
 /// **This is now three `Vec` constructions and one call** -- the ~70-line
 /// hand-rolled resolution this function used to perform (matching each id
 /// against a candidate's own identity, the router-factory cardinality
@@ -870,11 +982,12 @@ pub async fn install(
     form_surface: Option<Arc<dyn conway_plugin_ui::FormSurface>>,
 ) -> Result<(ConwayBuilder, Arc<dyn MemoryStore>, Arc<dyn AgentNames>), FacadeError> {
     let cwd = builder.config().cwd.clone();
+    let plugin_config = builder.config().plugins.config.clone();
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
     let agent_names = resolve_agent_names(&builder.config().plugins.install)?;
     let idiom_plugin = resolve_idiom_plugin(&cwd, env)?;
     let confine_plugin = resolve_confine_plugin(&builder.config().plugins.install)?;
-    let plugins = bundle(
+    let mut plugins = bundle(
         &cwd,
         memory_store.clone(),
         agent_names.clone(),
@@ -882,6 +995,7 @@ pub async fn install(
         confine_plugin,
         form_surface,
     );
+    apply_plugin_config(&mut plugins, &plugin_config)?;
     let builder = builder.install_selected(plugins, router_bundle(), backend_bundle())?;
     let builder = warn_if_no_plugin_opinion(builder, env);
     Ok((builder, memory_store, agent_names))
@@ -1024,17 +1138,25 @@ pub fn installed_plugins(
     // `None`: this re-derivation feeds the command registry/plugin browser
     // only, never a live turn's actual dispatch -- see `bundle`'s own doc,
     // "`form_surface`".
-    let mut plugins: Vec<Arc<dyn Plugin>> = bundle(
+    let mut plugins = bundle(
         &cwd,
         memory_store,
         agent_names,
         idiom_plugin,
         confine_plugin,
         None,
-    )
-    .into_iter()
-    .filter(|plugin| install.contains(&plugin.manifest().id))
-    .collect();
+    );
+    // Configured BEFORE the `install` filter below, not after: this is the
+    // same "validate every candidate this table names, whether or not it
+    // ends up selected" posture `install`'s own call to
+    // `apply_plugin_config` takes, so `conway plugin list`'s own re-check of
+    // an already-built `Conway` cannot disagree with what the real build
+    // already accepted or refused.
+    apply_plugin_config(&mut plugins, &conway.config().plugins.config)?;
+    let mut plugins: Vec<Arc<dyn Plugin>> = plugins
+        .into_iter()
+        .filter(|plugin| install.contains(&plugin.manifest().id))
+        .collect();
     plugins.extend(crate::claude_compat_plugins::command_plugins(
         conway.config(),
     )?);
@@ -1259,6 +1381,174 @@ mod tests {
             "the linked bundle must contain the trim plugin under its published id, otherwise \
              `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
             conway_plugin_trim::PLUGIN_ID
+        );
+    }
+
+    /// Same wiring-only check, for `conway_plugin_web`: without its
+    /// published id present in `bundle`, `[plugins].install =
+    /// ["conway.web"]` resolves to an unknown-id error -- board item
+    /// `01M1YVDYEBJENX4NFC6NCSD9B9`'s acceptance 1, the gap this crate's
+    /// missing dependency line and missing `bundle()` entry left open
+    /// before this change.
+    #[test]
+    fn bundle_carries_the_web_plugin_under_its_published_id() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let found = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(&cwd),
+            test_confine_plugin(),
+            None,
+        )
+        .iter()
+        .any(|p| p.manifest().id == conway_plugin_web::PLUGIN_ID);
+        assert!(
+            found,
+            "the linked bundle must contain the web plugin under its published id, otherwise \
+             `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
+            conway_plugin_web::PLUGIN_ID
+        );
+    }
+
+    /// Board item `01M1YVDYEBJENX4NFC6NCSD9B9`'s opt-in half: `conway.web`
+    /// must NOT appear in [`DEFAULT_OPINION_SET`]. Paired with
+    /// `bundle_carries_the_web_plugin_under_its_published_id` above -- that
+    /// test alone would pass against an implementation that wrongly added
+    /// this id to the default set too; this test alone would pass against
+    /// an implementation where the plugin were never wired in at all. This
+    /// plugin gives the model outbound network reach, a materially
+    /// different trust posture from every `DEFAULT_OPINION_SET` member,
+    /// which is why it stays opt-in unlike `conway.checkpoint` (a sibling
+    /// item deliberately reversed INTO the default set) -- see
+    /// `conway-plugin-web`'s own `Cargo.toml` doc for the full reasoning.
+    #[test]
+    fn web_plugin_is_not_in_the_default_opinion_set() {
+        assert!(
+            !DEFAULT_OPINION_SET.contains(&conway_plugin_web::PLUGIN_ID),
+            "conway.web must stay opt-in -- it grants the model outbound network reach, unlike \
+             every id already in DEFAULT_OPINION_SET: {DEFAULT_OPINION_SET:?}"
+        );
+    }
+
+    /// Same wiring-only check, for `conway_plugin_toolindex`: without its
+    /// published id present in `bundle`, `[plugins].install =
+    /// ["conway.toolindex"]` resolves to an unknown-id error -- board item
+    /// `01M1YS138H8T0HNV5YMZ6KD767`'s own reminder ("a sibling item was
+    /// left unreachable by forgetting this; do not repeat it").
+    #[test]
+    fn bundle_carries_the_toolindex_plugin_under_its_published_id() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let found = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(&cwd),
+            test_confine_plugin(),
+            None,
+        )
+        .iter()
+        .any(|p| p.manifest().id == conway_plugin_toolindex::PLUGIN_ID);
+        assert!(
+            found,
+            "the linked bundle must contain the toolindex plugin under its published id, \
+             otherwise `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
+            conway_plugin_toolindex::PLUGIN_ID
+        );
+    }
+
+    /// This item's part-1 "default set or opt-in" decision: `conway.
+    /// toolindex` must NOT appear in [`DEFAULT_OPINION_SET`]. Paired with
+    /// `bundle_carries_the_toolindex_plugin_under_its_published_id` above --
+    /// that test alone would pass against an implementation that wrongly
+    /// added this id to the default set too; this test alone would pass
+    /// against an implementation where the plugin were never wired in at
+    /// all. See `conway_plugin_toolindex`'s own module doc, "Default set
+    /// or opt-in", for the full reasoning.
+    #[test]
+    fn toolindex_plugin_is_not_in_the_default_opinion_set() {
+        assert!(
+            !DEFAULT_OPINION_SET.contains(&conway_plugin_toolindex::PLUGIN_ID),
+            "conway.toolindex must stay opt-in -- it changes model-facing tool-calling behavior \
+             for every non-built-in tool, a tradeoff DEFAULT_OPINION_SET's own ruling never \
+             evaluated: {DEFAULT_OPINION_SET:?}"
+        );
+    }
+
+    /// Board item `01M1YVM9CHFCJ6112XDYHCFS84`: `apply_plugin_config` must
+    /// actually thread an operator's `[plugins.config.conway.trim]` value
+    /// into the candidate `bundle` constructed -- checked by reading the
+    /// window back out of `conway.trim`'s own `description().you_get`
+    /// (`conway_plugin_trim::TrimPlugin::description`'s own doc pins that
+    /// text as dynamic), not by trusting that `configure` was merely
+    /// called without error.
+    #[test]
+    fn apply_plugin_config_threads_a_configured_window_into_the_trim_candidate() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let mut plugins = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(&cwd),
+            test_confine_plugin(),
+            None,
+        );
+        let config: std::collections::BTreeMap<String, serde_json::Value> = [(
+            conway_plugin_trim::PLUGIN_ID.to_string(),
+            serde_json::json!({ "keep_turns": 3 }),
+        )]
+        .into_iter()
+        .collect();
+        apply_plugin_config(&mut plugins, &config).expect("keep_turns=3 is a valid config value");
+        let trim = plugins
+            .iter()
+            .find(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID)
+            .expect("conway.trim is in the bundle");
+        let you_get = trim.description().you_get;
+        assert!(
+            you_get.contains('3'),
+            "conway.trim's description must reflect the configured window (3), got: {you_get}"
+        );
+    }
+
+    /// The install-path half of the required pair (acceptance 1): an
+    /// unknown key under `[plugins.config.conway.trim]` must fail
+    /// `apply_plugin_config` -- naming the key -- rather than silently
+    /// installing `conway.trim` with its default window. **What a wrong
+    /// implementation this catches that the crate-level
+    /// `conway_plugin_trim::tests::configure_refuses_an_unknown_key_by_name`
+    /// does not:** this proves the CLI's own install path
+    /// (`apply_plugin_config`) actually calls `configure` and propagates
+    /// its `Err` rather than, say, swallowing it with an `unwrap_or_else`
+    /// fallback the way several OTHER candidates in `bundle` legitimately
+    /// do for a missing operator file.
+    #[test]
+    fn apply_plugin_config_refuses_an_unknown_key_by_name() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let mut plugins = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(&cwd),
+            test_confine_plugin(),
+            None,
+        );
+        let config: std::collections::BTreeMap<String, serde_json::Value> = [(
+            conway_plugin_trim::PLUGIN_ID.to_string(),
+            serde_json::json!({ "keep_tuns": 3 }),
+        )]
+        .into_iter()
+        .collect();
+        let err = apply_plugin_config(&mut plugins, &config)
+            .expect_err("an unrecognized key must fail, not be silently ignored");
+        let message = err.to_string();
+        assert!(
+            message.contains("keep_tuns"),
+            "the error must name the offending key, got: {message}"
         );
     }
 

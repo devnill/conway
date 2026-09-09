@@ -249,6 +249,14 @@ struct ProfileRaw {
     parallel_tool_calls: bool,
     #[serde(default = "default_reliability_tier")]
     reliability_tier: ReliabilityTier,
+    /// See [`Profile::reports_cache_usage`]. `#[serde(default)]` (never a
+    /// `default = "fn"` override): the safe default for a profile that does
+    /// not mention this field at all is `false` -- an unverified provider's
+    /// wire dialect is never assumed to carry a cache-usage field by
+    /// omission, mirroring [`ProfileRaw::context_window_verified`]'s
+    /// identical "conservative unless a profile says otherwise" rule.
+    #[serde(default)]
+    reports_cache_usage: bool,
 }
 
 impl TryFrom<ProfileRaw> for Profile {
@@ -275,6 +283,7 @@ impl TryFrom<ProfileRaw> for Profile {
             structured_output: raw.structured_output.to_capability(),
             parallel_tool_calls: raw.parallel_tool_calls,
             reliability_tier: raw.reliability_tier,
+            reports_cache_usage: raw.reports_cache_usage,
         })
     }
 }
@@ -373,6 +382,25 @@ pub struct Profile {
     pub parallel_tool_calls: bool,
     /// Baseline reliability tier.
     pub reliability_tier: ReliabilityTier,
+    /// Whether this provider's chat-completions response is documented (by
+    /// this crate's own verification, not a guess) to carry a cache-usage
+    /// field when caching happens -- board item A5.7, "prompt caching reads
+    /// zero on every real session". Distinct from [`Profile::cache`]
+    /// (`CacheMode`, whether/how this provider SUPPORTS prefix caching at
+    /// all): `"kimi"` and `"ollama"` both declare `CacheMode::
+    /// ImplicitPrefix`, yet only `"kimi"` sets this `true` -- see
+    /// `openai_compat::wire::UsageWire`'s own doc for the two shapes this
+    /// crate actually reads (`usage.prompt_tokens_details.cached_tokens`,
+    /// OpenAI's; `usage.cached_tokens`, Kimi's top-level shape) and
+    /// `docs/providers.md`'s "Does Ollama Cloud actually cache prefixes?"
+    /// for why `"ollama"` stays at the honest default rather than a guess.
+    /// `false` (the conservative default: an unfamiliar or unverified
+    /// provider's wire dialect is never assumed to report cache usage by
+    /// omission) for every built-in profile except `"openai"` and
+    /// `"kimi"`. Feeds [`crate::openai_compat::OpenAiCompatBackend::
+    /// cache_reporting`], the operator-visible surface `conway routes
+    /// explain` prints.
+    pub reports_cache_usage: bool,
 }
 
 impl Profile {
@@ -447,6 +475,10 @@ context_window_verified = true
 structured_output = "json_schema"
 parallel_tool_calls = true
 reliability_tier = "verified"
+# OpenAI documents `usage.prompt_tokens_details.cached_tokens` on chat
+# completions -- a real, sourced field this crate's `wire.rs` `map_usage`
+# reads (board item A5.7).
+reports_cache_usage = true
 
 [profile.cache]
 kind = "implicit_prefix"
@@ -563,6 +595,10 @@ max_context_tokens = 32768
 structured_output = "json_schema"
 parallel_tool_calls = false
 reliability_tier = "community"
+# Moonshot's platform API documents automatic prompt caching above a
+# 256-token prompt and reports `usage.cached_tokens` at the TOP level
+# (`wire.rs`'s `UsageWire::cached_tokens`) -- board item A5.7.
+reports_cache_usage = true
 
 [profile.cache]
 kind = "implicit_prefix"
@@ -926,8 +962,40 @@ mod tests {
         assert_eq!(minimal.structured_output, StructuredOutput::None);
         assert!(!minimal.parallel_tool_calls);
         assert_eq!(minimal.reliability_tier, ReliabilityTier::Unknown);
+        assert!(
+            !minimal.reports_cache_usage,
+            "an unfamiliar provider's cache-reporting behavior is never assumed verified by omission"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Board item A5.7: only `openai` (documented
+    /// `prompt_tokens_details.cached_tokens`) and `kimi` (documented
+    /// top-level `cached_tokens`) declare `reports_cache_usage` -- every
+    /// other built-in, including `ollama`, stays at the conservative
+    /// default (see `docs/providers.md`'s "Does Ollama Cloud actually cache
+    /// prefixes?" for why that one is unverified rather than a guess).
+    #[test]
+    fn only_openai_and_kimi_declare_reports_cache_usage() {
+        assert!(Dialect::OpenAi.profile().reports_cache_usage);
+        assert!(
+            ProfileStore::built_ins()
+                .get("kimi")
+                .unwrap()
+                .reports_cache_usage
+        );
+        for dialect in [
+            Dialect::Ollama,
+            Dialect::VllmHermes,
+            Dialect::LmStudio,
+            Dialect::LlamaCppServer,
+        ] {
+            assert!(
+                !dialect.profile().reports_cache_usage,
+                "{dialect:?} has no verified cache-reporting field at this layer"
+            );
+        }
     }
 
     #[test]

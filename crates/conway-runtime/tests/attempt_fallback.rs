@@ -1380,6 +1380,78 @@ async fn t1_mixed_candidates_skips_small_attempts_large() {
     assert_eq!(fx.health.observations()[0].0, EndpointId::new("large"));
 }
 
+/// Board item A1d ("say why a turn fell back"): the SAME chain-whose-head-
+/// refuses-admission fixture as `t1_mixed_candidates_skips_small_attempts_
+/// large` above, but asserting the winning route's OWN persisted reason
+/// (`outcome.route.reason`, the exact value `agent_loop.rs` serializes into
+/// `LogRecord::Assistant::route_reason`) now names the refusal, WITH its
+/// numbers -- not merely that `AttemptOutcome::skipped` (a side-channel
+/// most callers never read) is non-empty, which a placeholder `after: vec![]`
+/// would already satisfy. Before this item's change to `attempt.rs`'s
+/// `with_admission_failures`, `route.reason` was the router's own
+/// `Fallback { after: Vec::new(), .. }` verbatim, never enriched with what
+/// the attempt loop itself discovered -- see this test's own doc-comment
+/// history note in the completion report for the failing-before run.
+#[tokio::test]
+async fn t1_fallback_route_reason_after_names_the_admission_refusal_with_its_numbers() {
+    let small = Arc::new(RecordingBackend::new(
+        "small",
+        caps(ToolCallSupport::Streaming { validated: true }, 32_768),
+        30_000,
+        vec![],
+    ));
+    let large = Arc::new(RecordingBackend::new(
+        "large",
+        caps(ToolCallSupport::Streaming { validated: true }, 200_000),
+        30_000,
+        vec![Turn::Respond(text_response("ok"))],
+    ));
+    let fx = fixture(backends_map(vec![
+        ("small", small as Arc<dyn Backend>),
+        ("large", large as Arc<dyn Backend>),
+    ]));
+    let segments = vec![a_segment()];
+    let tools: Vec<ToolSpec> = vec![];
+    let routes = vec![
+        route("small", "m1", primary("planner")),
+        route("large", "m1", fallback(1)),
+    ];
+    let req = base_request(routes, &segments, &tools, 30_000, 4_000);
+
+    let outcome = fx
+        .engine
+        .execute(req)
+        .await
+        .expect("large candidate must be attempted");
+
+    let RoutingReason::Fallback { position, after } = &outcome.route.reason else {
+        panic!(
+            "expected the winning route to carry Fallback, got {:?}",
+            outcome.route.reason
+        );
+    };
+    assert_eq!(*position, 1);
+    assert_eq!(after.len(), 1, "exactly the `small` refusal, got {after:?}");
+    assert_eq!(after[0].model, model_ref("small", "m1"));
+    assert!(
+        after[0].error.starts_with("context too large:"),
+        "got: {}",
+        after[0].error
+    );
+    // Every number the refusal's own `BackendError::ContextTooLarge`
+    // `Display` names -- est_tokens=30000, headroom=4000,
+    // required=34000, window=32768, shortfall=1232 -- sourced from the
+    // refusal directly (see `attempt.rs`'s own `with_admission_failures`
+    // doc), never recomputed.
+    for needle in ["30000", "4000", "34000", "32768", "1232"] {
+        assert!(
+            after[0].error.contains(needle),
+            "missing {needle} in {}",
+            after[0].error
+        );
+    }
+}
+
 #[tokio::test]
 async fn t1_error_display_names_all_five_values() {
     let a = Arc::new(RecordingBackend::new(

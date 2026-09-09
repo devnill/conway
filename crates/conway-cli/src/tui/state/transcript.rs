@@ -7,8 +7,17 @@
 //! [`super::turn_summary`]; transcript-pane scrolling lives in
 //! [`super::scroll`] -- both act on the same [`AppState::transcript`] this
 //! module owns the entries of, but are their own seams.
+//!
+//! [`backfill_entries`] (board item `01M1YS4FMJH004D1Y619MTBY7A`) is the
+//! ONE other way an `Entry` gets built, alongside `apply`'s live event
+//! dispatch: a pure `&[LogRecord] -> Vec<Entry>` mapping for
+//! `/resume`/`--resume`/`--fork-from`/`--continue` to draw a resumed
+//! session's history from, with no live `Event` stream involved. See its
+//! own doc for why this is a NEW mapping rather than a reuse of `conway::
+//! SessionHandle`'s `record_to_event` or `conway sessions show`'s renderer.
 
 use super::*;
+use conway::plugin::ContentBlock;
 
 /// One line of the transcript pane.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +143,35 @@ pub enum Entry {
     Error {
         text: String,
         fatal: bool,
+    },
+    /// A PROMPTED `Event::PermissionDecision`, rendered dim, one line,
+    /// directly beneath the [`Entry::Tool`] it belongs to (`call_id`
+    /// matches -- `AppState::apply_permission_decision` pushes this
+    /// immediately when the event arrives, which is always chronologically
+    /// between that tool's own `ToolCallProposed` and `ToolCallStarted`/
+    /// `ToolCallFinished`, so no separate lookup/re-sort is needed to place
+    /// it correctly). A SYSTEM record -- like `conway::LogRecord::
+    /// PermissionDecisionRecord`'s own doc says of its durable twin, this
+    /// is neither model output nor operator-typed prose,
+    /// so it deliberately does NOT reuse [`Entry::Notice`]'s cyan styling
+    /// (which every other informational line in this enum, and the
+    /// operator's own typed messages elsewhere, share) or [`Entry::Error`]'s
+    /// red -- `view/transcript.rs::entry_lines` renders it in `theme.dim`
+    /// instead, the same slot a tool's own accumulated `progress` notes and
+    /// truncated `args:` preview already use, so an audit fact about HOW a
+    /// call was authorized reads as exactly that, never as something the
+    /// model said or the operator typed. `text` is pre-formatted at apply
+    /// time (mirroring [`Entry::Notice`]/[`Entry::Error`]'s own convention
+    /// -- a decision arrives complete, never streamed, so there is nothing
+    /// render-time formatting would buy here) by `state::transcript::
+    /// format_permission_decision_note`. Only ever pushed for a decision
+    /// that actually reached the operator's own gate (`waited_ms.is_some()`
+    /// on the source event) -- see `AppState::apply`'s own
+    /// `Event::PermissionDecision` arm doc for why every other source is
+    /// silent here.
+    PermissionDecision {
+        call_id: String,
+        text: String,
     },
 }
 
@@ -342,21 +380,94 @@ impl AppState {
     }
 
     pub(super) fn finish_tool(&mut self, call_id: &str, is_error: bool, preview: String) {
+        let mut diff_seed: Option<(String, String)> = None; // (name, args) of the matched entry
         for entry in self.transcript.iter_mut().rev() {
             if let Entry::Tool {
                 call_id: id,
                 status,
                 preview: p,
+                name,
+                args,
                 ..
             } = entry
             {
                 if id == call_id {
                     *status = ToolStatus::Finished { is_error };
                     *p = preview;
-                    return;
+                    if !is_error {
+                        diff_seed = Some((name.clone(), args.clone()));
+                    }
+                    break;
                 }
             }
         }
+        // Board item 01M1YVEJB6GAPST5YZET4KZZE2: compute this call's own
+        // diff EXACTLY ONCE, right here, and store it in `self.tool_diffs`
+        // -- never recomputed later (see that field's own doc for why).
+        // Done AFTER the `transcript` borrow above is released.
+        if let Some((name, args_json)) = diff_seed {
+            self.settle_tool_diff(call_id, &name, &args_json);
+        }
+    }
+
+    /// The other half of [`Self::finish_tool`]'s diff computation, split out
+    /// so the borrow of `self.transcript` above is fully released before
+    /// this touches `self.diff_track`/`self.tool_diffs`. Folds this ONE
+    /// call's own change onto the running `self.diff_track[path]` (via
+    /// `crate::diff::apply_touch` -- the SAME fold rule `crate::diff::
+    /// cumulative_diffs` uses, so a call's own settled-entry diff and its
+    /// contribution to `/diff`'s cumulative view never disagree), advances
+    /// the tracker, and stores the resulting unified diff in
+    /// `self.tool_diffs` keyed by `call_id`. A no-op (no entry stored) for
+    /// any tool other than `edit`/`write`, malformed/missing `args` JSON,
+    /// or a fold that produced no line-level change.
+    fn settle_tool_diff(&mut self, call_id: &str, name: &str, args_json: &str) {
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(args_json) else {
+            return;
+        };
+        let Some(touch) = crate::diff::file_touch_from_args(name, &args) else {
+            return;
+        };
+        let before = self
+            .diff_track
+            .get(&touch.path)
+            .cloned()
+            .unwrap_or_default();
+        let after = crate::diff::apply_touch(&before, &touch.kind);
+        self.diff_track.insert(touch.path.clone(), after.clone());
+        let diff_text = crate::diff::unified_diff(&touch.path, &touch.path, &before, &after);
+        if !diff_text.is_empty() {
+            self.tool_diffs.insert(call_id.to_string(), diff_text);
+        }
+    }
+
+    /// Builds and pushes the dim [`Entry::PermissionDecision`] line for one
+    /// `Event::PermissionDecision`, called from `AppState::apply`'s own arm.
+    /// ALWAYS removes this call's stashed `PermissionResolved` kind from
+    /// [`AppState::permission_decision_pending`] first, regardless of the
+    /// early return below -- every call gets exactly one `PermissionResolved`
+    /// AND one `PermissionDecision`, so a version of this that only removed
+    /// on the render path would leak one map entry per silently-resolved
+    /// (pattern/rule/hook/mode) call for the rest of the session.
+    ///
+    /// Renders nothing (no push) when `waited_ms` is `None` -- this
+    /// decision never reached the operator's own gate; see `AppState::
+    /// apply`'s own `Event::PermissionDecision` arm doc for why that is the
+    /// deliberate "prompted decisions only" gate, not a bug.
+    pub(super) fn apply_permission_decision(
+        &mut self,
+        call_id: &str,
+        waited_ms: Option<u64>,
+        feedback: Option<String>,
+    ) {
+        let kind = self.permission_decision_pending.remove(call_id);
+        let Some(waited_ms) = waited_ms else {
+            return;
+        };
+        self.transcript.push(Entry::PermissionDecision {
+            call_id: call_id.to_string(),
+            text: format_permission_decision_note(kind, waited_ms, feedback.as_deref()),
+        });
     }
 }
 
@@ -380,6 +491,75 @@ fn truncate_tail_chars(text: &mut String, chars_to_remove: usize) {
         .map(|(byte_index, _)| byte_index)
         .unwrap_or(0);
     text.truncate(new_len);
+}
+
+/// The dim one-line text [`AppState::apply_permission_decision`] pushes as
+/// an [`Entry::PermissionDecision`] -- e.g. `"allowed once · waited 4m
+/// 12s"`, `"denied with feedback: too risky · waited 12s"`. `kind` is the
+/// correlated `Event::PermissionResolved`'s own `conway::
+/// PermissionDecisionKind` for the same call (`None` only when this
+/// session's stream never observed that sibling event for this call -- a
+/// subscription that started mid-call; falls back to a wording derived
+/// from `feedback.is_some()` alone in that case, matching the same-shaped
+/// fallback the `#[non_exhaustive]` catch-all below uses for a future
+/// variant this crate does not yet know about -- never a panic or an empty
+/// string either way).
+///
+/// `kind` decides the VERB (`allowed once`/`allowed always`/`allowed
+/// (cached)`/`denied`/`denied with feedback`); `feedback`, when `Some`, is
+/// appended after a colon regardless of which verb was chosen -- a bare
+/// `Denied` (the operator's own `n`, or a structural refusal that still
+/// reached the gate) carries a reason too (`conway::log::
+/// PermissionDecisionRecordKind`'s own doc, in `conway-core`: "feedback ...
+/// for any DENY-shaped decision"), so `"denied: <reason>"` and `"denied
+/// with feedback: <reason>"` stay visually distinct -- the former is the
+/// call's own rendered refusal text, the latter is what the OPERATOR
+/// typed after pressing `Esc`.
+fn format_permission_decision_note(
+    kind: Option<conway::PermissionDecisionKind>,
+    waited_ms: u64,
+    feedback: Option<&str>,
+) -> String {
+    use conway::PermissionDecisionKind as Kind;
+    let mut verb = match kind {
+        Some(Kind::AllowOnce) => "allowed once".to_string(),
+        Some(Kind::AllowAlways) => "allowed always".to_string(),
+        Some(Kind::Cached) => "allowed (cached)".to_string(),
+        Some(Kind::Denied) => "denied".to_string(),
+        Some(Kind::DeniedWithFeedback) => "denied with feedback".to_string(),
+        Some(_) | None => {
+            if feedback.is_some() {
+                "denied".to_string()
+            } else {
+                "allowed".to_string()
+            }
+        }
+    };
+    if let Some(reason) = feedback {
+        verb.push_str(": ");
+        verb.push_str(reason);
+    }
+    format!("{verb} · waited {}", humanize_wait_ms(waited_ms))
+}
+
+/// `waited_ms` as `"{m}m {s}s"` for >= 60_000ms, else `"{s}s"` -- mirrors
+/// `state::turn_summary::format_turn_summary`'s own `elapsed` shape exactly
+/// (duplicated here, not shared, matching this crate's own established
+/// practice of a handful of near-identical small per-module time-formatting
+/// helpers rather than one shared util with drifting callers -- see
+/// `view/transcript.rs::truncate_chars_with_ellipsis`'s own doc for the
+/// identical precedent on a truncation helper). Rounds DOWN to the nearest
+/// whole second -- a wait is never shown to the operator at millisecond
+/// precision, matching the turn-summary's own elapsed figure.
+fn humanize_wait_ms(waited_ms: u64) -> String {
+    let secs = waited_ms / 1000;
+    if secs >= 60 {
+        let m = secs / 60;
+        let s = secs % 60;
+        format!("{m}m {s}s")
+    } else {
+        format!("{secs}s")
+    }
 }
 
 /// T5's valid range for `tool_preview_lines` (`1..=200`), factored out as a
@@ -411,6 +591,289 @@ pub fn clamp_tool_preview_lines(n: Option<u32>) -> u32 {
         }
     })
     .unwrap_or(3)
+}
+
+/// Board item `01M1YS4FMJH004D1Y619MTBY7A`: turns a session's own
+/// persisted [`conway::LogRecord`]s into the transcript [`Entry`]s
+/// `/resume`, `--resume`/`--fork-from`/`--continue`
+/// (`tui::app::startup::App::resolve_handle`) all draw on open -- the
+/// mapping this crate long did without (`tui::commands`'s old
+/// `/resume` arm named the gap outright: "no LogRecord -> Entry mapping
+/// exists anywhere in this crate today").
+///
+/// **Why this is a NEW mapping, not a reuse of `conway::SessionHandle`'s
+/// own `record_to_event` (`LogRecord -> Event`):** every caller of THIS
+/// function reads its input the same way `conway sessions show` reads
+/// its own (`SessionHandle::transcript`, the ancestry-resolved effective
+/// transcript) -- that data-source IS reused. But `record_to_event` itself
+/// (read in full before writing this) discloses its own narrowing in its
+/// own doc: it maps a whole `LogRecord::Assistant` to ONE bare `TextDelta`
+/// of the record's TEXT content alone, dropping any `ToolUse` content
+/// block outright -- correct for ITS purpose (focus-switch replay within
+/// an already-live process) but wrong for this one, since it would
+/// silently drop every backfilled tool call the resume path's acceptance
+/// criteria require showing. Piping `record_to_event`'s output through
+/// `AppState::apply` was tried against that doc first and rejected for
+/// exactly this reason, not attempted-and-abandoned blindly.
+///
+/// **Why this is not `conway sessions show`'s renderer either:** that
+/// command's entire non-JSON rendering is `println!("{record:#?}")` -- a
+/// bare `Debug` dump, no per-kind text formatting, tool-call/result
+/// folding, or preview truncation of any kind to reuse. There is
+/// genuinely no existing formatter to share; this is the first one, in
+/// the one crate (`conway-cli`) that owns `Entry`'s shape at all.
+///
+/// **Never rewrites or reorders the log**: pure `&[LogRecord] ->
+/// Vec<Entry>`, read-only over an already-fetched, already-ordered slice
+/// -- every production caller passes `SessionHandle::transcript`'s own
+/// return value straight through, in the seq order the store already
+/// resolved it in.
+///
+/// **Declaration-honesty**: every record kind without a dedicated arm in
+/// `push_record` below still produces exactly one `Entry` -- a dim
+/// placeholder naming the kind (`LogRecord::kind_str`) -- never silently
+/// dropped. See that function's own trailing wildcard arm and
+/// `unknown_record_kind_becomes_a_named_placeholder_not_a_silent_drop`,
+/// below, for the test that catches an implementation which drops it
+/// instead.
+pub fn backfill_entries(records: &[conway::LogRecord]) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    for record in records {
+        push_record(&mut entries, record);
+    }
+    entries
+}
+
+/// One [`backfill_entries`] record. `#[non_exhaustive]` on
+/// `conway::LogRecord` (`conway-core`'s own attribute) means this match
+/// needs a wildcard arm regardless of how many kinds get a dedicated one
+/// below -- exactly the arm the module doc's "declaration-honesty"
+/// paragraph describes.
+fn push_record(entries: &mut Vec<Entry>, record: &conway::LogRecord) {
+    use conway::LogRecord;
+    match record {
+        // The session's own header: metadata, not a transcript line --
+        // `record_to_event`'s own first arm treats it identically.
+        LogRecord::Header(_) => {}
+        LogRecord::UserTurn { text, .. } => entries.push(Entry::User(text.clone())),
+        LogRecord::Assistant { ts, content, .. } => push_assistant_content(entries, content, *ts),
+        LogRecord::ToolResultRecord { result, .. } => {
+            fold_tool_result(
+                entries,
+                &result.call_id,
+                &result.blocks,
+                result.is_error,
+                &result.tool.to_string(),
+            );
+        }
+        LogRecord::ForkDirective { text, by, .. } => entries.push(Entry::Notice {
+            text: format!("fork directive from {by}: {text}"),
+        }),
+        LogRecord::ParentSteer { text, from, .. } => entries.push(Entry::Notice {
+            text: format!("parent steer from {from}: {text}"),
+        }),
+        LogRecord::SystemNote { text, reason, .. } => entries.push(Entry::Notice {
+            text: format!("{reason}: {text}"),
+        }),
+        LogRecord::AgentResultRecord { result, .. } => entries.push(Entry::Notice {
+            text: if result.summary.is_empty() {
+                "agent finished".to_string()
+            } else {
+                format!("agent finished: {}", result.summary)
+            },
+        }),
+        LogRecord::ChildResultRecord { result, .. } => entries.push(Entry::Notice {
+            text: format!("child {} finished: {}", result.agent_id, result.summary),
+        }),
+        LogRecord::ContextReportRecord { report, .. } => entries.push(Entry::Notice {
+            text: format!(
+                "context report: {} segments, {} tokens",
+                report.segments.len(),
+                report.total_tokens_est
+            ),
+        }),
+        // Declaration-honesty: every OTHER record kind (today:
+        // `ContextMask`/`ContextPathSet`/`ContextPathNamed`/
+        // `PermissionDecisionRecord` -- internal bookkeeping this
+        // transcript pane has no dedicated line for yet, matching
+        // `record_to_event`'s own identical `_ => None` for these same
+        // four) still produces exactly one entry, naming the kind, rather
+        // than vanishing.
+        //
+        // Reuses `Entry::PermissionDecision`'s existing render slot
+        // (the ONE `theme.dim` line `view/transcript.rs::entry_lines`
+        // already has -- this module owns transcript STATE, not the view,
+        // and `view/transcript.rs` was fenced off when this landed;
+        // adding a ninth `Entry` variant would need a matching
+        // arm there). `call_id` is left empty: nothing reads it outside
+        // `AppState::apply_permission_decision`'s own construction path,
+        // which this is not. Disclosed, deliberate reuse of an
+        // existing-but-differently-named variant for its STYLE, not its
+        // semantics -- the text itself always says plainly what it is
+        // ("record not shown"), so a reader who greps for a real
+        // permission audit line and finds one of these is not misled once
+        // they read it.
+        other => entries.push(Entry::PermissionDecision {
+            call_id: String::new(),
+            text: format!("[{} record not shown in the transcript]", other.kind_str()),
+        }),
+    }
+}
+
+/// Folds one `LogRecord::Assistant`'s content blocks into `entries`,
+/// mirroring the exact live shape [`AppState::apply`] already builds
+/// (`Event::TextDelta`/`Event::ThinkingDelta`/`Event::ToolCallProposed`,
+/// one call per block, in content order) -- so a backfilled `Assistant`
+/// record renders identically to however that same reply looked when it
+/// originally streamed in live: consecutive `Text` blocks fold into ONE
+/// `Entry::Assistant` (mirrors [`AppState::append_assistant_text`]'s own
+/// create-or-append onto `entries.last_mut()`), consecutive `Thinking`
+/// blocks fold into ONE `Entry::Reasoning` the same way, and each
+/// `ToolUse` block becomes its own `Entry::Tool` in `Proposed` state
+/// (mirrors `Event::ToolCallProposed`'s own apply arm) -- later folded to
+/// `Finished` by this same record's or a later record's
+/// `ToolResultRecord`/`ToolResultBlock` (`fold_tool_result`).
+///
+/// `model` is always `None` on a replayed entry, matching [`Entry::
+/// Assistant`]'s own doc ("`None` for replayed entries ... the renderer
+/// then omits the `[modelname]> ` marker").
+fn push_assistant_content(entries: &mut Vec<Entry>, content: &[ContentBlock], ts: DateTime<Utc>) {
+    for block in content {
+        match block {
+            ContentBlock::Text { text } => {
+                if let Some(Entry::Assistant { text: existing, .. }) = entries.last_mut() {
+                    existing.push_str(text);
+                } else {
+                    entries.push(Entry::Assistant {
+                        text: text.clone(),
+                        model: None,
+                        summary: None,
+                        ts: Some(ts),
+                    });
+                }
+            }
+            ContentBlock::Thinking { text, .. } => {
+                if let Some(Entry::Reasoning { text: existing, .. }) = entries.last_mut() {
+                    existing.push_str(text);
+                } else {
+                    entries.push(Entry::Reasoning {
+                        text: text.clone(),
+                        model: None,
+                        summary: None,
+                        ts: Some(ts),
+                    });
+                }
+            }
+            ContentBlock::ToolUse {
+                call_id,
+                name,
+                arguments,
+            } => {
+                entries.push(Entry::Tool {
+                    call_id: call_id.clone(),
+                    name: name.to_string(),
+                    status: ToolStatus::Proposed,
+                    preview: String::new(),
+                    args: arguments.to_string(),
+                    progress: String::new(),
+                    expanded: false,
+                    ts: Some(ts),
+                });
+            }
+            // Not produced by any live path today (a `tool_result` block
+            // embedded directly in an ASSISTANT message's own content,
+            // rather than as its own top-level `ToolResultRecord`) -- but
+            // `ContentBlock` is a real enum variant, so it gets a real
+            // fold rather than a silent skip, exactly like the top-level
+            // `ToolResultRecord` case just above.
+            ContentBlock::ToolResultBlock {
+                call_id,
+                blocks,
+                is_error,
+            } => {
+                fold_tool_result(entries, call_id, blocks, *is_error, "");
+            }
+            ContentBlock::Image { .. } => entries.push(Entry::Notice {
+                text: "[image content omitted]".to_string(),
+            }),
+            // `ContentBlock` is `#[non_exhaustive]`, so this arm is REQUIRED
+            // to compile and will silently start catching real content the
+            // day a variant is added. It pushes a visible placeholder rather
+            // than dropping, for the same reason the unknown-record-kind arm
+            // does: a backfilled transcript that quietly omits content would
+            // misrepresent what the session actually contains.
+            _ => entries.push(Entry::Notice {
+                text: "[unrecognized content block omitted]".to_string(),
+            }),
+        }
+    }
+}
+
+/// Mirrors `conway::session_handle`'s own (private, unexported)
+/// `tool_result_preview`: the first `ContentBlock::Text` block's text,
+/// truncated to 200 chars. Deliberately duplicated, not called --
+/// `conway-cli`'s production code cannot depend on `conway-core` directly
+/// (`no_forbidden_deps`, `crates/conway-cli/tests/cli_surface.rs`), and
+/// that helper is private to `conway`'s own crate besides -- but the
+/// algorithm is exactly three lines and needs to match the live shape
+/// exactly, so a backfilled tool result's preview reads identically to
+/// however that same result looked when it originally finished live.
+fn tool_result_preview(blocks: &[ContentBlock]) -> String {
+    const PREVIEW_LIMIT: usize = 200;
+    let text = blocks
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    text.chars().take(PREVIEW_LIMIT).collect()
+}
+
+/// Folds a tool result into the matching in-flight [`Entry::Tool`] pushed
+/// earlier in THIS SAME backfill pass (by `call_id`, searching backward --
+/// mirrors [`AppState::finish_tool`]'s identical live-path search, just
+/// over the `Vec` under construction instead of `self.transcript`).
+///
+/// No match found (a truncated record window, or the `ContentBlock::
+/// ToolResultBlock` shape above with no preceding `ToolUse` earlier in
+/// this same slice) still produces an entry -- `Finished` immediately,
+/// `tool_name` best-effort (possibly empty, for the embedded-block case,
+/// which carries no tool name of its own) -- rather than silently
+/// discarding a real tool result this session's log genuinely recorded.
+fn fold_tool_result(
+    entries: &mut Vec<Entry>,
+    call_id: &str,
+    blocks: &[ContentBlock],
+    is_error: bool,
+    tool_name: &str,
+) {
+    let preview = tool_result_preview(blocks);
+    for entry in entries.iter_mut().rev() {
+        if let Entry::Tool {
+            call_id: id,
+            status,
+            preview: p,
+            ..
+        } = entry
+        {
+            if id == call_id {
+                *status = ToolStatus::Finished { is_error };
+                *p = preview;
+                return;
+            }
+        }
+    }
+    entries.push(Entry::Tool {
+        call_id: call_id.to_string(),
+        name: tool_name.to_string(),
+        status: ToolStatus::Finished { is_error },
+        preview,
+        args: String::new(),
+        progress: String::new(),
+        expanded: false,
+        ts: None,
+    });
 }
 
 #[cfg(test)]
@@ -1144,6 +1607,220 @@ mod tests {
         }
     }
 
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: a full `edit` call's own
+    /// event sequence -- `ToolCallProposed` (which reads the target file's
+    /// CURRENT bytes into `diff_track`, before the call runs) then
+    /// `ToolCallFinished { is_error: false }` -- stores a unified diff in
+    /// `state.tool_diffs`, keyed by `call_id`, showing exactly the
+    /// substitution the call made. `old_string` spans TWO lines here (the
+    /// item's own required check), so this also pins that both removed
+    /// lines and both added lines appear.
+    #[test]
+    fn a_settled_edit_call_stores_a_two_line_diff_in_tool_diffs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").expect("seed file");
+        let path_str = path.to_string_lossy().to_string();
+
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("edit"),
+                args: serde_json::json!({
+                    "path": path_str,
+                    "old_string": "beta\ngamma",
+                    "new_string": "BETA\nGAMMA",
+                }),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallFinished {
+                call_id: "tc_1".to_string(),
+                is_error: false,
+                preview: format!("edited {path_str}: 1 replacement(s)"),
+            },
+        ));
+
+        let diff = state
+            .tool_diffs
+            .get("tc_1")
+            .unwrap_or_else(|| panic!("expected a stored diff, got {:?}", state.tool_diffs));
+        assert!(diff.contains("-beta"), "{diff}");
+        assert!(diff.contains("-gamma"), "{diff}");
+        assert!(diff.contains("+BETA"), "{diff}");
+        assert!(diff.contains("+GAMMA"), "{diff}");
+    }
+
+    /// The same sequence for `write`: the whole new `content` replaces
+    /// whatever `diff_track` captured at propose time, and the resulting
+    /// diff shows the old lines removed, the new lines added.
+    #[test]
+    fn a_settled_write_call_stores_a_diff_against_its_pre_write_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "old content\n").expect("seed file");
+        let path_str = path.to_string_lossy().to_string();
+
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("write"),
+                args: serde_json::json!({"path": path_str, "content": "new content\n"}),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallFinished {
+                call_id: "tc_1".to_string(),
+                is_error: false,
+                preview: format!("wrote 12 bytes to {path_str}"),
+            },
+        ));
+
+        let diff = state
+            .tool_diffs
+            .get("tc_1")
+            .expect("expected a stored diff");
+        assert!(diff.contains("-old content"), "{diff}");
+        assert!(diff.contains("+new content"), "{diff}");
+    }
+
+    /// A FAILED call (`is_error: true`, e.g. `old_string not found`) stores
+    /// no diff -- nothing actually changed, so there is nothing to show.
+    #[test]
+    fn a_failed_edit_call_stores_no_diff() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "alpha\n").expect("seed file");
+        let path_str = path.to_string_lossy().to_string();
+
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("edit"),
+                args: serde_json::json!({
+                    "path": path_str,
+                    "old_string": "does not exist",
+                    "new_string": "x",
+                }),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallFinished {
+                call_id: "tc_1".to_string(),
+                is_error: true,
+                preview: "old_string not found".to_string(),
+            },
+        ));
+
+        assert!(
+            !state.tool_diffs.contains_key("tc_1"),
+            "a failed call must not store a diff: {:?}",
+            state.tool_diffs
+        );
+    }
+
+    /// A non-`edit`/`write` tool (e.g. `bash`) stores no diff, even on
+    /// success -- there is no file-content change to show.
+    #[test]
+    fn a_settled_non_edit_tool_stores_no_diff() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({"command": "ls"}),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallFinished {
+                call_id: "tc_1".to_string(),
+                is_error: false,
+                preview: "".to_string(),
+            },
+        ));
+
+        assert!(state.tool_diffs.is_empty(), "{:?}", state.tool_diffs);
+    }
+
+    /// A multi-byte character sitting mid-line in the edited content must
+    /// never panic while being folded into a diff -- the exact bug class
+    /// `view/transcript.rs`'s own `truncate_chars_with_ellipsis` was fixed
+    /// for (a raw byte-index slice landing inside a multi-byte char).
+    /// Nothing in this diff path slices by byte offset, but this pins that
+    /// invariant against a regression the same way the item's own required
+    /// check asks for.
+    #[test]
+    fn a_settled_edit_with_a_multibyte_character_mid_line_never_panics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "price: 10\u{2014}20 dollars\n").expect("seed file"); // em dash
+        let path_str = path.to_string_lossy().to_string();
+
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("edit"),
+                args: serde_json::json!({
+                    "path": path_str,
+                    "old_string": "10\u{2014}20",
+                    "new_string": "15\u{2014}25",
+                }),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallFinished {
+                call_id: "tc_1".to_string(),
+                is_error: false,
+                preview: format!("edited {path_str}: 1 replacement(s)"),
+            },
+        ));
+
+        let diff = state
+            .tool_diffs
+            .get("tc_1")
+            .expect("expected a stored diff");
+        assert!(diff.contains('\u{2014}'), "{diff}");
+    }
+
     /// `toggle_thinking` flips `show_reasoning` and returns the new value.
     #[test]
     fn toggle_thinking_flips_show_reasoning() {
@@ -1251,6 +1928,403 @@ mod tests {
                 );
             }
             other => panic!("expected a Notice entry, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // `Event::PermissionDecision` -- the TUI's own dim transcript note for
+    // a PROMPTED permission decision. `/context`'s own count over the
+    // durable record (a separate half of the same board work; it reads the
+    // session's own record history, never `ContextReport::segments` --
+    // `ContextBuilder` deliberately excludes this record kind from context
+    // assembly) is tested in `commands.rs`, not here.
+    // -----------------------------------------------------------------
+
+    /// The full real sequence for one prompted, ALLOWED-once call:
+    /// `ToolCallProposed` -> `PermissionRequested` -> `PermissionResolved`
+    /// (stashes the kind) -> `PermissionDecision` (the new event, carrying
+    /// `waited_ms`/`feedback`) -> `ToolCallFinished`. Asserts the pushed
+    /// `Entry::PermissionDecision`'s `call_id` matches the tool call it
+    /// belongs to, its exact wording, and -- the "beneath the tool call"
+    /// placement criterion -- that it sits strictly AFTER the matching
+    /// `Entry::Tool` in transcript order.
+    #[test]
+    fn prompted_allow_decision_renders_a_dim_note_under_its_tool_call() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        let events = vec![
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({"command": "ls"}),
+            },
+            Event::PermissionRequested {
+                call_id: "tc_1".to_string(),
+                rendered: "bash: ls".to_string(),
+            },
+            Event::PermissionResolved {
+                call_id: "tc_1".to_string(),
+                decision: PermissionDecisionKind::AllowOnce,
+            },
+            Event::PermissionDecision {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("bash"),
+                decision: conway_core::log::PermissionDecisionRecordKind::Allow,
+                source: conway_core::log::PermissionDecisionSource::Operator,
+                waited_ms: Some(252_000), // 4m 12s
+                feedback: None,
+            },
+            Event::ToolCallFinished {
+                call_id: "tc_1".to_string(),
+                is_error: false,
+                preview: "ok".to_string(),
+            },
+        ];
+        for event in events {
+            state.apply(&envelope(session, root, event));
+        }
+
+        let tool_idx = state
+            .transcript
+            .iter()
+            .position(|e| matches!(e, Entry::Tool { .. }))
+            .expect("a Tool entry");
+        let decision_idx = state
+            .transcript
+            .iter()
+            .position(|e| matches!(e, Entry::PermissionDecision { .. }))
+            .expect("a PermissionDecision entry");
+        assert!(
+            decision_idx > tool_idx,
+            "the decision note must render BENEATH (after) the tool call it belongs to"
+        );
+
+        match &state.transcript[decision_idx] {
+            Entry::PermissionDecision { call_id, text } => {
+                assert_eq!(call_id, "tc_1");
+                assert_eq!(text, "allowed once · waited 4m 12s");
+            }
+            other => panic!("expected Entry::PermissionDecision, got {other:?}"),
+        }
+    }
+
+    /// A DENIED, prompted call with the operator's own typed feedback.
+    #[test]
+    fn prompted_deny_with_feedback_decision_renders_the_reason() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        let events = vec![
+            Event::ToolCallProposed {
+                call_id: "tc_2".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({"command": "rm -rf /"}),
+            },
+            Event::PermissionRequested {
+                call_id: "tc_2".to_string(),
+                rendered: "bash: rm -rf /".to_string(),
+            },
+            Event::PermissionResolved {
+                call_id: "tc_2".to_string(),
+                decision: PermissionDecisionKind::DeniedWithFeedback,
+            },
+            Event::PermissionDecision {
+                call_id: "tc_2".to_string(),
+                tool: ToolName::new("bash"),
+                decision: conway_core::log::PermissionDecisionRecordKind::DenyWithFeedback,
+                source: conway_core::log::PermissionDecisionSource::Operator,
+                waited_ms: Some(12_000),
+                feedback: Some("too risky".to_string()),
+            },
+        ];
+        for event in events {
+            state.apply(&envelope(session, root, event));
+        }
+
+        let decision = state
+            .transcript
+            .iter()
+            .find_map(|e| match e {
+                Entry::PermissionDecision { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("a PermissionDecision entry");
+        assert_eq!(decision, "denied with feedback: too risky · waited 12s");
+    }
+
+    /// PAIRING for the render test above: the SAME call, but the decision
+    /// never reached the operator (`waited_ms: None` -- a pattern/rule/
+    /// hook/mode resolution, matching every source but `Operator`). No
+    /// `Entry::PermissionDecision` is pushed at all. A wrong implementation
+    /// that renders for every `Event::PermissionDecision` regardless of
+    /// `waited_ms` would pass the ALLOW test above but fail this one.
+    #[test]
+    fn unprompted_decision_renders_no_entry() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        let events = vec![
+            Event::ToolCallProposed {
+                call_id: "tc_3".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({"command": "ls"}),
+            },
+            Event::PermissionResolved {
+                call_id: "tc_3".to_string(),
+                decision: PermissionDecisionKind::AllowAlways,
+            },
+            Event::PermissionDecision {
+                call_id: "tc_3".to_string(),
+                tool: ToolName::new("bash"),
+                decision: conway_core::log::PermissionDecisionRecordKind::Pattern,
+                source: conway_core::log::PermissionDecisionSource::Rule,
+                waited_ms: None,
+                feedback: None,
+            },
+        ];
+        for event in events {
+            state.apply(&envelope(session, root, event));
+        }
+
+        assert!(
+            !state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::PermissionDecision { .. })),
+            "a decision that never reached the operator must render no transcript line"
+        );
+        // The stash is still cleared -- not leaked -- even on the
+        // no-render path.
+        assert!(!state.permission_decision_pending.contains_key("tc_3"));
+    }
+
+    /// PAIRING for the two tests above: a tool call with NO
+    /// `Event::PermissionDecision` at all (most calls -- no permission
+    /// gate involved) renders no `Entry::PermissionDecision` either. A
+    /// wrong implementation that pushed a decision note unconditionally
+    /// from `Event::ToolCallProposed` (rather than from the real event)
+    /// would pass the two tests above but fail this one.
+    #[test]
+    fn a_tool_call_with_no_permission_decision_event_renders_no_entry() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_4".to_string(),
+                tool: ToolName::new("read"),
+                args: serde_json::json!({"path": "/tmp/x"}),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallFinished {
+                call_id: "tc_4".to_string(),
+                is_error: false,
+                preview: "ok".to_string(),
+            },
+        ));
+
+        assert!(!state
+            .transcript
+            .iter()
+            .any(|e| matches!(e, Entry::PermissionDecision { .. })));
+    }
+
+    /// `waited_ms` renders as a HUMAN duration (`"4m 12s"`), never the raw
+    /// millisecond count -- a wrong implementation that `format!`ed
+    /// `waited_ms` directly would still pass the wording tests above IF
+    /// they only checked for a substring match on the minutes/seconds, but
+    /// fails this one by asserting the raw number is absent.
+    #[test]
+    fn wait_duration_renders_as_a_human_duration_not_raw_milliseconds() {
+        assert_eq!(
+            format_permission_decision_note(Some(PermissionDecisionKind::AllowOnce), 252_000, None),
+            "allowed once · waited 4m 12s"
+        );
+        let short =
+            format_permission_decision_note(Some(PermissionDecisionKind::AllowOnce), 3_000, None);
+        assert_eq!(short, "allowed once · waited 3s");
+        assert!(
+            !short.contains("3000"),
+            "must never leak the raw millisecond count: {short}"
+        );
+    }
+
+    // ---- board item 01M1YS4FMJH004D1Y619MTBY7A: `backfill_entries` ----
+
+    fn ts() -> DateTime<Utc> {
+        "2026-07-20T00:00:00Z".parse().expect("valid timestamp")
+    }
+
+    /// Required test (the backfill's own acceptance criteria): a log with a
+    /// user turn, an assistant turn WITH a tool call, that tool's result,
+    /// and a child result -- asserting the resulting entries' TEXTS AND
+    /// ORDER.
+    ///
+    /// Catches two distinct wrong implementations at once:
+    /// - **Reusing `record_to_event`'s `Assistant` mapping verbatim**
+    ///   (mapping the whole record to one bare `TextDelta` of its text
+    ///   content, per that function's own disclosed narrowing) would drop
+    ///   the `ToolUse` content block entirely -- `entries.len()` would be 3,
+    ///   not 4, and the middle entry would carry no proposed tool call at
+    ///   all. The `entries.len() == 4` assertion plus the `Entry::Tool`
+    ///   match on `entries[2]` both fail against that implementation.
+    /// - **Failing to fold the `ToolResultRecord` into the SAME `Entry::
+    ///   Tool` pushed by the preceding `ToolUse` block** (e.g. always
+    ///   pushing a fresh entry instead of searching backward by `call_id`)
+    ///   would yield 5 entries, not 4, and `entries[2]`'s `status` would
+    ///   still read `Proposed` rather than `Finished` -- both assertions
+    ///   below fail against that implementation too.
+    #[test]
+    fn backfill_entries_orders_a_user_turn_a_tool_call_its_result_and_a_child_result() {
+        let child = AgentId::new();
+        let child_session = SessionId::new();
+        let model: conway::ModelRef = "test/echo".parse().expect("valid model ref");
+
+        let records = vec![
+            conway::LogRecord::UserTurn {
+                seq: LogSeq(1),
+                ts: ts(),
+                text: "list the files".to_string(),
+                prov: conway::Provenance::UserPrompt,
+            },
+            conway::LogRecord::Assistant {
+                seq: LogSeq(2),
+                ts: ts(),
+                content: vec![
+                    ContentBlock::Text {
+                        text: "sure, checking now".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        call_id: "tc_1".to_string(),
+                        name: ToolName::new("bash"),
+                        arguments: serde_json::json!({"command": "ls"}),
+                    },
+                ],
+                model,
+                route_reason: serde_json::json!({}),
+                usage: conway::Usage::default(),
+                stop: conway::backend::StopReason::EndTurn,
+            },
+            conway::LogRecord::ToolResultRecord {
+                seq: LogSeq(3),
+                ts: ts(),
+                result: conway_core::content::ToolResult {
+                    call_id: "tc_1".to_string(),
+                    tool: ToolName::new("bash"),
+                    blocks: vec![ContentBlock::Text {
+                        text: "one.txt\ntwo.txt".to_string(),
+                    }],
+                    is_error: false,
+                    truncated: None,
+                },
+            },
+            conway::LogRecord::ChildResultRecord {
+                seq: LogSeq(4),
+                ts: ts(),
+                result: conway::AgentResult::new(
+                    child,
+                    child_session,
+                    ResultStatus::Completed,
+                    "wrote the report",
+                ),
+                prov: conway::Provenance::ChildResult { from: child },
+            },
+        ];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(
+            entries.len(),
+            4,
+            "expected exactly one entry per record except the folded tool result: {entries:#?}"
+        );
+        assert_eq!(entries[0], Entry::User("list the files".to_string()));
+        match &entries[1] {
+            Entry::Assistant { text, model, .. } => {
+                assert_eq!(text.as_str(), "sure, checking now");
+                assert_eq!(
+                    *model, None,
+                    "replayed entries carry no model -- matches Entry::Assistant's own \
+                     doc ('None for replayed entries')"
+                );
+            }
+            other => panic!("expected Entry::Assistant at index 1, got {other:?}"),
+        }
+        match &entries[2] {
+            Entry::Tool {
+                call_id,
+                name,
+                status,
+                preview,
+                ..
+            } => {
+                assert_eq!(call_id.as_str(), "tc_1");
+                assert_eq!(name.as_str(), "bash");
+                assert_eq!(
+                    *status,
+                    ToolStatus::Finished { is_error: false },
+                    "the later ToolResultRecord must fold INTO this same entry, not push \
+                     a second one"
+                );
+                assert_eq!(preview.as_str(), "one.txt\ntwo.txt");
+            }
+            other => panic!("expected Entry::Tool at index 2, got {other:?}"),
+        }
+        match &entries[3] {
+            Entry::Notice { text } => {
+                assert_eq!(text, &format!("child {child} finished: wrote the report"));
+            }
+            other => panic!("expected Entry::Notice at index 3, got {other:?}"),
+        }
+    }
+
+    /// Required test: a record kind [`push_record`] has no dedicated arm
+    /// for (`ContextMask`, chosen as a representative -- `record_to_event`
+    /// itself falls back to its own `_ => None` for the identical four
+    /// kinds) still produces exactly one entry, naming the kind -- never
+    /// silently dropped.
+    ///
+    /// Catches a wrong implementation whose wildcard arm is `other => {}`
+    /// (or omits the arm's push): `entries.len()` would be `0`, not `1`.
+    /// Also catches one whose placeholder text does not name which kind was
+    /// unrecognized (a bare `"[unrecognized record]"`, say) -- silent about
+    /// WHAT was dropped is still a form of the same honesty failure this
+    /// item's own acceptance criteria call out.
+    #[test]
+    fn unknown_record_kind_becomes_a_named_placeholder_not_a_silent_drop() {
+        let records = vec![conway::LogRecord::ContextMask {
+            seq: LogSeq(1),
+            ts: ts(),
+            target_seq: LogSeq::ZERO,
+            excluded: true,
+        }];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(
+            entries.len(),
+            1,
+            "an unrecognized record kind must still produce exactly one entry, never zero: \
+             {entries:#?}"
+        );
+        match &entries[0] {
+            Entry::PermissionDecision { text, .. } => {
+                assert!(
+                    text.contains("context_mask"),
+                    "the placeholder must name the record's own kind: {text:?}"
+                );
+            }
+            other => panic!("expected a placeholder entry, got {other:?}"),
         }
     }
 }

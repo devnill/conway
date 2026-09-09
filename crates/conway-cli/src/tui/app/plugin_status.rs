@@ -305,6 +305,79 @@ mod tests {
         );
     }
 
+    /// **Board item A5.4, the load-bearing "two ticks" test its own spec
+    /// names by shape.** Every other rendered-status-line test in this
+    /// module's own suite up to here starts from an EMPTY contribution and
+    /// checks it becomes non-empty after one poll -- a test shaped that way
+    /// cannot tell a genuine per-tick re-read apart from a value latched
+    /// once and never refreshed again, because "empty, then something" is
+    /// also what a single one-shot read would produce. This test starts
+    /// from a contribution that is ALREADY non-empty (call-1, after the
+    /// first poll) and polls a SECOND time, asserting the rendered line
+    /// shows call-2 and no longer shows call-1 anywhere on screen -- the
+    /// only shape of assertion an unchanging fixture could never pass by
+    /// accident, because there is no single read that could produce both
+    /// observations.
+    #[tokio::test]
+    async fn two_refresh_ticks_with_a_changing_contribution_change_the_rendered_line() {
+        let conway = conway::test_support::test_builder(base_config())
+            .with_backend(Arc::new(conway_testkit::FakeBackend::echo(BackendId::new(
+                "fake",
+            ))))
+            .with_plugin(Arc::new(CountingPlugin {
+                calls: AtomicUsize::new(0),
+            }))
+            .build()
+            .expect("build should succeed with one status-contributing plugin installed");
+
+        let mut cli = minimal_cli();
+        let tui_config_dir = tempfile::tempdir().expect("tempdir");
+        let tui_config_path = tui_config_dir.path().join("settings.json");
+        std::fs::write(
+            &tui_config_path,
+            serde_json::json!({"tui": {"status_line": {"fields": ["plugins"]}}}).to_string(),
+        )
+        .expect("write settings.json carrying [tui.status_line.fields]");
+        cli.config = Some(tui_config_path);
+
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        // Tick 1: the same "appears after build" transition the sibling
+        // test above already proves, needed here only to reach a
+        // non-empty starting point for tick 2.
+        assert!(app.refresh_plugin_status_contributions());
+        let after_tick_1 = crate::tui::test_support::render_text(&app.state, 120, 40);
+        assert!(
+            after_tick_1.contains("counting: call-1"),
+            "tick 1 must show call-1: {after_tick_1}"
+        );
+
+        // Tick 2: this is the assertion the "empty then something" shape
+        // above cannot make. `refresh_plugin_status_contributions` must
+        // report a change...
+        assert!(
+            app.refresh_plugin_status_contributions(),
+            "a second poll whose value genuinely changed must report a change, exactly like \
+             the first poll did"
+        );
+        // ...and the RENDERED line -- not merely the intermediate
+        // `AppState` field -- must show the new value and must no longer
+        // show the old one, proving this is a live re-render off a live
+        // re-poll, not a value latched at tick 1 and never revisited.
+        let after_tick_2 = crate::tui::test_support::render_text(&app.state, 120, 40);
+        assert!(
+            after_tick_2.contains("counting: call-2"),
+            "tick 2 must show the NEW value call-2: {after_tick_2}"
+        );
+        assert!(
+            !after_tick_2.contains("call-1"),
+            "tick 2 must no longer show the STALE value call-1 anywhere on screen: \
+             {after_tick_2}"
+        );
+    }
+
     /// Acceptance criterion 5: a live poll makes contributions appear and
     /// DISAPPEAR mid-session, which is a new way to reach the boundary
     /// `view/status.rs`'s `plugin_contributions_never_displace_the_forced_

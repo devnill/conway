@@ -332,6 +332,7 @@ fn capabilities_for_claude_sonnet_returns_explicit_breakpoints_and_validated_str
         dialect_defaults: anthropic_defaults(),
         metadata: ModelMetadataStore::defaults().get(&ModelId::new("claude-sonnet-4-6")),
         overrides: None,
+        probed_max_context_tokens: None,
     });
     assert_eq!(caps, expected);
 }

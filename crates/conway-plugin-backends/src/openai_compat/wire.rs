@@ -101,6 +101,7 @@ pub(crate) fn build_request_body(
     if let Some(effort) = reasoning_effort(req, profile) {
         body.insert("reasoning_effort".into(), json!(effort));
     }
+    warn_ignored_params(req);
     if profile.sends_num_ctx {
         if let Some(window) = context_window {
             body.insert("options".into(), json!({ "num_ctx": window }));
@@ -138,6 +139,26 @@ fn reasoning_effort(req: &GenerateRequest, profile: &Profile) -> Option<String> 
         .get("reasoning_effort")
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+/// Warns, once per request, about a `SamplingParams` field this generic
+/// OpenAI-compatible wire body never reads -- the same declaration-honesty
+/// concern `anthropic::wire`'s own `warn_ignored_params` documents. `seed`
+/// is the one typed field with no equivalent here: `ollama_native.rs`'s own
+/// `build_native_request_body` DOES send `params.seed` (Ollama's native
+/// `/api/chat` supports it), but that is a separate body-construction
+/// function this one's callers never invoke together with this one -- see
+/// `openai_compat/mod.rs`'s `generate`/`stream`, which choose exactly one
+/// of the two per request depending on `profile.dialect`.
+fn warn_ignored_params(req: &GenerateRequest) {
+    if req.params.seed.is_some() {
+        tracing::warn!(
+            field = "seed",
+            backend = "openai-compat",
+            "params field \"seed\" ignored by backend \"openai-compat\": this profile's chat \
+             completions endpoint does not send a seed parameter"
+        );
+    }
 }
 
 /// Maps every segment to zero or more chat messages, in order. Segment
@@ -729,6 +750,114 @@ mod tests {
         assert!(ollama_body.get("reasoning_effort").is_none());
     }
 
+    // -----------------------------------------------------------------
+    // `warn_ignored_params` -- same minimal, dependency-free tracing WARN
+    // capture as `anthropic::wire`'s own tests (see that module for why
+    // there is no `tracing-test` dependency here either).
+    // -----------------------------------------------------------------
+
+    #[derive(Clone, Default)]
+    struct CaptureLog {
+        entries: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl CaptureLog {
+        fn contains(&self, needle: &str) -> bool {
+            self.entries
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.contains(needle))
+        }
+        fn count(&self) -> usize {
+            self.entries.lock().unwrap().len()
+        }
+    }
+
+    struct CaptureSubscriber {
+        log: CaptureLog,
+    }
+
+    struct MessageVisitor(String);
+
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    impl tracing::Subscriber for CaptureSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            self.log.entries.lock().unwrap().push(visitor.0);
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    fn install_capture() -> (CaptureLog, tracing::subscriber::DefaultGuard) {
+        let log = CaptureLog::default();
+        let guard = tracing::subscriber::set_default(CaptureSubscriber { log: log.clone() });
+        (log, guard)
+    }
+
+    fn seed_request(seed: Option<u64>) -> GenerateRequest {
+        GenerateRequest {
+            model: ModelId::new("m"),
+            segments: vec![],
+            tools: vec![],
+            params: SamplingParams {
+                seed,
+                ..SamplingParams::default()
+            },
+            prefix_key: None,
+        }
+    }
+
+    /// ACCEPTANCE: `params.seed` reaches the generic OpenAI-compatible
+    /// wire body (used by every dialect except Ollama's own native
+    /// endpoint -- `ollama_native.rs` DOES honor `seed`, so this path is
+    /// specifically the one that does not) and is never read there,
+    /// logging exactly one WARN naming both the ignored field and this
+    /// backend.
+    #[test]
+    fn seed_param_ignored_by_openai_compat_logs_exactly_one_warning_naming_field_and_backend() {
+        let (log, _guard) = install_capture();
+        let req = seed_request(Some(7));
+        build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
+
+        assert_eq!(
+            log.count(),
+            1,
+            "exactly one warning must be logged for one ignored field"
+        );
+        assert!(log.contains("seed"), "warning must name the ignored field");
+        assert!(
+            log.contains("openai-compat"),
+            "warning must name the backend"
+        );
+    }
+
+    /// A request naming no `seed` logs no warning at all.
+    #[test]
+    fn no_seed_param_logs_no_warning() {
+        let (log, _guard) = install_capture();
+        let req = seed_request(None);
+        build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
+        assert_eq!(log.count(), 0);
+    }
+
     #[test]
     fn reasoning_content_is_parsed_into_a_thinking_block_without_a_signature() {
         let response: ChatCompletionResponse = serde_json::from_value(json!({
@@ -1044,5 +1173,143 @@ mod tests {
                 profile.id
             );
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Byte stability (board item A5.7, acceptance criterion 4) -- the
+    // OpenAI-compatible-dialect counterpart to `anthropic::wire`'s own pair
+    // of tests, sharing the identical reasoning: implicit-prefix caching
+    // (every built-in profile but `lm_studio`) matches on byte-identical
+    // leading bytes, so conway's own message construction must never
+    // introduce churn ahead of the genuinely new turn.
+    // -----------------------------------------------------------------
+
+    fn shared_conversation_prefix() -> Vec<PromptSegment> {
+        vec![
+            PromptSegment::new(
+                Role::System,
+                vec![ContentBlock::Text {
+                    text: "You are a helpful assistant.".into(),
+                }],
+                Provenance::AgentDef {
+                    name: "assistant".into(),
+                },
+            ),
+            PromptSegment::new(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "what's 2+2?".into(),
+                }],
+                Provenance::UserPrompt,
+            ),
+            PromptSegment::new(
+                Role::Assistant,
+                vec![ContentBlock::Text { text: "4".into() }],
+                Provenance::SystemNote {
+                    reason: "turn".into(),
+                },
+            ),
+        ]
+    }
+
+    /// **The load-bearing byte-stability check**, OpenAI-compatible dialect.
+    /// Two conversations sharing an identical prefix, differing ONLY in the
+    /// LAST user turn, must render a byte-identical leading run of chat
+    /// messages -- proven at the level of the wire messages
+    /// `build_request_body` actually sends.
+    #[test]
+    fn two_conversations_differing_only_in_the_final_user_turn_render_byte_identical_up_to_that_turn(
+    ) {
+        let mut conversation_a = shared_conversation_prefix();
+        conversation_a.push(PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "and 3+3?".into(),
+            }],
+            Provenance::UserPrompt,
+        ));
+        let mut conversation_b = shared_conversation_prefix();
+        conversation_b.push(PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "what about 10-1?".into(),
+            }],
+            Provenance::UserPrompt,
+        ));
+
+        let profile = Dialect::OpenAi.profile();
+        let messages_a = segments_to_messages(&conversation_a, &profile, false);
+        let messages_b = segments_to_messages(&conversation_b, &profile, false);
+
+        assert_eq!(
+            messages_a.len(),
+            messages_b.len(),
+            "both conversations have the same NUMBER of turns -- only the last one's content \
+             differs"
+        );
+        let (last_a, prefix_a) = messages_a.split_last().expect("at least one message");
+        let (last_b, prefix_b) = messages_b.split_last().expect("at least one message");
+        assert_eq!(
+            prefix_a, prefix_b,
+            "every message strictly before the final user turn must be byte-identical on the \
+             wire -- the exact precondition implicit-prefix caching depends on: \
+             a=({prefix_a:?}) b=({prefix_b:?})"
+        );
+        assert_ne!(
+            last_a, last_b,
+            "the two conversations must genuinely differ in their final turn"
+        );
+    }
+
+    /// Companion to the test above, proving it is discriminating rather
+    /// than tautological -- see `anthropic::wire`'s identically-named
+    /// sibling test for the full reasoning ("a check is not established
+    /// until it has been shown to fail").
+    #[test]
+    fn the_prefix_comparison_actually_catches_front_churn_not_just_a_changed_last_turn() {
+        let mut conversation_a = shared_conversation_prefix();
+        conversation_a[1] = PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "what's 2+2? (variant A)".into(),
+            }],
+            Provenance::UserPrompt,
+        );
+        conversation_a.push(PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "and 3+3?".into(),
+            }],
+            Provenance::UserPrompt,
+        ));
+
+        let mut conversation_b = shared_conversation_prefix();
+        conversation_b[1] = PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "what's 2+2? (variant B)".into(),
+            }],
+            Provenance::UserPrompt,
+        );
+        conversation_b.push(PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "and 3+3?".into(),
+            }],
+            Provenance::UserPrompt,
+        ));
+
+        let profile = Dialect::OpenAi.profile();
+        let messages_a = segments_to_messages(&conversation_a, &profile, false);
+        let messages_b = segments_to_messages(&conversation_b, &profile, false);
+        let (_last_a, prefix_a) = messages_a.split_last().expect("at least one message");
+        let (_last_b, prefix_b) = messages_b.split_last().expect("at least one message");
+
+        assert_ne!(
+            prefix_a, prefix_b,
+            "a change at the FRONT of the conversation must be visible in the shared-prefix \
+             comparison -- if this ever started passing, the sibling byte-stability test above \
+             would no longer be proving anything"
+        );
     }
 }

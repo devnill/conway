@@ -36,7 +36,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use common::mock_backend::{Chunk, MockBackend, Script};
-use common::{command, run_conway, write_fixture, write_fixture_with};
+use common::{command, run_conway, session_dir, write_fixture, write_fixture_with, Fixture};
 use serde_json::Value;
 
 const NO_ESC: u8 = 0x1b;
@@ -1196,6 +1196,194 @@ fn wait_with_timeout(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+// ---------------------------------------------------------------------
+// SIGTERM / SIGHUP (board item A5.3): a one-shot run terminated by either
+// must leave a terminal `agent_result` as the LAST record in its own
+// persisted session log, and exit with the documented signal-specific
+// code -- not merely "no error was returned" (this file's own module doc,
+// "Exit-code liveness"): a unit test of `exit.rs`'s mapping is not
+// evidence a code is reachable, and neither is an exit code alone evidence
+// the LOG actually recorded anything. Both tests below read the real
+// on-disk session log the compiled binary wrote and assert on its LAST
+// line.
+// ---------------------------------------------------------------------
+
+#[cfg(unix)]
+fn send_signal(pid: u32, signal: nix::sys::signal::Signal) {
+    use nix::unistd::Pid;
+    nix::sys::signal::kill(Pid::from_raw(pid as i32), signal).expect("send signal");
+}
+
+/// The single session file the fixture's one root session wrote --
+/// `session_dir` names the directory, this glob asserts there is exactly
+/// one `.jsonl` file in it (true for every test in this file: one fresh
+/// `-p` invocation, never `--resume`/`--fork-from`). Not `#[cfg(unix)]` --
+/// unlike [`send_signal`], nothing here is signal-specific.
+fn only_session_file(fixture: &Fixture) -> std::path::PathBuf {
+    let dir = session_dir(fixture);
+    // `index.jsonl` (the store's own catalog, not a session transcript)
+    // shares the `.jsonl` extension with every real session file in the
+    // same directory -- excluded by filename, not just extension.
+    let mut jsonl: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read session dir {}: {e}", dir.display()))
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "jsonl"))
+        .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("index.jsonl"))
+        .collect();
+    assert_eq!(
+        jsonl.len(),
+        1,
+        "expected exactly one session file in {}, found {jsonl:?}",
+        dir.display()
+    );
+    jsonl.remove(0)
+}
+
+/// The last line of `path`, parsed as JSON -- the session log's own LAST
+/// RECORD, which is exactly what this item's acceptance criteria say to
+/// assert on rather than an intermediate signal.
+fn last_record(path: &std::path::Path) -> Value {
+    let contents = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let last_line = contents
+        .lines()
+        .last()
+        .unwrap_or_else(|| panic!("session file {path:?} has no lines at all"));
+    serde_json::from_str(last_line)
+        .unwrap_or_else(|e| panic!("last line of {path:?} did not parse as JSON: {e}"))
+}
+
+/// ACCEPTANCE 1: "A one-shot run terminated by SIGTERM leaves an
+/// `agent_result` as its last log record and exits with a documented
+/// code." Drives the real compiled binary, sends a real `SIGTERM`, and
+/// reads the real on-disk session log back -- the same shape
+/// `sigint_graceful` above uses for SIGINT, generalized to this item's new
+/// signal and its own exit code (143 = 128 + SIGTERM).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sigterm_leaves_a_terminal_agent_result_as_the_logs_last_record() {
+    let mock = MockBackend::start(Script(vec![vec![Chunk::Text("partial"), Chunk::Hang]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let mut child = command(&["-p", "hi"], &fixture)
+        .spawn()
+        .expect("spawn conway");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    // Give the child time to receive and render the first delta (and, with
+    // it, install its signal handlers -- `sigint_double_aborts`'s own
+    // comment documents this exact readiness hazard) before signalling it.
+    let mut buf = [0u8; 7]; // b"partial".len()
+    let read_deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = 0;
+    while got < buf.len() {
+        if Instant::now() > read_deadline {
+            panic!("never observed the initial TextDelta before the read deadline");
+        }
+        match stdout.read(&mut buf[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(_) => break,
+        }
+    }
+    assert_eq!(&buf[..got], b"partial");
+
+    send_signal(child.id(), nix::sys::signal::Signal::SIGTERM);
+
+    let status = wait_with_timeout(&mut child, Duration::from_secs(10))
+        .expect("conway must exit within 10s of a single SIGTERM");
+    assert_eq!(status.code(), Some(143), "documented SIGTERM exit code");
+
+    let last = last_record(&only_session_file(&fixture));
+    assert_eq!(last["kind"], "agent_result", "last record was: {last}");
+    assert_eq!(last["result"]["status"]["status"], "cancelled");
+    assert_eq!(last["result"]["status"]["reason"], "signal: SIGTERM");
+}
+
+/// The SIGHUP sibling of the test above -- same shape, the other
+/// documented signal-specific exit code (129 = 128 + SIGHUP).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sighup_leaves_a_terminal_agent_result_as_the_logs_last_record() {
+    let mock = MockBackend::start(Script(vec![vec![Chunk::Text("partial"), Chunk::Hang]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let mut child = command(&["-p", "hi"], &fixture)
+        .spawn()
+        .expect("spawn conway");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    let mut buf = [0u8; 7];
+    let read_deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = 0;
+    while got < buf.len() {
+        if Instant::now() > read_deadline {
+            panic!("never observed the initial TextDelta before the read deadline");
+        }
+        match stdout.read(&mut buf[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(_) => break,
+        }
+    }
+    assert_eq!(&buf[..got], b"partial");
+
+    send_signal(child.id(), nix::sys::signal::Signal::SIGHUP);
+
+    let status = wait_with_timeout(&mut child, Duration::from_secs(10))
+        .expect("conway must exit within 10s of a single SIGHUP");
+    assert_eq!(status.code(), Some(129), "documented SIGHUP exit code");
+
+    let last = last_record(&only_session_file(&fixture));
+    assert_eq!(last["kind"], "agent_result", "last record was: {last}");
+    assert_eq!(last["result"]["status"]["status"], "cancelled");
+    assert_eq!(last["result"]["status"]["reason"], "signal: SIGHUP");
+}
+
+/// ACCEPTANCE 2: "A fatal backend/stream error in a one-shot run leaves
+/// `agent_result { status: failed, reason: <error> }`." `exit_1_failed`
+/// (above) already proves the EXIT CODE this path reaches; this test
+/// proves the item's own sharper bar -- the observable outcome is the LAST
+/// RECORD in the session's own persisted log, not the exit code or stderr
+/// text alone (a test that only checks "no error was returned", or even
+/// "the process exited 1", cannot distinguish a written record from a
+/// missing one).
+///
+/// `flavor = "multi_thread"`, matching `exit_1_failed` above -- `run_conway`
+/// blocks its calling OS thread on `Command::output()`; on a single-thread
+/// runtime that would starve `MockBackend`'s own async server task of any
+/// chance to answer the request at all (confirmed empirically: the
+/// single-threaded version of this test hung until `conway`'s own
+/// `--max-seconds`-less deadline, `waiting for a response...` forever).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fatal_backend_error_leaves_a_failed_agent_result_as_the_logs_last_record() {
+    let mock = MockBackend::start(Script(vec![vec![Chunk::HttpError {
+        status: 401,
+        body: r#"{"error":{"message":"invalid api key"}}"#,
+    }]]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+    assert!(
+        out.status.code() == Some(1),
+        "expected exit 1 (AgentFailed), got {:?}; stderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let last = last_record(&only_session_file(&fixture));
+    assert_eq!(last["kind"], "agent_result", "last record was: {last}");
+    assert_eq!(last["result"]["status"]["status"], "failed");
+    let reason = last["result"]["status"]["error"]
+        .as_str()
+        .expect("Failed status carries an `error` string");
+    assert!(
+        reason.contains("authentication failed"),
+        "persisted Failed error must name the auth failure, got {reason:?}"
+    );
 }
 
 // ---------------------------------------------------------------------

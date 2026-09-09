@@ -216,4 +216,23 @@ impl PluginRegistry {
         ids.dedup();
         ids.len()
     }
+
+    /// Every registered tool's declaring plugin id, by name -- the
+    /// attribution [`Self::specs`]'s plain `ToolSpec` list cannot carry
+    /// (that type has no `plugin_id` field: it is the backend-facing wire
+    /// shape, not harness bookkeeping). Board item
+    /// `01M1YS138H8T0HNV5YMZ6KD767` part 2's `/context` per-plugin
+    /// tool-registry breakdown is the one reader: it zips this against
+    /// `Self::specs(None)` by name to group the announced set by declaring
+    /// plugin. Unfiltered, mirroring `specs(None)`/`tools_metadata` above --
+    /// a per-agent `ToolSelector` narrows ANNOUNCEMENT, not registration, so
+    /// this enumerates the full registered set regardless of any one
+    /// agent's own view. Computed from the same `RegisteredTool::plugin_id`
+    /// [`Self::plugin_count`] already reads, not a second source of truth.
+    pub(crate) fn tool_plugin_ids(&self) -> HashMap<ToolName, String> {
+        self.tools
+            .iter()
+            .map(|(name, registered)| (name.clone(), registered.plugin_id.clone()))
+            .collect()
+    }
 }

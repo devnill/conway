@@ -283,3 +283,135 @@ async fn one_hour_ttl_emits_ttl_key_five_minutes_omits_it() {
         "FiveMinutes must not emit a ttl key: {five_minute_cache_control:?}"
     );
 }
+
+/// **Acceptance criterion 3, board item A5.7 ("prompt caching reads zero on
+/// every real session"):** proves the Anthropic caching path end to end, in
+/// ONE flow, rather than as two facts living in separate tests that could
+/// each pass while the other silently regressed. The FIRST turn over a
+/// static, breakpointed prefix must place `cache_control` on it; a SECOND
+/// turn reusing that exact same prefix -- replayed against a wiremock
+/// fixture reporting `cache_read_input_tokens > 0` -- must both (a) decode
+/// into a nonzero `GenerateResponse::usage.cache_read_tokens`, matching
+/// [`generate_text_only_response_maps_stop_and_usage_from_all_four_wire_fields`]
+/// (`anthropic_generate.rs`)'s single-turn proof that the WIRE FIELD decodes
+/// correctly, and (b) still carry the SAME breakpoint on the SAME prefix --
+/// the precondition every cache hit depends on, which that single-turn test
+/// cannot show because it never sends a second request at all. No live API
+/// call -- both replayed responses are wiremock fixtures, matching every
+/// other test in this file.
+#[tokio::test]
+async fn a_second_turn_over_the_cached_prefix_reports_a_real_hit_and_the_first_turn_placed_the_breakpoint(
+) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(|req: &wiremock::Request| {
+            let body: Value = req.body_json().expect("valid JSON request body");
+            // Turn 1 sends exactly one message (the user's first question);
+            // turn 2 additionally carries the replayed assistant reply and
+            // the follow-up question -- an unambiguous discriminator, the
+            // same technique `fanout_prefix_sharing.rs` uses to tell apart
+            // captured requests after the fact.
+            let is_second_turn = body["messages"]
+                .as_array()
+                .map(|m| m.len() > 1)
+                .unwrap_or(false);
+            let response = if is_second_turn {
+                json!({
+                    "content": [{"type": "text", "text": "second"}],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 6,
+                        "output_tokens": 4,
+                        "cache_read_input_tokens": 512,
+                        "cache_creation_input_tokens": 0
+                    }
+                })
+            } else {
+                json!({
+                    "content": [{"type": "text", "text": "first"}],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 512,
+                        "output_tokens": 4,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 512
+                    }
+                })
+            };
+            ResponseTemplate::new(200).set_body_json(response)
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let backend = AnthropicBackend::new(config(&server.uri())).unwrap();
+
+    // The static prefix both turns share, carrying the ONE breakpoint hint
+    // a real `ContextBuilder`/attempt-layer pass would attach for a
+    // `CacheMode::ExplicitBreakpoints` model -- hand-attached directly here
+    // (this crate does not depend on `conway-runtime`), the identical
+    // pattern every other test in this file already uses.
+    let static_prefix =
+        system_segment("You are a helpful assistant with a long, shared system prompt.")
+            .with_cache_hint(breakpoint_hint(CacheTtl::FiveMinutes, "shared-prefix"));
+    let first_question = PromptSegment::new(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "first question".into(),
+        }],
+        Provenance::UserPrompt,
+    );
+
+    let turn_one = req_with(vec![static_prefix.clone(), first_question.clone()]);
+    let response_one = backend.generate(turn_one).await.unwrap();
+    assert_eq!(
+        response_one.usage.cache_read_tokens, 0,
+        "cold cache on the first turn -- nothing to hit yet"
+    );
+
+    let turn_two = req_with(vec![
+        static_prefix.clone(),
+        first_question,
+        PromptSegment::new(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: "first".into(),
+            }],
+            Provenance::SystemNote {
+                reason: "turn".into(),
+            },
+        ),
+        PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "follow-up question".into(),
+            }],
+            Provenance::UserPrompt,
+        ),
+    ]);
+    let response_two = backend.generate(turn_two).await.unwrap();
+
+    assert!(
+        response_two.usage.cache_read_tokens > 0,
+        "the second turn's replayed cache_read_input_tokens must decode into a nonzero \
+         cache_read_tokens: {:?}",
+        response_two.usage
+    );
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    assert_eq!(requests.len(), 2);
+    let first_body: Value = requests[0].body_json().unwrap();
+    assert_eq!(
+        first_body["system"][0]["cache_control"],
+        json!({"type": "ephemeral"}),
+        "the FIRST turn must place the breakpoint on the static prefix: {first_body:?}"
+    );
+    let second_body: Value = requests[1].body_json().unwrap();
+    assert_eq!(
+        second_body["system"][0]["cache_control"],
+        json!({"type": "ephemeral"}),
+        "the SECOND turn must place the SAME breakpoint on the SAME static prefix -- the \
+         precondition a real cache hit depends on: {second_body:?}"
+    );
+}

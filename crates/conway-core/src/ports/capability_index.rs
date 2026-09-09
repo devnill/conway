@@ -34,18 +34,31 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::capabilities::Capabilities;
+use crate::capabilities::{Capabilities, ContextTokensSource};
 use crate::ids::{BackendId, ModelId, ModelRef};
 
-use super::{Backend, TokenCountFidelity};
+use super::{Backend, CacheReporting, TokenCountFidelity};
 
 /// Immutable `(backend, model) -> Capabilities` lookup, plus a `backend ->
-/// TokenCountFidelity` lookup. Built once at startup; capability refresh is
-/// a rebuild (owned by the facade).
+/// TokenCountFidelity` lookup, a `backend -> CacheReporting` lookup, and a
+/// `(backend, model) -> ContextTokensSource` lookup. Built once at startup;
+/// capability refresh is a rebuild (owned by the facade).
 #[derive(Debug, Clone, Default)]
 pub struct CapabilityIndex {
     map: HashMap<(BackendId, ModelId), Capabilities>,
     fidelity: HashMap<BackendId, TokenCountFidelity>,
+    /// Keyed like `fidelity`, not `map`: `Backend::cache_reporting` is a
+    /// `Backend`-level declaration (which wire dialect this instance
+    /// speaks), not per-model like `Capabilities` -- see that method's own
+    /// doc.
+    cache_reporting: HashMap<BackendId, CacheReporting>,
+    /// Keyed like `map`, not `fidelity`: a context window's provenance
+    /// genuinely varies per model on the same backend (one model named in
+    /// `models.json`, a sibling on the same server falling to the dialect
+    /// floor), unlike token-estimate fidelity, which is a `Backend`-level
+    /// declaration. See `Backend::context_window_source`'s own doc for the
+    /// full chain this feeds.
+    context_window_source: HashMap<(BackendId, ModelId), ContextTokensSource>,
 }
 
 /// Builder for [`CapabilityIndex`].
@@ -53,6 +66,8 @@ pub struct CapabilityIndex {
 pub struct CapabilityIndexBuilder {
     map: HashMap<(BackendId, ModelId), Capabilities>,
     fidelity: HashMap<BackendId, TokenCountFidelity>,
+    cache_reporting: HashMap<BackendId, CacheReporting>,
+    context_window_source: HashMap<(BackendId, ModelId), ContextTokensSource>,
 }
 
 impl CapabilityIndexBuilder {
@@ -79,10 +94,39 @@ impl CapabilityIndexBuilder {
         self
     }
 
+    /// Records `backend`'s declared [`CacheReporting`] -- one entry per
+    /// backend id, not per `(backend, model)` pair, exactly like
+    /// [`Self::insert_token_fidelity`]'s relationship to `fidelity`.
+    /// Independent of [`Self::insert`]: a caller (e.g. a test) may set one
+    /// without the other.
+    pub fn insert_cache_reporting(
+        mut self,
+        backend: BackendId,
+        cache_reporting: CacheReporting,
+    ) -> CapabilityIndexBuilder {
+        self.cache_reporting.insert(backend, cache_reporting);
+        self
+    }
+
+    /// Records `(backend, model)`'s declared [`ContextTokensSource`] --
+    /// independent of [`Self::insert`], exactly like
+    /// [`Self::insert_token_fidelity`]'s relationship to it.
+    pub fn insert_context_window_source(
+        mut self,
+        backend: BackendId,
+        model: ModelId,
+        source: ContextTokensSource,
+    ) -> CapabilityIndexBuilder {
+        self.context_window_source.insert((backend, model), source);
+        self
+    }
+
     pub fn build(self) -> CapabilityIndex {
         CapabilityIndex {
             map: self.map,
             fidelity: self.fidelity,
+            cache_reporting: self.cache_reporting,
+            context_window_source: self.context_window_source,
         }
     }
 }
@@ -99,6 +143,8 @@ impl CapabilityIndex {
         CapabilityIndexBuilder {
             map: self.map,
             fidelity: self.fidelity,
+            cache_reporting: self.cache_reporting,
+            context_window_source: self.context_window_source,
         }
     }
 
@@ -117,12 +163,30 @@ impl CapabilityIndex {
         self.fidelity.get(backend).copied()
     }
 
+    /// O(1) `HashMap` lookup of `backend`'s declared [`CacheReporting`] --
+    /// `None` under the exact same conditions [`Self::token_fidelity`]
+    /// returns `None` (this index was never told about `backend` at all).
+    pub fn cache_reporting(&self, backend: &BackendId) -> Option<CacheReporting> {
+        self.cache_reporting.get(backend).copied()
+    }
+
+    /// O(1) `HashMap` lookup of `model_ref`'s declared [`ContextTokensSource`]
+    /// -- `None` under the exact same conditions [`Self::get`] returns
+    /// `None` (this index was never told about the pair at all).
+    pub fn context_window_source(&self, model_ref: &ModelRef) -> Option<ContextTokensSource> {
+        self.context_window_source
+            .get(&(model_ref.backend.clone(), model_ref.model.clone()))
+            .copied()
+    }
+
     /// Builds the index by asking each backend for its capabilities, once
-    /// per `(backend, model)` pair in `refs`, and its declared
-    /// [`TokenCountFidelity`], once per distinct backend id in `refs`. Refs
-    /// whose backend id is not present in `backends` are silently omitted.
-    /// Synchronous -- `Backend::capabilities` and `Backend::token_fidelity`
-    /// both perform no I/O.
+    /// per `(backend, model)` pair in `refs`; its declared
+    /// [`TokenCountFidelity`], once per distinct backend id in `refs`; and
+    /// its declared [`ContextTokensSource`] for that same `(backend,
+    /// model)` pair. Refs whose backend id is not present in `backends` are
+    /// silently omitted. Synchronous -- `Backend::capabilities`,
+    /// `Backend::token_fidelity`, and `Backend::context_window_source` all
+    /// perform no I/O.
     ///
     /// This is the *only* place a caller should populate a
     /// `CapabilityIndex` from real backends: routing this way (rather than
@@ -138,6 +202,8 @@ impl CapabilityIndex {
             backends.iter().map(|b| (b.id(), b)).collect();
         let mut map = HashMap::new();
         let mut fidelity = HashMap::new();
+        let mut cache_reporting = HashMap::new();
+        let mut context_window_source = HashMap::new();
         for r in refs {
             if let Some(backend) = by_id.get(&r.backend) {
                 map.entry((r.backend.clone(), r.model.clone()))
@@ -145,9 +211,20 @@ impl CapabilityIndex {
                 fidelity
                     .entry(r.backend.clone())
                     .or_insert_with(|| backend.token_fidelity());
+                cache_reporting
+                    .entry(r.backend.clone())
+                    .or_insert_with(|| backend.cache_reporting());
+                context_window_source
+                    .entry((r.backend.clone(), r.model.clone()))
+                    .or_insert_with(|| backend.context_window_source(&r.model));
             }
         }
-        CapabilityIndex { map, fidelity }
+        CapabilityIndex {
+            map,
+            fidelity,
+            cache_reporting,
+            context_window_source,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -360,6 +437,100 @@ mod tests {
         assert_eq!(
             index.token_fidelity(&BackendId::new("local")),
             Some(TokenCountFidelity::Heuristic)
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // `CacheReporting` plumbing (board item A5.7)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn builder_insert_cache_reporting_and_lookup_and_unknown_backend() {
+        let index = CapabilityIndex::builder()
+            .insert_cache_reporting(BackendId::new("anthropic"), CacheReporting::Reported)
+            .build();
+        assert_eq!(
+            index.cache_reporting(&BackendId::new("anthropic")),
+            Some(CacheReporting::Reported)
+        );
+        assert_eq!(index.cache_reporting(&BackendId::new("remote")), None);
+    }
+
+    #[test]
+    fn from_backends_captures_cache_reporting_once_per_backend_not_per_model_pair() {
+        struct ReportingBackend {
+            id: BackendId,
+            caps: Capabilities,
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl Backend for ReportingBackend {
+            fn id(&self) -> BackendId {
+                self.id.clone()
+            }
+            fn capabilities(&self, _model: &ModelId) -> Capabilities {
+                self.caps.clone()
+            }
+            async fn generate(
+                &self,
+                _req: GenerateRequest,
+            ) -> Result<GenerateResponse, BackendError> {
+                unimplemented!("not exercised by this test")
+            }
+            async fn stream(
+                &self,
+                _req: GenerateRequest,
+            ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError>
+            {
+                unimplemented!("not exercised by this test")
+            }
+            async fn probe(&self) -> Result<crate::capabilities::ProbeReport, BackendError> {
+                unimplemented!("not exercised by this test")
+            }
+            fn cache_reporting(&self) -> CacheReporting {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                CacheReporting::Reported
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let backend: Arc<dyn Backend> = Arc::new(ReportingBackend {
+            id: BackendId::new("anthropic"),
+            caps: caps(1000),
+            calls: Arc::clone(&calls),
+        });
+        let refs: Vec<ModelRef> = vec![
+            "anthropic/m1".parse().unwrap(),
+            "anthropic/m2".parse().unwrap(),
+            "absent/m3".parse().unwrap(),
+        ];
+        let index = CapabilityIndex::from_backends(&[backend], &refs);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "once per distinct backend id, not per (backend, model) pair"
+        );
+        assert_eq!(
+            index.cache_reporting(&BackendId::new("anthropic")),
+            Some(CacheReporting::Reported)
+        );
+        assert_eq!(index.cache_reporting(&BackendId::new("absent")), None);
+    }
+
+    #[test]
+    fn from_backends_defaults_cache_reporting_to_not_reported_when_backend_does_not_override() {
+        let backend: Arc<dyn Backend> = Arc::new(CountingBackend {
+            id: BackendId::new("local"),
+            caps: caps(1000),
+            calls: Arc::new(AtomicUsize::new(0)),
+            fidelity_calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let refs: Vec<ModelRef> = vec!["local/m1".parse().unwrap()];
+        let index = CapabilityIndex::from_backends(&[backend], &refs);
+        assert_eq!(
+            index.cache_reporting(&BackendId::new("local")),
+            Some(CacheReporting::NotReported)
         );
     }
 }

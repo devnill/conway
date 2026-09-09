@@ -33,16 +33,15 @@ use common::{command, Fixture};
 /// never needs a real network dial -- these tests only ever run read-only
 /// subcommands, never a prompt.
 ///
-/// `permissions.mode` is set to `"deny"` for explicitness only. It used to
-/// be load-bearing: read-only subcommands passed no `PermissionGate`, so a
-/// `"prompt"`-mode config failed `ConwayBuilder::build()` before the CLI
-/// reached the warning-printing code under test. They now carry a deny-all
-/// gate, so this override no longer changes the outcome.
+/// No `permissions` override here: `settings.json` has not selected a
+/// gate at all since board item 01M1YVP3FDPHY4WZ72SXMWAN2D, and read-only
+/// subcommands now carry their own deny-all gate regardless (`main.rs`'s
+/// own comment) -- there is nothing left for a `permissions` key in this
+/// fixture to change.
 fn write_headroom_warning_fixture() -> Fixture {
     let fixture = common::write_fixture_with("http://127.0.0.1:1/v1", "test-model", 10);
     let text = std::fs::read_to_string(&fixture.config_path).expect("read fixture config");
     let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse fixture config");
-    value["permissions"] = serde_json::json!({ "mode": "deny" });
     value["roles"]["coder"] = serde_json::json!({
         "chain": ["mock/test-model"],
         "headroom_tokens": 200_000,
@@ -112,12 +111,10 @@ async fn misconfigured_headroom_is_visible_on_stderr_for_one_shot_print() {
     let fixture = common::write_fixture(&mock, 10);
     let text = std::fs::read_to_string(&fixture.config_path).expect("read fixture config");
     let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse fixture config");
-    // One-shot `-p` builds its own gate (`oneshot::build_gate`) regardless
-    // of `permissions.mode` (main.rs's own comment: `-p` supplies its own
-    // gate override) -- `"deny"` here just needs to pass `merge::validate`'s
-    // "allowlist requires non-empty allowed_tools" check trivially, exactly
-    // like `write_headroom_warning_fixture` above.
-    value["permissions"] = serde_json::json!({ "mode": "deny" });
+    // No `permissions` override here either -- see
+    // `write_headroom_warning_fixture`'s own doc, same reasoning: one-shot
+    // `-p` builds its own gate (`oneshot::build_gate`) regardless, and
+    // `settings.json` has no say in gate selection at all any more.
     value["roles"]["default"] = serde_json::json!({
         "chain": [format!("mock/{}", mock.model)],
         "headroom_tokens": 200_000,
@@ -160,7 +157,9 @@ fn a_healthy_headroom_prints_no_warning() {
     let fixture = common::write_fixture_with("http://127.0.0.1:1/v1", "test-model", 10);
     let text = std::fs::read_to_string(&fixture.config_path).expect("read fixture config");
     let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse fixture config");
-    value["permissions"] = serde_json::json!({ "mode": "deny" });
+    // No `permissions` override -- see `write_headroom_warning_fixture`'s
+    // own doc, same reasoning: nothing left for this fixture's `mode` key
+    // to change now that `settings.json` has no say in gate selection.
     // Well under the fixture's 128_000-token model window -- no warning.
     value["roles"]["coder"] = serde_json::json!({
         "chain": ["mock/test-model"],

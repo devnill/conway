@@ -310,20 +310,53 @@ for line in sys.stdin:
     sys.stdout.flush()
 "#;
 
-/// An MCP server that answers the FIRST `tools/call` then exits nonzero -- the
-/// "dies mid-session" fixture: the second call must fail with a typed
-/// `SessionDied` within the timeout, never a hang. The handshake completes
-/// normally so the session opens; only a subsequent `tools/call` observes the
-/// death.
-pub const DIE_AFTER_ONE_SERVER: &str = r#"#!/usr/bin/env python3
-import sys, json
+/// An MCP server whose GENERATION 1 dies mid-call -- WITHOUT ever answering
+/// the first `tools/call` it receives -- and whose every later generation
+/// answers normally, with its own pid as the result text. The
+/// "session dies mid-flight, never re-sent" fixture (board item
+/// `01M1ZR1DGZB8FB399SMG51RHP5`'s correction): unlike an older fixture this
+/// one replaced, generation 1 does NOT answer-then-exit (that shape can
+/// never distinguish "the call succeeded, the death is incidental" from "the
+/// call itself died in flight" from OUTSIDE the process) -- it exits
+/// nonzero with NO response line written at all, so the client's read
+/// genuinely observes the death mid-call, the exact shape a resent request
+/// would be needed to paper over.
+///
+/// Two env vars, both optional/required as noted:
+/// - `SPAWN_COUNTER_FILE` (required): each spawn's generation number is
+///   `1 + the number of lines already in this file` (read BEFORE this
+///   spawn appends its own line), and this spawn then appends its OWN
+///   `os.getpid()` as one line -- so a test reading this file back gets
+///   BOTH the total spawn count (line count) AND each generation's actual
+///   pid (the line's own content), letting it assert generation 2's pid
+///   differs from generation 1's without generation 1 ever having to
+///   report its own pid over the wire (it never gets to -- it dies first).
+/// - `REQUEST_LOG_FILE` (optional): every `tools/call` THIS generation ever
+///   receives is appended to this file (its `params`, as one JSON line)
+///   BEFORE this generation decides whether to answer or die -- so a
+///   resent request would show up here as a SECOND line even though only
+///   one user-level call happened. This is the load-bearing evidence for
+///   the no-resend test; see that test's own doc.
+pub const DIES_MID_FIRST_CALL_THEN_RECOVERS_SERVER: &str = r#"#!/usr/bin/env python3
+import sys, json, os
+
+counter_path = os.environ["SPAWN_COUNTER_FILE"]
+generation = 0
+if os.path.exists(counter_path):
+    with open(counter_path) as f:
+        generation = len(f.readlines())
+generation += 1
+with open(counter_path, "a") as f:
+    f.write(str(os.getpid()) + "\n")
+
+request_log_path = os.environ.get("REQUEST_LOG_FILE")
 
 def initialize(rid):
     return {
         "jsonrpc": "2.0", "id": rid, "result": {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "ref-die", "version": "0.1"},
+            "serverInfo": {"name": "ref-die-once", "version": "0.1"},
         }
     }
 
@@ -332,13 +365,12 @@ def tools_list(rid):
         "jsonrpc": "2.0", "id": rid, "result": {
             "tools": [{
                 "name": "die",
-                "description": "answers once then the server exits nonzero",
+                "description": "generation 1 dies mid-call without answering; every later generation answers with its own pid",
                 "inputSchema": {"type": "object"},
             }]
         }
     }
 
-count = 0
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -348,19 +380,256 @@ for line in sys.stdin:
     rid = req.get("id")
     if method == "initialize":
         sys.stdout.write(json.dumps(initialize(rid)) + "\n")
+        sys.stdout.flush()
     elif method == "notifications/initialized":
         continue
     elif method == "tools/list":
         sys.stdout.write(json.dumps(tools_list(rid)) + "\n")
-    elif method == "tools/call":
-        count += 1
-        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {
-            "content": [{"type": "text", "text": "first"}],
-            "isError": False,
-        }}) + "\n")
         sys.stdout.flush()
+    elif method == "tools/call":
+        if request_log_path:
+            with open(request_log_path, "a") as f:
+                f.write(json.dumps(req.get("params", {})) + "\n")
+        if generation == 1:
+            # Dies mid-call, WITHOUT writing a response line at all -- the
+            # client's read observes a genuine mid-flight death, never a
+            # completed-then-exited call.
+            sys.exit(1)
+        else:
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {
+                "content": [{"type": "text", "text": str(os.getpid())}],
+                "isError": False,
+            }}) + "\n")
+            sys.stdout.flush()
+"#;
+
+/// An MCP server that answers its handshake normally but, on EVERY
+/// `tools/call` it ever receives (in ANY generation -- there is no "answer
+/// once" here, unlike [`DIES_MID_FIRST_CALL_THEN_RECOVERS_SERVER`]), exits
+/// nonzero WITHOUT
+/// answering at all: a genuinely crash-looping server, never transiently
+/// unlucky. Writes its own spawn generation to the file named by the
+/// `SPAWN_COUNTER_FILE` env var on startup (appending one line per spawn) --
+/// a test reads that file's line count to prove how many times this host
+/// actually spawned a fresh child, independent of and more reliable than
+/// counting `invoke` calls (which also include calls that never trigger a
+/// respawn).
+pub const ALWAYS_DIES_SERVER: &str = r#"#!/usr/bin/env python3
+import sys, json, os
+
+counter_path = os.environ.get("SPAWN_COUNTER_FILE")
+if counter_path:
+    with open(counter_path, "a") as f:
+        f.write("x\n")
+
+def initialize(rid):
+    return {
+        "jsonrpc": "2.0", "id": rid, "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "ref-crashloop", "version": "0.1"},
+        }
+    }
+
+def tools_list(rid):
+    return {
+        "jsonrpc": "2.0", "id": rid, "result": {
+            "tools": [{
+                "name": "boom",
+                "description": "always exits nonzero on tools/call, without answering",
+                "inputSchema": {"type": "object"},
+            }]
+        }
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method")
+    rid = req.get("id")
+    if method == "initialize":
+        sys.stdout.write(json.dumps(initialize(rid)) + "\n")
+        sys.stdout.flush()
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        sys.stdout.write(json.dumps(tools_list(rid)) + "\n")
+        sys.stdout.flush()
+    elif method == "tools/call":
+        # Exits WITHOUT writing a response line at all -- the client's read
+        # observes EOF mid-call, the same "died mid-call" shape
+        # `DIES_MID_FIRST_CALL_THEN_RECOVERS_SERVER`'s generation 1 produces,
+        # but on every generation.
         sys.exit(1)
-    sys.stdout.flush()
+"#;
+
+/// An MCP server whose `tools/list` answer depends on its OWN spawn
+/// generation, read from the `SPAWN_COUNTER_FILE` env var (same mechanism as
+/// [`ALWAYS_DIES_SERVER`]): generation 1 declares two tools (`stable`,
+/// `only_on_first`) and exits nonzero without answering the first
+/// `tools/call` it receives (forcing a respawn); generation 2+ declares only
+/// `stable` -- `only_on_first` is GONE. Proves acceptance criterion 5: a
+/// respawn whose fresh `tools/list` no longer matches the tool set this
+/// plugin registered at `discover` time must fail the call with a typed
+/// error naming the difference, never silently drop the tool from the
+/// runtime's view.
+pub const TOOL_SET_CHANGES_ON_RESPAWN_SERVER: &str = r#"#!/usr/bin/env python3
+import sys, json, os
+
+counter_path = os.environ["SPAWN_COUNTER_FILE"]
+generation = 0
+if os.path.exists(counter_path):
+    with open(counter_path) as f:
+        generation = len(f.readlines())
+generation += 1
+with open(counter_path, "a") as f:
+    f.write("x\n")
+
+def initialize(rid):
+    return {
+        "jsonrpc": "2.0", "id": rid, "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "ref-shifting", "version": "0.1"},
+        }
+    }
+
+def tools_list(rid):
+    tools = [{
+        "name": "stable",
+        "description": "present in every generation",
+        "inputSchema": {"type": "object"},
+    }]
+    if generation == 1:
+        tools.append({
+            "name": "only_on_first",
+            "description": "present only in generation 1",
+            "inputSchema": {"type": "object"},
+        })
+    return {"jsonrpc": "2.0", "id": rid, "result": {"tools": tools}}
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method")
+    rid = req.get("id")
+    if method == "initialize":
+        sys.stdout.write(json.dumps(initialize(rid)) + "\n")
+        sys.stdout.flush()
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        sys.stdout.write(json.dumps(tools_list(rid)) + "\n")
+        sys.stdout.flush()
+    elif method == "tools/call":
+        if generation == 1:
+            # Generation 1 dies mid-call, without answering, forcing a
+            # respawn -- the respawn is what should discover the shrunk
+            # generation-2 tool set and refuse it.
+            sys.exit(1)
+        else:
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {
+                "content": [{"type": "text", "text": "ok"}],
+                "isError": False,
+            }}) + "\n")
+            sys.stdout.flush()
+"#;
+
+/// The IDENTICAL "dies mid-first-call, every later generation recovers"
+/// fixture as [`DIES_MID_FIRST_CALL_THEN_RECOVERS_SERVER`], with one
+/// addition: its `die` tool's `tools/list` entry carries an
+/// `annotations.idempotentHint` controlled ENTIRELY by the
+/// `IDEMPOTENT_HINT` env var, read fresh on every spawn (so a respawned
+/// generation reports the SAME value the original generation did, matching
+/// the real-world shape of one server declaring one fixed annotation for
+/// its whole life):
+/// - unset -> no `annotations` key at all (the "absent" case -- MCP's own
+///   documented default applies: unsafe to retry).
+/// - `"true"` -> `{"idempotentHint": true}`.
+/// - `"false"` -> `{"idempotentHint": false}` (the EXPLICIT-false case,
+///   distinct from absent -- both must fail closed the same way).
+///
+/// One script, one behavior, three env-selected declarations -- so the
+/// "retried" and "not retried" tests exercise a genuinely IDENTICAL fixture
+/// (same file bytes, same generation-1-dies/generation-2-recovers shape),
+/// differing only in the ONE field this item's retry decision reads. Reuses
+/// the identical `SPAWN_COUNTER_FILE`/`REQUEST_LOG_FILE` evidence
+/// [`DIES_MID_FIRST_CALL_THEN_RECOVERS_SERVER`]'s own doc describes: the
+/// counter file proves how many children were actually spawned, and the
+/// request log proves how many `tools/call`s actually reached a server
+/// process -- 1 line for a call that was correctly NOT retried, 2 lines for
+/// one that WAS.
+pub const DIES_MID_FIRST_CALL_ANNOTATED_SERVER: &str = r#"#!/usr/bin/env python3
+import sys, json, os
+
+counter_path = os.environ["SPAWN_COUNTER_FILE"]
+generation = 0
+if os.path.exists(counter_path):
+    with open(counter_path) as f:
+        generation = len(f.readlines())
+generation += 1
+with open(counter_path, "a") as f:
+    f.write(str(os.getpid()) + "\n")
+
+request_log_path = os.environ.get("REQUEST_LOG_FILE")
+idempotent_hint_mode = os.environ.get("IDEMPOTENT_HINT")  # "true", "false", or unset
+
+def initialize(rid):
+    return {
+        "jsonrpc": "2.0", "id": rid, "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "ref-die-annotated", "version": "0.1"},
+        }
+    }
+
+def tools_list(rid):
+    tool = {
+        "name": "die",
+        "description": "generation 1 dies mid-call without answering; every later generation answers with its own pid",
+        "inputSchema": {"type": "object"},
+    }
+    if idempotent_hint_mode == "true":
+        tool["annotations"] = {"idempotentHint": True}
+    elif idempotent_hint_mode == "false":
+        tool["annotations"] = {"idempotentHint": False}
+    # else: no "annotations" key at all -- the absent case.
+    return {"jsonrpc": "2.0", "id": rid, "result": {"tools": [tool]}}
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method")
+    rid = req.get("id")
+    if method == "initialize":
+        sys.stdout.write(json.dumps(initialize(rid)) + "\n")
+        sys.stdout.flush()
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        sys.stdout.write(json.dumps(tools_list(rid)) + "\n")
+        sys.stdout.flush()
+    elif method == "tools/call":
+        if request_log_path:
+            with open(request_log_path, "a") as f:
+                f.write(json.dumps(req.get("params", {})) + "\n")
+        if generation == 1:
+            # Dies mid-call, WITHOUT writing a response line at all -- the
+            # client's read genuinely observes a mid-flight death, never a
+            # completed-then-exited call.
+            sys.exit(1)
+        else:
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {
+                "content": [{"type": "text", "text": str(os.getpid())}],
+                "isError": False,
+            }}) + "\n")
+            sys.stdout.flush()
 "#;
 
 /// An MCP server that answers the handshake but sleeps past any test timeout

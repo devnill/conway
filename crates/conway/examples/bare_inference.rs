@@ -58,8 +58,7 @@ use std::sync::Arc;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PermissionsConfigMode, PluginsConfig, RoleEntry, RoutingSection,
-    SessionConfig, ToolsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::{ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
@@ -94,40 +93,14 @@ fn config_with_tools(tools: ToolsConfig) -> ConwayConfig {
         cwd: std::path::PathBuf::from("."),
         session: SessionConfig::default(),
         limits: LimitsConfig::default(),
-        // `permissions.mode = "prompt"` (`PermissionsConfig::default()`'s
-        // own value) requires a prompt handler, and no `with_prompt_handler`
-        // method exists on `ConwayBuilder` at all (`crate::builder`'s own
-        // module doc), so an unmodified default config never builds without
-        // a `with_permission_gate` override.
-        //
-        // The crate's OWN shipped preset for exactly this situation,
-        // `presets::default_permissions_for_one_shot` (allow-list mode, an
-        // empty `allowed_tools`), could NOT be used when this example was
-        // first written: `config::merge::validate`'s check 3 rejected
-        // `mode = "allowlist"` paired with an EMPTY `allowed_tools`, and
-        // `ConwayBuilder::build` always re-validates (`apply_cli`, its own
-        // step 1) even for a config built via `from_parts` -- so the preset
-        // this crate ships specifically for a tool-free build could not
-        // itself build, for any caller who used it unmodified.
-        //
-        // That was a real defect and it is FIXED (board item
-        // `01M01EM4QSB204FZSANJB3XH78`). Check 3 now runs only in the strict
-        // `validate` entry point behind `config::load` -- where its job is
-        // catching a typo in a human-authored settings file, which is the
-        // only path its own test ever exercised -- and is skipped in
-        // `apply_cli`, where the config was either already validated on load
-        // or assembled deliberately in Rust. `presets::
-        // default_permissions_for_one_shot` builds now, and
-        // `tests/preset_one_shot_permissions_build.rs` pins that.
-        //
-        // This example keeps `PermissionsConfigMode::Deny` anyway, deliberately:
-        // with zero tools registered the two are exactly as inert, and
-        // `Deny` states the intent without depending on how an empty
-        // allow-list is interpreted. Either is correct here.
-        permissions: PermissionsConfig {
-            mode: PermissionsConfigMode::Deny,
-            ..PermissionsConfig::default()
-        },
+        // Board item 01M1YVP3FDPHY4WZ72SXMWAN2D: `PermissionsConfig` no
+        // longer carries a gate selection at all (`default_mode` is a
+        // different concept -- the STARTING mode of an interactive TUI
+        // session, irrelevant to this one-shot, no-tools example). The
+        // gate itself is supplied explicitly below via
+        // `with_permission_gate` regardless of what this field holds, so
+        // the plain default is correct here.
+        permissions: PermissionsConfig::default(),
         backends: BTreeMap::new(),
         routing: RoutingSection::default(),
         roles,
@@ -172,9 +145,10 @@ async fn main() -> conway::Result<()> {
     // (exactly what `minimal_session.rs`'s own `minimal_config()` uses)
     // registers three built-in tool plugins on its own, whether or not the
     // caller wants an agent at all. A permission gate is required here too
-    // (`permissions.mode` defaults to "prompt") purely so this comparison
-    // build succeeds -- it plays no role in the finding below, which is
-    // about `tools`, not `permissions`.
+    // (`ConwayBuilder::build`'s own step 9 fallback, `GateMode::Prompt` by
+    // default, needs a prompt handler this example does not supply)
+    // purely so this comparison build succeeds -- it plays no role in the
+    // finding below, which is about `tools`, not `permissions`.
     let with_default_tools = ConwayBuilder::from_parts(config_with_tools(ToolsConfig::default()))
         .with_backend(backend.clone())
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))

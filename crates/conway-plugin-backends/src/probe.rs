@@ -111,7 +111,9 @@ use conway_core::ids::ModelId;
 use serde::Deserialize;
 use url::Url;
 
-use crate::capabilities::{build_capabilities, CapabilityInputs};
+use crate::capabilities::{
+    build_capabilities, max_context_tokens_source, CapabilityInputs, ContextTokensSource,
+};
 use crate::config::{ModelOverrides, SecretString};
 use crate::http::HttpClient;
 use crate::model_metadata::ModelMetadataStore;
@@ -164,9 +166,23 @@ struct ModelsResponse {
 struct ModelEntry {
     id: String,
     /// VLLM-specific: the model's configured context length. Populated only
-    /// when `profile.id == "vllm_hermes"` consults it.
+    /// by vLLM's own `/v1/models` response.
     #[serde(default)]
     max_model_len: Option<u32>,
+    /// **Hosted OpenAI-compatible models item.** The generic OpenAI-compat
+    /// `/v1/models` field some hosted servers report per model (distinct
+    /// from vLLM's own `max_model_len` above, a different field name for
+    /// the same concept on a different server implementation) -- e.g. a
+    /// provider whose `/v1/models` entries carry `"context_length":
+    /// 1048576`. Consulted for EVERY profile, not gated to one dialect id
+    /// the way `max_model_len` is: this is the general mechanism the item's
+    /// resolution order names ("the provider's model-list endpoint where
+    /// the dialect has one"), so a hosted provider this crate has never
+    /// been specially taught about still gets a real, live number instead
+    /// of silently falling to the dialect floor whenever its `/v1/models`
+    /// happens to report one.
+    #[serde(default)]
+    context_length: Option<u32>,
 }
 
 /// Ollama-shaped `/api/tags` response: `{"models":[{"name":...}]}`.
@@ -232,10 +248,13 @@ struct ProbedHints {
 /// The outcome of one [`CapabilityProbe::discover_result`] call: the
 /// composed capabilities plus whether discovery observed nothing over the
 /// network (in which case `capabilities` reflects `ModelMetadata` and
-/// configured `models` overrides alone).
+/// configured `models` overrides alone), plus each model's resolved
+/// [`ContextTokensSource`] -- keyed the same as `capabilities`, one call to
+/// `max_context_tokens_source` per model, never re-derived by a caller.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveryResult {
     pub capabilities: BTreeMap<ModelId, Capabilities>,
+    pub context_window_source: BTreeMap<ModelId, ContextTokensSource>,
     pub degraded: bool,
 }
 
@@ -383,10 +402,14 @@ impl CapabilityProbe {
         if let Some(entries) = self.fetch_models().await {
             for entry in entries {
                 let hints = observed.entry(entry.id).or_default();
-                if self.profile.id == "vllm_hermes" {
-                    if let Some(max_model_len) = entry.max_model_len {
-                        hints.max_context_tokens = Some(max_model_len);
-                    }
+                // Generic step, every profile: an OpenAI-compatible
+                // server's own `/v1/models` entry reporting `context_length`
+                // -- see `ModelEntry::context_length`'s doc. Tried first so
+                // vLLM's own `max_model_len` (its own name for the same
+                // concept) only fills the gap when a server reports that
+                // field instead.
+                if let Some(context_length) = entry.context_length.or(entry.max_model_len) {
+                    hints.max_context_tokens = Some(context_length);
                 }
             }
         }
@@ -449,25 +472,33 @@ impl CapabilityProbe {
         }
 
         let mut capabilities = BTreeMap::new();
+        let mut context_window_source = BTreeMap::new();
         for (id, hints) in &observed {
             let model_id = ModelId::new(id.clone());
             let mut dialect_defaults = self.profile.dialect_defaults();
-            if let Some(max_context_tokens) = hints.max_context_tokens {
-                dialect_defaults.max_context_tokens = max_context_tokens;
-            }
             if hints.reliability_downgrade {
                 dialect_defaults.reliability_tier = ReliabilityTier::Unknown;
             }
-            let caps = build_capabilities(CapabilityInputs {
+            // `hints.max_context_tokens` -- when present -- travels as
+            // `probed_max_context_tokens`, NOT folded into `dialect_defaults`
+            // directly (the pre-`Probed` mechanism this replaces): that is
+            // what lets `max_context_tokens_source` (called once, right
+            // below, and never re-derived) tell "a live discovery answered
+            // this" apart from "the dialect's own floor governs" for the
+            // SAME resolved number.
+            let inputs = CapabilityInputs {
                 dialect_defaults,
                 metadata: self.metadata.get(&model_id),
                 overrides: self.overrides.get(id),
-            });
-            capabilities.insert(model_id, caps);
+                probed_max_context_tokens: hints.max_context_tokens,
+            };
+            context_window_source.insert(model_id.clone(), max_context_tokens_source(&inputs));
+            capabilities.insert(model_id, build_capabilities(inputs));
         }
 
         DiscoveryResult {
             capabilities,
+            context_window_source,
             degraded,
         }
     }
@@ -491,16 +522,26 @@ impl CapabilityProbe {
 /// incident that made a fix applied to only one of these two entrances a
 /// real, quickly-hit defect.
 ///
-/// `None` (never an error) whenever there is nothing useful to report: this
-/// `profile.id` has no known discovery endpoint (only `"ollama"`'s native
-/// `POST /api/show` is confirmed to expose one — see this module's own
-/// "`/api/show` vs. `/api/ps`" doc), the server is unreachable, the model
-/// name is unrecognized (a live `/api/show` against a since-retired model
-/// returns a named error, not a number — see this module's own 2026-08-30
-/// re-confirmation note), or the response is malformed. The caller's own
-/// job on `None` is to ask the operator instead — this function only ever
-/// answers the discovery half, never the asking half (a UI concern, out of
-/// this crate's scope).
+/// **Hosted OpenAI-compatible models item:** tries `"ollama"`'s native
+/// `POST /api/show` first when `profile.id == "ollama"` (the most precise
+/// source this crate knows for that one dialect — see this module's own
+/// "`/api/show` vs. `/api/ps`" doc), then falls through to the GENERIC
+/// `GET {base}/models` step every OpenAI-compatible dialect shares, reading
+/// the SAME `ModelEntry::context_length`/`max_model_len` fields
+/// [`CapabilityProbe::discover_result`]'s own step 1 reads — so a hosted
+/// provider this crate has no dialect-specific step for (an OpenAI-compat
+/// server, or Ollama Cloud's own `/v1/models` listing, reporting
+/// `context_length` per model) still gets a real, live number at setup
+/// time instead of only ever reaching the "ask the operator" fallback.
+///
+/// `None` (never an error) whenever there is nothing useful to report:
+/// every step above found nothing for `model` specifically (the server is
+/// unreachable, the model name is unrecognized -- a live `/api/show`
+/// against a since-retired model returns a named error, not a number, see
+/// this module's own 2026-08-30 re-confirmation note -- or neither response
+/// shape names a window at all). The caller's own job on `None` is to ask
+/// the operator instead — this function only ever answers the discovery
+/// half, never the asking half (a UI concern, out of this crate's scope).
 ///
 /// Never persists anything: this is a pure, one-shot network read. Writing
 /// the resolved (or operator-typed) value into config is the caller's own
@@ -513,7 +554,17 @@ pub async fn discover_context_window(
     auth: Option<SecretString>,
     model: &str,
 ) -> Option<u32> {
-    if profile.id != "ollama" {
+    // A dialect whose OWN baseline is already a sourced fact
+    // (`context_window_verified`, e.g. `"openai"`'s 128,000) has nothing to
+    // gain from a live discovery round trip -- the caller's own
+    // `context_window_is_verified` guard would never act on a `Some` here
+    // anyway (that baseline already governs), so making the call at all
+    // would be pure network noise on a setup path this crate's own module
+    // doc promises stays best-effort and fast. `"ollama"` (this crate's one
+    // built-in dialect with NO verified baseline) always reaches the steps
+    // below; a hosted dialect an operator adds with its own
+    // `context_window_verified = true` gets the identical skip.
+    if profile.context_window_verified {
         return None;
     }
     let probe = CapabilityProbe::new(
@@ -524,7 +575,16 @@ pub async fn discover_context_window(
         crate::model_metadata::ModelMetadataStore::defaults(),
         BTreeMap::new(),
     );
-    probe.fetch_ollama_show_context_length(model).await
+    if profile.id == "ollama" {
+        if let Some(window) = probe.fetch_ollama_show_context_length(model).await {
+            return Some(window);
+        }
+    }
+    let entries = probe.fetch_models().await?;
+    entries
+        .into_iter()
+        .find(|entry| entry.id == model)
+        .and_then(|entry| entry.context_length.or(entry.max_model_len))
 }
 
 #[cfg(test)]

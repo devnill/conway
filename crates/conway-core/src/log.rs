@@ -254,6 +254,100 @@ pub struct SessionMeta {
     pub plugin_config: PluginConfig,
 }
 
+/// What `conway_runtime::permission::PermissionBroker::decide` actually
+/// decided for one call -- the `decision` field of
+/// [`LogRecord::PermissionDecisionRecord`].
+///
+/// **Deliberately distinct from [`crate::agent::PermissionDecisionKind`].**
+/// That type is the live `Event::PermissionResolved`'s five-value summary
+/// of the OPERATOR's own answer alone (`AllowOnce`/`AllowAlways`/`Denied`/
+/// `DeniedWithFeedback`/`Cached`) -- it existed before this record did and
+/// stays exactly as it was (board item `01M1YS2ACS0TKJYKF8TBPESTTC`'s own
+/// constraint: no change to any decision's OUTCOME or to the pre-existing
+/// event shape). This type instead names EVERY way `decide` can resolve a
+/// call, not just the ones that reach the operator: `Pattern`/`Auto` cover
+/// the two no-prompt ALLOW paths, `PlanDenied`/`HookDenied`/`Rule` cover
+/// three of the no-prompt DENY paths, and `Deny` (bare, no rule) covers the
+/// fourth -- confinement-root containment, which has no `Rule` object to
+/// name (see [`PermissionDecisionSource::Rule`]'s own doc on that field for
+/// how `source` disambiguates a bare `Deny` from the operator's own typed
+/// `n`).
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionDecisionRecordKind {
+    /// The operator answered `y` (once), live, at the gate.
+    Allow,
+    /// Either the operator answered `a` (always) live at the gate, OR this
+    /// call reused an EARLIER `AllowAlways` grant from this same session's
+    /// cache without asking again -- [`PermissionDecisionSource`]
+    /// distinguishes the two (`Operator` vs `Rule`).
+    AllowAlways,
+    /// Authorized by a matching `allow` prefix-pattern rule (`p` at the
+    /// gate, or a trusted permissions file), without reaching the operator
+    /// this time.
+    Pattern,
+    /// Refused outright with a plain reason -- either the operator answered
+    /// `n` at the gate (`source: operator`), or the call never reached the
+    /// gate because this agent's confinement root refused it
+    /// (`source: rule`; `conway_runtime::permission::PermissionBroker::
+    /// check_root`, which builds no [`crate::permission_pattern::Rule`] of
+    /// its own and so cannot use [`PermissionDecisionRecordKind::Rule`]
+    /// below).
+    Deny,
+    /// The operator pressed `Esc` and typed a message explaining why --
+    /// carried in the owning [`LogRecord::PermissionDecisionRecord`]'s own
+    /// `feedback` field.
+    DenyWithFeedback,
+    /// Authorized because [`crate::permission_mode::PermissionMode::
+    /// AutoAllow`] is the session's current mode, without reaching the
+    /// operator this time.
+    Auto,
+    /// Refused because [`crate::permission_mode::PermissionMode::Plan`] is
+    /// the session's current mode and this call's category is not one plan
+    /// mode permits -- checked before the operator's gate, every deny
+    /// pattern, and every allow path.
+    PlanDenied,
+    /// Refused by an installed `pre_tool_use` hook's own verdict, or by its
+    /// runner's outage `on_failure: deny` policy -- checked before the
+    /// operator's gate and before plan mode's own denial.
+    HookDenied,
+    /// Refused by a plugin- or operator-authored `deny` prefix-pattern rule
+    /// (`conway_core::permission_pattern::Rule`) matching this call
+    /// directly, without reaching the operator's gate. `id` is that rule's
+    /// own [`crate::permission_pattern::Rule::describe`] text -- rules carry
+    /// no separate identifier field of their own, so this names WHICH rule
+    /// fired, not merely that some rule did (and is never a steering-store
+    /// id: a `Rule` has no relationship to that store at all).
+    Rule { id: String },
+}
+
+/// WHO/WHAT resolved one call, as opposed to WHAT was decided
+/// ([`PermissionDecisionRecordKind`]) -- the `source` field of
+/// [`LogRecord::PermissionDecisionRecord`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionDecisionSource {
+    /// This call reached `PermissionGate::check` -- the operator (or
+    /// whatever `PermissionGate` implementation is standing in for them,
+    /// e.g. a one-shot `AllowListGate`) answered live, right now.
+    Operator,
+    /// Resolved without reaching the gate this time: a prefix-pattern
+    /// `allow`/`deny` rule matched, a cached `AllowAlways` grant from
+    /// earlier in this session covered the call, or (for a bare `Deny`
+    /// with no [`PermissionDecisionRecordKind::Rule`] payload) this agent's
+    /// confinement root refused it outright.
+    Rule,
+    /// Resolved by an installed `pre_tool_use` hook, before the gate, the
+    /// deny-pattern check, or plan mode's own denial were ever reached.
+    Hook,
+    /// Resolved by the session's current [`crate::permission_mode::
+    /// PermissionMode`] alone -- `AutoAllow` authorizing without asking, or
+    /// `Plan` refusing a category it does not permit.
+    Mode,
+}
+
 /// Filter for session listing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionFilter {
@@ -461,6 +555,61 @@ pub enum LogRecord {
         name: String,
         selection: SelectionKey,
     },
+    /// One [`crate::agent::PermissionRequest`]'s resolution, written by
+    /// `conway_runtime::permission::PermissionBroker::decide` for EVERY call
+    /// it resolves -- prompted, rule-decided, hook-decided, or mode-decided
+    /// -- not just the ones that reach the operator (board item
+    /// `01M1YS2ACS0TKJYKF8TBPESTTC`, "Record the operator's permission
+    /// decisions so the transcript shows them"). Before this variant
+    /// existed, a permission prompt's answer left no durable trace at all:
+    /// the only evidence one had ever been waiting was an unexplained gap
+    /// between an `assistant` record's tool call and its `tool_result`.
+    ///
+    /// A SYSTEM record: unlike `SystemNote`/`UserTurn`/`Assistant`, this
+    /// carries no `prov` field and no `text` -- it is neither model output
+    /// nor operator-typed prose, and (deliberately) does not participate in
+    /// context assembly at all (`conway_runtime::context::builder::
+    /// ContextBuilder` does not read this variant): a durable AUDIT fact
+    /// about how a call was authorized, not a message meant for the model to
+    /// read back on a later turn.
+    ///
+    /// `waited_ms` is `Some` only when `source` is
+    /// [`PermissionDecisionSource::Operator`] -- the elapsed wall-clock time
+    /// `PermissionBroker::decide`'s own `gate.check` call actually took,
+    /// measured around that call and nowhere else; every other `source`
+    /// resolves without any wait, so it is `None` there, never a
+    /// fabricated `0`. `feedback` carries the human-readable reason for any
+    /// DENY-shaped `decision` (the operator's own `Esc`-typed message for
+    /// `DenyWithFeedback`, or the same rendered explanation the call's own
+    /// `PermissionOutcome::Deny` carries for every other deny path) and is
+    /// `None` for any ALLOW-shaped `decision`.
+    ///
+    /// **Single write site.** `PermissionBroker::decide` is the ONE place
+    /// in this codebase that calls `PermissionGate::check`, evaluates a
+    /// deny/prompt pattern, consults a `pre_tool_use` hook, or applies the
+    /// current `PermissionMode` -- so it is also the one place a
+    /// `permission_decision` record can be built with all four facts
+    /// (`decision`/`source`/`waited_ms`/`feedback`) already in hand, and the
+    /// only place this variant is ever constructed. A second, independent
+    /// write site (e.g. the tool runner inspecting `PermissionOutcome`
+    /// after the fact) was deliberately rejected: it cannot see WHY a call
+    /// was resolved the way it was (only whether it was allowed or denied),
+    /// and a second site is exactly the kind of drift this project has
+    /// already paid for once per permission-decision path that ever grew a
+    /// second implementation.
+    #[serde(rename = "permission_decision")]
+    PermissionDecisionRecord {
+        seq: LogSeq,
+        ts: DateTime<Utc>,
+        call_id: String,
+        tool: crate::ids::ToolName,
+        decision: PermissionDecisionRecordKind,
+        source: PermissionDecisionSource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waited_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feedback: Option<String>,
+    },
 }
 
 impl LogRecord {
@@ -479,7 +628,8 @@ impl LogRecord {
             | LogRecord::ContextReportRecord { seq, .. }
             | LogRecord::ContextMask { seq, .. }
             | LogRecord::ContextPathSet { seq, .. }
-            | LogRecord::ContextPathNamed { seq, .. } => Some(*seq),
+            | LogRecord::ContextPathNamed { seq, .. }
+            | LogRecord::PermissionDecisionRecord { seq, .. } => Some(*seq),
         }
     }
 
@@ -499,6 +649,7 @@ impl LogRecord {
             LogRecord::ContextMask { .. } => "context_mask",
             LogRecord::ContextPathSet { .. } => "context_path_set",
             LogRecord::ContextPathNamed { .. } => "context_path_named",
+            LogRecord::PermissionDecisionRecord { .. } => "permission_decision",
         }
     }
 }
@@ -670,6 +821,21 @@ mod tests {
                     selection: crate::path::SelectionKey::from_nodes(&[]),
                 },
                 "context_path_named",
+            ),
+            (
+                LogRecord::PermissionDecisionRecord {
+                    seq: LogSeq(13),
+                    ts: ts(),
+                    call_id: "tc_1".into(),
+                    tool: "bash".parse().unwrap(),
+                    decision: PermissionDecisionRecordKind::Rule {
+                        id: "any `bash` call".into(),
+                    },
+                    source: PermissionDecisionSource::Rule,
+                    waited_ms: None,
+                    feedback: Some("`bash` is denied by a `deny` rule".into()),
+                },
+                "permission_decision",
             ),
         ];
         for (record, expected) in &records {

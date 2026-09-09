@@ -9,19 +9,43 @@ kind of mistake this page exists to prevent.
 
 ## Permission modes
 
-How much you are asked. Every TUI session starts in `Prompt`; change
-it mid-session with `/settings`, which cycles Prompt → Plan → AutoAllow →
-Prompt. (`settings.json`'s own `permissions.mode` is a different,
-narrower setting — `prompt`/`allowlist`/`deny` — that only matters to a
-library embedder assembling a `Conway` with no gate of its own; the `conway`
-binary's TUI and `-p` one-shot mode both always supply their own gate and
-never consult it.)
+How much you are asked. Change the mode mid-session with `/settings`
+(`permissions -> current mode`), which cycles Prompt → Plan → AutoAllow →
+Prompt, or the `Shift+Tab` binding.
 
 | Mode | Effect |
 | --- | --- |
 | `Prompt` (default) | Every distinct tool call pauses for your decision — see "The prompt" below. Nothing runs without you seeing it first. |
 | `Plan` | Allows the non-mutating categories (`Read`, `Search`, `Think`) without asking; denies everything else outright, including a `bash` call that merely reads a file — the category is what `bash` *declares itself as* (`Execute`), not what a given command happens to do, so plan mode never has to parse or guess at shell syntax. For exploring a codebase with a guarantee that nothing changes. |
 | `AutoAllow` | Allows every call without asking. |
+
+### Setting the starting mode: `permissions.default_mode`
+
+Which mode a new TUI session **starts** in is a separate question from
+which mode it is in right now. `permissions.default_mode` in
+`settings.json` (`"prompt"` / `"plan"` / `"auto_allow"`, default
+`"prompt"`) answers the first question; `/settings`/`Shift+Tab` still
+answer the second, for the rest of that session only. `/settings ->
+permissions` shows both rows side by side, distinctly labeled, so the two
+are never confused.
+
+- **User scope** (`~/.conway/settings.json`, or `$CONWAY_CONFIG_DIR`) takes
+  effect immediately — it is your own file, trusted by authorship, the
+  same footing your own `permissions.json` already has.
+- **Project scope** (`.conway/settings.json` in a repository) is gated on
+  trust, the identical `/trust permissions` decision a project's
+  `permissions.json` `allow` rules already require. A cloned repository
+  cannot set `default_mode = "auto_allow"` and have it silently take
+  effect the moment you open it: until you run `/trust permissions` for
+  that project, its `default_mode` is ignored (with a transcript notice
+  explaining why and what to run), and the session starts in whatever the
+  user scope (or the built-in default, `Prompt`) resolves to instead.
+- **`--default-permission-mode`** overrides both, for one launch only —
+  see `conway --help`.
+
+Distinct from `--permission-mode`, one-shot (`-p`) mode's own,
+unrelated flag (`allowlist`/`deny` only — a non-interactive run has nobody
+to prompt, so it has no equivalent of a "starting mode").
 
 ## Working with bash day to day
 
@@ -119,6 +143,40 @@ the granting one — both are proven end to end in
 did not intend is best avoided by reading the scope line before pressing a
 remembered-grant key.
 
+## Permission decisions
+
+Every call `PermissionBroker::decide` resolves — prompted, or resolved by a
+rule, a hook, or the current mode without ever asking you — is written
+durably as a `permission_decision` record, at the moment it is decided,
+before the tool runs. Before this existed, the only trace a prompt had ever
+been waiting was an unexplained gap in the transcript between a tool call
+and its result; now `conway sessions show <id>` prints the record like any
+other, right where it happened.
+
+Each record carries:
+
+| Field | Meaning |
+| --- | --- |
+| `call_id` | The tool call this decision resolved. |
+| `tool` | The tool name. |
+| `decision` | What was decided: `allow`, `allow_always`, `pattern`, `deny`, `deny_with_feedback`, `auto`, `plan_denied`, `hook_denied`, or `rule` (naming the specific `deny` rule that matched). |
+| `source` | How it was resolved: `operator` (you were shown a prompt, just now), `rule` (a pattern grant, a cached "always allow" from earlier in the session, or this agent's confinement root), `hook`, or `mode` (`AutoAllow` authorizing, or `Plan` refusing a category it doesn't permit). |
+| `waited_ms` | How long the prompt sat in front of you, in milliseconds — present only when `source` is `operator`; absent (never a fabricated `0`) for every other source, since nothing was ever waiting. |
+| `feedback` | The human-readable reason, for any denial — your own typed message from `Esc`, or the rendered explanation any other deny path already gives the model. Absent for an allow. |
+
+This is a record of the DECISION, not a new grant: it never carries your
+`[a]`/`[p]` answer itself as a durable rule — those live exactly where the
+sections above describe (in-memory grants, or `permissions.json`'s `rules`
+array). It also never becomes part of what's sent to the model on a later
+turn — see [`sessions.md`](sessions.md)'s record table for the "SYSTEM
+record" distinction.
+
+In `--output-format jsonl`/`--output-format text` (one-shot `conway -p`), a
+denied call's reason is visible live too: `jsonl` carries the full record on
+the event stream, and `text` mode prints the denial and its reason to
+stderr once — closing the friction `docs/dogfooding.md` names ("the model
+sees a reason, the operator does not").
+
 ## Rules in `permissions.json`
 
 A rules file — project-scoped (alongside the nearest `.conway/settings.json`,
@@ -213,7 +271,10 @@ Each rule is `{ select, when, then }`:
   resolve under that directory (read from the call's arguments and
   resolved the same way the tool itself will resolve them — never from the
   sanitized display rendering); `{ "category_in": ["Read", "Search"] }`
-  matches a call whose declared category is in the list.
+  matches a call whose declared category is in the list; `{ "domains":
+  ["docs.rs"] }` matches a URL-fetching tool (`conway.web`'s `web_fetch`)
+  whose call renders to an `http(s)` URL on that host or a subdomain of it
+  — see below.
 - **`then`** — the effect: `"allow"`, `"prompt"`, or `"deny"`. **`"allow"`
   paired with `"always"` or `"command_prefix"` against a tool whose
   rendering is a shell command (`bash`) never matches anything, for any
@@ -306,6 +367,39 @@ dropped. Fix the prefix or create the directory. (Distinct from
 `PathsUnderOnUnconfinedTool`: that fires when the prefix canonicalizes fine
 but the selected tool's path arguments can never be confined; this fires when
 the prefix itself cannot be canonicalized, regardless of the tool.)
+
+**`domains` matches a URL-fetching tool's own rendering, not its
+arguments.** Unlike `paths_under` (which reads the call's declared
+arguments and needs the broker's own resolved-path machinery), a `domains`
+condition is evaluated directly against the tool's `rendered` string — the
+same field `command_prefix` compares — because a fetch tool's URL argument
+needs no filesystem canonicalization to compare a hostname against a
+configured list. `conway.web`'s `web_fetch` renders as the bare URL for
+exactly this reason (see [`docs/plugins/web.md`](plugins/web.md)). A
+configured entry matches the exact host or any subdomain of it
+(`"docs.rs"` matches `docs.rs` and `foo.docs.rs`, never `evildocs.rs`);
+comparison is case-insensitive, and a leading or trailing `.` on the
+configured entry is ignored.
+
+```json
+{ "select": { "tools": ["web_fetch"] }, "when": { "domains": ["docs.rs"] }, "then": "allow" }
+```
+
+**`domains` fails closed in both directions, the same asymmetry
+`paths_under` uses for an unconfinable tool.** If `rendered` cannot be
+parsed as an `http(s)` URL with a host at all (a different tool's
+rendering, a corrupted or tampered display string), an `allow` rule never
+matches — the call falls through to your permission gate rather than being
+authorized on a guess — while a `deny`/`prompt` rule DOES match in that
+same case, so a narrowing rule can never be defeated by making its evidence
+unparseable. **Unlike `paths_under`, `domains` has no registration-time
+inertness check yet** — pairing it with a tool that never renders a URL at
+all (e.g. `bash`) installs without a typed error; it simply never matches
+for that tool, silently, because that tool's `rendered` string never
+parses as an `http(s)` URL. Scope a `domains` rule's `select` to a
+URL-fetching tool yourself; nothing here currently catches a rule scoped to
+the wrong tool the way `PathsUnderOnUnconfinedTool` catches an unconfinable
+`paths_under` select.
 
 **`command_prefix` registration checks whether a `Structured` tool was
 named — not, any more, whether the rule can actually authorize anything.**

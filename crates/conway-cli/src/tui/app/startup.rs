@@ -5,7 +5,10 @@
 //! in `crates/conway/tests/architecture_invariants.rs` greps that exact
 //! file's source text for them).
 
-use conway::{Conway, RoleAlias, SessionSpec, ToolSelector};
+use conway::{
+    Conway, ForkSpec, ModelRef, RoleAlias, SessionFilter, SessionHandle, SessionId, SessionMeta,
+    SessionSpec, ToolSelector,
+};
 use tokio::sync::mpsc;
 
 use crate::cli::Cli;
@@ -31,25 +34,27 @@ impl App {
     /// (`crate::model_pin::parse_model_pin`) rather than a second one that
     /// could fail a malformed value a different way.
     ///
-    /// `--session`/`--resume`/`--fork-from` (the caller's session-continuity
-    /// flags) are a decided non-goal for the TUI, not an oversight: one-
-    /// shot's `resolve_session` has real per-flag logic with no equivalent
-    /// shape here (an existence probe ahead of `--session`, `--cwd`
-    /// rejected alongside `--fork-from`, a local-head lookup for a seq-less
-    /// fork ref) -- building a second, TUI-flavored version of that logic is
-    /// out of scope. Rather than leave the three flags
-    /// accepted-and-ignored (the same defect `--model` had), the TUI
-    /// refuses to start when any of them is passed, with
-    /// a usage error naming both alternatives: one-shot mode for startup
-    /// continuity, or the already-wired `/resume <session-id>` slash
-    /// command once the TUI is running. `docs/interactive.md` documents
-    /// this as one-shot-only accordingly.
+    /// **Superseded, in part, by board item `01M1YS4FMJH004D1Y619MTBY7A`:**
+    /// `--resume`/`--fork-from` used to be a decided non-goal for the TUI
+    /// alongside `--session` (the paragraph this replaces argued building a
+    /// TUI-flavored `oneshot::resolve_session` was out of scope). That item
+    /// built exactly that -- [`Self::resolve_handle`], immediately below,
+    /// now the TUI's own per-flag continuity logic (existence-probe-free,
+    /// since `Conway::resume_with`/`Conway::fork_from` reattach rather than
+    /// create) -- plus a fourth flag, `--continue`, one-shot has no
+    /// equivalent of. `session_spec` itself keeps its original, narrower
+    /// job: building the FRESH-session `SessionSpec`, called only from
+    /// `resolve_handle`'s own flag-free arm. `--session` alone is still
+    /// refused (see that flag's own doc in `cli.rs` for why it did not
+    /// graduate too) -- this function keeps guarding exactly that one flag,
+    /// so `tests/tui_model_pin.rs` can still drive the refusal
+    /// synchronously, with no live `Conway` needed.
     pub fn session_spec(cli: &Cli) -> conway::Result<SessionSpec> {
-        if cli.session.is_some() || cli.resume.is_some() || cli.fork_from.is_some() {
+        if cli.session.is_some() {
             return Err(crate::model_pin::usage_error(
-                "--session/--resume/--fork-from are not supported when starting the \
-                 interactive TUI; use one-shot mode (-p) for session continuity at startup, \
-                 or the `/resume <session-id>` slash command once the TUI is running",
+                "--session is not supported when starting the interactive TUI; use one-shot \
+                 mode (-p) for --session, or --resume/--fork-from/--continue for TUI session \
+                 continuity",
             ));
         }
         let model = crate::model_pin::parse_model_pin(cli)?;
@@ -73,6 +78,218 @@ impl App {
             model,
             ..SessionSpec::default()
         })
+    }
+
+    /// Board item `01M1YS4FMJH004D1Y619MTBY7A`: resolves the live
+    /// [`SessionHandle`] [`Self::new`] drives -- the fresh path
+    /// ([`Self::session_spec`] + `Conway::new_session`, unchanged), or one
+    /// of the TUI's three now-supported continuity flags: `--resume`,
+    /// `--fork-from`, `--continue`. Mirrors `oneshot::resolve_session`'s
+    /// own shape (same up-front guards, same per-flag arms) deliberately --
+    /// see that function's own doc comment for the reasoning each guard
+    /// below restates -- but is its own, TUI-scoped function rather than a
+    /// shared one: `oneshot::resolve_session` is private to `oneshot.rs`
+    /// and wires flags (`--agent`, `--output-schema`, `--allowed-tools`,
+    /// budgets) the TUI does not read even on the flag-free path, so a
+    /// shared function would need its own TUI-vs-one-shot branching
+    /// throughout rather than at the one seam that already exists (two
+    /// call sites, one per binary mode).
+    ///
+    /// **Every error here is a usage error** (`ExitCode::Usage`), matching
+    /// `oneshot::resolve_session`'s own documented contract: in every arm
+    /// that returns `Err`, no interactive session has started, so there is
+    /// no partially-open TUI to tear back down.
+    pub async fn resolve_handle(cli: &Cli, conway: &Conway) -> conway::Result<SessionHandle> {
+        if cli.session.is_some()
+            && (cli.resume.is_some() || cli.fork_from.is_some() || cli.continue_session)
+        {
+            // Unreachable through the real CLI parser (`cli.rs`'s
+            // `conflicts_with_all` quad already refuses this combination
+            // before `Cli` is ever handed to this function) -- kept as an
+            // explicit, named refusal anyway, matching `oneshot::
+            // resolve_session`'s own identical defensive catch-all, rather
+            // than trusting a hand-built `Cli` (as several of this
+            // function's own tests build) to always respect a parser-level
+            // invariant it never actually runs through.
+            return Err(crate::model_pin::usage_error(
+                "--session, --resume, --fork-from, and --continue are mutually exclusive",
+            ));
+        }
+
+        let continuing = cli.resume.is_some() || cli.fork_from.is_some() || cli.continue_session;
+        if continuing {
+            if cli.system_prompt.is_some() || cli.append_system_prompt.is_some() {
+                return Err(crate::model_pin::usage_error(
+                    "--system-prompt/--append-system-prompt are not supported with \
+                     --resume/--fork-from/--continue: a continued session's system prompt is \
+                     fixed by the session it continues, not by this invocation",
+                ));
+            }
+            if cli.max_turns.is_some() || cli.max_tokens.is_some() || cli.max_seconds.is_some() {
+                return Err(crate::model_pin::usage_error(
+                    "--max-turns/--max-tokens/--max-seconds are not supported with \
+                     --resume/--fork-from/--continue in this release: neither facade path \
+                     accepts a caller-supplied budget override yet",
+                ));
+            }
+            if cli.output_schema.is_some() {
+                return Err(crate::model_pin::usage_error(
+                    "--output-schema is not supported with --resume/--fork-from/--continue in \
+                     this release: neither facade path accepts a caller-supplied \
+                     result-contract override yet",
+                ));
+            }
+            // Unlike `oneshot::resolve_session` (where `--agent` genuinely
+            // wires onto `--fork-from`), the TUI refuses `--agent`
+            // regardless of which continuity flag it is paired with: the
+            // TUI's own flag-free path does not read `--agent` at all
+            // today (`Self::session_spec` never names `cli.agent`), so
+            // wiring it onto exactly one of three new flags would be a
+            // narrower, more confusing surface than refusing it uniformly
+            // -- consistent with every OTHER TUI-unsupported one-shot flag
+            // in this same guard block.
+            if cli.agent.is_some() {
+                return Err(crate::model_pin::usage_error(
+                    "--agent is not supported with --resume/--fork-from/--continue: a \
+                     continued session's agent definition is fixed by the session it continues",
+                ));
+            }
+        }
+
+        if let Some(id) = &cli.resume {
+            let names =
+                crate::session_names::NamesStore::load(&crate::session_names::session_root(conway))
+                    .map_err(|e| crate::model_pin::usage_error(e.to_string()))?;
+            let sid = crate::session_names::resolve(id, &names)
+                .map_err(|e| crate::model_pin::usage_error(e.to_string()))?;
+            return Self::resume_sid(cli, conway, sid).await;
+        }
+
+        if let Some(r) = &cli.fork_from {
+            return Self::fork_from_ref(cli, conway, r).await;
+        }
+
+        if cli.continue_session {
+            let sid = Self::most_recently_written_session(conway).await?;
+            return Self::resume_sid(cli, conway, sid).await;
+        }
+
+        let spec = Self::session_spec(cli)?;
+        conway.new_session(spec).await
+    }
+
+    /// The shared tail of `--resume <id|name>` and `--continue` (which
+    /// resolves to a `SessionId` first, via
+    /// [`Self::most_recently_written_session`], then reattaches through
+    /// this exact same path) -- `--role-override`/`--model` wire here
+    /// exactly as they do on `oneshot::resolve_session`'s own `--resume`
+    /// arm (`Conway::resume_with`, not the bare `Conway::resume` neither
+    /// flag could reach).
+    async fn resume_sid(
+        cli: &Cli,
+        conway: &Conway,
+        sid: SessionId,
+    ) -> conway::Result<SessionHandle> {
+        let role = cli.role_override.clone().map(RoleAlias::new);
+        let model = crate::model_pin::parse_model_pin(cli)?;
+        conway
+            .resume_with(sid, role, model)
+            .await
+            .map_err(|e| crate::model_pin::usage_error(format!("resuming session {sid}: {e}")))
+    }
+
+    /// `--fork-from <id|name>[@seq]`: mirrors `oneshot::resolve_session`'s
+    /// own `--fork-from` arm (same `--cwd` refusal, same seq-less ->
+    /// current-head resolution via `Conway::session_head`), narrowed to
+    /// what the TUI's flag-free path already supports: `--role-override`
+    /// wires through; `--agent`/`--output-schema`/tool-selector flags do
+    /// not (see `Self::resolve_handle`'s own guard block for `--agent`,
+    /// and this crate's own one-shot-only stance on `--allowed-tools`/
+    /// `--deny-tools`/`--permission-mode`, neither of which the TUI's
+    /// flag-free path reads either).
+    async fn fork_from_ref(cli: &Cli, conway: &Conway, r: &str) -> conway::Result<SessionHandle> {
+        if cli.cwd.is_some() {
+            return Err(crate::model_pin::usage_error(
+                "--cwd is not supported with --fork-from: the forked child always inherits the \
+                 parent session's cwd",
+            ));
+        }
+        let names =
+            crate::session_names::NamesStore::load(&crate::session_names::session_root(conway))
+                .map_err(|e| crate::model_pin::usage_error(e.to_string()))?;
+        let (parent, seq) = crate::session_names::resolve_fork_ref(r, &names)
+            .map_err(|e| crate::model_pin::usage_error(e.to_string()))?;
+        let at = match seq {
+            Some(seq) => seq,
+            None => conway
+                .session_head(parent)
+                .await
+                .map_err(|e| crate::model_pin::usage_error(format!("--fork-from {parent}: {e}")))?,
+        };
+        let mut spec = ForkSpec::new(String::new());
+        if let Some(role) = cli.role_override.clone().map(RoleAlias::new) {
+            spec = spec.role(role);
+        }
+        // Same "pure and light" tool profile `Self::session_spec` gives
+        // every fresh TUI session (see that field's own comment there) --
+        // a forked child opened directly in the TUI is driven
+        // interactively too, with no parent to `report` an `AgentResult`
+        // to.
+        spec = spec.tools(ToolSelector::Except(vec!["report".into()]));
+        conway.fork_from(parent, at, spec).await.map_err(|e| {
+            crate::model_pin::usage_error(format!("--fork-from {parent}@{}: {e}", at.0))
+        })
+    }
+
+    /// `--continue`: the most recently WRITTEN-TO session for this
+    /// project. Excludes ephemeral sessions (`Conway::sessions`'s own
+    /// default) -- an `/ask` scratchpad is never a `--continue` target.
+    async fn most_recently_written_session(conway: &Conway) -> conway::Result<SessionId> {
+        let candidates = conway.sessions(SessionFilter::default()).await?;
+        let root = crate::session_names::session_root(conway);
+        Self::most_recently_written(&root, &candidates).ok_or_else(|| {
+            crate::model_pin::usage_error(
+                "--continue: no sessions found for this project (run `conway sessions list` \
+                 to check, or start a fresh session without --continue)",
+            )
+        })
+    }
+
+    /// The pure half of [`Self::most_recently_written_session`]: no
+    /// `Conway`, no async, no store call -- just a directory to stat files
+    /// under and the candidate list already fetched. Lets `mod
+    /// continue_tests` (below) drive the actual ranking decision against a
+    /// plain tempdir, with no real session store or `CONWAY_CONFIG_DIR`
+    /// involved at all -- the same hermetic-testing idiom `Self::
+    /// resolve_default_mode` (further below in this file) already
+    /// establishes for this module.
+    ///
+    /// Ranked by each candidate's own `<id>.jsonl` log file's mtime under
+    /// `root` (`session_names::session_root`'s own doc: "the SAME `root`
+    /// `ConwayBuilder::build` resolved `JsonlSessionStore::open` against",
+    /// and `conway-session`'s own `<ulid>.jsonl` naming convention -- see
+    /// `session_names.rs`'s module doc, "`root/<session-id>.jsonl`") --
+    /// deliberately NOT `SessionMeta::created` (that session's BIRTH): an
+    /// older session chatted in five minutes ago must outrank a brand-new,
+    /// still-empty one, and `created` cannot tell the two apart. A
+    /// candidate whose file cannot be stat'd (removed mid-race, or this
+    /// convention drifting from the real store's own -- never expected in
+    /// practice) is skipped rather than treated as infinitely old/new, so
+    /// one bad candidate cannot silently win OR silently veto every other
+    /// one.
+    fn most_recently_written(
+        root: &std::path::Path,
+        candidates: &[SessionMeta],
+    ) -> Option<SessionId> {
+        candidates
+            .iter()
+            .filter_map(|meta| {
+                let path = root.join(format!("{}.jsonl", meta.id));
+                let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+                Some((meta.id, mtime))
+            })
+            .max_by_key(|(_, mtime)| *mtime)
+            .map(|(id, _)| id)
     }
 
     /// Creates the interactive session. `plugins` is the SAME plugin list the caller
@@ -100,9 +317,35 @@ impl App {
                 }
             })?,
         );
-        let spec = Self::session_spec(cli)?;
-        let handle = conway.new_session(spec).await?;
+        // Board item `01M1YS4FMJH004D1Y619MTBY7A`: `resolve_handle` covers
+        // the flag-free path (`Self::session_spec` + `Conway::new_session`,
+        // unchanged) AND the three continuity flags (`--resume`,
+        // `--fork-from`, `--continue`) in one place -- see its own doc.
+        let handle = Self::resolve_handle(cli, conway).await?;
         let mut state = AppState::new(handle.root());
+        // Board item `01M1YS4FMJH004D1Y619MTBY7A`: backfill this session's
+        // own history into the transcript BEFORE any of the startup
+        // notices below are pushed, so a resumed conversation's past reads
+        // as the past and this run's own notices ("no first-party plugins
+        // installed", a skipped permission rule, ...) still read as the
+        // present, appended after it -- not interleaved.
+        //
+        // Unconditional, not gated on "was this a --resume/--fork-from/
+        // --continue launch": `handle.transcript(handle.root())` is
+        // ancestry-resolved (the SAME read `conway sessions show` already
+        // performs) and empty for a genuinely fresh session (nothing has
+        // been appended to it yet at this point in `new`), so backfilling
+        // unconditionally is a no-op for the common case rather than a
+        // second, parallel "is this a continuation" branch to keep in
+        // sync with `resolve_handle`'s own four-way match. Best-effort: a
+        // failed fetch (store I/O) leaves the transcript exactly as
+        // `AppState::new` left it -- empty -- rather than failing the
+        // whole session open over a display-only backfill.
+        if let Ok(records) = handle.transcript(handle.root()).await {
+            state
+                .transcript
+                .extend(crate::tui::state::backfill_entries(&records));
+        }
         // the initial, authoritative
         // read of this session's own head -- see `AppState::
         // session_head_seq`'s own doc for why this is the FIRST of several
@@ -176,6 +419,36 @@ impl App {
         );
         if let Some(path) = &history_path {
             state.history = crate::tui::history::load(path);
+        }
+
+        // Board item `01M1YVJ4RA5V7FF95MFRQMTQW3`: the rebindable keymap --
+        // `state.keybindings` (already `Keymap::defaults()` from
+        // `AppState::new`) is what `input::handle_key`'s dispatcher and
+        // `/help`'s overlay both resolve against for the rest of the
+        // session -- see that module's own "one table" doc. A malformed
+        // `keybindings.json` is refused WHOLESALE (never a partial load,
+        // and `state.keybindings` is left at its plain-defaults value) and
+        // surfaced through the SAME `Entry::Error { fatal: false }` channel
+        // the permission-file loader below uses -- a broken keymap should
+        // cost a visible notice, never a silently-wrong binding table and
+        // never a refusal to start. `keybindings_file_path` itself can
+        // return `None` (no resolvable home directory, mirrors
+        // `history_file_path` just above); a missing/unreadable file is NOT
+        // an error either (`Keymap::load`'s own doc) -- only a file that
+        // EXISTS but fails to parse reaches the `Err` arm below.
+        let keybindings_path = crate::tui::keybindings::keybindings_file_path(
+            &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
+        );
+        if let Some(path) = &keybindings_path {
+            match crate::tui::keybindings::Keymap::load(path) {
+                Ok(keymap) => state.keybindings = keymap,
+                Err(err) => {
+                    state.transcript.push(crate::tui::state::Entry::Error {
+                        text: err.to_string(),
+                        fatal: false,
+                    });
+                }
+            }
         }
 
         // V2b: load persisted permission rules from both scopes, project
@@ -280,6 +553,32 @@ impl App {
                 fatal: false,
             });
         }
+        // Board item 01M1YVP3FDPHY4WZ72SXMWAN2D: the mode THIS session
+        // STARTS in -- see `resolve_default_mode`'s own doc for the
+        // precedence/trust contract. `report.paths`' first entry is
+        // always project scope (`crate::config::discovery::
+        // permission_file_paths`'s own construction); its parent
+        // directory is where that scope's `settings.json` lives too.
+        let project_settings_path = report
+            .paths
+            .first()
+            .and_then(|p| p.parent())
+            .map(|dir| dir.join("settings.json"));
+        let user_settings_path = conway::config::discovery::user_config_path(&env_vars);
+        let (effective_default_mode, default_mode_notice) = Self::resolve_default_mode(
+            cli.default_permission_mode,
+            project_settings_path.as_deref(),
+            report.project_permissions_trusted,
+            user_settings_path.as_deref(),
+            conway.config().permissions.default_mode,
+        );
+        if let Some(text) = default_mode_notice {
+            state
+                .transcript
+                .push(crate::tui::state::Entry::Notice { text });
+        }
+        conway.set_permission_mode(effective_default_mode);
+        state.default_permission_mode = effective_default_mode;
         state.permission_mode = conway.permission_mode();
         state.permission_paths = report.paths;
         // T3: cwd display -- prefer the CLI `--cwd` override, fall back to
@@ -302,25 +601,44 @@ impl App {
             .cwd
             .clone()
             .unwrap_or_else(|| conway.config().cwd.clone());
-        // T3 follow-up: read the local model-metadata map
-        // (`[models.metadata_path]`) from `Conway::model_metadata` --
-        // `ConwayBuilder::build` already loaded and parsed this file once to
-        // construct the `CapabilityIndex`; this used to re-read and
-        // re-parse the SAME file itself, a second code path that agreed
-        // with the builder's only because both happen to implement the
-        // identical "missing file -> empty map" fallback. One load, one
-        // source of truth: the status line's `ctx%` field looks up the
-        // focused model's max context window by `"backend/model"` string
-        // from whatever `model_max_context` ends up holding here. Empty
-        // when the builder found no metadata (or it named no models) --
-        // the renderer then falls back to raw tokens (no percentage), same
-        // as before; never an error, never blocks startup.
-        state.model_max_context = conway
-            .model_metadata()
-            .models
-            .iter()
-            .map(|(k, v)| (k.clone(), v.max_context_tokens))
-            .collect();
+        // Board item 01M1ZJ796E0YP6Y8QWS8HB0AVB (context-window-provenance,
+        // status-line half): the known `"backend/model"` key set still
+        // comes from `Conway::model_metadata` (unchanged -- that map is
+        // still the one place `models.json` names which pairs exist at
+        // all), but the WINDOW NUMBER and its PROVENANCE now both come from
+        // `Conway::capability_index()` -- the SAME resolved index `routes
+        // explain`/the runway notice/the admission gate already read,
+        // instead of `ModelMetadataEntry::max_context_tokens` read
+        // directly. The superseded comment here used to invoke a "one load,
+        // one source of truth" rule against re-reading `models.json` from
+        // disk a second time -- that rule is still honored (this reads
+        // `conway.capability_index()`, an in-memory accessor over the
+        // SAME builder-time resolution, not a second file read); it never
+        // named a reason THIS number had to come from `model_metadata`
+        // specifically, only that it must not be re-parsed from disk on its
+        // own. `capability_index().get(&model_ref)` has no entry for a pair
+        // whose backend was never configured/injected -- that pair is
+        // simply omitted here too, same as before (the renderer then falls
+        // back to raw tokens, no percentage). `context_window_source`
+        // alongside it is what lets the status line's `ctx` field mark an
+        // `Unverified` (assumed-floor) window, the same "floor (assumed)"
+        // wording `conway routes explain` already uses.
+        let capability_index = conway.capability_index();
+        let mut model_max_context = std::collections::HashMap::new();
+        let mut model_max_context_source = std::collections::HashMap::new();
+        for key in conway.model_metadata().models.keys() {
+            let Ok(model_ref) = key.parse::<ModelRef>() else {
+                continue;
+            };
+            if let Some(caps) = capability_index.get(&model_ref) {
+                model_max_context.insert(key.clone(), caps.max_context_tokens);
+            }
+            if let Some(source) = capability_index.context_window_source(&model_ref) {
+                model_max_context_source.insert(key.clone(), source);
+            }
+        }
+        state.model_max_context = model_max_context;
+        state.model_max_context_source = model_max_context_source;
         // T3: read the current git branch once at startup (best-effort,
         // no polling). On any failure (not a repo, git absent, non-UTF8
         // output) -> `None`, and the status line's `git` field is omitted.
@@ -501,13 +819,336 @@ impl App {
     ///
     /// Consuming `self` rather than taking `&mut self` so the one caller
     /// can chain it onto `App::new`'s own `Ok` arm and never hold an `App`
-    /// that has been constructed but not yet wired.
+    /// that is constructed but still unwired.
     pub fn with_agent_names(
         mut self,
         agent_names: std::sync::Arc<dyn conway_plugin_names::AgentNames>,
     ) -> Self {
         self.state.agent_names = Some(agent_names);
         self
+    }
+
+    /// Board item 01M1YVP3FDPHY4WZ72SXMWAN2D: resolves the mode a new
+    /// session STARTS in, and the transcript notice (if any) explaining
+    /// why a project-scope contribution was skipped. Returns `(mode,
+    /// notice)`.
+    ///
+    /// **Precedence**: `cli_flag` (`--default-permission-mode`, one
+    /// launch) > project `permissions.default_mode` (ONLY when
+    /// `project_trusted`) > user `permissions.default_mode` >
+    /// `merged_default_mode` (the config's own five-source-merged value,
+    /// used verbatim whenever project scope did not itself set the key,
+    /// or did and IS trusted -- in both cases the merge already resolved
+    /// the correct precedence between user/project/env/CLI, so this
+    /// function has nothing to add).
+    ///
+    /// **Fail-closed on trust, the item's own load-bearing line**: a
+    /// PROJECT-scope `default_mode` (e.g. a cloned repo's own
+    /// `.conway/settings.json` claiming `auto_allow`) must not take
+    /// effect until the operator has run `/trust permissions` for THIS
+    /// project. `project_trusted` is the caller's ONE input for that --
+    /// `App::new` passes `PermissionLoadReport::project_permissions_
+    /// trusted`, the IDENTICAL trust decision `permissions.json`'s own
+    /// `allow` half already requires (reused, not duplicated -- see that
+    /// field's own doc for why one trust subject, not two).
+    ///
+    /// **Pure and synchronous, unlike its one caller**: every filesystem
+    /// fact this needs is an explicit parameter (`project_settings_path`/
+    /// `user_settings_path`, already-resolved paths) rather than read from
+    /// `std::env::vars()` internally -- the same hermetic-testing idiom
+    /// `conway::config::merge::LoadOptions::env`/`App::apply_plugin_toggle`
+    /// already establish workspace-wide (see that method's own module doc
+    /// for why an in-process unit test must never itself mutate real
+    /// process env: `crates/conway/tests/config_isolation_guard.rs` exists
+    /// because that exact hazard already broke a test suite once). This is
+    /// what lets `mod tests` below drive every precedence/trust branch
+    /// directly against a tempdir, with no real `CONWAY_CONFIG_DIR`/
+    /// `TrustStore` involved at all.
+    fn resolve_default_mode(
+        cli_flag: Option<crate::cli::TuiPermissionMode>,
+        project_settings_path: Option<&std::path::Path>,
+        project_trusted: bool,
+        user_settings_path: Option<&std::path::Path>,
+        merged_default_mode: conway::PermissionMode,
+    ) -> (conway::PermissionMode, Option<String>) {
+        if let Some(flag_mode) = cli_flag {
+            return (flag_mode.into(), None);
+        }
+        let project_default_mode =
+            project_settings_path.and_then(conway::config::schema::read_default_mode);
+        if project_default_mode.is_some() && !project_trusted {
+            // Ignore the project's contribution; fall back to whatever
+            // user scope alone resolves to -- mirroring exactly how an
+            // untrusted project permissions file's `allow` rules are
+            // skipped with a notice rather than silently applied
+            // (`App::new`'s own `report.notices` handling).
+            let user_default_mode = user_settings_path
+                .and_then(conway::config::schema::read_default_mode)
+                .unwrap_or_default();
+            let notice = format!(
+                "{} sets permissions.default_mode, but this project is not trusted -- run \
+                 `/trust permissions` to apply it; starting in {} mode instead",
+                project_settings_path
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "the project's settings.json".to_string()),
+                user_default_mode.label()
+            );
+            return (user_default_mode, Some(notice));
+        }
+        (merged_default_mode, None)
+    }
+}
+
+#[cfg(test)]
+mod resolve_default_mode_tests {
+    use conway::PermissionMode;
+
+    use super::App;
+    use crate::cli::TuiPermissionMode;
+
+    fn write_default_mode(dir: &std::path::Path, mode: &str) -> std::path::PathBuf {
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            format!(r#"{{ "permissions": {{ "default_mode": "{mode}" }} }}"#),
+        )
+        .expect("write settings.json");
+        path
+    }
+
+    /// Untrusted project scope: `default_mode = "auto_allow"` must NOT
+    /// take effect, and the session must fall back to user scope's own
+    /// value -- not to `PermissionMode::default()` -- proving the
+    /// fallback genuinely reads user scope rather than merely refusing
+    /// the project's.
+    ///
+    /// ACCEPTANCE 2's own load-bearing check: a wrong implementation that
+    /// ignores project scope UNCONDITIONALLY (never even looking at
+    /// `project_trusted`) would also pass a bare "untrusted -> ignored"
+    /// test -- this one is paired with `trusted_project_default_mode_
+    /// applies_once_trusted` below (same fixture, only `project_trusted`
+    /// flipped) specifically so that wrong implementation fails THAT one
+    /// instead.
+    #[test]
+    fn untrusted_project_default_mode_is_ignored_with_a_notice() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project_path = write_default_mode(dir.path(), "auto_allow");
+        let user_dir = tempfile::tempdir().expect("tempdir");
+        let user_path = write_default_mode(user_dir.path(), "plan");
+
+        let (mode, notice) = App::resolve_default_mode(
+            None,
+            Some(&project_path),
+            false, // untrusted
+            Some(&user_path),
+            PermissionMode::Prompt, // what a real merge would have produced
+        );
+
+        assert_eq!(
+            mode,
+            PermissionMode::Plan,
+            "must fall back to USER scope's own value, not a bare default"
+        );
+        let notice = notice.expect("an untrusted project override must produce a notice");
+        assert!(
+            notice.contains("not trusted"),
+            "notice must explain why: {notice}"
+        );
+        assert!(
+            notice.contains("/trust permissions"),
+            "notice must name the remedy: {notice}"
+        );
+    }
+
+    /// The trusted pairing of the test above: identical fixture, only
+    /// `project_trusted` flipped to `true` -- and now the project's OWN
+    /// `auto_allow` applies, with no notice. Proves the trust flag is
+    /// genuinely load-bearing (not merely plumbed and ignored) and that
+    /// project scope, once trusted, is not silently capped at whatever
+    /// user scope says either.
+    #[test]
+    fn trusted_project_default_mode_applies_once_trusted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project_path = write_default_mode(dir.path(), "auto_allow");
+        let user_dir = tempfile::tempdir().expect("tempdir");
+        let user_path = write_default_mode(user_dir.path(), "plan");
+
+        let (mode, notice) = App::resolve_default_mode(
+            None,
+            Some(&project_path),
+            true, // trusted
+            Some(&user_path),
+            // A real five-source merge, once the project is trusted, would
+            // already have resolved `default_mode` to the project's own
+            // "auto_allow" (project outranks user) -- this stands in for
+            // that already-merged value, exactly as `App::new`'s real
+            // caller passes `conway.config().permissions.default_mode`.
+            PermissionMode::AutoAllow,
+        );
+
+        assert_eq!(
+            mode,
+            PermissionMode::AutoAllow,
+            "a TRUSTED project's own default_mode must apply"
+        );
+        assert!(
+            notice.is_none(),
+            "a trusted project's contribution must not print a notice: {notice:?}"
+        );
+    }
+
+    /// No project-scope contribution at all (a project with no
+    /// `settings.json`/no `default_mode` key): trust is irrelevant, and
+    /// the merged value (here standing in for "user scope, or the
+    /// built-in default") passes through unchanged, with no notice --
+    /// proves this function does not manufacture a notice for a project
+    /// that never touched the key.
+    #[test]
+    fn no_project_contribution_passes_the_merged_value_through_untouched() {
+        let (mode, notice) = App::resolve_default_mode(
+            None,
+            None, // no project settings.json at all
+            false,
+            None,
+            PermissionMode::Plan,
+        );
+        assert_eq!(mode, PermissionMode::Plan);
+        assert!(notice.is_none());
+    }
+
+    /// `--default-permission-mode` outranks everything, including a
+    /// TRUSTED project's own contradictory `default_mode` -- an explicit,
+    /// one-launch operator choice is never second-guessed by a config
+    /// file, trusted or not.
+    #[test]
+    fn cli_flag_outranks_a_trusted_project_default_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project_path = write_default_mode(dir.path(), "auto_allow");
+
+        let (mode, notice) = App::resolve_default_mode(
+            Some(TuiPermissionMode::Plan),
+            Some(&project_path),
+            true, // trusted -- would otherwise win with auto_allow
+            None,
+            PermissionMode::AutoAllow,
+        );
+
+        assert_eq!(mode, PermissionMode::Plan, "the CLI flag must win outright");
+        assert!(notice.is_none());
+    }
+}
+
+#[cfg(test)]
+mod continue_tests {
+    //! Board item `01M1YS4FMJH004D1Y619MTBY7A`: [`App::most_recently_
+    //! written`]'s own hermetic tests -- a plain tempdir standing in for
+    //! `session_names::session_root`, no `Conway`/session store involved at
+    //! all (matching `resolve_default_mode_tests`'s own idiom, immediately
+    //! above).
+
+    use conway::{SessionId, SessionMeta};
+
+    use super::App;
+
+    /// A minimal, otherwise-irrelevant `SessionMeta` for a given id and
+    /// `created` timestamp -- every OTHER field is a placeholder, since
+    /// [`App::most_recently_written`] reads only `id` off this struct (the
+    /// mtime comes from the file this fixture also writes, not from
+    /// anything on `SessionMeta` itself).
+    fn meta(id: SessionId, created: chrono::DateTime<chrono::Utc>) -> SessionMeta {
+        SessionMeta {
+            id,
+            agent_id: conway::AgentId::new(),
+            origin: None,
+            agent_def: None,
+            role: None,
+            created,
+            cwd: std::path::PathBuf::from("/tmp"),
+            labels: Vec::new(),
+            ephemeral: false,
+            ask_origin: None,
+            root: None,
+            plugin_config: Default::default(),
+        }
+    }
+
+    fn touch_with_mtime(dir: &std::path::Path, id: SessionId, mtime: std::time::SystemTime) {
+        let path = dir.join(format!("{id}.jsonl"));
+        std::fs::write(&path, b"").expect("write session file");
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("reopen session file");
+        file.set_modified(mtime).expect("set mtime");
+    }
+
+    /// **The load-bearing check**: ranks by the candidate's own file's
+    /// mtime, NOT `SessionMeta::created` -- an older-created session
+    /// written to MORE RECENTLY must win. `older_but_written_to` is given
+    /// an EARLIER `created` than `newer_but_idle` (so a wrong
+    /// implementation sorting by `created` picks `newer_but_idle`) but a
+    /// LATER file mtime (so the correct answer is `older_but_written_to`).
+    /// A wrong implementation that ranks by `SessionMeta::created` instead
+    /// of file mtime fails this test outright, picking the wrong session.
+    #[test]
+    fn continue_picks_the_most_recently_written_session_not_the_most_recently_created() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = std::time::SystemTime::now();
+        let an_hour_ago = now - std::time::Duration::from_secs(3600);
+
+        let older_but_written_to = SessionId::new();
+        let newer_but_idle = SessionId::new();
+
+        touch_with_mtime(dir.path(), older_but_written_to, now);
+        touch_with_mtime(dir.path(), newer_but_idle, an_hour_ago);
+
+        let candidates = vec![
+            meta(
+                older_but_written_to,
+                chrono::DateTime::<chrono::Utc>::from(an_hour_ago),
+            ),
+            meta(newer_but_idle, chrono::DateTime::<chrono::Utc>::from(now)),
+        ];
+
+        let got = App::most_recently_written(dir.path(), &candidates);
+
+        assert_eq!(
+            got,
+            Some(older_but_written_to),
+            "must rank by the file's own last-write time, not SessionMeta::created"
+        );
+    }
+
+    /// No candidates at all (or none whose file can be stat'd) -> `None`,
+    /// not a panic and not an arbitrary pick.
+    #[test]
+    fn no_candidates_yields_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(App::most_recently_written(dir.path(), &[]), None);
+    }
+
+    /// A candidate whose `.jsonl` file is missing (removed mid-race, or
+    /// this convention drifting from the real store's own) is skipped
+    /// rather than crashing the whole ranking -- the remaining, real
+    /// candidate still wins.
+    #[test]
+    fn a_candidate_with_no_matching_file_is_skipped_not_fatal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = std::time::SystemTime::now();
+
+        let missing_file = SessionId::new();
+        let real = SessionId::new();
+        touch_with_mtime(dir.path(), real, now);
+
+        let candidates = vec![
+            meta(missing_file, chrono::DateTime::<chrono::Utc>::from(now)),
+            meta(real, chrono::DateTime::<chrono::Utc>::from(now)),
+        ];
+
+        assert_eq!(
+            App::most_recently_written(dir.path(), &candidates),
+            Some(real)
+        );
     }
 }
 
@@ -547,15 +1188,27 @@ mod tests {
 
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use conway::config::{CliOverrides, LoadOptions};
     use conway::plugin::{Plugin, PluginManifest, PluginStatusContribution, Tool};
     use conway::test_support::test_builder;
     use conway::{ConwayBuilder, PermissionGate, ResultStatus};
     use conway_core::agent::PermissionDecision;
-    use conway_core::ids::{BackendId, ModelId};
-    use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+    use conway_core::content::{
+        ContentBlock, PermissionClass, StopReason, ToolCall, ToolCategory, ToolSpec,
+        TruncationPolicy, Usage,
+    };
+    use conway_core::error::ToolError;
+    use conway_core::ids::{BackendId, ModelId, ToolName};
+    use conway_core::log::PermissionDecisionSource;
+    use conway_core::ports::{GenerateResponse, ToolCtx, ToolOutput};
+    use conway_testkit::{text_response, FakeBackend, FakeGate, FakeRouter, FakeStore};
+    use conway_testkit::{ScriptedBackend, ScriptedTurn};
+    use futures::StreamExt as _;
 
-    use super::super::fixtures::{base_config, echo_conway, minimal_cli};
+    use super::super::fixtures::{
+        base_config, echo_conway, echo_conway_and_store, echo_conway_over, minimal_cli,
+    };
     use super::App;
     use crate::tui::state::Entry;
 
@@ -621,6 +1274,74 @@ mod tests {
             .await
             .expect("App::new should succeed");
         assert_eq!(app.state.session_head_seq, Some(conway::LogSeq(0)));
+    }
+
+    /// Board item `01M1YS4FMJH004D1Y619MTBY7A`, acceptance 1: `--resume`
+    /// backfills a resumed session's REAL history into the transcript at
+    /// TUI startup -- proven end to end through the real `App::new`, not
+    /// just `backfill_entries` in isolation (`state/transcript.rs`'s own
+    /// unit tests cover the mapping itself with hand-built records; this
+    /// proves the WIRING: `resolve_handle` actually reaches it). Same "two
+    /// `Conway`s sharing one `FakeStore`, simulated restart" shape
+    /// `resuming_a_session_refreshes_its_own_head_seq` (`app.rs`) already
+    /// establishes for `/resume`'s OWN in-TUI resumption -- this is that
+    /// shape's twin for `--resume` at STARTUP instead. `App::new` once
+    /// refused `--resume` outright (see `tests/tui_model_pin.rs`'s
+    /// now-superseded `session_flags_are_rejected_by_app_new_not_silently_
+    /// ignored`), so a passing case here could not have been written at
+    /// all until that refusal became support.
+    #[tokio::test]
+    async fn resolve_handle_resume_backfills_history_into_the_transcript() {
+        let (conway, store) = echo_conway_and_store();
+
+        let other_sid = {
+            let other_conway = echo_conway_over(store.clone());
+            let other = other_conway
+                .new_session(conway::SessionSpec::default())
+                .await
+                .expect("new_session should succeed");
+            let sid = other.id();
+            other
+                .prompt("hello there")
+                .await
+                .expect("prompt should not error")
+                .text()
+                .await
+                .expect("turn should complete");
+            sid
+            // `other_conway`/`other` drop here -- their in-memory
+            // `Runtime`/tree go with them, leaving only the persisted log
+            // in the SHARED `store` behind for `--resume` to read back.
+        };
+
+        let mut cli = minimal_cli();
+        cli.resume = Some(other_sid.to_string());
+
+        let app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new must accept --resume now, not refuse it");
+
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::User(text) if text == "hello there")),
+            "the resumed session's own user turn must be backfilled into the transcript, got: \
+             {:?}",
+            app.state.transcript
+        );
+        // The fixture backend echoes the last user segment's text back
+        // verbatim (`FakeBackend::echo`'s own doc) -- so the persisted
+        // `Assistant` record's text is deterministically the same string,
+        // letting this assert on exact content rather than mere presence.
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant { text, .. } if text == "hello there")),
+            "the resumed session's own assistant reply must be backfilled too, got: {:?}",
+            app.state.transcript
+        );
     }
 
     /// Board item `01M0KARX71A64NTSYTDBVANVPF`: `App::new` populates
@@ -885,7 +1606,6 @@ mod tests {
                 "backends": {
                     "fake": { "kind": "anthropic", "api_key": "unused-placeholder-key" }
                 },
-                "permissions": { "mode": "deny" },
                 "models": { "metadata_path": models_path }
             })
             .to_string(),
@@ -968,7 +1688,6 @@ mod tests {
                 "backends": {
                     "fake": { "kind": "anthropic", "api_key": "unused-placeholder-key" }
                 },
-                "permissions": { "mode": "deny" },
                 "tui": {
                     "theme": {
                         "user": { "fg": "magenta", "modifiers": ["bold", "italic"] }
@@ -1148,6 +1867,172 @@ mod tests {
         assert!(
             text.contains("guard: qwen2.5-3b"),
             "the plugin's status contribution must reach the rendered status line: {text}"
+        );
+    }
+
+    /// An Execute-category tool -- Plan mode denies this category
+    /// outright, regardless of what the injected `PermissionGate` would
+    /// have answered. Mirrors `app::ask::tests::MarkerTool`'s shape
+    /// (a separate module's private fixture, not reusable from here),
+    /// `ToolCategory::Execute` instead of `Read`.
+    struct ExecuteMarkerTool;
+
+    #[async_trait]
+    impl Tool for ExecuteMarkerTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: ToolName::new("marker_exec"),
+                description: "test-only Execute-category marker tool".into(),
+                schema: serde_json::from_value(serde_json::json!({"type": "object"})).unwrap(),
+                category: ToolCategory::Execute,
+                permission: PermissionClass::Safe,
+            }
+        }
+
+        async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput {
+                blocks: vec![ContentBlock::Text {
+                    text: "should never run under plan mode".into(),
+                }],
+                is_error: false,
+                truncation: TruncationPolicy::None,
+                artifacts: vec![],
+            })
+        }
+    }
+
+    struct ExecuteMarkerPlugin;
+
+    impl Plugin for ExecuteMarkerPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: "test.marker_exec".to_string(),
+                version: "0.0.0".to_string(),
+                tools: vec![ToolName::new("marker_exec")],
+                required_host_caps: vec![],
+                optional_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![Arc::new(ExecuteMarkerTool)]
+        }
+    }
+
+    fn tool_call_response(call_id: &str, tool: &str) -> GenerateResponse {
+        GenerateResponse {
+            content: vec![],
+            tool_calls: vec![ToolCall {
+                call_id: call_id.to_string(),
+                name: ToolName::new(tool),
+                arguments: serde_json::json!({}),
+            }],
+            stop: StopReason::ToolUse,
+            usage: Usage::default(),
+        }
+    }
+
+    /// ACCEPTANCE (the project rule that "a check is not established until it
+    /// has been shown to fail" line, half (a)): `permissions.default_mode
+    /// = "plan"` does not merely PARSE -- it actually GATES a first real
+    /// tool call, the identical way `/settings` cycling into `Plan`
+    /// mid-session already does.
+    ///
+    /// **The gate injected here is `test_builder`'s own default:
+    /// always-allow (`allow_once_gate()`), deliberately NOT overridden.**
+    /// If `default_mode` failed to reach `PermissionBroker::set_mode` at
+    /// all (a config field that parses and does nothing -- precisely the
+    /// defect this whole item exists to close), the always-allow gate
+    /// would let this Execute-category call straight through and the
+    /// tool's own "should never run" text would appear in the turn's
+    /// reply. A pass here can only be explained by the mode itself having
+    /// denied the call BEFORE the gate was ever consulted --
+    /// `conway_runtime::permission::PermissionBroker::decide`'s own
+    /// `PermissionDecisionSource::Mode` (see that type's own doc: "Plan
+    /// refusing a category it does not permit") is the one event source
+    /// that can ONLY mean the mode decided, never the gate.
+    #[tokio::test]
+    async fn config_default_mode_plan_gates_a_real_execute_tool_call() {
+        let mut config = base_config();
+        config.permissions.default_mode = conway::PermissionMode::Plan;
+
+        let backend = Arc::new(
+            ScriptedBackend::new(vec![
+                ScriptedTurn::Respond(tool_call_response("call_1", "marker_exec")),
+                ScriptedTurn::Respond(text_response("done")),
+            ])
+            .with_id(BackendId::new("fake")),
+        );
+        let conway = test_builder(config)
+            .with_backend(backend)
+            .with_plugin(Arc::new(ExecuteMarkerPlugin))
+            .build()
+            .expect("build should succeed with every port injected");
+
+        // Exercises the code under test: `App::new` must read
+        // `config.permissions.default_mode` and apply it via
+        // `Conway::set_permission_mode` before returning.
+        let cli = minimal_cli();
+        let app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        assert_eq!(
+            app.state.permission_mode,
+            conway::PermissionMode::Plan,
+            "App::new must have applied config.permissions.default_mode before the first turn"
+        );
+
+        // Now drive an actual turn, straight against `conway` (the SAME
+        // instance `App::new` just configured the mode on) -- the mode
+        // lives on the broker, shared by the whole `Conway`/`Runtime`, not
+        // scoped to whichever session issues the call.
+        let session = conway
+            .new_session(conway::SessionSpec::default())
+            .await
+            .expect("new_session should succeed");
+        let mut events = session.events();
+        let _turn = session
+            .prompt("please use marker_exec")
+            .await
+            .expect("prompt should be accepted");
+
+        // Bounded so a genuine hang (a scripting mistake, not the property
+        // under test) fails legibly rather than blocking the suite --
+        // mirrors `app::ask::tests::HANG_TIMEOUT`'s own reasoning, one
+        // module over.
+        let mut saw_mode_denial = false;
+        let drain = async {
+            while let Some(envelope) = events.next().await {
+                if let conway::Event::PermissionDecision { source, tool, .. } = &envelope.event {
+                    if *tool == ToolName::new("marker_exec") {
+                        assert_eq!(
+                            *source,
+                            PermissionDecisionSource::Mode,
+                            "the Execute call must be resolved by MODE, never by reaching the \
+                             always-allow gate (source: Operator would mean plan mode was \
+                             never consulted at all)"
+                        );
+                        saw_mode_denial = true;
+                    }
+                }
+                if let conway::Event::AgentFinished { result, .. } = &envelope.event {
+                    if result.agent_id == session.root() {
+                        break;
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), drain)
+            .await
+            .expect(
+                "turn must finish within the bound (a hang here is a scripting defect, \
+                     not the property under test)",
+            );
+        assert!(
+            saw_mode_denial,
+            "expected a PermissionDecision event for the marker_exec call, resolved by mode"
         );
     }
 }

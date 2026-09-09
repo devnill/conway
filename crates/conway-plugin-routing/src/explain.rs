@@ -97,6 +97,25 @@ impl<'a> RoutingExplain<'a> {
                             .router
                             .capability_index()
                             .token_fidelity(&model_ref.backend);
+                        // Board item A5.7: the operator-visible surface for
+                        // `Backend::cache_reporting`, read the same way
+                        // (backend id alone -- a `Backend`-level
+                        // declaration, not per-model).
+                        let cache_reporting = self
+                            .router
+                            .capability_index()
+                            .cache_reporting(&model_ref.backend);
+                        // Hosted OpenAI-compatible models item: the
+                        // operator-visible surface for
+                        // `Backend::context_window_source`. Same index
+                        // `capabilities`/`token_fidelity` above already
+                        // read -- `None` under the exact same conditions
+                        // `capabilities` is `None` (this candidate has no
+                        // capability-index entry at all).
+                        let context_window_source = self
+                            .router
+                            .capability_index()
+                            .context_window_source(&model_ref);
                         let breaker = BreakerSnapshot {
                             state: self.router.health().state(&endpoint_of(&model_ref)),
                         };
@@ -120,6 +139,8 @@ impl<'a> RoutingExplain<'a> {
                             capabilities,
                             breaker,
                             token_fidelity,
+                            context_window_source,
+                            cache_reporting,
                         }
                     })
                     .collect();

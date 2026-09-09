@@ -440,7 +440,7 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
         let registrations = report.hook_registrations();
         for server in report.mcp_servers {
             let server_name = server.name.clone();
-            let spec = server.into_spec(entry.timeout_ms);
+            let spec = server.into_spec(entry.timeout_ms, entry.first_call_timeout_ms);
             match McpPlugin::discover(spec).await {
                 Ok(plugin) => {
                     builder = builder.with_plugin(Arc::new(plugin));
@@ -634,6 +634,7 @@ mod tests {
             id: "acme-tools".to_string(),
             dir: std::path::PathBuf::from("/does/not/exist/at/all"),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
         let builder = ConwayBuilder::from_parts(config);
         // `ConwayBuilder` does not implement `Debug`, so `expect_err`/
@@ -700,6 +701,7 @@ mod tests {
             id: "ideate".to_string(),
             dir: dir.path().to_path_buf(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
         let builder = ConwayBuilder::from_parts(config);
         let builder = install(builder)
@@ -764,6 +766,7 @@ mod tests {
             id: "acme-tools".to_string(),
             dir: dir.path().to_path_buf(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
         let builder = ConwayBuilder::from_parts(config);
         let builder = install(builder)
@@ -803,6 +806,7 @@ mod tests {
             id: "acme-tools".to_string(),
             dir: dir.to_path_buf(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
         config
     }
@@ -1046,11 +1050,13 @@ mod tests {
             id: "entry-a".to_string(),
             dir: dir_a.path().to_path_buf(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
         config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
             id: "entry-b".to_string(),
             dir: dir_b.path().to_path_buf(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
 
         let builder = ConwayBuilder::from_parts(config);
@@ -1086,6 +1092,7 @@ mod tests {
             id: entry_id.to_string(),
             dir: dir.to_path_buf(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
         config
     }
@@ -1259,11 +1266,13 @@ mod tests {
             id: "entry-a".to_string(),
             dir: dir_a.path().to_path_buf(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
         config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
             id: "entry-b".to_string(),
             dir: dir_b.path().to_path_buf(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
 
         let plugins = command_plugins(&config).expect("command_plugins must succeed");

@@ -8,8 +8,18 @@ mod support;
 
 use conway::config::{load, CliOverrides, LoadOptions};
 
+/// Board item 01M1YVP3FDPHY4WZ72SXMWAN2D superseded the check this test
+/// used to pin (`permissions.mode = "allowlist"` requiring non-empty
+/// `allowed_tools`, since removed along with the two keys themselves):
+/// `allowlist_empty.json` -- unchanged, still spelling the old
+/// `{"mode": "allowlist", "allowed_tools": []}` shape -- is now refused
+/// for a different, more fundamental reason: `mode` is not a recognized
+/// key AT ALL any more. This is checked (`schema::
+/// permissions_removed_key_error`) BEFORE the generic `deny_unknown_fields`
+/// deserialize ever runs, so the message names `default_mode`, the
+/// key's actual replacement, not a bare "unknown field".
 #[test]
-fn allowlist_mode_with_empty_allowed_tools_is_rejected() {
+fn allowlist_mode_with_empty_allowed_tools_is_refused_as_a_removed_key() {
     let dir = support::unique_temp_dir("allowlist-empty");
     let result = load(LoadOptions {
         cwd: dir,
@@ -20,8 +30,8 @@ fn allowlist_mode_with_empty_allowed_tools_is_rejected() {
     });
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("allowlist") && err.contains("allowed_tools"),
-        "error must name the allowlist/allowed_tools requirement: {err}"
+        err.contains("default_mode"),
+        "error must point at permissions.default_mode: {err}"
     );
 }
 

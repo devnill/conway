@@ -240,17 +240,49 @@
 //! `system_prompt_override`, which stays the flag's job (report it here so
 //! the next reader does not invent a second "replace" answer).
 //!
-//! **1. One file, not a search path.** `.conway/instructions.md`, matching
-//! `.conway/agents/`/`.conway/skills/` -- both already resolved directly
-//! against `cwd`, never walked up an ancestor chain
+//! **1. A short walk, bounded at the enclosing git repository root, plus
+//! an `AGENTS.md` fallback.** `.conway/instructions.md` is no longer
+//! resolved by a single direct `cwd`-join alone:
+//! [`project_instructions_path`] walks from `cwd` up through each
+//! ancestor directory, NEAREST FIRST, taking the first
+//! `.conway/instructions.md` it finds, and stops climbing at the
+//! enclosing git repository root -- the nearest ancestor (including
+//! `cwd` itself) that contains a `.git` entry -- rather than continuing
+//! all the way to the filesystem root. When `cwd` is not inside a git
+//! repository at all, the walk is `cwd` alone, exactly the old,
+//! single-directory behaviour. This doc used to say conway's project-file
+//! convention "never walked up an ancestor chain" for `.conway/*`; that
+//! was true when written and is no longer the rule this crate's own code
+//! follows -- someone launching a session from a subdirectory of an
+//! already-`.conway`-configured repository now sees the same project
+//! instructions a launch from the repository root would have. `.conway/
+//! agents/`/`.conway/skills/` are unaffected by this item and still
+//! resolve directly against `cwd` alone
 //! (`crates/conway-cli/src/first_party_plugins.rs`'s own `bundle`, `cwd.
-//! join(".conway").join("skills")`). Pi merges several directories because
-//! it walks from a deeply nested cwd up through a monorepo; conway's own
-//! project-file convention never does that for `.conway/*`, so a search
-//! path would be new shape for this plugin alone, not a precedent it is
-//! following. No concrete case named here needs more than one project file
-//! -- an operator who wants to say two different things says them in one
-//! file.
+//! join(".conway").join("skills")`).
+//!
+//! **When that walk finds no `.conway/instructions.md` anywhere, it tries
+//! `AGENTS.md` on the identical directory list** -- same nearest-first
+//! order, same git-root boundary -- before giving up. Most harnesses an
+//! operator arriving at conway from elsewhere has likely used converge on
+//! `AGENTS.md` as the filename a project already carries; an operator
+//! should not have to re-author `.conway/instructions.md` before conway
+//! reads anything a project already has. `.conway/instructions.md` wins
+//! whenever both exist ANYWHERE on the walk, even when the `AGENTS.md`
+//! that lost is nearer to `cwd` than the `.conway/instructions.md` that
+//! won -- conway's own file is the more specific declaration. Both land
+//! under the SAME fragment name, [`OPERATOR_PROJECT_INSTRUCTION_NAME`]: an
+//! `AGENTS.md` source is a different file backing the existing fragment
+//! slot, not a new one, and `Provenance::Operator`'s own `path` field --
+//! already the mechanism naming which file backs an operator fragment --
+//! names the exact file this session actually read, so `/context` and a
+//! session's durable log already say which one without any new field.
+//! `CLAUDE.md` is deliberately NOT read: ruled out as single-vendor,
+//! unlike `AGENTS.md`'s multi-harness convergence. No `@import` directive
+//! and no per-directory rule file either -- this plugin still contributes
+//! at most one project-scope fragment per session. No concrete case named
+//! here needs more than one project file -- an operator who wants to say
+//! two different things says them in one file.
 //!
 //! **2. Project AND global, both additive.** conway's config discovery
 //! already resolves a project layer (`conway::config::discovery::discover`,
@@ -331,8 +363,9 @@
 //!   below) sets `authored_by: FragmentAuthor::Operator { path }` -- the
 //!   operator wrote it, in a file this plugin merely reads, so it is
 //!   stamped `Provenance::Operator { name, path }` instead, naming the
-//!   exact file (`.conway/instructions.md` or `<home>/.conway/
-//!   instructions.md`) an operator can go edit.
+//!   exact file (a project's `.conway/instructions.md`, its `AGENTS.md`
+//!   fallback, or `<home>/.conway/instructions.md` at global scope) an
+//!   operator can go edit.
 //!
 //! This used to be a single, uniform `Provenance::Skill { name }` stamp for
 //! every fragment this plugin contributed -- the SAME stamp an
@@ -377,9 +410,11 @@ pub const INSTRUCTION_NAME: &str = "conway.idiom.base";
 pub const ENVIRONMENT_INSTRUCTION_NAME: &str = "conway.idiom.environment";
 
 /// The name of the operator's project-scope instruction fragment, sourced
-/// from `<cwd>/.conway/instructions.md` when that file exists, is
-/// readable, and is non-empty. See this module's own doc, "Operator
-/// instructions", point 3.
+/// from the nearest `.conway/instructions.md` (or, when none is found, the
+/// nearest `AGENTS.md`) found walking up from `<cwd>` to the enclosing git
+/// repository root -- see [`project_instructions_path`] for the exact
+/// walk/fallback rule, and this module's own doc, "Operator instructions",
+/// points 1 and 3.
 pub const OPERATOR_PROJECT_INSTRUCTION_NAME: &str = "conway.idiom.operator.project";
 
 /// The name of the operator's global-scope instruction fragment, sourced
@@ -950,12 +985,115 @@ fn environment_fragment(cwd: &Path) -> InstructionFragment {
         .with_authored_by(FragmentAuthor::Plugin)
 }
 
-/// The default project-scope operator file: `<cwd>/.conway/instructions.md`
-/// -- never walked up an ancestor chain, matching `.conway/agents/`/
-/// `.conway/skills/`'s own direct-`cwd`-join convention (this module's own
-/// doc, "Operator instructions", point 1).
+/// The bare filename this crate falls back to when no `.conway/
+/// instructions.md` is found anywhere on [`project_instructions_path`]'s
+/// walk -- see this module's own doc, "Operator instructions", point 1.
+/// `CLAUDE.md` is deliberately not a second fallback filename here: ruled
+/// out as single-vendor, unlike this name's multi-harness convergence.
+pub const AGENTS_FALLBACK_FILENAME: &str = "AGENTS.md";
+
+/// The project-scope operator file for `cwd`: the NEAREST
+/// `.conway/instructions.md` found walking from `cwd` up through each
+/// ancestor directory (nearest first), stopping at -- and including -- the
+/// enclosing git repository root (this module's own doc, "Operator
+/// instructions", point 1). When that walk finds no `.conway/
+/// instructions.md` anywhere, the NEAREST [`AGENTS_FALLBACK_FILENAME`]
+/// found on the identical directory list is returned instead --
+/// `.conway/instructions.md` wins whenever both exist anywhere on the
+/// walk, even one nearer to `cwd` than a farther `.conway/instructions.md`
+/// that wins. When `cwd` is not inside a git repository at all
+/// (`find_enclosing_git_root` returns `None`), the walk is `cwd` alone --
+/// no walk above a repository boundary that does not exist, so a
+/// home-directory file is never picked up as a project file.
+///
+/// When NEITHER file is found anywhere on the walk, the direct
+/// `cwd`-join is returned regardless (the exact path the pre-walk-up
+/// version of this function always returned) -- `read_operator_fragment`'s
+/// own `NotFound` handling already treats that path exactly like every
+/// other absent file, missing silently (this module's own doc, "Operator
+/// instructions", point 4), so returning it here rather than an `Option`
+/// keeps every existing caller's shape unchanged.
 pub fn project_instructions_path(cwd: &Path) -> PathBuf {
+    let dirs = candidate_project_directories(cwd);
+    if let Some(found) = dirs
+        .iter()
+        .map(|dir| dir.join(".conway").join(OPERATOR_INSTRUCTIONS_FILENAME))
+        .find(|path| path.exists())
+    {
+        return found;
+    }
+    if let Some(found) = dirs
+        .iter()
+        .map(|dir| dir.join(AGENTS_FALLBACK_FILENAME))
+        .find(|path| path.exists())
+    {
+        return found;
+    }
     cwd.join(".conway").join(OPERATOR_INSTRUCTIONS_FILENAME)
+}
+
+/// The directories [`project_instructions_path`] searches, NEAREST FIRST:
+/// `cwd` itself, then each ancestor up to and including
+/// [`find_enclosing_git_root`]'s result -- or `[cwd]` alone when that
+/// returns `None` (no enclosing git repository). Pulled out as its own
+/// function so the directory LIST and the two filename searches that
+/// consume it stay separately testable.
+fn candidate_project_directories(cwd: &Path) -> Vec<PathBuf> {
+    let git_root = find_enclosing_git_root(cwd);
+    let mut dirs = Vec::new();
+    let mut current = cwd.to_path_buf();
+    loop {
+        dirs.push(current.clone());
+        if git_root.as_deref() == Some(current.as_path()) {
+            break;
+        }
+        match &git_root {
+            Some(_) => match current.parent() {
+                Some(parent) => current = parent.to_path_buf(),
+                // Defensive only: `git_root`, when `Some`, is by
+                // construction an ancestor of `cwd` (or `cwd` itself)
+                // reached by this identical `.parent()` chain, so this
+                // arm is unreachable in practice -- stop rather than loop
+                // forever if that invariant is ever wrong.
+                None => break,
+            },
+            // No enclosing git repository: the walk is `cwd` alone. A
+            // walk with no repository boundary to stop at must not run
+            // all the way to the filesystem root -- a home-directory
+            // `AGENTS.md` (or `.conway/instructions.md`) above `cwd` is
+            // not a project file.
+            None => break,
+        }
+    }
+    dirs
+}
+
+/// Walks up from `cwd`, INCLUSIVE, looking for a `.git` entry -- directory
+/// OR file. A plain repository's `.git` is a directory; a linked
+/// worktree's or a submodule's `.git` is a FILE containing a `gitdir:`
+/// pointer elsewhere, but its mere presence still marks the directory
+/// that holds it as that worktree's or submodule's own project root for
+/// this walk's purposes -- this function does not resolve where the
+/// pointer leads, only whether one exists. Returns `None` when no such
+/// entry exists anywhere above `cwd`, including the ordinary case of `cwd`
+/// not being inside a git repository at all.
+///
+/// **Not handled:** a bare-repository checkout, where `cwd` sits inside
+/// the bare repository's own directory (`HEAD`/`objects`/`refs` directly
+/// present) rather than under a nested `.git`. Nothing marks that
+/// directory as a boundary here, so the walk falls back to `cwd` alone in
+/// that case, the same as a plain non-repository directory.
+fn find_enclosing_git_root(cwd: &Path) -> Option<PathBuf> {
+    let mut current = cwd.to_path_buf();
+    loop {
+        if current.join(".git").exists() {
+            return Some(current);
+        }
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => return None,
+        }
+    }
 }
 
 /// The default global-scope operator file: alongside conway's user-scoped
@@ -1154,8 +1292,11 @@ impl Plugin for IdiomPlugin {
                       `report`-gated part specifically, describe how a *child* agent should \
                       behave, and now reach exactly that agent. Also up to two more fragments, \
                       additive alongside the two shipped ones, \
-                      read from an operator's own `.conway/instructions.md` (project scope) and \
-                      `<home>/.conway/instructions.md` (global scope) when either file exists -- \
+                      read from an operator's own `.conway/instructions.md` (project scope, \
+                      found by walking up from cwd to the enclosing git repository root, or \
+                      -- when that file is absent everywhere on the walk -- the nearest \
+                      `AGENTS.md` instead) and `<home>/.conway/instructions.md` (global scope) \
+                      when either file exists -- \
                       reaching a forked/spawned child exactly the same way, for the same reason"
                 .to_string(),
             you_lose: "nothing else".to_string(),
@@ -1674,6 +1815,117 @@ mod operator_file_tests {
             project_tmp.path().join(".conway").join("instructions.md")
         );
         assert_eq!(global, Some(global_tmp.path().join("instructions.md")));
+    }
+
+    /// Fixture-tree case (a): `repo/.conway/instructions.md` is read when
+    /// launched from `repo/a/b`. Catches an implementation that never
+    /// walks up at all (the direct `cwd`-join this crate used before this
+    /// item) -- such an implementation resolves to
+    /// `repo/a/b/.conway/instructions.md`, a path that does not exist, and
+    /// silently sees no project instructions even though the repository
+    /// genuinely has one.
+    #[test]
+    fn walk_up_finds_the_repo_root_dot_conway_file_from_a_nested_cwd() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(repo.path().join(".git")).expect("mkdir .git");
+        let dot_conway_instructions = repo.path().join(".conway").join("instructions.md");
+        std::fs::create_dir_all(dot_conway_instructions.parent().unwrap()).expect("mkdir .conway");
+        std::fs::write(&dot_conway_instructions, "Project convention.\n")
+            .expect("write instructions.md");
+        let nested = repo.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).expect("mkdir nested");
+
+        assert_eq!(project_instructions_path(&nested), dot_conway_instructions);
+    }
+
+    /// Fixture-tree case (b): `repo/AGENTS.md` is read when
+    /// `.conway/instructions.md` is absent everywhere on the walk, as
+    /// [`OPERATOR_PROJECT_INSTRUCTION_NAME`] with its source noted via
+    /// `authored_by`'s own `path`. Catches an implementation that walks
+    /// correctly for `.conway/instructions.md` but never implements (or
+    /// never walks for) the `AGENTS.md` fallback at all -- such an
+    /// implementation resolves to the same nonexistent path case (a)
+    /// rules out and sees nothing, even though the repository genuinely
+    /// has standing instructions under the other name.
+    #[test]
+    fn walk_up_falls_back_to_the_repo_root_agents_md_when_dot_conway_is_absent() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(repo.path().join(".git")).expect("mkdir .git");
+        let agents_md = repo.path().join("AGENTS.md");
+        std::fs::write(&agents_md, "Project convention.\n").expect("write AGENTS.md");
+        let nested = repo.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).expect("mkdir nested");
+
+        let resolved = project_instructions_path(&nested);
+        assert_eq!(resolved, agents_md);
+
+        let plugin =
+            IdiomPlugin::from_operator_files(&nested, Some(&resolved), None).expect("read ok");
+        let fragment = plugin
+            .instructions()
+            .into_iter()
+            .find(|f| f.name == OPERATOR_PROJECT_INSTRUCTION_NAME)
+            .expect("AGENTS.md must contribute the project-scope fragment");
+        assert!(fragment.text.contains("Project convention"));
+        match fragment.authored_by {
+            FragmentAuthor::Operator { path } => assert_eq!(path, agents_md),
+            other => panic!("expected FragmentAuthor::Operator, got {other:?}"),
+        }
+    }
+
+    /// Fixture-tree case (c): both `repo/.conway/instructions.md` and a
+    /// NEARER `repo/a/AGENTS.md` exist -- `.conway/instructions.md` wins
+    /// even though it is farther from `cwd`. Catches a walk that is too
+    /// eager to prefer `AGENTS.md`: an implementation that merges the two
+    /// searches into one single nearest-first pass over BOTH filenames
+    /// together (rather than exhausting the `.conway/instructions.md`
+    /// search before ever trying `AGENTS.md`) would return
+    /// `repo/a/AGENTS.md` here, the wrong file, silently overriding
+    /// conway's own more specific declaration with a nearer but less
+    /// specific one.
+    #[test]
+    fn dot_conway_wins_over_a_nearer_agents_md() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(repo.path().join(".git")).expect("mkdir .git");
+        let dot_conway_instructions = repo.path().join(".conway").join("instructions.md");
+        std::fs::create_dir_all(dot_conway_instructions.parent().unwrap()).expect("mkdir .conway");
+        std::fs::write(&dot_conway_instructions, "Project convention.\n")
+            .expect("write instructions.md");
+        let nearer_agents_md = repo.path().join("a").join("AGENTS.md");
+        std::fs::create_dir_all(nearer_agents_md.parent().unwrap()).expect("mkdir a");
+        std::fs::write(&nearer_agents_md, "A different, nearer file.\n").expect("write AGENTS.md");
+        let nested = repo.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).expect("mkdir nested");
+
+        assert_eq!(
+            project_instructions_path(&nested),
+            dot_conway_instructions,
+            ".conway/instructions.md must win even though AGENTS.md is nearer to cwd"
+        );
+    }
+
+    /// Fixture-tree case (d): no enclosing git repository -- the walk is
+    /// `cwd` alone, never reaching a PARENT directory's `AGENTS.md`
+    /// (deliberately placed just one level above `cwd`, with no `.git`
+    /// anywhere). Catches a walk that is too greedy in the other
+    /// direction: an implementation that walks to the filesystem root
+    /// whenever it finds nothing nearby (ignoring the "stop at the git
+    /// root, or don't walk at all" rule) would return the parent's
+    /// `AGENTS.md` here -- exactly the home-directory-leak case this item
+    /// explicitly rules out.
+    #[test]
+    fn no_repository_means_no_walk_a_parent_agents_md_is_never_read() {
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::fs::write(outside.path().join("AGENTS.md"), "Not a project file.\n")
+            .expect("write AGENTS.md");
+        let cwd = outside.path().join("project");
+        std::fs::create_dir_all(&cwd).expect("mkdir project");
+
+        assert_eq!(
+            project_instructions_path(&cwd),
+            cwd.join(".conway").join("instructions.md"),
+            "with no enclosing git repository, the walk must be cwd alone"
+        );
     }
 
     /// Board item `01M0W5Q569F0T97HSEP6F0MPCR`, at the unit level:

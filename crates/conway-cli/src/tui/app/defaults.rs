@@ -274,7 +274,73 @@ impl App {
             });
             return;
         }
+        self.write_model_to_default_role_head(model, env, cwd);
+    }
 
+    /// The model picker's own "make default" key (`d`, bare, only while
+    /// `AppState::model_picker_active` -- `input::handle_ui_form_key`'s own
+    /// doc), acceptance criterion 2 of the native `/model` picker: makes
+    /// the currently-highlighted candidate (`model`, whatever string
+    /// `AskSelectRequest::options` carried for that row -- ALREADY a valid
+    /// `"backend/model"` pair by construction, the same guarantee
+    /// [`crate::tui::commands::apply_model_switch`]'s own doc names for its
+    /// sibling `Enter` path) the persistent default, through the exact same
+    /// [`Self::write_model_to_default_role_head`] writer
+    /// [`Self::apply_promote_session_model_to_default`] above uses -- one
+    /// source of truth for "reorder the default role's chain," never a
+    /// second chain rewriter. Unlike that sibling, this does NOT switch
+    /// this session's own running model (the picker's `Enter` key already
+    /// owns that, unconditionally, via `apply_model_switch`) -- pressing
+    /// `d` only changes what a FUTURE session's `default_role` resolves
+    /// to, so the picker stays open afterward rather than closing/resolving
+    /// the `ask_select` the way `Enter`/`Esc` do (no facade call needed to
+    /// leave the modal; `AppState::resolve_ui_form` is not involved here at
+    /// all).
+    ///
+    /// Refuses -- a named error, no write -- only when `model` already
+    /// matches the derived default (nothing would change); unlike
+    /// [`Self::apply_promote_session_model_to_default`], there is no
+    /// "nothing to promote" case here at all: every row the picker shows is
+    /// already a real candidate the operator explicitly highlighted, never
+    /// an absent value.
+    pub(super) fn apply_make_model_default(
+        &mut self,
+        model: String,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+    ) {
+        if self.state.default_model_snapshot.as_deref() == Some(model.as_str()) {
+            self.state.transcript.push(Entry::Error {
+                text: format!("{model} is already the persistent default"),
+                fatal: false,
+            });
+            return;
+        }
+        self.write_model_to_default_role_head(model, env, cwd);
+    }
+
+    /// The one REORDER-and-persist writer both
+    /// [`Self::apply_promote_session_model_to_default`] and
+    /// [`Self::apply_make_model_default`] call after their own (different)
+    /// refusal checks -- P-14: a chain-reorder-to-head is written in
+    /// exactly one place in this crate. Reads the default role's CURRENT
+    /// chain via `super::provider_manage::load_roles_lax` (reused, never a
+    /// second opinion -- the same reuse `refresh_default_entries` already
+    /// makes), removes any existing occurrence of `model` (a model already
+    /// present elsewhere in the chain must not appear TWICE once promoted),
+    /// and inserts it at index 0 -- every other configured fallback keeps
+    /// its own relative order, never truncated away: a chain's whole point
+    /// is fallback candidates, and promoting one to head is not a reason to
+    /// discard the rest. Pushes the resulting chain in a
+    /// [`Entry::Notice`] on success (both callers' own acceptance
+    /// criterion: "show the resulting chain" / "show the resulting chain in
+    /// a notice").
+    fn write_model_to_default_role_head(
+        &mut self,
+        model: String,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+    ) {
         let role = self.state.default_role_snapshot.clone();
         let roles = match load_roles_lax(env, cwd) {
             Ok(roles) => roles,
@@ -305,8 +371,9 @@ impl App {
                 self.state.transcript.push(Entry::Notice {
                     text: format!(
                         "default model: {model} (written to {}, head of role \"{role}\"'s \
-                         chain)",
-                        path.display()
+                         chain: {})",
+                        path.display(),
+                        chain.join(", ")
                     ),
                 });
                 self.refresh_default_entries(env, cwd);
@@ -626,6 +693,146 @@ mod tests {
         app.state.focused_model = Some("anthropic/claude-sonnet-4-6".to_string());
 
         app.apply_promote_session_model_to_default(&env, cwd.path());
+
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert_eq!(text, original, "a refusal must never write the file");
+    }
+
+    // ---------------------------------------------------------------
+    // The model picker's "make default" key: `App::apply_make_model_default`.
+    // ---------------------------------------------------------------
+
+    /// ACCEPTANCE 2: pressing the picker's "make default" key on a
+    /// highlighted, non-default candidate rewrites `roles.<default_role>.
+    /// chain` so that model heads it -- asserted on the REWRITTEN CHAIN
+    /// itself (never merely "the call did not error"), through the exact
+    /// same [`super::App::apply_promote_session_model_to_default`] writer
+    /// (`set_role_chain`) that path already uses -- one source of truth. A
+    /// wrong implementation that opened a second writer, or that only
+    /// updated the in-memory snapshot without persisting, would still leave
+    /// the settings file's own `chain` unchanged and fail this assertion.
+    #[tokio::test]
+    async fn making_the_highlighted_model_default_rewrites_the_chain_and_persists() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            serde_json::json!({
+                "default_role": "coder",
+                "roles": {
+                    "coder": {"chain": ["anthropic/claude-sonnet-4-6", "kimi/k3"]}
+                }
+            })
+            .to_string(),
+        )
+        .expect("write fixture");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.refresh_default_entries(&env, cwd.path());
+        assert_eq!(
+            app.state.default_model_snapshot.as_deref(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+
+        // The picker never mutates `focused_model` -- unlike
+        // `apply_promote_session_model_to_default`, this reads the model
+        // straight from whichever row was highlighted, passed as a plain
+        // argument.
+        app.apply_make_model_default("kimi/k3".to_string(), &env, cwd.path());
+
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["roles"]["coder"]["chain"],
+            serde_json::json!(["kimi/k3", "anthropic/claude-sonnet-4-6"]),
+            "the chosen model must head the chain, with the prior head surviving right \
+             after it, on disk: {text}"
+        );
+        assert_eq!(
+            app.state.default_model_snapshot.as_deref(),
+            Some("kimi/k3"),
+            "the in-memory snapshot must follow the write too, without a restart"
+        );
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                crate::tui::state::Entry::Notice { text } if text.contains("kimi/k3")
+            )),
+            "the resulting chain must be shown in a notice"
+        );
+    }
+
+    /// PAIRING for the test above: an UNRELATED action
+    /// (`apply_cycle_default_role`, which never touches `roles.<role>.
+    /// chain` at all -- only `default_role` itself) must never rewrite the
+    /// chain. A wrong implementation that routed the "make default" key's
+    /// write through some ambient/global mutation (rather than only ever
+    /// firing from `apply_make_model_default` itself) would leak a chain
+    /// rewrite into an unrelated action and fail this assertion; this test
+    /// would NOT catch a bug in `apply_make_model_default`'s own wording or
+    /// refusal logic (that is what the test above, and the refusal test
+    /// below, are each for).
+    #[tokio::test]
+    async fn an_unrelated_action_does_not_rewrite_the_default_chain() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            serde_json::json!({
+                "default_role": "coder",
+                "roles": {
+                    "coder": {"chain": ["anthropic/claude-sonnet-4-6", "kimi/k3"]},
+                    "reviewer": {"chain": ["kimi/k3"]}
+                }
+            })
+            .to_string(),
+        )
+        .expect("write fixture");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.refresh_default_entries(&env, cwd.path());
+
+        // An unrelated write path: cycling the default ROLE, not the chain.
+        app.apply_cycle_default_role(&env, cwd.path());
+
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["roles"]["coder"]["chain"],
+            serde_json::json!(["anthropic/claude-sonnet-4-6", "kimi/k3"]),
+            "an unrelated action must never touch the chain: {text}"
+        );
+    }
+
+    /// The highlighted model already IS the persistent default: refuses
+    /// without writing.
+    #[tokio::test]
+    async fn making_a_model_default_that_already_matches_the_default_refuses_without_writing() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let original = serde_json::json!({
+            "default_role": "coder",
+            "roles": {"coder": {"chain": ["anthropic/claude-sonnet-4-6"]}}
+        })
+        .to_string();
+        std::fs::write(dir.path().join("settings.json"), &original).expect("write fixture");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.refresh_default_entries(&env, cwd.path());
+
+        app.apply_make_model_default("anthropic/claude-sonnet-4-6".to_string(), &env, cwd.path());
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert_eq!(text, original, "a refusal must never write the file");

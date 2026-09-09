@@ -98,12 +98,20 @@ impl Default for LoadOptions {
 /// documented shape. `tests/config_precedence.rs` covers that key across
 /// default/user/project/env (four sources) and notes the gap rather than
 /// inventing an undocumented field here.
+///
+/// **`permission_mode`/`allowed_tools`/`denied_tools` removed, `default_mode`
+/// added** (board item 01M1YVP3FDPHY4WZ72SXMWAN2D): the first three used to
+/// translate into `permissions.mode`/`permissions.allowed_tools`/
+/// `permissions.denied_tools` in the merge document, keys `PermissionsConfig`
+/// no longer has at all (`gates::GateConfig` replaced them, an explicit
+/// Rust value an embedder now passes to `ConwayBuilder::with_gate_config`
+/// directly rather than through this override struct's merge-document
+/// detour). `default_mode` is its replacement's own CLI-precedence path,
+/// translating into `permissions.default_mode`.
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     pub default_role: Option<RoleAlias>,
-    pub permission_mode: Option<String>,
-    pub allowed_tools: Option<Vec<String>>,
-    pub denied_tools: Option<Vec<String>>,
+    pub default_mode: Option<conway_core::permission_mode::PermissionMode>,
     pub max_steps: Option<u32>,
     pub session_root: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
@@ -126,7 +134,7 @@ pub struct CliOverrides {
     /// set, which is now true of every field here: `conway-cli` wires its
     /// own flags directly rather than through this struct (see the struct
     /// doc comment), so this field's reachability from a real CLI
-    /// invocation is exactly as good, and exactly as absent, as its seven
+    /// invocation is exactly as good, and exactly as absent, as its five
     /// remaining siblings'.
     pub headroom_tokens: Option<u32>,
 }
@@ -279,6 +287,18 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
         .as_object_mut()
         .is_some_and(|obj| obj.remove("tui").is_some());
 
+    // Board item 01M1YVP3FDPHY4WZ72SXMWAN2D: a settings file naming one of
+    // the three removed `[permissions]` keys gets a message that POINTS
+    // somewhere (`permissions.json`/`default_mode`), not `serde_json`'s
+    // bare "unknown field" -- checked ahead of the generic deserialize
+    // below, which would otherwise be what an operator actually sees.
+    if let Some(message) = crate::config::schema::permissions_removed_key_error(&merged) {
+        return Err(FacadeError::Config {
+            path: None,
+            message,
+        });
+    }
+
     let mut config: ConwayConfig =
         serde_json::from_value(merged).map_err(|e| FacadeError::Config {
             path: None,
@@ -369,12 +389,12 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
 /// Re-applies `cli_overrides` to an already-loaded config (used by
 /// `ConwayBuilder::build`, so an
 /// invalid override is caught even when `from_parts`/`from_config` bypassed
-/// `load`'s own CLI layer). Re-runs every validation check EXCEPT check 3
-/// (`permissions.mode = "allowlist"` requiring non-empty `allowed_tools`) --
-/// see that check's own comment in `validate_impl` for why this call site
-/// deliberately diverges from `validate`'s strict default. Every other check
-/// still runs unconditionally: this is a targeted exception for one check,
-/// not a general relaxation.
+/// `load`'s own CLI layer). Runs every validation check unconditionally --
+/// board item 01M1YVP3FDPHY4WZ72SXMWAN2D removed the one check
+/// (`permissions.mode = "allowlist"` requiring non-empty `allowed_tools`,
+/// formerly check 3) that used to run here on a narrower footing than
+/// [`validate`]'s own STRICT entry point; every check that remains has
+/// always run identically at both call sites.
 pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConfig> {
     let mut value = serde_json::to_value(config).map_err(|e| FacadeError::Config {
         path: None,
@@ -388,12 +408,7 @@ pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConf
 
     let metadata_path = resolve_metadata_path(&merged.models.metadata_path, &merged.cwd);
     let metadata = model_metadata::load(&metadata_path).unwrap_or_else(|_| ModelMetadata::empty());
-    validate_impl(
-        &merged,
-        &metadata,
-        &HashMap::new(),
-        AllowlistEmptyCheck::Skip,
-    )?;
+    validate_impl(&merged, &metadata, &HashMap::new())?;
 
     Ok(merged)
 }
@@ -658,7 +673,7 @@ const KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
 
 /// Array-valued leaf keys, so their env values are comma-split rather than
 /// parsed as a single scalar.
-const ARRAY_LEAF_KEYS: &[&str] = &["allowed_tools", "denied_tools", "fields"];
+const ARRAY_LEAF_KEYS: &[&str] = &["fields"];
 
 /// Builds the env-derived merge layer. `CONWAY_` prefix, `__` as the table
 /// separator, uppercase with single `_` preserved within a segment.
@@ -762,25 +777,17 @@ fn cli_overrides_to_value(cli: &CliOverrides) -> Value {
             Value::String(cwd.to_string_lossy().to_string()),
         );
     }
-    if let Some(mode) = &cli.permission_mode {
+    if let Some(mode) = cli.default_mode {
+        // `PermissionMode` serializes via serde (`rename_all = "snake_case"`)
+        // rather than a hand-written match, so this stays correct if a
+        // fourth mode is ever added -- `expect` is safe: an enum with no
+        // custom `Serialize` impl and no interior data cannot fail to
+        // serialize to a `Value`.
+        let value = serde_json::to_value(mode).expect("PermissionMode always serializes");
         set_path(
             &mut root,
-            &["permissions".to_string(), "mode".to_string()],
-            Value::String(mode.clone()),
-        );
-    }
-    if let Some(allowed) = &cli.allowed_tools {
-        set_path(
-            &mut root,
-            &["permissions".to_string(), "allowed_tools".to_string()],
-            Value::Array(allowed.iter().cloned().map(Value::String).collect()),
-        );
-    }
-    if let Some(denied) = &cli.denied_tools {
-        set_path(
-            &mut root,
-            &["permissions".to_string(), "denied_tools".to_string()],
-            Value::Array(denied.iter().cloned().map(Value::String).collect()),
+            &["permissions".to_string(), "default_mode".to_string()],
+            value,
         );
     }
     if let Some(max_steps) = cli.max_steps {
@@ -820,13 +827,11 @@ const HEADROOM_FRACTION_WARN_DENOM: u32 = 4;
 
 /// Runs every validation step in the documented order, failing on the
 /// first hard error and returning accumulated warnings from the last step.
-///
-/// This is the STRICT entry point (check 3 included, see that check's own
-/// doc for why): the right choice for a config a human might have typed by
-/// hand, notably `load_impl`'s own call site (behind [`load`]/
-/// [`load_ignoring_user_config`]). [`apply_cli`] deliberately calls
-/// `validate_impl` with check 3 skipped instead of this function -- see
-/// its own doc.
+/// The right choice for a config a human might have typed by hand, notably
+/// `load_impl`'s own call site (behind [`load`]/
+/// [`load_ignoring_user_config`]); [`apply_cli`] calls the identical
+/// `validate_impl` -- see that function's own doc for the one check that
+/// used to run only here, and no longer exists.
 ///
 /// Note: conway does not validate the *shape* of an API key. Whether a
 /// credential is a metered API key, a coding-plan subscription key, or a
@@ -838,20 +843,7 @@ pub fn validate(
     metadata: &ModelMetadata,
     env: &HashMap<String, String>,
 ) -> Result<Vec<ConfigWarning>> {
-    validate_impl(config, metadata, env, AllowlistEmptyCheck::Enforce)
-}
-
-/// Whether [`validate_impl`] treats `permissions.mode = "allowlist"` paired
-/// with an empty `allowed_tools` as a hard error (check 3) -- a private,
-/// two-variant enum rather than a bare `bool` for the same self-documenting
-/// reason [`IncludeUserLayer`] is one, not `validate_impl(config, metadata,
-/// env, true)` with no indication of which way `true` goes.
-///
-/// See check 3's own comment, at its call site below, for why the two
-/// [`validate_impl`] call sites ([`validate`] and [`apply_cli`]) disagree.
-enum AllowlistEmptyCheck {
-    Enforce,
-    Skip,
+    validate_impl(config, metadata, env)
 }
 
 fn validate_impl(
@@ -863,7 +855,6 @@ fn validate_impl(
     // the injected environment has it available without a breaking signature
     // change.
     _env: &HashMap<String, String>,
-    allowlist_empty_check: AllowlistEmptyCheck,
 ) -> Result<Vec<ConfigWarning>> {
     // 1. default_role exists in [roles].
     if !config.roles.contains_key(config.default_role.as_str()) {
@@ -901,53 +892,7 @@ fn validate_impl(
         }
     }
 
-    // 3. permissions.mode = "allowlist" requires non-empty allowed_tools --
-    //    but only when the config being checked is one a human could have
-    //    typed by hand into a settings file, i.e. only in `validate`'s own
-    //    STRICT entry point (`AllowlistEmptyCheck::Enforce`, pinned by
-    //    `config_validation.rs::allowlist_mode_with_empty_allowed_tools_is_
-    //    rejected`, which loads the offending value through `config::load`
-    //    -- a JSON FILE -- not through this module's own struct
-    //    constructors). There, `allowlist` with nothing on it is
-    //    overwhelmingly more likely to be an operator who forgot to list
-    //    the tools they meant to allow than a deliberate "deny everything"
-    //    -- allow-list mode reads as additive, so an empty list reads as
-    //    "I haven't filled this in yet", not "I want zero tools". The typo
-    //    is exactly the failure mode this check exists to catch before it
-    //    reaches a live session.
-    //
-    //    `apply_cli` -- `ConwayBuilder::build`'s own re-validation step,
-    //    called for EVERY build regardless of how the config was
-    //    assembled -- passes `AllowlistEmptyCheck::Skip` instead, because by
-    //    the time a config reaches it, the empty-allowlist-as-typo concern
-    //    above no longer applies: either the config came from
-    //    `config::load`/`load_ignoring_user_config` and already passed THIS check
-    //    once (`load_impl`'s own `validate` call), or it was assembled
-    //    programmatically via `ConwayBuilder::from_parts`/`CliOverrides` --
-    //    an embedder writing Rust, not a human hand-editing a settings file
-    //    -- where an explicit empty `allowed_tools` is exactly as legible a
-    //    "deny everything" statement as `permissions.mode = "deny"` itself,
-    //    and is precisely what `presets::default_permissions_for_one_shot`
-    //    ships as its own deliberate, documented value (see that function's
-    //    own doc comment). Skipping here does not weaken the file-typo
-    //    protection above: nothing reaches `apply_cli` without either having
-    //    gone through the strict check already, or never having been a file
-    //    at all.
-    if matches!(allowlist_empty_check, AllowlistEmptyCheck::Enforce)
-        && matches!(
-            config.permissions.mode,
-            crate::config::schema::PermissionsConfigMode::Allowlist
-        )
-        && config.permissions.allowed_tools.is_empty()
-    {
-        return Err(FacadeError::Config {
-            path: None,
-            message: "permissions.mode = \"allowlist\" requires a non-empty allowed_tools list"
-                .to_string(),
-        });
-    }
-
-    // 4. fsync = "interval" requires fsync_interval_ms > 0.
+    // 3. fsync = "interval" requires fsync_interval_ms > 0.
     if matches!(
         config.session.fsync,
         crate::config::schema::FsyncMode::Interval
@@ -959,7 +904,7 @@ fn validate_impl(
         });
     }
 
-    // 5. api_key and api_key_env are not both non-empty for the same
+    // 4. api_key and api_key_env are not both non-empty for the same
     //    backend.
     for (id, backend) in &config.backends {
         if !backend.api_key.is_empty() && !backend.api_key_env.is_empty() {
@@ -972,7 +917,7 @@ fn validate_impl(
         }
     }
 
-    // 6. Hard error: headroom values must be > 0 (global and every present
+    // 5. Hard error: headroom values must be > 0 (global and every present
     //    per-role override).
     if config.routing.default_headroom_tokens == 0 {
         return Err(FacadeError::Config {
@@ -991,7 +936,7 @@ fn validate_impl(
         }
     }
 
-    // 7. Warning only: headroom >= smallest reachable model context, plus
+    // 6. Warning only: headroom >= smallest reachable model context, plus
     //    (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`) a milder warning when
     //    headroom does not literally exceed that window but still consumes
     //    an unreasonably large FRACTION of it -- see
@@ -1071,7 +1016,7 @@ fn validate_impl(
         }
     }
 
-    // 8. Hard error: every id in tools.builtin_plugins names a real built-in.
+    // 7. Hard error: every id in tools.builtin_plugins names a real built-in.
     //
     // A hard error rather than a warning, for the same reason check 1 hard-
     // errors on an undefined default_role: the candidate set is closed and
@@ -1120,12 +1065,12 @@ fn validate_impl(
         }
     }
 
-    // 9. Every [hooks].rules[] entry has a non-empty `id`, and every `id` is
+    // 8. Every [hooks].rules[] entry has a non-empty `id`, and every `id` is
     //    unique across the file. Enforced here (a semantic check on the
     //    parsed value), not by serde, matching how every other "required in
     //    practice" invariant in this function is enforced -- see check 3's
-    //    own precedent (`permissions.mode = "allowlist"` requiring
-    //    non-empty `allowed_tools`). `id` is load-bearing for the later
+    //    own precedent (`fsync = "interval"` requiring
+    //    `fsync_interval_ms > 0`). `id` is load-bearing for the later
     //    operator-visibility item that lists hook rules individually and
     //    revokes one by name (`schema::HookEntry::id`'s own doc comment);
     //    an empty or duplicate id there would make that lookup ambiguous or
@@ -1157,7 +1102,7 @@ fn validate_impl(
         }
     }
 
-    // 10. A rule's `match` only
+    // 9. A rule's `match` only
     //     applies to an `event` whose payload actually names a tool --
     //     `"pre_tool_use"`/`"post_tool_use"`. `EVENTS_WITHOUT_TOOL_NAME`
     //     names every OTHER event `conway-runtime` dispatches on this
@@ -1199,7 +1144,7 @@ fn validate_impl(
         }
     }
 
-    // 11. Every [hooks].rules[] `event` is a WELL-FORMED name -- bare
+    // 10. Every [hooks].rules[] `event` is a WELL-FORMED name -- bare
     //     (core-shaped) or `plugin_id.event_name` -- per
     //     `conway_core::event_name::validate_event_name`'s subscriber-side
     //     rule (`declaring_plugin: None`).

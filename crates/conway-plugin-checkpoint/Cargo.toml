@@ -1,0 +1,47 @@
+[package]
+name = "conway-plugin-checkpoint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin, `conway.checkpoint`: snapshots a file's bytes around every write/edit tool call, and /conway.checkpoint.diff|rollback|list to preview and undo them"
+
+# Versioned WITH the workspace, like every other first-party plugin -- see
+# `conway-plugin-history`/`conway-plugin-stepguard`'s own Cargo.toml doc
+# comments for the full reasoning, restated there rather than re-derived
+# here: this crate carries none of `conway-core`'s strict-semver discipline
+# (ARCHITECTURE.md §2), because that discipline exists for the crate
+# third-party plugins depend on, and this is, from `conway`'s own point of
+# view, just another consumer of the public `conway`/`conway::plugin`
+# surface.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets. `Plugin`, `Command`,
+# `ToolObserver`, `ObservedCall`/`ObserverAnswer`/`ObserverCtx`/
+# `ObserverNote`, and `LogSeq` are all reachable through `conway`/
+# `conway::plugin` alone, mirroring `conway-plugin-history`'s own precedent
+# ("the ONE workspace crate").
+conway = { path = "../conway" }
+# `store::CheckpointStore` content-addresses every snapshot by
+# `blake3::hash` -- already a pinned workspace dependency
+# (`conway-plugin-stepguard` uses it the same way, for a per-call digest),
+# reused rather than hand-rolling a second hashing primitive.
+blake3 = { workspace = true }
+# `store::CheckpointEntry`/`SnapshotRef` round-trip through the session's
+# own `index.jsonl` via `serde`/`serde_json` -- both already pinned
+# workspace dependencies.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `CheckpointEntry::ts` -- the same `DateTime<Utc>` every other timestamped
+# record in this workspace uses (`conway_core::log::LogRecord`'s own `ts`
+# fields), already a pinned workspace dependency with its `serde` feature
+# enabled workspace-wide.
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# Test-only: a scratch directory per test so `store`/end-to-end tests never
+# share, or leak into, this machine's real filesystem.
+tempfile = { workspace = true }

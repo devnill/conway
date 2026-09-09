@@ -61,6 +61,30 @@
 //! PendingGuard}`, gated `cfg(all(unix, feature = "builtin-tools"))` because
 //! this module calls [`super::unix::kill_group`] directly, the exact gate
 //! `kill_group`'s own re-export already carries.
+//!
+//! **Patience before the kill, on the READ side only (board item
+//! `01M1YQ3MJQSCQTMVAZ3GCSTB8P`).** The pre-existing SAFETY property above
+//! (fail-closed on timeout) is unchanged in OUTCOME; what changed is WHEN it
+//! fires. [`ChildSession::await_response`] no longer kills the instant a
+//! round trip's read deadline elapses -- it warns and waits again, for the
+//! SAME pending response (never a resend), up to a small, fixed, documented
+//! multiple of that deadline (`GRACE_CEILING_FACTOR`, this module's own
+//! private constant) before giving up
+//! exactly as before. The FIRST ordinary round trip after spawn additionally
+//! gets a caller-chosen, larger base deadline
+//! ([`ChildSession::next_round_trip_timeout_ms`]) -- a one-time warm-up cost
+//! (opening a database, priming a cache) is common on a freshly-spawned
+//! child's first real request and should not be punished at the same
+//! trigger-happy rate as an ordinary call. Both mechanisms live ONCE, here,
+//! so every consumer inherits them without restating the flag or the
+//! kill-on-elapse bookkeeping -- safety-critical resolution logic has one
+//! implementation, never a per-crate copy. See this item's own completion
+//! report for the full argument and the incident it answers. Deliberately
+//! NOT extended to the WRITE deadline (`ChildSession`'s own private
+//! `write_locked`): a child that has stopped draining its own stdin is a
+//! different, more unambiguous failure shape than one merely slow to
+//! answer, and the acceptance criteria this item shipped against are all
+//! read-side.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -73,7 +97,63 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio::time::timeout;
 
+use super::spawn_retry::spawn_with_retry;
 use super::unix::kill_group;
+
+/// The multiple of a round trip's stated deadline (`timeout_ms` for an
+/// ordinary call, [`ChildSession`]'s own `first_call_timeout_ms` for the
+/// first) this host waits, IN TOTAL, before concluding a late-but-still-
+/// running process is genuinely unresponsive and killing it -- board item
+/// `01M1YQ3MJQSCQTMVAZ3GCSTB8P`, extending this module's own timeout-then-
+/// kill sequence with ONE bounded grace extension rather than killing on
+/// the first millisecond of overrun.
+///
+/// **The incident this answers, 2026-09-07.** A dogfooding session's
+/// `ideate` MCP plugin lost its session on the FIRST real tool call:
+/// `cargo build` competing for CPU (host load average 6/11/12) pushed one
+/// ordinarily 5-second-budgeted call a little past its deadline, and the
+/// old code killed the whole session on that first millisecond of overrun.
+/// An isolated repro of the IDENTICAL call against IDENTICAL data answered
+/// in 0.05s once the machine was not contended -- the DATA was never slow,
+/// the SCHEDULER was, for a handful of seconds. A flat cutoff has no room
+/// for that; this factor is the room.
+///
+/// **One extension, not a retry loop, and the SAME pending answer.**
+/// [`ChildSession::await_response`] waits `base`; if that elapses with no
+/// answer and the session has not died for some other reason, it emits a
+/// `tracing::warn!` naming the plugin and waits again -- for the SAME
+/// outstanding request, via the SAME oneshot receiver -- up to a TOTAL of
+/// `base * GRACE_CEILING_FACTOR`. The original request is never resent: a
+/// resend of a side-effecting call (e.g. `work_claim`) could double it,
+/// which this item states as a hard "never." If the answer lands inside the
+/// extension, the call succeeds, late, with only the warning to show for
+/// it. If the full ceiling still elapses, this host gives up exactly as
+/// before -- [`ChildSession::kill_group_now`], then
+/// [`ChildSessionError::timed_out`] -- so the fail-closed OUTCOME on a
+/// genuinely hung or malicious server is unchanged; only WHEN it fires
+/// moved, and only by this fixed, bounded amount.
+///
+/// **A multiple of the deadline, not a fixed number of added seconds -- and
+/// never a function of observed load.** A 5s ordinary call and a 20s
+/// first-call budget (`conway-plugin-mcp::DEFAULT_FIRST_CALL_TIMEOUT_MS`)
+/// are asking about scheduler contention at very different scales;
+/// multiplying keeps the grace proportionate to what "a little late" means
+/// for THAT call. This host does not measure load and must not chase it --
+/// a load-proportional grace would make the worst-case wait unbounded
+/// exactly when the fail-closed guarantee matters most. The factor below is
+/// fixed and applies identically whether the host is idle or thrashing.
+///
+/// **3, not 2 or 10.** 2x (doubling) leaves only one more base deadline of
+/// headroom -- for the default 5s per-call budget, 5s more, which the live
+/// incident's own load spike plausibly could have exceeded (how long that
+/// particular spike lasted was never measured, only that it pushed one call
+/// past 5s). 10x turns "a little late" into "close enough to unbounded" for
+/// a caller already holding a generous deadline (a 20s first-call budget
+/// would then tolerate over three minutes of silence). 3x -- roughly 10s of
+/// added patience on the default 5s per-call deadline, roughly 40s on the
+/// 20s first-call default -- absorbs a real scheduling burst without
+/// approaching "no different from no deadline at all."
+const GRACE_CEILING_FACTOR: u64 = 3;
 
 /// One host-level lifecycle failure a [`ChildSession`] can report -- the
 /// four causes shared verbatim by both consumer crates today ("Spawn /
@@ -192,6 +272,20 @@ pub struct ChildSession<E: ChildSessionError> {
     config_id: String,
     pgid: i32,
     timeout_ms: u64,
+    /// The deadline the FIRST ordinary round trip (through
+    /// [`Self::framed_round_trip`]) gets instead of `timeout_ms` -- see
+    /// [`Self::next_round_trip_timeout_ms`]'s own doc. A caller with no
+    /// warm-up concept of its own (today, `conway-plugin-subprocess`) passes
+    /// the SAME value as `timeout_ms` here at [`Self::spawn`], which makes
+    /// this field a no-op elevation -- the flag still advances, but to a
+    /// value indistinguishable from the ordinary deadline, so that caller's
+    /// behavior is byte-for-byte unchanged while still inheriting the
+    /// grace-on-elapse mechanism ([`GRACE_CEILING_FACTOR`]) uniformly.
+    first_call_timeout_ms: u64,
+    /// Set `true` the first time [`Self::next_round_trip_timeout_ms`] is
+    /// read, so at most ONE ordinary round trip ever sees
+    /// `first_call_timeout_ms` instead of `timeout_ms`.
+    first_call_taken: AtomicBool,
     /// The child, held for the session's lifetime and killed on drop.
     /// Behind an async mutex so the timeout path can `kill_group` it while
     /// a write may be in flight.
@@ -215,11 +309,18 @@ impl<E: ChildSessionError> ChildSession<E> {
     /// tasks. `notify` selects how the reader routes an inbound no-`id`
     /// line (see [`NotificationRoute`]). Returns a handle whose child lives
     /// until it is dropped or a fatal error kills it.
+    ///
+    /// `first_call_timeout_ms` is the deadline [`Self::next_round_trip_timeout_ms`]
+    /// hands the FIRST ordinary round trip after this call returns, instead
+    /// of `timeout_ms` -- pass `timeout_ms` itself here for a caller with no
+    /// warm-up concept of its own (a no-op elevation; see
+    /// [`ChildSession`]'s own field doc).
     pub async fn spawn(
         config_id: &str,
         command: &[String],
         env: &[(String, String)],
         timeout_ms: u64,
+        first_call_timeout_ms: u64,
         notify: NotificationRoute,
     ) -> Result<Self, E> {
         let (program, args) = command
@@ -240,8 +341,8 @@ impl<E: ChildSessionError> ChildSession<E> {
             cmd.env(k, v);
         }
 
-        let mut child = cmd
-            .spawn()
+        let mut child = spawn_with_retry(|| cmd.spawn())
+            .await
             .map_err(|err| E::spawn(config_id, format!("failed to spawn '{program}': {err}")))?;
 
         let pgid = child.id().ok_or_else(|| {
@@ -382,6 +483,8 @@ impl<E: ChildSessionError> ChildSession<E> {
             config_id: config_id.to_string(),
             pgid,
             timeout_ms,
+            first_call_timeout_ms,
+            first_call_taken: AtomicBool::new(false),
             child: AsyncMutex::new(Some(child)),
             stdin: Arc::new(AsyncMutex::new(stdin)),
             next_id: AtomicU64::new(1),
@@ -406,6 +509,30 @@ impl<E: ChildSessionError> ChildSession<E> {
     /// This session's configured per-call deadline, in milliseconds.
     pub fn timeout_ms(&self) -> u64 {
         self.timeout_ms
+    }
+
+    /// The deadline the NEXT ordinary round trip should use, and advances
+    /// the once-per-session "first call" flag atomically so AT MOST ONE
+    /// round trip ever sees the warm-up budget (`first_call_timeout_ms`).
+    /// [`Self::framed_round_trip`] calls this itself; a caller that builds
+    /// its OWN round trip on [`Self::send_request`]/[`Self::await_response`]
+    /// directly -- `conway-plugin-mcp::McpSession::tools_call`, which races
+    /// the read against a cancellation token and so cannot use
+    /// `framed_round_trip` unmodified -- calls this FIRST, to inherit the
+    /// SAME warm-up/grace treatment without restating the flag or the
+    /// bookkeeping around it -- one implementation, many callers.
+    ///
+    /// A caller with an EXPLICIT deadline -- the opening `initialize`
+    /// handshake, via [`Self::framed_round_trip_within`] -- bypasses this
+    /// entirely: it already states its own budget and does not consume the
+    /// warm-up slot, so the first ORDINARY call after the handshake still
+    /// gets it.
+    pub fn next_round_trip_timeout_ms(&self) -> u64 {
+        if !self.first_call_taken.swap(true, Ordering::AcqRel) {
+            self.first_call_timeout_ms
+        } else {
+            self.timeout_ms
+        }
     }
 
     /// The raw stdin handle, shared with every round trip via the SAME
@@ -499,26 +626,30 @@ impl<E: ChildSessionError> ChildSession<E> {
 
     /// The shared id-correlated round trip: [`Self::send_request`] writes
     /// the framed request (uncancellable), then this awaits the correlated
-    /// response under the per-call read deadline -- NO cancellation racing;
-    /// a caller that needs to race the read against its own token uses
-    /// [`Self::send_request`] directly (see `conway-plugin-mcp::session::
+    /// response under [`Self::next_round_trip_timeout_ms`]'s deadline (the
+    /// ordinary per-call budget, or the first-call warm-up budget for
+    /// whichever round trip is genuinely first) with a bounded grace
+    /// extension on elapse ([`Self::await_response`]) -- NO cancellation
+    /// racing; a caller that needs to race the read against its own token
+    /// uses [`Self::send_request`]/[`Self::next_round_trip_timeout_ms`]/
+    /// [`Self::await_response`] directly (see `conway-plugin-mcp::session::
     /// McpSession::tools_call` for that shape). Fail-closed on every failure
-    /// mode: dead session, write failure, per-call timeout, or the reader
-    /// dropping the sender (session died mid-call) -- never a hang, never a
-    /// silent retry.
+    /// mode: dead session, write failure, per-call timeout (after grace), or
+    /// the reader dropping the sender (session died mid-call) -- never a
+    /// hang, never a silent retry, never a resend.
     pub async fn framed_round_trip(&self, id: u64, json: Vec<u8>) -> Result<serde_json::Value, E> {
-        self.framed_round_trip_within(id, json, self.timeout_ms)
-            .await
+        let timeout_ms = self.next_round_trip_timeout_ms();
+        self.framed_round_trip_within(id, json, timeout_ms).await
     }
 
     /// [`Self::framed_round_trip`] under an EXPLICIT read deadline instead of
-    /// the session's own per-call `timeout_ms`.
+    /// [`Self::next_round_trip_timeout_ms`]'s own choice.
     ///
-    /// Exists because the per-call deadline is the wrong bound for the FIRST
-    /// round trip of a session's life. A per-call timeout answers "how long
-    /// may an already-running server take to answer one request"; the opening
-    /// handshake also covers the process getting to the point where it can
-    /// answer anything at all.
+    /// Exists because neither the per-call nor the first-call deadline is the
+    /// right bound for the OPENING handshake. A per-call timeout answers "how
+    /// long may an already-running server take to answer one request"; the
+    /// opening handshake also covers the process getting to the point where
+    /// it can answer anything at all.
     ///
     /// **Found by the operator, 2026-08-30.** A Claude Code plugin is
     /// installed by cloning it with no build step and no bundled runtime, so
@@ -528,10 +659,16 @@ impl<E: ChildSessionError> ChildSession<E> {
     /// never finish, and the operator sees the session die at startup with no
     /// hint that a build was underway.
     ///
+    /// **Does NOT consume the first-call warm-up slot** -- an explicit
+    /// deadline states its own budget, so [`Self::next_round_trip_timeout_ms`]
+    /// is never called here and the first ORDINARY round trip after this one
+    /// (e.g. an MCP session's first `tools/call`) still gets its own warm-up
+    /// treatment.
+    ///
     /// Everything else is identical and delegates to ONE implementation --
     /// safety-critical logic is written once and parameterized, never copied
     /// into a near-duplicate that can drift: same fail-closed handling of a
-    /// dead session, write failure, timeout, or a dropped sender.
+    /// dead session, write failure, timeout-with-grace, or a dropped sender.
     pub async fn framed_round_trip_within(
         &self,
         id: u64,
@@ -539,23 +676,92 @@ impl<E: ChildSessionError> ChildSession<E> {
         timeout_ms: u64,
     ) -> Result<serde_json::Value, E> {
         let (rx, _guard) = self.send_request(id, json).await?;
-        match timeout(Duration::from_millis(timeout_ms), rx).await {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(_canceled)) => {
-                // The reader dropped the sender -- the session died while we
-                // were waiting. `kill_all` already recorded the typed death
-                // reason; surface THAT, not a generic "session died".
-                Err(self.death_error().unwrap_or_else(|| {
-                    E::session_died(
-                        &self.config_id,
-                        "the session died before it answered this call".into(),
-                    )
-                }))
-            }
-            Err(_elapsed) => {
-                self.kill_group_now().await;
-                Err(E::timed_out(&self.config_id, timeout_ms))
-            }
+        self.await_response(rx, timeout_ms).await
+    }
+
+    /// Awaits the correlated response for an outstanding [`Self::
+    /// send_request`], patiently: waits `base_timeout_ms`, and if that
+    /// elapses with no answer and the session has not died for some other
+    /// reason, warns and waits again -- for the SAME pending response, via
+    /// the SAME oneshot receiver, never a resend -- up to a TOTAL of
+    /// `base_timeout_ms * GRACE_CEILING_FACTOR` before giving up exactly as
+    /// the pre-grace code did: [`Self::kill_group_now`], then
+    /// [`ChildSessionError::timed_out`]. See `GRACE_CEILING_FACTOR`'s own
+    /// doc (this module's private constant) for the full argument behind
+    /// the number and the incident it answers.
+    ///
+    /// `pub` (not the private detail [`Self::framed_round_trip_within`]
+    /// alone needs) so a caller building its OWN round trip on
+    /// [`Self::send_request`] can inherit the SAME grace treatment without
+    /// restating it -- `conway-plugin-mcp::McpSession::tools_call` races
+    /// THIS future (not a hand-rolled `timeout(..)`) against its own
+    /// cancellation token in a `tokio::select!`; dropping this future
+    /// mid-wait on a cancel is exactly as safe as dropping the pre-grace,
+    /// ungraced wait always was -- the caller's own [`PendingGuard`] removes
+    /// the pending entry either way, session state here is local to this
+    /// call's own stack, and no request is ever sent twice.
+    pub async fn await_response(
+        &self,
+        mut rx: oneshot::Receiver<serde_json::Value>,
+        base_timeout_ms: u64,
+    ) -> Result<serde_json::Value, E> {
+        if let Some(result) = self.wait_for(&mut rx, base_timeout_ms).await {
+            return result;
+        }
+
+        // The base deadline elapsed with no answer and the session did not
+        // die for some other reason -- extend ONCE rather than killing on
+        // the first millisecond of overrun. `grace_ms` is the ADDITIONAL
+        // wait, so `base_timeout_ms + grace_ms == base_timeout_ms *
+        // GRACE_CEILING_FACTOR`, the full ceiling this module's own doc (and
+        // `GRACE_CEILING_FACTOR`'s) argues for.
+        let grace_ms = base_timeout_ms.saturating_mul(GRACE_CEILING_FACTOR - 1);
+        tracing::warn!(
+            config_id = %self.config_id,
+            base_timeout_ms,
+            grace_ms,
+            "a round trip exceeded its per-call deadline; waiting up to {grace_ms}ms longer for \
+             the SAME pending response before concluding the process is unresponsive (never \
+             resent -- a resend could double a side-effecting call)"
+        );
+
+        if let Some(result) = self.wait_for(&mut rx, grace_ms).await {
+            return result;
+        }
+
+        // The full ceiling elapsed: give up exactly as the pre-grace code
+        // did -- kill the group, mark the session dead, report TimedOut
+        // against the FULL ceiling actually waited (not just the base),
+        // since that is how long this host really tolerated the call.
+        self.kill_group_now().await;
+        Err(E::timed_out(
+            &self.config_id,
+            base_timeout_ms.saturating_add(grace_ms),
+        ))
+    }
+
+    /// Waits up to `ms` for `rx` to resolve. `None` means the deadline
+    /// elapsed with NEITHER a response NOR the session dying -- the caller's
+    /// (i.e. [`Self::await_response`]'s) cue to extend or give up. `Some` is
+    /// a TERMINAL outcome: either the correlated response, or the typed
+    /// death reason if the reader dropped the sender while this waited (the
+    /// session died for an UNRELATED reason -- a malformed frame from
+    /// another in-flight call, say -- while this call was still patiently
+    /// waiting for its own answer).
+    async fn wait_for(
+        &self,
+        rx: &mut oneshot::Receiver<serde_json::Value>,
+        ms: u64,
+    ) -> Option<Result<serde_json::Value, E>> {
+        match timeout(Duration::from_millis(ms), rx).await {
+            Ok(Ok(value)) => Some(Ok(value)),
+            Ok(Err(_canceled)) => Some(Err(self.death_error().unwrap_or_else(|| {
+                E::session_died(
+                    &self.config_id,
+                    "the session died before it answered this call".into(),
+                )
+            }))),
+            Err(_elapsed) => None,
         }
     }
 

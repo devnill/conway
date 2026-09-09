@@ -14,7 +14,7 @@ use ratatui::Frame;
 use conway::SubagentMode;
 
 use super::theme::Theme;
-use crate::tui::state::{AppState, NodeStatus, TreeNode};
+use crate::tui::state::{AppState, NodeStatus, SpawnRoleOrModel, TreeNode};
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     // Item A2: the visibility filter lives entirely HERE, at draw time --
@@ -91,10 +91,26 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
             }
             // Item A2: the recipe label (what context recipe this agent was
             // spawned with), dimmed so it reads as annotation next to the
-            // row's own label.
-            for part in recipe_parts(node) {
+            // row's own label. Board item A1b: folds in the operator's own
+            // `--role`/`--model` flag, when `/spawn`/`/fork` recorded one
+            // for this row (`state.spawn_role_or_model`'s own doc) --
+            // `None` for every other row, which renders byte-for-byte what
+            // it did before that field existed.
+            for part in recipe_parts(node, state.spawn_role_or_model.get(&node.agent_id)) {
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(part, theme.dim));
+            }
+            // Board item A5.6, acceptance criterion 1 ("`/agents` marks
+            // it"): a row this session has ever seen `Event::BudgetWarning`
+            // for gets an explicit `!budget` tag -- reusing `theme.
+            // tool_running`'s attention-getting color (the same one a
+            // still-executing tool call gets) rather than adding a
+            // dedicated theme field for one marker. Stays on the row even
+            // after the agent later finishes: the crossing already
+            // happened and remains a true fact about that run.
+            if state.budget_warned_agents.contains(&node.agent_id) {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled("!budget", theme.tool_running));
             }
             spans.push(Span::styled(focus_tag, theme.focused));
             ListItem::new(Line::from(spans))
@@ -124,15 +140,27 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
 
 /// Item A2: the recipe-label parts for a row -- what context recipe this
 /// agent was spawned with, composed from the A1 `TreeNode` fields
-/// (`kind`/`inherited_upto`/`ephemeral`). A pure function so the
-/// label formatting is unit-testable with no terminal. Root/legacy nodes
-/// (`kind: None`) get no recipe label; an ephemeral node always carries the
-/// `(ephemeral)` marker. ASCII, single-line, copy-paste friendly.
+/// (`kind`/`inherited_upto`/`ephemeral`), plus (board item A1b)
+/// `role_or_model` -- the operator's own `--role`/`--model` flag on
+/// `/spawn`/`/fork`, when one was given (`AppState::spawn_role_or_model`'s
+/// own doc explains why this rides in as a caller-supplied argument rather
+/// than a `TreeNode` field: the runtime's `Event::AgentSpawned` never
+/// carries it, so `TreeNode` -- built entirely from that event -- has
+/// nothing to hold). A pure function so the label formatting is
+/// unit-testable with no terminal. Root/legacy nodes (`kind: None`) get no
+/// recipe label; an ephemeral node always carries the `(ephemeral)` marker;
+/// `role_or_model: None` (the overwhelming majority of rows: no flag was
+/// given, or this row's spawn was never observed by this session's own TUI
+/// command layer at all) adds nothing -- no stray separator, no empty
+/// marker. ASCII, single-line, copy-paste friendly.
 ///
 /// `pub(crate)` so item A3's `/tree` snapshot renderer (`tui::commands`)
 /// composes the SAME label text the panel draws instead of duplicating the
 /// logic -- the panel and the `/tree` alias can never drift apart.
-pub(crate) fn recipe_parts(node: &TreeNode) -> Vec<String> {
+pub(crate) fn recipe_parts(
+    node: &TreeNode,
+    role_or_model: Option<&SpawnRoleOrModel>,
+) -> Vec<String> {
     let mut parts = Vec::new();
     match node.kind {
         Some(SubagentMode::Fork) => match node.inherited_upto {
@@ -146,6 +174,11 @@ pub(crate) fn recipe_parts(node: &TreeNode) -> Vec<String> {
             Some(def) => parts.push(format!("@{def}")),
             None => parts.push("(inherit)".to_string()),
         },
+        None => {}
+    }
+    match role_or_model {
+        Some(SpawnRoleOrModel::Role(role)) => parts.push(format!("role: {role}")),
+        Some(SpawnRoleOrModel::Model(model)) => parts.push(format!("model: {model}")),
         None => {}
     }
     if node.ephemeral {
@@ -165,8 +198,8 @@ pub(crate) fn recipe_parts(node: &TreeNode) -> Vec<String> {
 /// be mislabeled as a fork or a spawn it never was), falls back to the
 /// node's own short id so the hop still names WHO even when it cannot name
 /// HOW.
-pub(crate) fn hop_label(node: &TreeNode) -> String {
-    let parts = recipe_parts(node);
+pub(crate) fn hop_label(node: &TreeNode, role_or_model: Option<&SpawnRoleOrModel>) -> String {
+    let parts = recipe_parts(node, role_or_model);
     if parts.is_empty() {
         short_agent_id(node.agent_id)
     } else {
@@ -355,7 +388,7 @@ fn status_style(status: NodeStatus, theme: &Theme) -> Style {
 
 #[cfg(test)]
 mod tests {
-    use conway::{AgentId, LogSeq, SubagentMode};
+    use conway::{AgentId, LogSeq, ModelRef, RoleAlias, SubagentMode};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -678,7 +711,7 @@ mod tests {
             Some(LogSeq(42)),
             false,
         );
-        assert_eq!(recipe_parts(&n), vec!["fork @seq 42"]);
+        assert_eq!(recipe_parts(&n, None), vec!["fork @seq 42"]);
     }
 
     #[test]
@@ -693,7 +726,7 @@ mod tests {
             false,
         );
         assert_eq!(
-            recipe_parts(&n),
+            recipe_parts(&n, None),
             vec!["fork"],
             "a missing inherited_upto must degrade gracefully, not drop the label"
         );
@@ -710,7 +743,7 @@ mod tests {
             None,
             false,
         );
-        assert_eq!(recipe_parts(&n), vec!["@reviewer"]);
+        assert_eq!(recipe_parts(&n, None), vec!["@reviewer"]);
     }
 
     #[test]
@@ -724,7 +757,7 @@ mod tests {
             None,
             false,
         );
-        assert_eq!(recipe_parts(&n), vec!["(inherit)"]);
+        assert_eq!(recipe_parts(&n, None), vec!["(inherit)"]);
     }
 
     #[test]
@@ -738,7 +771,10 @@ mod tests {
             Some(LogSeq(7)),
             true,
         );
-        assert_eq!(recipe_parts(&fork), vec!["fork @seq 7", "(ephemeral)"]);
+        assert_eq!(
+            recipe_parts(&fork, None),
+            vec!["fork @seq 7", "(ephemeral)"]
+        );
 
         // Even a node with no kind (should-not-happen for an ephemeral one)
         // still carries the marker.
@@ -751,7 +787,7 @@ mod tests {
             None,
             true,
         );
-        assert_eq!(recipe_parts(&kindless), vec!["(ephemeral)"]);
+        assert_eq!(recipe_parts(&kindless, None), vec!["(ephemeral)"]);
     }
 
     #[test]
@@ -766,8 +802,86 @@ mod tests {
             false,
         );
         assert!(
-            recipe_parts(&n).is_empty(),
+            recipe_parts(&n, None).is_empty(),
             "a root/legacy node (kind: None) gets no recipe label"
+        );
+    }
+
+    // ---- Board item A1b: the operator's own --role/--model flag ----
+
+    /// **Load-bearing, positive half -- pairs with the test below.** An
+    /// operator's own `--role` flag on `/spawn`/`/fork` shows on the row.
+    /// A wrong implementation that never reads `role_or_model` at all would
+    /// still pass every OTHER test in this file (none of them pass
+    /// `Some(..)`) -- this is the one that catches it.
+    #[test]
+    fn recipe_label_role_flag_shows_the_role_alias() {
+        let n = node(
+            AgentId::new(),
+            None,
+            None,
+            NodeStatus::Running,
+            Some(SubagentMode::Fork),
+            Some(LogSeq(3)),
+            false,
+        );
+        let role_or_model = SpawnRoleOrModel::Role(RoleAlias::new("fast"));
+        assert_eq!(
+            recipe_parts(&n, Some(&role_or_model)),
+            vec!["fork @seq 3", "role: fast"],
+            "an operator's --role flag must show on the row"
+        );
+    }
+
+    /// A pinned `--model` flag renders the same way, with its own `model:`
+    /// prefix (never `role:`) so the two are never confused on the row.
+    #[test]
+    fn recipe_label_model_flag_shows_the_pinned_model() {
+        let n = node(
+            AgentId::new(),
+            None,
+            None,
+            NodeStatus::Running,
+            Some(SubagentMode::Spawn),
+            None,
+            false,
+        );
+        let role_or_model = SpawnRoleOrModel::Model(ModelRef {
+            backend: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+        });
+        assert_eq!(
+            recipe_parts(&n, Some(&role_or_model)),
+            vec!["(inherit)", "model: anthropic/claude-sonnet-4-6"],
+        );
+    }
+
+    /// **Load-bearing, negative half -- pairs with the test above.** No
+    /// `--role`/`--model` flag (`role_or_model: None`, the overwhelming
+    /// majority of rows -- no flag was typed, or the spawn came from a
+    /// model-invoked `conway_spawn`/`conway_fork` tool call this session's
+    /// TUI command layer never saw) must add NOTHING: no stray empty
+    /// marker, no trailing separator. A wrong implementation that
+    /// unconditionally appends a marker (or an empty string) whenever this
+    /// function runs would still pass the positive test above (which only
+    /// ever checks the `Some` case) -- this is the one that catches it, by
+    /// asserting the exact same node's recipe is BYTE-FOR-BYTE what it was
+    /// before this field existed.
+    #[test]
+    fn recipe_label_with_no_role_or_model_flag_adds_nothing() {
+        let n = node(
+            AgentId::new(),
+            None,
+            None,
+            NodeStatus::Running,
+            Some(SubagentMode::Fork),
+            Some(LogSeq(3)),
+            false,
+        );
+        assert_eq!(
+            recipe_parts(&n, None),
+            vec!["fork @seq 3"],
+            "no --role/--model flag must add nothing to the recipe -- no stray marker"
         );
     }
 
@@ -855,6 +969,56 @@ mod tests {
         assert!(
             text.contains("@livechild"),
             "the spawn @agent_def recipe must render: {text:?}"
+        );
+    }
+
+    /// **Load-bearing, positive half -- pairs with the test below.** Board
+    /// item A1b, at the draw level (not just the pure `recipe_parts`
+    /// function): a child created with `--role fast` actually shows that
+    /// on ITS OWN `/agents` row -- `state.spawn_role_or_model` populated
+    /// exactly as `commands::bare_fork`/`bare_spawn`'s one write site would,
+    /// then read back by the real `draw` function, not called directly.
+    #[test]
+    fn draw_shows_the_operators_role_flag_on_the_row_it_was_given_for() {
+        let (mut state, live, _done) = three_node_state();
+        state
+            .spawn_role_or_model
+            .insert(live, SpawnRoleOrModel::Role(RoleAlias::new("fast")));
+
+        let text = rendered(&state, 80, 10);
+
+        assert!(
+            text.contains("role: fast"),
+            "the --role flag must render on the row it was given for: {text:?}"
+        );
+    }
+
+    /// **Load-bearing, negative half -- pairs with the test above.** A
+    /// child created with NO `--role`/`--model` flag shows the plain
+    /// recipe with no stray marker -- `donechild` here never gets an entry
+    /// in `spawn_role_or_model`. This is the half the positive test above
+    /// cannot cover on its own: a renderer that unconditionally appends
+    /// SOME marker (even an empty one, changing spacing) to every row
+    /// regardless of whether a flag was given would still pass the
+    /// positive test (which only ever checks for the presence of `"role:
+    /// fast"`) but would corrupt every other row's text -- this asserts
+    /// `donechild`'s row is byte-for-byte what it was before this field
+    /// existed (`draw_under_all_shows_terminal_rows_with_their_recipe_labels`'s
+    /// own `"fork @seq 3"` assertion, unchanged).
+    #[test]
+    fn draw_with_no_role_or_model_flag_shows_the_plain_recipe_with_no_stray_marker() {
+        let (state, _live, _done) = three_node_state();
+        // Deliberately empty: no `spawn_role_or_model` entry for either
+        // child.
+        let text = rendered(&state, 80, 10);
+
+        assert!(
+            !text.contains("role:") && !text.contains("model:"),
+            "with no --role/--model flag ever recorded, no row may show either marker: {text:?}"
+        );
+        assert!(
+            text.contains("fork @seq 3"),
+            "the plain recipe must still render unchanged: {text:?}"
         );
     }
 
@@ -1040,7 +1204,7 @@ mod tests {
             Some(LogSeq(9)),
             false,
         );
-        assert_eq!(hop_label(&n), "fork @seq 9");
+        assert_eq!(hop_label(&n, None), "fork @seq 9");
     }
 
     /// V5 acceptance: a node with `kind: None` (the root, or one seeded
@@ -1050,9 +1214,9 @@ mod tests {
     fn hop_label_of_a_kindless_node_falls_back_to_its_short_id_not_a_recipe_guess() {
         let id = AgentId::new();
         let n = node(id, None, None, NodeStatus::Running, None, None, false);
-        assert_eq!(hop_label(&n), short_agent_id(id));
-        assert!(!hop_label(&n).contains("fork"));
-        assert!(!hop_label(&n).contains('@'));
+        assert_eq!(hop_label(&n, None), short_agent_id(id));
+        assert!(!hop_label(&n, None).contains("fork"));
+        assert!(!hop_label(&n, None).contains('@'));
     }
 
     /// Board item `01M0TV5BSE98S16SFYECG9G9WP`: with `conway.names`
@@ -1141,5 +1305,41 @@ mod tests {
             conway_plugin_names::InMemoryAgentNames::new(),
         ));
         assert_eq!(agent_name(&state, id), None, "installed, but no entry");
+    }
+
+    /// Board item A5.6, acceptance criterion 1: a row this session has
+    /// recorded a budget crossing for (`AppState::budget_warned_agents`,
+    /// populated by `apply`'s own `Event::BudgetWarning` arm -- see
+    /// `state.rs`'s own test for that half) gets the `!budget` tag; a row
+    /// with no crossing gets none.
+    #[test]
+    fn draw_tags_a_row_whose_agent_crossed_a_budget_warning() {
+        let root: AgentId = "01HF7YAT000000000000000001".parse().unwrap();
+        let child: AgentId = "01J000000000000000000000A2".parse().unwrap();
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(node(
+            child,
+            Some(root),
+            Some("worker"),
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+        state.budget_warned_agents.insert(child);
+
+        let text = rendered(&state, 80, 10);
+        assert!(
+            text.contains("!budget"),
+            "the crossed agent's row must carry the tag: {text:?}"
+        );
+
+        // The root's own row never crossed anything in this fixture: only
+        // ONE `!budget` tag should appear, not one per row.
+        assert_eq!(
+            text.matches("!budget").count(),
+            1,
+            "only the crossed row may carry the tag: {text:?}"
+        );
     }
 }

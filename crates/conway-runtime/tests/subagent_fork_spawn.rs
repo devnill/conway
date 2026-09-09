@@ -4260,3 +4260,267 @@ async fn spawn_child_inherits_plugin_instruction_fragments_still_gated_by_tool_i
         .expect("the reachable fragment must also be recorded");
     assert!(general_entry.unreachable_tool_ids.is_empty());
 }
+
+// ---------------------------------------------------------------------
+// An explicit `role` knob on a fork/spawn spec (the `conway_fork`/
+// `conway_spawn` tools' `role` argument, and the TUI's `/spawn --role`/
+// `/fork --role`): actually routes through that role's own configured
+// chain, and an unconfigured alias fails loud, before any session is
+// created, rather than silently substituting the parent's role.
+// ---------------------------------------------------------------------
+
+/// Two independently-configured roles ("planner" for the root, "fast" for
+/// a child) each routing to their OWN backend/model via a real
+/// `MinimalRouter` -- built expressly to give an explicit `role` knob a
+/// REAL routing decision to prove or disprove, not just a value that
+/// survives a deserialize round trip. Distinct backends AND distinct model
+/// ids mean a child that silently kept routing on the PARENT's inherited
+/// role (rather than genuinely reading its own `spec.knobs.role`) would
+/// answer through the wrong `ScriptedBackend` entirely -- there is no
+/// shared fallback path that could paper over the difference by accident.
+fn build_runtime_with_two_roles(
+    planner_turns: usize,
+    fast_turns: usize,
+) -> (Arc<Runtime>, Arc<CountingStore>) {
+    let fake = Arc::new(FakeStore::new());
+    let store = Arc::new(CountingStore::new(fake));
+    let store_dyn: Arc<dyn SessionStore> = store.clone();
+
+    let planner_backend = Arc::new(
+        ScriptedBackend::new(
+            (0..planner_turns)
+                .map(|_| ScriptedTurn::Respond(text_response("planner turn")))
+                .collect(),
+        )
+        .with_id(BackendId::new("planner-backend")),
+    );
+    let planner_model = ModelRef {
+        backend: planner_backend.id(),
+        model: ModelId::new("planner-model"),
+    };
+    let fast_backend = Arc::new(
+        ScriptedBackend::new(
+            (0..fast_turns)
+                .map(|_| ScriptedTurn::Respond(text_response("fast turn")))
+                .collect(),
+        )
+        .with_id(BackendId::new("fast-backend")),
+    );
+    let fast_model = ModelRef {
+        backend: fast_backend.id(),
+        model: ModelId::new("fast-model"),
+    };
+
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "planner".to_string(),
+        RoleConfig {
+            chain: vec![planner_model],
+            required: RequiredCaps::default(),
+            params: SamplingParams::default(),
+            headroom_tokens: None,
+        },
+    );
+    roles.insert(
+        "fast".to_string(),
+        RoleConfig {
+            chain: vec![fast_model],
+            required: RequiredCaps::default(),
+            params: SamplingParams::default(),
+            headroom_tokens: None,
+        },
+    );
+    let router: Arc<dyn Router> = Arc::new(MinimalRouter::new(RoutingConfig {
+        roles,
+        health: HealthConfig::default(),
+        default_headroom_tokens: 4096,
+    }));
+
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(planner_backend.id(), planner_backend as Arc<dyn Backend>);
+    backends.insert(fast_backend.id(), fast_backend as Arc<dyn Backend>);
+
+    let runtime = Runtime::new(RuntimeDeps {
+        store: store_dyn,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs: HashMap::new(),
+        instructions: Vec::new(),
+        skills: Default::default(),
+        event_bus: EventBus::with_default_capacity(),
+        headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
+    });
+    (runtime, store)
+}
+
+/// **Load-bearing, positive half:** a child forked with an EXPLICIT `role`
+/// knob actually routes through THAT role's own configured chain -- not the
+/// parent's inherited "planner" role, not a silent default. A wrong
+/// implementation that accepts and stores the `role` field (e.g. threads it
+/// only as far as `SessionMeta.role`, never into the `RouteRequest` a real
+/// turn routes with) would still pass any test that only checks the
+/// argument round-trips through JSON/`AgentKnobs` -- but here the child
+/// would answer through `planner-backend`/`planner-model` (the ROOT's own
+/// role, silently inherited) instead of `fast-backend`/`fast-model`, and
+/// the assertions below would catch exactly that.
+#[tokio::test]
+async fn fork_with_explicit_role_routes_through_that_roles_own_chain() {
+    let (runtime, store) = build_runtime_with_two_roles(1, 1);
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let mut spec = SubagentSpec::fork("go fast", Budget::default());
+    spec.knobs.role = Some(RoleAlias::new("fast"));
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let child_session = session_of(&runtime, child);
+    let records = store.read(&child_session, SeqRange::full()).await.unwrap();
+    let (model, route_reason) = records
+        .iter()
+        .find_map(|r| match r {
+            LogRecord::Assistant {
+                model,
+                route_reason,
+                ..
+            } => Some((model.clone(), route_reason.clone())),
+            _ => None,
+        })
+        .expect("the child must have produced at least one Assistant record");
+
+    assert_eq!(
+        model.backend,
+        BackendId::new("fast-backend"),
+        "role: \"fast\" must route through the \"fast\" role's own configured backend, not the \
+         parent's \"planner\" backend -- got {model:?}"
+    );
+    assert_eq!(model.model, ModelId::new("fast-model"));
+    assert_eq!(
+        route_reason,
+        // `RoutingReason` is `#[serde(tag = "kind", rename_all = "snake_case")]`
+        // -- INTERNALLY tagged, so the variant name is a `kind` field
+        // alongside the payload, not an outer wrapper object. This assertion
+        // still carries its full weight: `alias` must be `fast`, never the
+        // inherited `planner`.
+        serde_json::json!({"kind": "alias_primary", "alias": "fast"}),
+        "route_reason must name the \"fast\" alias's own primary chain entry, not the \
+         inherited \"planner\" alias -- got {route_reason:?}"
+    );
+}
+
+/// **Load-bearing, negative half -- pairs with the test above.** An
+/// unconfigured `role` alias fails LOUD as a typed `RuntimeError::
+/// InvalidSpec` (-> `SubagentError::InvalidSpec` -> `ToolError::
+/// InvalidArguments` for the model-invoked `conway_fork`/`conway_spawn`
+/// tools), BEFORE any child session is created -- `store.fork_call_count()`
+/// stays at zero. This is the half the positive test above cannot cover on
+/// its own: that test only ever names a role that IS configured, so it
+/// could never distinguish a correct implementation from one that silently
+/// substitutes the parent's own role (or the hardcoded `"default"`
+/// literal) whenever the requested alias does not resolve -- which would
+/// still pass the positive test (since "fast" IS configured there) but
+/// would never surface a caller's typo/nonexistent alias as an error at
+/// all. This test's assertion that `start` itself returns `Err` -- not that
+/// a child was created and later failed its own first turn -- is what rules
+/// that out.
+#[tokio::test]
+async fn fork_with_unknown_role_alias_fails_before_creating_any_child_session() {
+    let (runtime, store) = build_runtime_with_two_roles(1, 1);
+    let root = start_and_finish_root(&runtime, "hi").await;
+    let fork_calls_before = store.fork_call_count();
+
+    let mut spec = SubagentSpec::fork("go nowhere", Budget::default());
+    spec.knobs.role = Some(RoleAlias::new("nope"));
+
+    let err = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap_err();
+
+    match &err {
+        RuntimeError::InvalidSpec { detail } => {
+            assert!(
+                detail.contains("nope"),
+                "the rejection must name the unconfigured role alias itself, got {detail:?}"
+            );
+        }
+        other => panic!(
+            "expected RuntimeError::InvalidSpec naming the unknown role alias, got {other:?}"
+        ),
+    }
+    assert_eq!(
+        store.fork_call_count(),
+        fork_calls_before,
+        "an unknown role alias must be rejected before SessionStore::fork ever runs -- no \
+         child session may be created for a spec this rejection already knows is invalid"
+    );
+}
+
+/// **Load-bearing, negative half -- pairs with the test below.** An
+/// unconfigured role alias's rejection must NAME the configured roles a
+/// caller could have used instead, not just echo the bad alias back. A
+/// message test that only greps for the bad alias (`"nope"`, as the test
+/// above already does) would pass against an implementation that lists
+/// nothing at all -- this asserts BOTH configured aliases from
+/// `build_runtime_with_two_roles` ("planner", "fast") actually appear in the
+/// detail text.
+#[tokio::test]
+async fn fork_with_unknown_role_alias_error_lists_the_configured_role_aliases() {
+    let (runtime, _store) = build_runtime_with_two_roles(1, 1);
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let mut spec = SubagentSpec::fork("go nowhere", Budget::default());
+    spec.knobs.role = Some(RoleAlias::new("nope"));
+
+    let err = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap_err();
+
+    match &err {
+        RuntimeError::InvalidSpec { detail } => {
+            assert!(
+                detail.contains("planner") && detail.contains("fast"),
+                "the rejection must list the configured role aliases so a caller who guessed \
+                 wrong is told the real options -- got {detail:?}"
+            );
+        }
+        other => panic!(
+            "expected RuntimeError::InvalidSpec listing the configured role aliases, got \
+             {other:?}"
+        ),
+    }
+}
+
+/// **Load-bearing, positive half -- pairs with the test above.** A role
+/// alias that IS configured must never trip the unconfigured-role
+/// rejection -- `start` returns `Ok` before any turn even runs. This is the
+/// half the listing test above cannot cover on its own: nothing about
+/// asserting "planner" and "fast" appear in a rejection MESSAGE proves that
+/// a request naming one of those same aliases is actually accepted (an
+/// implementation could list roles correctly in its error text while still
+/// wrongly rejecting -- or wrongly ACCEPTING -- every request, valid or
+/// not).
+#[tokio::test]
+async fn fork_with_a_configured_role_alias_produces_no_role_error() {
+    let (runtime, _store) = build_runtime_with_two_roles(1, 1);
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let mut spec = SubagentSpec::fork("go fast", Budget::default());
+    spec.knobs.role = Some(RoleAlias::new("fast"));
+
+    let result = SubagentHost::start(&*runtime, root, root, spec).await;
+    assert!(
+        result.is_ok(),
+        "a configured role alias must not trip the unknown-role rejection, got {result:?}"
+    );
+}

@@ -21,6 +21,12 @@ pub mod claude_compat_plugins;
 pub mod cli;
 pub mod commands;
 pub mod diag;
+// Board item 01M1YVEJB6GAPST5YZET4KZZE2: a minimal, dependency-free
+// unified-diff engine shared by the TUI (the permission prompt's `edit`/
+// `write` preview, the settled transcript entry, `/diff`) and the headless
+// `conway sessions show --diff` -- see `diff.rs`'s own module doc for why
+// it lives at the crate root rather than under `tui/`.
+pub mod diff;
 pub mod exit;
 pub mod first_party_plugins;
 pub mod first_run;

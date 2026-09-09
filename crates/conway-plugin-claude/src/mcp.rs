@@ -37,7 +37,7 @@ impl TranslatedMcpServer {
     /// takes -- the literal next step that makes this server's tools real,
     /// exactly as `crates/conway-cli/src/mcp_plugins.rs` does for an
     /// operator-authored `[plugins].mcp[]` entry.
-    pub fn into_spec(self, timeout_ms: u64) -> McpPluginSpec {
+    pub fn into_spec(self, timeout_ms: u64, first_call_timeout_ms: u64) -> McpPluginSpec {
         McpPluginSpec {
             config_id: self.name,
             command: self.command,
@@ -49,6 +49,13 @@ impl TranslatedMcpServer {
             // a pathological one -- so this path takes the generous startup
             // budget rather than the per-call deadline.
             startup_timeout_ms: conway_plugin_mcp::DEFAULT_STARTUP_TIMEOUT_MS,
+            // The FIRST ordinary round trip after the handshake (this
+            // server's first real `tools/call`) also gets its own budget --
+            // board item `01M1YQ3MJQSCQTMVAZ3GCSTB8P`, the live incident
+            // that motivated it: a dogfooding session's `ideate` plugin,
+            // installed through exactly this translation path, lost its
+            // session on its first real tool call under CPU contention.
+            first_call_timeout_ms,
             env: self.env,
         }
     }

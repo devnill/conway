@@ -27,6 +27,7 @@ kinds you'll see:
 | `child_result` | A CHILD's terminal result, recorded into the PARENT's own log at the next turn boundary after the child's `AgentMessage::Result` drains from the parent's mailbox — how a fan-out caller (`await: false`) learns a child finished without ever calling `conway_await` on it. See [`agents.md`](agents.md#a-model-tool-call). |
 | `context_report` | What was actually sent to the model that turn: every segment, its provenance, its estimated token count, and any [tool calls dropped](#dropped-tool-calls) to make the request sendable. |
 | `context_mask` | Marks an earlier record (by its seq) excluded from — or re-included in — a *future fork's inherited prefix*, without touching that record. It has no effect on the owning session's own later turns; nothing in conway today writes one. |
+| `permission_decision` | One tool call's permission resolution: which tool, what was decided (allow, allow-always, a matching pattern, deny, deny-with-feedback, auto-allow, plan-mode's own refusal, a denying hook, or a matching `deny` rule), whether it came from you answering a prompt or from a rule/hook/mode resolving it without asking, how long you were shown a prompt for (only when you actually were), and the reason behind any denial. See [Permission decisions](permissions.md#permission-decisions) for the full field list and how to read one back. A SYSTEM record — never model text, never your own typed prose, and never part of what's sent to the model on a later turn. |
 
 The one qualification to "never rewritten": a session's header line has
 exactly one sanctioned later mutation, the one-way promotion of an
@@ -100,21 +101,35 @@ one `<session-id>.jsonl` file per session plus an `index.jsonl` conway
 maintains for fast listing. `.conway/sessions` is no longer created in
 your project by a fresh, unconfigured run.
 
-**The project key is your invocation directory's absolute path, with `/`
-(or `\` on Windows) replaced by `-`.** Deliberately readable, not a hash —
-running `ls ~/.conway/sessions/` shows your own project paths, not opaque
-digests. Two checkouts of the same repository at different paths get two
-different keys (each is a genuinely separate working tree, with its own
-history); a renamed or moved checkout gets a new key of its own, and the
-old one is left where it was, still reachable by name if you go looking for
-it.
+**The project key is the absolute path of the enclosing git repository's
+root, with `/` (or `\` on Windows) replaced by `-`** — or, when your
+invocation directory is not inside any git repository at all, your
+invocation directory's own absolute path, encoded the same way. Deliberately
+readable, not a hash — running `ls ~/.conway/sessions/` shows your own
+project paths, not opaque digests. Two checkouts of the same repository at
+different paths get two different keys (each is a genuinely separate
+working tree, with its own history); a renamed or moved checkout gets a new
+key of its own, and the old one is left where it was, still reachable by
+name if you go looking for it. "Enclosing repository" is found by walking
+up from your invocation directory looking for a `.git` entry (a directory
+for an ordinary clone, or a file for a linked worktree or submodule) — the
+same rule the `conway.idiom` plugin's own project-scope `instructions.md`
+discovery uses (see [`plugins/idiom.md`](plugins/idiom.md)'s "An operator's
+own standing instructions" section), so the two never disagree about where
+a project starts. It does not walk past the filesystem root looking for
+one, and it does not special-case a bare-repository checkout (where your
+invocation directory sits directly inside `HEAD`/`objects`/`refs` rather
+than under a nested `.git`) — that case falls back to your exact invocation
+directory, same as being outside any repository at all.
 
-**This still depends on your invocation directory, exactly as the old
-default did.** Run conway from a project's root, then again from a
-subdirectory of that same project (no `.conway/settings.json` of its own),
-and both runs discover the identical `settings.json` — but each resolves to
-its own project key, so `conway sessions list` run from one location still
-will not show sessions created from the other:
+**Run conway from a project's root, then again from a subdirectory of that
+same project (no `.conway/settings.json` of its own), and both now resolve
+to the SAME project key** — the fix for the exact problem this section used
+to describe as the accepted default: a repository's root and a
+subdirectory of it used to key to two disjoint stores, so `conway sessions
+list` run from one location would not show sessions created from the other,
+even though both located the identical `settings.json`. Now they share one
+history:
 
 ```console
 $ cd my-project && conway -p "..." && conway sessions list
@@ -123,17 +138,19 @@ ID        NAME  CREATED               ROLE   ORIGIN
 
 $ cd my-project/src && conway -p "..." && conway sessions list
 ID        NAME  CREATED               ROLE   ORIGIN
+01KYWYAD        2026-07-31T20:37:14Z  coder
 01KYWYK9        2026-07-31T20:42:04Z  coder
 ```
 
-Two different directories, two disjoint session stores (now
-`~/.conway/sessions/-Users-you-my-project/` and
-`~/.conway/sessions/-Users-you-my-project-src/`), both reading the same
-config. If you want one shared history regardless of where you invoke
-conway from within a project, set `session.root` explicitly — doing so
-opts back into the field's older, direct meaning: `root` then names the
-sessions directory itself (resolved against `--cwd` if you give a relative
-path), not a root further keyed by project:
+One shared session store (`~/.conway/sessions/-Users-you-my-project/`),
+keyed by the repository root regardless of which of its subdirectories you
+invoke conway from. Launching from somewhere with no enclosing git
+repository at all still keys off the exact invocation directory, unchanged
+from before. If you want a different sessions location entirely — shared
+across repositories, or split further than the repository boundary — set
+`session.root` explicitly, which opts back into the field's older, direct
+meaning: `root` then names the sessions directory itself (resolved against
+`--cwd` if you give a relative path), not a root further keyed by project:
 
 ```json
 // .conway/settings.json
@@ -173,14 +190,37 @@ Either way, nothing is stranded silently: the old sessions are exactly
 where they always were, findable at `<project>/.conway/sessions` whenever
 you go looking, even though nothing in conway will mention it for you.
 
+### If you already have subdirectory-keyed sessions
+
+Before the project key started following the enclosing git repository
+root, a session created from a subdirectory landed in its OWN, separately
+keyed store (`~/.conway/sessions/-Users-you-my-project-src/` for the
+`my-project/src` example above). Switching the key to the repository root
+does not move, merge, or delete that old subdirectory-keyed store either —
+the same no-silent-migration stance as the project-local-`.conway/sessions`
+case just above, for the identical reason: a project's session history is
+not something conway rewrites on your behalf as a side effect of a default
+changing. Sessions already sitting under an old subdirectory key stay
+exactly there, and stay reachable exactly as before — `conway sessions
+list` run from that same subdirectory (or with `[session].root`/
+`CONWAY_CONFIG_DIR` pointed at it directly) still finds them, and
+`--resume`/`--fork-from`/`sessions show` still work on any of their ids
+directly, from anywhere, once you know one. What changes is only where
+NEW sessions land: from here on, launching from the repository root or
+from any of its subdirectories converges on the one repository-root store,
+so history stops splitting further. There is no flag that lists every
+project key's sessions in one merged pass — today, as before, each project
+key is its own independent catalog.
+
 Your input history is separate from session data and always lives at
 `~/.conway/history` (or `$CONWAY_CONFIG_DIR/history`) — see
 [`interactive.md`](interactive.md#composing-input).
 
 ## Resuming
 
-`--resume <id>` (one-shot CLI), `/resume <id>` (TUI, see below), or
-`Conway::resume(id)` (embedder) reattaches to a persisted session and
+`--resume <id|name>` (one-shot CLI, or the TUI at startup), `/resume
+<id|name>` (TUI, once already running -- see below), or `Conway::resume(id)`
+(embedder) reattaches to a persisted session and
 continues its transcript: the returned handle's next
 `prompt` genuinely continues where the session left off, with the model
 seeing its own full prior history. Verified end to end — asking a fresh
@@ -223,21 +263,42 @@ session; passing it to `--resume` instead fails with
 exactly as the persisted header recorded them; there's no flag or spec
 field to change them on the way back in.
 
-Three related but distinct ways to get a session handle -- **all one-shot
-(`-p`) only.** The TUI refuses to start if you pass any of these three
-flags (a usage error naming the alternative), rather than silently ignoring
-them — see [`interactive.md`](interactive.md#starting-a-session).
+Three related but distinct ways to get a session handle. `--session` stays
+**one-shot (`-p`) only** — the TUI refuses to start if you pass it (a usage
+error pointing at `--resume`/`--fork-from`/`--continue` instead of a silent
+ignore). `--resume` and `--fork-from` are no longer one-shot-only: the TUI
+now accepts both at startup too, opening straight onto the named session
+with its full history drawn — see
+[`interactive.md`](interactive.md#starting-a-session).
 
 | Flag / call | Effect |
 | --- | --- |
-| `--session <id>` | Use this exact id, creating it if it doesn't already exist. Colliding with an existing id is a usage error pointing you at `--resume` instead — never a silent overwrite. |
-| `--resume <id>` | Reattach to a persisted session and continue it, as above. |
-| `--fork-from <id>[@seq]` | Branch a **new** session from an existing one's log, at its current head or an explicit earlier point — no live parent agent involved, and the store copies zero parent records (a fork is always a reference, not a copy). Omit `--cwd` when using this flag: the child always inherits the parent's cwd, and there's no field to override it. |
+| `--session <id>` | Use this exact id, creating it if it doesn't already exist. Colliding with an existing id is a usage error pointing you at `--resume` instead — never a silent overwrite. One-shot only. |
+| `--resume <id\|name>` | Reattach to a persisted session and continue it, as above. Accepts an operator-chosen name (`conway sessions name`) anywhere it accepts an id. One-shot **and** the TUI (opens the TUI on that session). |
+| `--fork-from <id\|name>[@seq]` | Branch a **new** session from an existing one's log, at its current head or an explicit earlier point — no live parent agent involved, and the store copies zero parent records (a fork is always a reference, not a copy). Omit `--cwd` when using this flag: the child always inherits the parent's cwd, and there's no field to override it. One-shot **and** the TUI. |
+| `--continue` / `-c` | **TUI only.** No id or name to type: opens the TUI on the most recently WRITTEN-TO session for the current project (ranked by each candidate session's own log file's last-write time, not by when it was first created — an older session you chatted in five minutes ago outranks a brand-new, still-empty one). A usage error naming `conway sessions list` if this project has no sessions at all yet. |
 
-The TUI's `/resume <session-id>` command does the same thing as `--resume`,
-once the TUI is already running rather than at startup — see
-[`interactive.md`](interactive.md). It has no equivalent for `--session` or
-`--fork-from`.
+The TUI's `/resume <id|name>` command is genuinely `--resume`'s equivalent
+now — same name-or-id argument, same effect (switches the running TUI onto
+that session with its full history drawn), just reachable once the TUI is
+already running rather than only at startup. An id or name that resolves to
+nothing is a clear error naming `conway sessions list`, the same as an
+unresolvable `--resume` argument is. There is no `/fork-from` or
+`/continue` slash-command equivalent — those two stay startup-only flags.
+
+**Bare `/resume` (no argument) opens a picker** over this project's own
+sessions instead of erroring — each row shows the session's name (or, for
+an unnamed session, its derived auto-title), its first prompt, when it was
+last active, how many records its transcript holds, and any labels. `Up`/
+`Down` move the highlighted row, `Enter` resumes it through the exact same
+mechanism `/resume <id>` uses, and `Esc` cancels with nothing resumed. A
+project with no sessions yet gets a clear notice instead of an empty
+picker. The picker is scoped to this project's own session-root key only
+— it does not (yet) reach across the "no flag that lists every project
+key's sessions in one merged pass" boundary the paragraph above describes;
+a session sitting under an old subdirectory key is still reachable, but
+only by its id or name, typed directly (`/resume <id|name>`), the same as
+before this picker existed.
 
 ## Keep-alive sessions
 
@@ -303,8 +364,9 @@ note.
 
 | Subcommand | Effect |
 | --- | --- |
-| `sessions list [--limit N] [--label L] [--json]` | Lists sessions (id, name, created, role, origin), newest first. `--json` prints a JSON array instead of a table. Excludes ephemeral sessions; there's no flag to include them. |
+| `sessions list [--limit N] [--label L] [--json]` | Lists sessions (id, name, created, role, origin), newest first. `--json` prints a JSON array instead of a table. Excludes ephemeral sessions; there's no flag to include them. The `NAME` column (and `--json`'s `title` field) shows an unnamed session's auto-derived title instead of staying blank — see [Where a title comes from](#where-a-title-comes-from) below. |
 | `sessions show <id-or-name> [--json]` | Prints that session's ancestry-resolved transcript — its own records plus, if it's a fork child, everything it inherited. Default output is one `--- <kind> seq=<n> ---` block per record in Rust debug form; `--json` prints one compact JSON object per line (JSONL), the same wire shape the log itself uses. |
+| `sessions show <id-or-name> --diff` | Prints the cumulative diff of every path this session's own root agent edited or wrote, one `## <path>` section per path, instead of the ordinary record dump — the headless counterpart of the TUI's `/diff` command (`docs/interactive.md`'s "Diffs, not raw JSON"); both fold the same ordered sequence of successful `edit`/`write` calls through one shared reconstruction. See the note below the table for what "against the bytes it had when the session first touched it" actually means for a session inspected well after the fact, and the current single-agent (root only) scope. |
 | `sessions tree <id-or-name>` | Prints the session's fork/spawn tree as indented text: one line per node (role), starting from `<id-or-name>` itself and indenting each descendant under its parent. |
 | `sessions export <id-or-name> [--out PATH]` | Writes the ancestry-resolved transcript as JSONL — to `PATH` if given, else stdout. Same content as `show --json`, without the interleaved per-line inspection framing. |
 | `sessions name <id-or-name> <name>` | Attaches `<name>` to a session, or — if `<id-or-name>` is itself an existing name — renames it. Refuses a `<name>` that parses as a valid ULID, and refuses one already bound to a *different* session, naming which session holds it — never a silent overwrite. A session carries at most one name; naming an already-named session moves its one name rather than adding a second. |
@@ -314,15 +376,11 @@ note.
 
 A few things worth knowing before you rely on the output:
 
-- **`sessions <subcommand>` needs `permissions.mode` in your
-  `settings.json` to be something other than `"prompt"`.** These
-  subcommands are read-only and never invoke a tool, but conway still
-  builds a full permission gate for every invocation, and `"prompt"` mode
-  requires an interactive handler these subcommands don't supply. Set
-  `permissions.mode` to `"deny"` or `"allowlist"` (with an empty allow
-  list, which denies everything) if you're only ever going to run
-  `sessions`/`routes` against that config — either is a no-op for a
-  subcommand that never calls a tool.
+- **Nothing to configure for permissions.** `sessions`/`routes` are
+  read-only and never invoke a tool, so `conway` builds them a deny-all
+  gate unconditionally, regardless of anything in `settings.json` — a
+  no-op for a subcommand that never calls a tool, and one less thing to
+  set up before either one works.
 - **An unknown session id is a usage error (exit 2), not a crash or an
   `AgentFailed` (exit 1)** — `show`/`tree`/`export`/`name` map "not found"
   and "malformed id" the same way, and `label`/`unlabel` do too (via
@@ -333,6 +391,17 @@ A few things worth knowing before you rely on the output:
   and this column, not the `ROLE` column, is where that
   distinction shows up. `sessions list --json`'s `origin` object carries the
   same distinction as a `"mode": "fork"`/`"mode": "spawn"` field.
+- **`--diff`'s "baseline" is reconstructed, not stored.** conway persists
+  no full file snapshots — the log records each `edit`/`write` call's own
+  arguments (the substring changed, or the new content), not the file's
+  bytes before or after. The first time `--diff`'s walk touches a given
+  path, it reads that path's CURRENT on-disk content and treats it as the
+  baseline, then folds every recorded call for that path on top in memory.
+  That is exactly right immediately after a session ends, against files
+  nothing else has since touched; it is a best-effort answer, not a
+  guarantee, for an old session whose files have diverged further or been
+  reverted since. `--diff` only walks the session's own **root** agent
+  today — a subagent's own `edit`/`write` calls are not yet included.
 - Values passed to `--session`/`--resume`/`--fork-from` and
   `sessions show|tree|export|name|unname|label|unlabel <id-or-name>` accept
   either a full ULID or an operator-chosen name (below) — never a
@@ -364,6 +433,31 @@ integration suite run against the compiled binary
 the sidecar itself (`crates/conway-cli/src/session_names.rs`), but neither
 was exercised by hand against a live invocation the way this page's other
 worked examples were.
+
+### Where a title comes from
+
+Unlike a name, a title is never stored anywhere — it is computed fresh
+every time `sessions list` runs, and it is display-only. For a session
+with an operator-chosen name (above), the title IS that name. For a
+session with none, `sessions list` reads the session's own first
+`user_turn` record (its own, or — for a forked child — the one it
+inherited, the identical ancestry-resolved read `show`/`export` already
+perform) and derives a title from it: the first LINE only (a multi-line
+prompt's second and later lines are dropped, never folded in), trimmed,
+and bounded to a fixed length measured in characters, never bytes (a byte-
+index cut can land inside a multi-byte character and corrupt or crash on
+it — this bound never does). A session with no user turn yet shows no
+title, same as it always showed no name.
+
+**Never written to `session-names.json`.** A derived title is a guess
+about what a session is about, not an operator's deliberate choice — the
+two must stay distinguishable, so `sessions list --json`'s `title` field
+sits alongside `name` (which stays `null` for an unnamed session,
+unchanged) rather than replacing it. Naming a session for real still goes
+through `sessions name`, the only write path into that sidecar, exactly as
+[Where a name lives](#where-a-name-lives) above describes. There is no LLM
+call anywhere in this path — a title is deterministic and free to compute,
+every time.
 
 ### Where a label lives
 

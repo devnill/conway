@@ -762,6 +762,104 @@ mod tests {
         assert!(contributions.is_empty());
     }
 
+    /// **Board item A5.4, the load-bearing timeout test its own spec names
+    /// by shape.** Every timeout test above proves ONE of the two halves of
+    /// acceptance criterion 2 in isolation: `a_slow_command_is_bounded_by_
+    /// its_own_timeout_not_left_to_run` proves `run_once` itself returns
+    /// close to `timeout_ms`; `status_contributions_never_blocks_while_a_
+    /// slow_run_is_in_flight` proves a read never blocks, but starts from
+    /// an EMPTY cache (no run has ever succeeded), so it cannot show that a
+    /// timed-out run leaves the PREVIOUS GOOD VALUE on screen rather than
+    /// wiping it. This test drives the real background loop end to end
+    /// through both states in sequence: a first run that succeeds fast
+    /// (populating the cache with a real value), then a second run of the
+    /// SAME plugin instance that sleeps well past its own `timeout_ms` --
+    /// and asserts that WHILE that second run is still in flight,
+    /// `status_contributions()` (a) returns instantly (the loop is not
+    /// blocked on the slow child) and (b) still shows the FIRST run's
+    /// value, not an empty/failed placeholder -- exactly "a slow command
+    /// shows the previous value", acceptance criterion 2's own wording.
+    ///
+    /// The command is a marker-file shell script rather than a fixed
+    /// `sleep N`: the SAME command string has to behave differently on its
+    /// first invocation (fast, succeeds) than on every invocation after
+    /// (slow, exceeds `timeout_ms`) so this one `StatusLineSpec` can drive
+    /// the background loop through both states without swapping the spec
+    /// out from under it mid-test -- swapping the spec would prove nothing
+    /// about a REAL config's stable command doing this.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_command_that_times_out_leaves_the_previous_good_value_visible_while_in_flight() {
+        let marker = std::env::temp_dir().join(format!(
+            "conway-plugin-statusline-timeout-test-{}-{}.marker",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let spec = StatusLineSpec {
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "if [ -e {path} ]; then sleep 5; else touch {path}; echo first-run; fi",
+                    path = marker.display()
+                ),
+            ],
+            refresh_interval_ms: MIN_REFRESH_INTERVAL_MS,
+            timeout_ms: 200,
+            ..StatusLineSpec::default()
+        };
+        let plugin = StatusLinePlugin::new(spec);
+
+        // Wait for the FIRST run (fast, no marker yet) to populate the
+        // cache with a real value -- the baseline this test exists to show
+        // survives a subsequent timeout.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let contributions = plugin.status_contributions();
+            if contributions.first().map(|c| c.value.as_str()) == Some("first-run") {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the first (fast) run never populated the cache with its real value"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // The background loop now sleeps `refresh_interval_ms` (the floor,
+        // 1000ms) before starting the SECOND run -- the marker file now
+        // exists, so this run sleeps 5s, well past its own 200ms
+        // `timeout_ms`. Wait past the sleep-then-start boundary but well
+        // short of `timeout_ms` firing, landing squarely mid-flight.
+        tokio::time::sleep(Duration::from_millis(MIN_REFRESH_INTERVAL_MS + 100)).await;
+
+        // Mid-flight: a direct, synchronous call, exactly like this crate's
+        // own `status_contributions_never_blocks_while_a_slow_run_is_in_
+        // flight` -- deliberately not `tokio::time::timeout`-wrapped, which
+        // would only bound the FUTURE, not a call that blocks the calling
+        // thread itself.
+        let started = tokio::time::Instant::now();
+        let contributions = plugin.status_contributions();
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "status_contributions() took {:?} while the second (slow) run was in flight -- \
+             the loop must not be blocked on it",
+            started.elapsed()
+        );
+        assert_eq!(
+            contributions.first().map(|c| c.value.as_str()),
+            Some("first-run"),
+            "while the second run is still in flight (has not yet hit its own 200ms timeout), \
+             the PREVIOUS good value must still be what status_contributions() reports, not \
+             empty or failed: {contributions:?}"
+        );
+
+        let _ = std::fs::remove_file(&marker);
+    }
+
     #[test]
     fn clamped_refresh_interval_floors_at_the_published_minimum() {
         let spec = StatusLineSpec {

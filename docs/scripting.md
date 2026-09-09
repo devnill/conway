@@ -81,7 +81,20 @@ entry point.
 | 2 | Usage | A malformed or conflicting flag, an empty/unreadable prompt, an unknown `--session`/`--resume` id, a malformed `--model`/`--fork-from` reference, or any `FacadeError::Config`/`AgentDef`/`Build`/`UnsupportedFeature`. |
 | 4 | NoHealthyBackend | Routing could not supply any model for the turn: the role is unknown (e.g. `--role-override` naming a role the config does not define), no candidate in the role's chain was admissible (an unregistered `backend/model` pair, a health-open breaker, every fallback entry exhausted against a live backend), or the assembled context exceeds every candidate's window (`RoutingError::ContextTooLarge` — no truncation or escalation is performed). |
 | 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). A `-p`/scripted run is never a keep-alive session (`SessionSpec::keep_alive` is an opt-in only the interactive/library facade sets), so every dimension here is session-lifetime and `limit` always reads `"max_steps=40 (this session)"` (the whole run) — see `json`'s `steps_taken`/`steps_this_turn` fields, immediately below, for the two counters this scope label distinguishes. A **keep-alive** session (the TUI) behaves differently for two of these four dimensions: `max_steps`/`max_tool_calls` are per-turn runaway-loop guards there, so tripping one ends only the current turn (`Event::TurnAborted`, no exit code involved — the process is still running), never the session; only `max_tokens`/`deadline` can still end a keep-alive session outright, and produce this same exit code when they do. See [`interactive.md`](interactive.md#when-a-turn-is-cut-off) for the keep-alive behavior. |
+| 129 | TerminatedBySighup | A `SIGHUP` was observed and the run's terminal status is `Cancelled { reason: "signal: SIGHUP" }` — `128 + 1`, the same POSIX "terminated by signal N" convention `130`/`143` already follow. |
 | 130 | Interrupted | A SIGINT was observed (once, or twice for an immediate hard exit) and the run's terminal status is `Cancelled`. |
+| 143 | TerminatedBySigterm | A `SIGTERM` was observed and the run's terminal status is `Cancelled { reason: "signal: SIGTERM" }` — `128 + 15`. See [`agents.md`](agents.md#what-a-parent-sees-when-a-child-dies-board-item-a53) for why this signal is the one a backgrounded `conway -p ... &` child is most likely to receive from something else's timeout/cancellation handling, and why catching it (rather than dying with no record at all) is this exit code's whole point. |
+
+129/130/143 share a shape `0`–`5` don't: like SIGINT, an uncaught `SIGTERM`/
+`SIGHUP` runs no process code at all before the OS tears the process down —
+conway now installs a handler for all three (`crates/conway-cli/src/
+signal.rs`) that reacts to the FIRST delivery by cancelling the running root
+through the same path an operator-driven cancel uses, giving it a bounded
+grace window to publish a real terminal result before the process exits
+with the code above; a SECOND delivery of any of the three forces an
+immediate, unconditional exit regardless of whether that graceful path ever
+finishes. `SIGKILL` cannot be caught by any handler, on any platform, ever
+— nothing here or in `agents.md` claims otherwise.
 
 Code 3 is unassigned. There is no permission-denied exit code, and that is
 a decision, not a gap: a denied tool call becomes a tool result fed back
@@ -204,6 +217,15 @@ Every line is a self-contained JSON object with `seq`, `ts`, `session`,
 struct-shaped event, or a bare string like `"turn_started"` for a unit
 variant, as in the excerpt above).
 
+Immediately after a `permission_resolved` line like the denial above, a
+`permission_decision` line now follows it — the reason `permission_resolved`
+alone never carried (`{"event":"permission_decision","call_id":"…",
+"tool":"bash","decision":"deny_with_feedback","source":"operator",
+"waited_ms":…,"feedback":"…"}`; `waited_ms` is present only when `source`
+is `operator`). See [`permissions.md`](permissions.md#permission-decisions)
+for the full field list and the durably-persisted counterpart
+`conway sessions show` reads back later.
+
 When a run forks or spawns a subagent (`conway_fork`/`conway_spawn`/
 `conway_ask`), the stream interleaves that child's own lifecycle lines into
 the parent's — each stamped with the child's *own* session, agent, and
@@ -314,7 +336,32 @@ directory conway searched — never a silent run with no persona at all.
 fixed by the session it continues) but composes cleanly with `--fork-from`
 (the child can be given a different persona than its parent).
 
-### `--system-prompt` / `--append-system-prompt`
+#### `--agent` + `--model`: the delegation recipe
+
+`--agent` and `--model` compose cleanly: `--model` overrides the named
+def's own `model` field (`--agent`'s own doc above — "each still overridable
+by its own flag"), while the def's `system_prompt`/`role`/`tools` still
+apply. This is the recipe for launching a one-shot run under a specific
+persona AND a specific model/backend from a shell — including from inside
+another agent's own `bash` tool call, when delegating a task to a cheaper or
+stronger model is the goal and the model-invoked `conway_fork`/
+`conway_spawn` tools' own `role` argument (see
+[`docs/agents.md`](agents.md#a-model-tool-call)) is not the fit, because the
+model backend needed is not already behind a configured role's chain:
+
+```console
+conway -p "rename every occurrence of Foo to Bar in this crate" \
+    --agent worker --model ollama_cloud/glm-5.2 &
+```
+
+Prefer `conway_fork`/`conway_spawn`'s own `role` argument, or `/spawn
+--role`/`/fork --role` from the TUI (see [`docs/interactive.md`](interactive.md)
+"`--role`/`--model` on `/spawn` and `/fork`"), whenever the target model is
+already reachable through a configured role — routing's fallbacks,
+capability filters, and `/why` reasons all still apply that way, and a
+second, completely separate conway process is not needed. This `--agent
+--model` shell recipe is the fallback for the case those two do not cover:
+a model/backend that is not (yet) behind any configured role at all.
 
 `--system-prompt <text>` replaces the effective system prompt outright —
 with `--agent` absent, this is what stops a one-shot run from being the
@@ -679,10 +726,11 @@ one, get denied with feedback, and fall back to answering in plain text
 instead — exactly what the `jsonl` excerpt above shows (`report`, then
 `bash`, each proposed and `denied_with_feedback`, followed by a `text_delta`
 answer regardless). In `text` mode this same sequence shows up as `conway:
-warning: tool call proposed: …`/`permission denied for call …` lines on
-stderr; **in `json` mode you won't see it at all** — that format carries
-only the terminal result, with no record of which tools were tried and
-denied along the way.
+warning: tool call proposed: …`/`permission denied for call …: <reason>`
+lines on stderr — the reason is the same explanation the model itself was
+given, printed once per denied call; **in `json` mode you won't see it at
+all** — that format carries only the terminal result, with no record of
+which tools were tried and denied along the way.
 
 **List the tools you actually want the model to use via `--allowed-tools`
 and this round trip genuinely stops happening**, rather than merely being

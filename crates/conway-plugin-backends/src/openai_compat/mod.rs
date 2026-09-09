@@ -23,8 +23,8 @@ use conway_core::capabilities::{Capabilities, ProbeReport};
 use conway_core::error::BackendError;
 use conway_core::ids::{BackendId, ModelId};
 use conway_core::ports::{
-    check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk,
-    TokenCountFidelity,
+    check_admission, Admission, Backend, BoxStream, CacheReporting, GenerateRequest,
+    GenerateResponse, StreamChunk, TokenCountFidelity,
 };
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -136,6 +136,14 @@ impl OpenAiCompatBackend {
             dialect_defaults: self.profile.dialect_defaults(),
             metadata: self.models.get(model),
             overrides: self.overrides.get(model.as_str()),
+            // This synchronous, per-request path has no live discovery
+            // result to offer -- `CapabilityProbe::discover_result` (async,
+            // startup-time) is a SEPARATE resolution that overlays the
+            // router's `CapabilityIndex` afterward
+            // (`conway::builder::ConwayBuilder::build`'s probe-overlay
+            // step), never folded back through this method. Always `None`
+            // here.
+            probed_max_context_tokens: None,
         }
     }
 
@@ -215,9 +223,36 @@ impl Backend for OpenAiCompatBackend {
                      reconfigure this provider to establish a real value"
                 );
             }
-            ContextTokensSource::Override | ContextTokensSource::Metadata => {}
+            // `Probed`: a live discovery result governed -- logged at the
+            // discovery call site itself (`CapabilityProbe::discover_result`),
+            // not restated here.
+            ContextTokensSource::Override
+            | ContextTokensSource::Metadata
+            | ContextTokensSource::Probed => {}
+            // `#[non_exhaustive]` (defined in conway-core): no other variant
+            // exists today, but a future one must not silently skip this
+            // discoverability logging -- treated the same as `Unverified`
+            // rather than silently doing nothing.
+            _ => {
+                tracing::debug!(
+                    backend = %self.id,
+                    model = %model,
+                    dialect = %self.profile.id,
+                    "max_context_tokens resolved from an unrecognized ContextTokensSource variant \
+                     -- this adapter has not been updated for it"
+                );
+            }
         }
         build_capabilities(inputs)
+    }
+
+    /// See [`Backend::context_window_source`]'s own doc: calls the SAME
+    /// resolution function [`Self::capabilities`] already calls
+    /// (`max_context_tokens_source`) over the SAME `CapabilityInputs`
+    /// (`Self::capability_inputs`, this backend's single construction
+    /// site), never a second, independently-derived answer.
+    fn context_window_source(&self, model: &ModelId) -> ContextTokensSource {
+        max_context_tokens_source(&self.capability_inputs(model))
     }
 
     async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
@@ -359,5 +394,27 @@ impl Backend for OpenAiCompatBackend {
     /// same heuristic with a false label.
     fn token_fidelity(&self) -> TokenCountFidelity {
         TokenCountFidelity::Heuristic
+    }
+
+    /// **Declared from `Profile::reports_cache_usage`** (board item A5.7):
+    /// `true` only for `"openai"` (documented
+    /// `usage.prompt_tokens_details.cached_tokens`) and `"kimi"`
+    /// (documented top-level `usage.cached_tokens`, Moonshot's platform
+    /// API) -- every other built-in profile, including `"ollama"` (see
+    /// `docs/providers.md`'s "Does Ollama Cloud actually cache prefixes?"
+    /// for why that one stays unverified rather than a guess), resolves to
+    /// the honest default. One field, not a per-endpoint branch: this
+    /// backend's `use_native_ollama_chat` split changes which endpoint a
+    /// request goes to, but neither of `"ollama"`'s two endpoints has ever
+    /// been confirmed to report a cache field (`ollama_native.rs`'s own
+    /// doc: the native path's response structs expose only
+    /// `prompt_eval_count`/`eval_count`), so there is nothing for this
+    /// declaration to differentiate between.
+    fn cache_reporting(&self) -> CacheReporting {
+        if self.profile.reports_cache_usage {
+            CacheReporting::Reported
+        } else {
+            CacheReporting::NotReported
+        }
     }
 }

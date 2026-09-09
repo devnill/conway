@@ -55,8 +55,9 @@
 //! the proof that the public surface is sufficient: nothing in
 //! `conway::backend` was needed to make that decision for it.
 //!
-//! `fixture::write_settings`'s rendered config sets `permissions.mode =
-//! "allowlist"` and `[build_conway]` points `CONWAY_CONFIG_DIR` at the
+//! [`build_conway`] selects its own gate directly (`with_gate_config`,
+//! `GateMode::Deny` -- `settings.json` has no say in gate selection at
+//! all) and points `CONWAY_CONFIG_DIR` at the
 //! fixture's own temp directory (which has no `conway/settings.json`
 //! inside it) -- so a real `~/.conway/settings.json` on the machine
 //! running this test (verified present on at least one development
@@ -339,6 +340,17 @@ pub fn build_conway(dir: &Path, config_path: &Path) -> conway::Result<conway::Co
     })?;
     conway::ConwayBuilder::from_parts(outcome.config)
         .with_backend_factory(Arc::new(ThirdPartyBackendFactory))
+        // `ThirdPartyBackend` never issues a tool call, so which gate this
+        // selects is never actually consulted -- `GateMode::Deny` just
+        // needs to be SOMETHING that builds without a prompt handler
+        // (`GateConfig::default()`'s `GateMode::Prompt` would error here).
+        // `settings.json` no longer has any say in gate selection at all
+        // (board item 01M1YVP3FDPHY4WZ72SXMWAN2D), so this is now the
+        // only place that selection is made.
+        .with_gate_config(conway::gates::GateConfig {
+            mode: conway::gates::GateMode::Deny,
+            ..conway::gates::GateConfig::default()
+        })
         .build()
 }
 
@@ -418,13 +430,10 @@ pub mod fixture {
         let settings = serde_json::json!({
             "default_role": "coder",
             "cwd": dir.to_string_lossy(),
-            // `permissions.mode = "allowlist"` requires a non-empty
-            // `allowed_tools` list (`config::merge::validate`) even though
-            // `ThirdPartyBackend` never issues a tool call and this gate is
-            // therefore never actually consulted -- `"*"` is a real,
-            // syntactically valid `AllowListGate` glob entry (matches any
-            // tool name), not a magic sentinel this fixture invented.
-            "permissions": { "mode": "allowlist", "allowed_tools": ["*"] },
+            // No `"permissions"` key: `settings.json` no longer selects a
+            // gate at all (board item 01M1YVP3FDPHY4WZ72SXMWAN2D) --
+            // `build_conway`'s own `with_gate_config` call is what makes
+            // this build without a prompt handler now.
             "backends": {
                 BACKEND_ID: backend_entry
             },

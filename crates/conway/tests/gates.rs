@@ -3,8 +3,7 @@
 
 use std::sync::Arc;
 
-use conway::config::schema::{PermissionsConfig, PermissionsConfigMode};
-use conway::gates::{self, AllowListGate, DenyAllGate, PromptingGate};
+use conway::gates::{self, AllowListGate, DenyAllGate, GateConfig, GateMode, PromptingGate};
 use conway::FacadeError;
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::ToolCategory;
@@ -289,10 +288,10 @@ async fn prompting_gate_delegates_unchanged() {
 
 #[tokio::test]
 async fn from_config_allowlist_mode_builds_allow_list_gate() {
-    let config = PermissionsConfig {
-        mode: PermissionsConfigMode::Allowlist,
+    let config = GateConfig {
+        mode: GateMode::Allowlist,
         allowed_tools: vec!["read".to_string()],
-        ..PermissionsConfig::default()
+        ..GateConfig::default()
     };
     let gate = gates::from_config(&config, None).expect("allowlist mode never needs a handler");
     // Behavioral check: an AllowListGate for "read" allows "read".
@@ -304,9 +303,9 @@ async fn from_config_allowlist_mode_builds_allow_list_gate() {
 
 #[tokio::test]
 async fn from_config_deny_mode_builds_deny_all_gate() {
-    let config = PermissionsConfig {
-        mode: PermissionsConfigMode::Deny,
-        ..PermissionsConfig::default()
+    let config = GateConfig {
+        mode: GateMode::Deny,
+        ..GateConfig::default()
     };
     let gate = gates::from_config(&config, None).expect("deny mode never needs a handler");
     let decision = gate
@@ -322,9 +321,9 @@ async fn from_config_deny_mode_builds_deny_all_gate() {
 
 #[tokio::test]
 async fn from_config_prompt_mode_with_handler_builds_prompting_gate() {
-    let config = PermissionsConfig {
-        mode: PermissionsConfigMode::Prompt,
-        ..PermissionsConfig::default()
+    let config = GateConfig {
+        mode: GateMode::Prompt,
+        ..GateConfig::default()
     };
     let handler: gates::PromptHandler =
         Arc::new(|_req| Box::pin(async { PermissionDecision::AllowOnce }));
@@ -337,9 +336,9 @@ async fn from_config_prompt_mode_with_handler_builds_prompting_gate() {
 
 #[test]
 fn from_config_prompt_mode_without_handler_errors() {
-    let config = PermissionsConfig {
-        mode: PermissionsConfigMode::Prompt,
-        ..PermissionsConfig::default()
+    let config = GateConfig {
+        mode: GateMode::Prompt,
+        ..GateConfig::default()
     };
     let err = match gates::from_config(&config, None) {
         Ok(_) => panic!("expected an error when mode = prompt and no handler is supplied"),
@@ -372,6 +371,6 @@ fn presets_builtin_plugins_matches_conway_tools() {
 #[test]
 fn presets_default_permissions_for_one_shot_is_empty_allowlist() {
     let config = conway::presets::default_permissions_for_one_shot();
-    assert_eq!(config.mode, PermissionsConfigMode::Allowlist);
+    assert_eq!(config.mode, GateMode::Allowlist);
     assert!(config.allowed_tools.is_empty());
 }

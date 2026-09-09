@@ -43,6 +43,24 @@ pub struct TreeNode {
     pub ephemeral: bool,
 }
 
+/// What an operator-typed `--role`/`--model` flag on `/spawn`/`/fork` named
+/// for a child, when either was given. Kept OUT of `TreeNode` and instead
+/// read out of `AppState::spawn_role_or_model` -- a side-map, the
+/// same shape `switch_lineage`/`budget_warned_agents` already use for
+/// provenance known only at one TUI command call site -- because the
+/// runtime's own `Event::AgentSpawned` carries no role/model field at all
+/// (routing is resolved lazily, per turn, from the child's own `AgentSpec`),
+/// so this fact could never be reconstructed from the event stream the way
+/// every other `TreeNode` field is; see that field's own doc for the full
+/// reasoning.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpawnRoleOrModel {
+    /// A routing role alias (`--role <alias>`).
+    Role(RoleAlias),
+    /// A raw model pin (`--model <backend/model>`).
+    Model(ModelRef),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeStatus {
     Starting,
@@ -957,6 +975,49 @@ mod tests {
         assert!(
             matches!(state.transcript.last(), Some(Entry::Notice { .. })),
             "an unknown-agent AgentPromoted must degrade to a Notice, got: {:?}",
+            state.transcript.last()
+        );
+    }
+
+    /// Board item A5.6, acceptance criterion 1: applying `Event::
+    /// BudgetWarning` for a child records the crossing (what `view::
+    /// agents::draw`'s own test reads back to render the `!budget` tag) and
+    /// leaves a transcript `Notice` so an operator focused elsewhere still
+    /// learns about it.
+    #[test]
+    fn budget_warning_records_the_crossing_agent_and_leaves_a_notice() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        state.apply(&envelope(session, child, spawned(Some(root))));
+        let before = state.transcript.len();
+
+        state.apply(&envelope(
+            session,
+            child,
+            Event::BudgetWarning {
+                agent_id: child,
+                limit: "max_steps=5".to_string(),
+                text: "runway: 4 of 5 max_steps used this session (max_steps=5). Wrap up or \
+                       report now."
+                    .to_string(),
+            },
+        ));
+
+        assert!(
+            state.budget_warned_agents.contains(&child),
+            "the crossing agent must be recorded"
+        );
+        assert!(
+            !state.budget_warned_agents.contains(&root),
+            "an unrelated agent must not be marked"
+        );
+        assert_eq!(state.transcript.len(), before + 1);
+        assert!(
+            matches!(state.transcript.last(), Some(Entry::Notice { .. })),
+            "a BudgetWarning must leave a Notice so an operator focused elsewhere still \
+             sees it, got: {:?}",
             state.transcript.last()
         );
     }

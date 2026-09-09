@@ -539,6 +539,14 @@ fn routes_explain_text_shows_position_reason_and_breaker() {
         text.contains("tokens: unknown"),
         "stdout must surface token fidelity per candidate: {text:?}"
     );
+    // Board item A5.7: the same `MinimalRouter` degenerate fallback holds no
+    // `Arc<dyn Backend>`, so it honestly reports "unknown" for
+    // cache-reporting too, rather than guessing "reported" or "not
+    // reported".
+    assert!(
+        text.contains("cache: unknown"),
+        "stdout must surface cache-reporting per candidate: {text:?}"
+    );
 }
 
 #[test]
@@ -567,12 +575,34 @@ fn routes_explain_with_routing_plugin_shows_declared_token_fidelity() {
         text.contains("tokens: heuristic"),
         "stdout must surface the routing plugin's real token fidelity: {text:?}"
     );
+    // Hosted OpenAI-compatible models item, acceptance criterion 1: a
+    // candidate this report actually indexes shows a real window and a
+    // named provenance, never `unknown` -- the fixture's own
+    // `.conway/models.json` (`common::write_fixture_with`) declares
+    // `max_context_tokens: 128_000` for this exact model, so this must
+    // resolve `Override`, rendered `models.json`.
+    assert!(
+        text.contains("window: 128000 [models.json]"),
+        "stdout must surface the resolved window and its provenance: {text:?}"
+    );
+    // Board item A5.7: the fixture's mock backend uses the `"openai"`
+    // dialect, whose profile declares `reports_cache_usage = true` (OpenAI's
+    // documented `prompt_tokens_details.cached_tokens`) -- an operator
+    // asking "does this backend have anywhere to report a cache hit at
+    // all?" gets a real, named answer without reading source.
+    assert!(
+        text.contains("cache: reported"),
+        "stdout must surface the routing plugin's real cache-reporting declaration: {text:?}"
+    );
 
     let out = run_conway(&["routes", "explain", "default", "--json"], &fixture);
     assert!(out.status.success());
     let value: Value = serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
     let chain = value["chain"].as_array().expect("chain is an array");
     assert_eq!(chain[0]["token_fidelity"], "heuristic");
+    assert_eq!(chain[0]["context_window_tokens"], 128_000);
+    assert_eq!(chain[0]["context_window_source"], "models.json");
+    assert_eq!(chain[0]["cache_reporting"], "reported");
 }
 
 #[test]

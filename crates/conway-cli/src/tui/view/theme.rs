@@ -235,6 +235,24 @@ pub struct Theme {
     /// it here for plain layout chrome blurred that meaning for no reason
     /// (see the module doc's "chrome" rule).
     pub help_key: Style,
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: an added line in a rendered
+    /// `edit`/`write` diff (the permission prompt, the settled transcript
+    /// entry, `/diff`). Default: `Color::Green` -- the SAME meaning
+    /// [`Theme::tool_done`]/[`Theme::agent_finished`] already give green
+    /// (the module doc's "green is success" rule): an added line is what
+    /// the call is asking to make true, read the same way a finished tool
+    /// call's own tag reads.
+    pub diff_add: Style,
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: a removed line in a rendered
+    /// `edit`/`write` diff. Default: `Color::Red` -- pairs with
+    /// [`Theme::diff_add`]'s green the same way a real `diff -u`'s red/green
+    /// does, and stays inside the module doc's "red is failure or active
+    /// danger" only loosely -- here it means "going away", not a failure,
+    /// but red/green as a removed/added pair is universal enough (Claude
+    /// Code, Cursor, OpenCode, and Antigravity all use exactly this
+    /// pairing for their own diff surfaces) that inventing a different
+    /// color for it would cost legibility for no gain.
+    pub diff_del: Style,
 }
 
 impl Default for Theme {
@@ -284,6 +302,8 @@ impl Default for Theme {
                 .fg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
             help_key: Style::default().add_modifier(Modifier::BOLD),
+            diff_add: Style::default().fg(Color::Green),
+            diff_del: Style::default().fg(Color::Red),
         }
     }
 }
@@ -331,6 +351,8 @@ impl Theme {
         theme.scroll_footer = overlay(theme.scroll_footer, config.scroll_footer.as_ref());
         theme.help_border = overlay(theme.help_border, config.help_border.as_ref());
         theme.help_key = overlay(theme.help_key, config.help_key.as_ref());
+        theme.diff_add = overlay(theme.diff_add, config.diff_add.as_ref());
+        theme.diff_del = overlay(theme.diff_del, config.diff_del.as_ref());
         theme
     }
 }
@@ -678,6 +700,29 @@ mod tests {
     fn default_help_key_is_bold_not_green() {
         let t = Theme::default();
         assert_eq!(t.help_key, Style::default().add_modifier(Modifier::BOLD));
+    }
+
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: `diff_add`/`diff_del` default
+    /// to plain `Color::Green`/`Color::Red` -- the same red/green pairing
+    /// every mainstream diff-showing tool uses (see [`Theme::diff_del`]'s
+    /// own doc).
+    #[test]
+    fn default_diff_add_is_green_and_diff_del_is_red() {
+        let t = Theme::default();
+        assert_eq!(t.diff_add, Style::default().fg(Color::Green));
+        assert_eq!(t.diff_del, Style::default().fg(Color::Red));
+    }
+
+    #[test]
+    fn diff_add_and_diff_del_overrides_apply_independently() {
+        let cfg = ThemeConfig {
+            diff_add: Some(fg_only("light_green")),
+            ..Default::default()
+        };
+        let t = Theme::from_config(&cfg);
+        assert_eq!(t.diff_add, Style::default().fg(Color::LightGreen));
+        // Untouched slot keeps its default.
+        assert_eq!(t.diff_del, Style::default().fg(Color::Red));
     }
 
     #[test]

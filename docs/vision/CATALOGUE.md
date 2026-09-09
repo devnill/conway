@@ -399,13 +399,37 @@ failure mode the brief warns against.
   called) about something that's already fully expressible without one —
   the textbook case of a feature that has "had its moment" the day it
   ships, since whoever wants a style writes an agent def.
-- **Filesystem checkpointing/snapshotting as a harness feature.** conway
-  already has the conversation-history half of this (rewind via
-  `conway.history`). The filesystem half is exactly the case
-  `PHILOSOPHY.md` §6 makes for `cd`/worktrees: "a worktree per agent...
-  reached through a tool call rather than a harness feature." Git already
-  solves this; conway should not grow a second, weaker version of git
-  inside the harness.
+- **Filesystem checkpointing/snapshotting as a harness feature — REVERSED
+  2026-09-07, and built as `conway.checkpoint`.** This bullet used to argue:
+  conway already has the conversation-history half of this (rewind via
+  `conway.history`); the filesystem half is exactly the case `PHILOSOPHY.md`
+  §6 makes for `cd`/worktrees ("a worktree per agent... reached through a
+  tool call rather than a harness feature"); and git already solves this,
+  so conway should not grow a second, weaker version of git inside the
+  harness. **That reasoning did not survive contact with the actual
+  evidence.** An 11-hour session's root died mid-`edit` on `old_string not
+  found` with files half-changed, and the operator's own recovery — by hand,
+  through every merge that week — was exactly the "which uncommitted edits
+  were mine and which were the model's" problem git cannot answer, because
+  git tracks changes to a working tree, not WHO made a given uncommitted
+  one. Applying this catalogue's own convergence test the way every other
+  entry here is held to it: four independent coding harnesses ship some
+  form of file checkpoint, three of them ON TOP of git rather than instead
+  of it (Claude Code, OpenCode's git-object snapshots, Hermes's shadow-git
+  `/rollback`), which is the opposite of "git already solves this" — if it
+  did, none of them would still be building a second mechanism next to it.
+  The operator ruled: build it, as a plugin (never core), in the default
+  opinion set, removable like every other one — `conway-plugin-checkpoint`,
+  documented at `docs/plugins/checkpoint.md`. **The cost this reversal
+  actually paid**: the plugin tier has no in-process seam that runs BEFORE
+  a tool call, only after (`ToolObserver::after_tool_call`), so it cannot
+  read a path's TRUE pre-edit bytes the way a git commit or Claude Code's
+  own host-level interception can — it chains each snapshot's "before" from
+  its own most recent EARLIER capture of that same path, and discloses,
+  rather than guesses, when a path's first-ever touch in a session has no
+  baseline to chain from. That is a real, load-bearing limit this rung of
+  the extension model imposes, not a gap this item quietly routed around by
+  reaching into `conway-core`/`conway-runtime`.
 - **A dedicated "thinking budget" dial as a harness concept.** This is
   provider-shaped, not harness-shaped — each backend already declares what
   it supports, and a role's routing config is where this belongs

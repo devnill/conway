@@ -14,22 +14,32 @@ Run `conway` with no `-p`/`--print` flag to get the TUI:
 conway
 ```
 
-A couple of flags change the session the TUI starts:
+A few flags change the session the TUI starts:
 
 | Flag | Effect |
 | --- | --- |
 | `--role-override <role>` | Use this role instead of `default_role` for the session. |
 | `--model <backend/model>` | Pin a specific model instead of routing through a role's chain. |
+| `--resume <id\|name>` | Reattach to a persisted session and open the TUI on it, with its full history drawn into the transcript. Accepts an operator-chosen name (`conway sessions name`) anywhere it accepts an id. |
+| `--fork-from <id\|name>[@seq]` | Open the TUI on a **new** session branched from an existing one's log, at its current head or an explicit earlier point. Omit `--cwd` when using this flag: the forked session always inherits the parent's cwd. |
+| `--continue` / `-c` | Open the TUI on the most recently WRITTEN-TO session for this project — no id to look up first. Ranked by each session's own last-write time, not when it was first created. A usage error naming `conway sessions list` if this project has no sessions yet. |
 
-`--session`, `--resume`, and `--fork-from` are **one-shot (`-p`) only**: the
-TUI refuses to start if you pass any of them, with a usage error naming the
-alternative. One-shot's continuity logic (an existence probe ahead of
-`--session`, `--cwd` rejected alongside `--fork-from`, resolving a seq-less
-`--fork-from` against the parent's current head) has no equivalent shape for
-an already-running interactive session to land in, so the flags are not
-silently accepted and ignored — they are refused outright. To reattach to a
-persisted session from inside the TUI, use the [`/resume`](#slash-commands)
-slash command once it's running instead.
+`--resume`/`--fork-from`/`--continue` are mutually exclusive with each
+other and with `--session` (still **one-shot (`-p`) only** — the TUI
+refuses to start if you pass it, with a usage error naming the
+alternative: one-shot mode, or `--resume`/`--fork-from`/`--continue`).
+Budget/prompt flags one-shot has no TUI equivalent for
+(`--system-prompt`/`--append-system-prompt`, `--max-turns`/`--max-tokens`/
+`--max-seconds`, `--output-schema`, `--agent`) are refused, not silently
+ignored, alongside any of the three continuity flags — for the same reason
+the flags themselves were: an accepted-and-ignored flag is a defect, not a
+convenience.
+
+Once the TUI is already running, [`/resume <id|name>`](#slash-commands)
+does the same thing `--resume` does at startup — switches the running TUI
+onto that session, history drawn, without a restart. There is no
+`/fork-from` or `/continue` slash-command equivalent; those two stay
+startup-only flags.
 
 **bash is off by default.** `fs`/`subagent`/`report` are registered
 automatically; bash (arbitrary shell command execution) is not, and needs a
@@ -99,6 +109,7 @@ while you're composing:
 | `Up` / `Down` | Move the cursor within a multi-line draft; once the cursor is already on the first/last line, scroll the transcript one line instead (bare arrows are also what a two-finger scroll arrives as — see "Why `Up`/`Down` scroll, not recall history" below). |
 | `Ctrl-P` / `Ctrl-N` | Recall older/newer entries from your input history, unconditionally — the readline pairing, and conway's one way to reach history from the keyboard. |
 | `Ctrl-W` | Delete the previous word. |
+| `Ctrl-G` | Edit the current input in `$VISUAL`/`$EDITOR` (falling back to `vi`) — see "Keybindings" below. |
 | `Home` / `End` | With the input box empty, jump the transcript to the top/tail instead of moving the cursor. |
 | `PageUp` / `PageDown` | Scroll the transcript a page at a time. |
 | `Ctrl-C` | Interrupt the current turn (or, pressed with nothing running, does nothing destructive on its own). Also abandons an in-flight `/ask`, if one is running — see below. |
@@ -108,6 +119,11 @@ Your input history persists across sessions (`~/.conway/history`, or under
 `$CONWAY_CONFIG_DIR/conway` if set) — it follows you across every project,
 not just the current checkout. A pasted block is inserted as one edit, not
 replayed as a flood of keystrokes.
+
+Every key above (except `Enter`/`Alt-Enter`/`Shift-Enter`/`Left`/`Right`/
+`Backspace`/`Home`/`End`/`Ctrl-C`/`Ctrl-D`) is rebindable — see
+"Keybindings" below for the file, the full action vocabulary, and exactly
+which keys stay fixed.
 
 ### Why `Up`/`Down` scroll, not recall history
 
@@ -307,6 +323,51 @@ any other session-scope grant does, once you `/trust permissions` if the
 file wasn't already trusted. A per-agent or per-subtree grant is never
 written to a file, at any scope.
 
+### Diffs, not raw JSON
+
+A pending `edit` or `write` call doesn't show its raw arguments as JSON —
+it shows a colored unified diff of the target file: current bytes on one
+side, what the call would actually produce on the other, `-`/`+` lines the
+same way `diff -u`/every code-review tool shows one:
+
+```
+┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
+│--- src/lib.rs                                                    │
+│+++ src/lib.rs                                                    │
+│@@ -12,3 +12,3 @@                                                 │
+│ fn greet() {                                                     │
+│-    println!("hello");                                           │
+│+    println!("hello, world");                                    │
+│ }                                                                 │
+│[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
+└───────────────────────────────────────────────────────────────────┘
+```
+
+The raw arguments stay reachable underneath the diff (scroll with
+`PageUp`/`PageDown`, same as any other long command); a call whose diff
+can't be computed (an `edit` whose `old_string` isn't in the file right
+now, or an unreadable target) falls back to the raw JSON dump the same way
+every other tool's prompt already renders.
+
+Once you approve it, the settled transcript entry shows the identical
+diff, folded under the same line cap and `Ctrl-E` expand toggle every
+other tool's output already uses (see "Watching a turn" above and the
+`/settings` menu's `tool_preview_lines` stepper below). It is computed
+exactly once, right when the call settles — never recomputed against
+whatever the file looks like by the time you scroll back to it.
+
+`/diff` (above) shows the CUMULATIVE version: every file this session's
+agents have touched, all in one place, each against the bytes it had the
+first time this session touched it — not just the single most recent
+change. `conway sessions show <id> --diff` prints the identical cumulative
+diff for a completed session, headlessly (see
+[`sessions.md`](sessions.md)).
+
+The diff colors are configurable, like every other themed element:
+`[tui.theme.diff_add]`/`[tui.theme.diff_del]` in `settings.json`, each an
+`{fg, bg, modifiers}` table exactly like every other `[tui.theme.<name>]`
+entry (default: plain green/red).
+
 ## Slash commands
 
 Type `/` to open the command palette; it narrows live as you keep typing,
@@ -324,13 +385,14 @@ shrinking the candidate list).
 | `/await` | `/await <agent>` | Ask to be told when a running agent finishes — the operator's counterpart to the model's `conway_await` tool. Posts an immediate notice ("awaiting `<agent>`; a keep_alive agent ends only on `/cancel`"), then keeps working — input never blocks — and posts a second notice once the agent reaches a terminal state, naming its status, summary, and how many facts/artifacts it produced. Awaiting the session's own root agent is refused (use `/quit`); a second `/await` on an agent already being awaited is refused too — one waiter per agent from this surface. |
 | `/context` | `/context [<agent>]` | Show an agent's assembled context, including its preamble (see below). With no argument, shows the focused agent's context; see [the agent panel](#the-agent-panel-agents) for where to find another agent's id. |
 | `/why` | `/why` | Show the last routing decision — and, after a `/model`/`/role` switch, what changed. |
-| `/fork` | `/fork [<text>]` or `/fork @<agent> <directive>` | Open an interactive fork of the focused agent (inherits its context, frozen at the fork point), or fork a specific agent explicitly. Free text is classified into a fork/spawn recipe and confirmed before anything is created. |
-| `/spawn` | `/spawn [@<agent_def>] [<prompt>]` | Open an interactive spawned agent — a clean slate, optionally from a named agent definition; inherits the parent's role/model if none is given. |
-| `/resume` | `/resume <session-id>` | Resume a prior session. |
-| `/model` | `/model [<backend/model>]` | With an argument, switch the focused agent to a pinned model, mid-conversation. Bare, list every configured `backend/model` pair instead — a menu if `conway.ui` is installed, plain text otherwise (see below). |
+| `/fork` | `/fork [--role <alias>\|--model <backend/model>] [<text>]` or `/fork [--role <alias>\|--model <backend/model>] @<agent> <directive>` | Open an interactive fork of the focused agent (inherits its context, frozen at the fork point), or fork a specific agent explicitly. `--role`/`--model` (mutually exclusive) pick the child's routing explicitly instead of inheriting the focused agent's; giving either skips the free-text classification below entirely (there is nothing left to infer once routing is explicit). Otherwise, free text is classified into a fork/spawn recipe and confirmed before anything is created. |
+| `/spawn` | `/spawn [--role <alias>\|--model <backend/model>] [@<agent_def>] [<prompt>]` | Open an interactive spawned agent — a clean slate, optionally from a named agent definition; inherits the parent's role/model if none is given. `--role`/`--model` (mutually exclusive) pick the child's routing explicitly — see `/fork`'s own row for the identical mutual-exclusion and classification-skip rules. |
+| `/resume` | `/resume [<id\|name>]` | With an id or a name given via `conway sessions name`, resume that prior session directly -- switches this running TUI onto it, with its full history drawn into the transcript. An id or name that resolves to nothing errors clearly, naming `conway sessions list`. Bare, opens an interactive picker over this project's own sessions instead (see below). |
+| `/model` | `/model [<backend/model>]` | With an exact `backend/model` argument, switch the focused agent to a pinned model, mid-conversation. Bare, or with any other text, opens an interactive picker over every reachable model instead — no plugin required (see below). |
 | `/role` | `/role <alias>` | Switch the focused agent to a different role, mid-conversation. |
 | `/trust permissions` | `/trust permissions` | Opens a preview card showing the project's `.conway/permissions.json` at its current content; `[y]`/`Enter` confirms (trusting it and installing its `allow` rules for this session), `[n]`/`Esc` cancels having written nothing. See [`permissions.md`](permissions.md). |
 | `/tree` | `/tree` | Print the same agent tree the `/agents` panel shows, as plain transcript lines you can scroll back to or copy — with each agent's **full** id rather than the panel's short one, since a printed line may be pasted elsewhere long after the row set on screen has changed. |
+| `/diff` | `/diff` | Print the cumulative diff of every file this session's agents have edited or written so far, one `## <path>` section per file, against the bytes each file had the first time this session touched it. See "The permission prompt" above and "Diffs, not raw JSON" below. |
 | `/help` | `/help` | Open a read-only keybinding reference overlay. |
 | `/quit` or `/exit` | `/quit` | Exit conway. |
 
@@ -428,9 +490,17 @@ bare `/fork` uses, just with the child's model pinned (`/model`) or its role
 changed (`/role`) instead of a directive. Nothing about *which* records are
 selected changes; only the model rendering them from here does. A notice
 records the switch immediately; `/why` reports the resulting routing
-decision — and, once at least one switch has happened this session, what it
-changed (`role: planner -> fast`, `model: X -> Y`) rather than only the
-latest decision in isolation.
+decision — and keeps a short session HISTORY of routing decisions, not only
+the latest one, so a run of several switches (or several ordinary
+fallbacks) stays reviewable, each showing what it changed (`role: planner
+-> fast`, `model: X -> Y`) against the one before it.
+
+**`/agents` does not grow one row per switch.** A run of `/model`/`/role`
+switches off the same agent collapses to a single row in the `/agents`
+panel — its own live tip — rather than piling up a fresh row per switch;
+every fork underneath is still real and independently logged (nothing about
+the session's log semantics changes), the panel just shows the switch chain
+as what it is: one lineage, not several unrelated agents.
 
 If the newly-pinned model (or the new role's own chain) cannot take the
 conversation's current size, you'll see the same loud refusal an ordinary
@@ -438,35 +508,118 @@ turn's admission gate gives — naming what didn't fit — the next time you
 send a message. Nothing silently falls back to the old model, and nothing
 is silently trimmed to make it fit.
 
-#### `/model` with no argument: list, or a menu
+### `--role`/`--model` on `/spawn` and `/fork`: choosing a NEW child's routing
 
-Typing `/model` with nothing after it lists what's actually configured —
-every `backend/model` pair named in any role's `chain` — rather than
-erroring or reaching out to a provider for a live roster:
+`/model`/`/role` above switch the *focused* agent onto a different
+model/role mid-session. `--role <alias>`/`--model <backend/model>` on
+`/spawn`/`/fork` are the sibling case: choosing a **new** child's routing at
+the moment it is created, rather than switching an existing one afterward.
 
 ```
-configured models:
-  anthropic/claude-haiku
-  anthropic/claude-sonnet-4-6  (active)
-  openai/gpt-5
+/spawn --role fast do these three renames
+/fork --model anthropic/claude-haiku review this diff
 ```
 
-The line matching the focused agent's own current model is marked
-`(active)` — the point of listing is comparison, not just discovery. Any
-line shown here is accepted verbatim as `/model <that line>`.
+The two flags are mutually exclusive — `--role` names a routing role alias
+(the child's turns route through that role's own configured fallback chain,
+so the operator's routing config — fallbacks, capability floors, `/why`
+reasons — still applies); `--model` pins a specific `backend/model` pair
+outright, bypassing routing entirely. This is the exact operator-side
+parity surface for the model-invoked `conway_fork`/`conway_spawn` tools' own
+`role` argument (see [`agents.md`](agents.md#a-model-tool-call)): anything a
+model can do to the session's own agents through those tools, the operator
+can do too, from one typed command — and, with `--model`, more, since
+`--model` has no model-invoked equivalent at all (a model may only name a
+role, never a raw model — see that same section for why).
 
-**With `conway.ui` installed** (`plugins.install`, opt-in and absent by
-default — see [`plugins/trust-and-security.md`](plugins/trust-and-security.md)),
-bare `/model` is a menu instead of text: `Up`/`Down` move the highlighted
-option, `Enter` switches to it, `Esc` cancels with no switch at all. This
-reuses the exact same modal `ask_question` (a model-called tool) opens —
-`/model` is simply a second, TUI-raised consumer of it. Without `conway.ui`,
-the text listing above is the whole experience — it is the main path, not a
-degraded fallback, since `conway.ui` is opt-in.
+An unconfigured `--role <alias>` is rejected loud, naming the alias, before
+any child is created — never a silent fallback to the parent's own role. A
+malformed `--model` value is reported the same way `/model <value>`'s own
+malformed-value case is: as a notice, before any child is created.
+
+#### `/model` with no argument: an interactive picker, no plugin required
+
+Typing `/model` with nothing after it opens an interactive picker over
+every reachable model — every `backend/model` pair named in any role's
+`chain`, plus every model recorded in the local model-metadata file
+(`.conway/models.json`, even one that no role's `chain` names) — rather than
+erroring or reaching out to a provider for a live roster. `Up`/`Down` move
+the highlighted option, `Enter` switches to it (exactly like typing
+`/model <that pair>` yourself), `Esc` cancels with no switch at all. The
+prompt line names the focused agent's own current model, so comparison
+doesn't require memorizing which line was already active before you opened
+the picker.
+
+**`d` makes the highlighted model the persistent default, without leaving
+the picker.** This writes the highlighted model to the *head* of the
+default role's own `chain` in your global `settings.json` — the exact same
+reorder the `/settings → defaults` promotion row (below) performs, through
+the same writer, so there is still exactly one source of truth for "what is
+the persistent default." Every other configured fallback survives, in its
+previous relative order, just no longer first. The resulting chain is
+echoed back in a notice. Unlike `Enter`, pressing `d` does **not** switch
+this session's own running model and does **not** close the picker — the
+two are independent: `d` changes what a *future* session starts on, `Enter`
+changes what *this* session is running right now, and you can press either
+one, or both, without reopening `/model`.
+
+This reuses the exact same modal `ask_question` (a model-called tool)
+opens, and **needs no plugin installed at all** — `conway.ui`
+(`plugins.install`, opt-in and absent by default — see
+[`plugins/trust-and-security.md`](plugins/trust-and-security.md)) is
+unrelated to whether this picker is available; installing it changes
+nothing about `/model`.
+
+**`/model <text>` with `<text>` not itself a valid `backend/model` pair**
+opens the identical picker, pre-filtered to entries whose name contains
+`<text>` (case-insensitive), instead of erroring — so `/model claude`
+narrows straight to every configured Claude model without first having to
+see the whole list. If nothing matches, `/model` says so by name rather
+than opening an unusable empty picker. A syntactically well-formed
+`backend/model` pair (`/model anthropic/claude-haiku`) still switches
+directly, exactly as before — filtering only kicks in for text that isn't
+already a complete pair.
 
 If nothing is configured yet (no `[backends]`, no role with a non-empty
-`chain`), `/model` says so by name rather than showing an empty list or a
-blank menu.
+`chain`, and no `.conway/models.json`), `/model` says so by name rather
+than opening an empty picker.
+
+**Not yet built: a live filter box inside the open picker.** Today,
+narrowing the list further means retyping `/model <narrower text>` (closing
+the picker and reopening it pre-filtered) — the `d` key above covers
+promoting a highlighted entry to the persistent default without leaving the
+picker; only in-picker live filtering remains a separate, larger piece.
+
+#### `/resume` with no argument: an interactive picker over this project's sessions
+
+Typing `/resume` with nothing after it opens an interactive picker over
+this project's own sessions — the same set `conway sessions list` shows —
+rather than erroring. Each row shows the session's name (or, for an
+unnamed session, its derived auto-title — the same one-line summary
+`conway sessions list`'s `NAME` column shows), its first prompt, when it
+was last active, how many records its transcript holds, and any labels
+attached via `conway sessions label`. `Up`/`Down` move the highlighted
+row, `Enter` resumes it — the exact same mechanism a hand-typed `/resume
+<id>` uses, so choosing a row from the picker and typing its id yourself
+land you in an identical place — and `Esc` cancels with nothing resumed.
+
+If this project has no sessions yet, `/resume` says so by name rather than
+opening an empty picker.
+
+This reuses the exact same modal `/model`'s own bare-argument picker
+(above) does, and, like that picker, needs no plugin installed.
+
+**Not yet built: a live filter box inside the open picker, and a key that
+widens the listing to sessions under a different project's own session-root
+key.** Unlike `/model`, retyping `/resume <narrower text>` does not
+re-open the picker pre-filtered either — an id or a name that does not
+resolve stays a plain, immediate error naming `conway sessions list` (see
+the table above), so a typed `/resume` argument keeps meaning exactly one
+thing: "reattach to precisely this session." A session sitting under an
+old subdirectory key (see
+[`sessions.md`](sessions.md#if-you-already-have-subdirectory-keyed-sessions))
+is reachable only by typing its id or name directly; the picker itself
+lists only this project's own session-root key.
 
 ### Plugin-declared commands
 
@@ -522,8 +675,14 @@ described).
 session's tree: a status marker, the agent's **short id** (its id's first
 8 characters — the same truncation the status line's `session`/`lineage`
 fields already use), a label, and how it was created (`fork @seq N`,
-`@agent_def`, `(inherit)`, with `(ephemeral)` for an in-flight `/ask`). The
-currently focused agent's row is tagged `(focused)`. The short id is the
+`@agent_def`, `(inherit)`, with `(ephemeral)` for an in-flight `/ask`). A
+child created with `/spawn --role <alias>`/`/fork --role <alias>` shows
+`role: <alias>`; one created with `--model <backend/model>` shows `model:
+<backend/model>` instead, right alongside the recipe label. This only
+covers what YOU typed at this command: a child another agent created via
+the model-invoked `conway_spawn`/`conway_fork` tools' own `role` argument
+shows no such marker here (its row still shows the ordinary fork/spawn
+recipe). The currently focused agent's row is tagged `(focused)`. The short id is the
 one thing this panel shows that `/context`/`/steer`/`/cancel`/`/await`/`/fork
 @<agent>` actually accept as an argument — a plain label is not unique (several
 agents can share one, and any agent spawned with no `agent_def` renders
@@ -587,9 +746,14 @@ role above, or that role's `chain` in `settings.json` by hand.
 **Making a session's model the persistent default.** `/model` (above)
 only ever changes what *this* session is running — a fresh session still
 starts on the default role's chain head, and nothing tells you the two
-have diverged unless you go looking. If they have, a third row appears
-right under "default model": `this session is running <model> — Enter to
-make it the persistent default`. Pressing `Enter` writes that model to the
+have diverged unless you go looking. Pressing `d` inside `/model`'s own
+picker (above) promotes the *highlighted* candidate to the persistent
+default directly, without leaving the picker or switching this session.
+This section's own row covers the same promotion for the model *this
+session is already running*, from `/settings` instead: if they have
+diverged, a third row appears right under "default model": `this session is
+running <model> — Enter to make it the persistent default`. Pressing
+`Enter` writes that model to the
 *head* of the default role's own `chain` (moving it there if it was
 already a fallback further down, inserting it if it wasn't in the chain at
 all) — every other configured fallback survives, in its previous order,
@@ -692,7 +856,7 @@ session | lineage | mode | model | ctx | tokens | activity | hint
 | `lineage` | `agent <id> via root → fork @seq 3 → @reviewer` | How the focused agent was created. Omitted while you're focused on the session's own root. |
 | `mode` | `ready`, `awaiting permission`, `ask`, or `intent` | The TUI's current top-level state. When your permission mode isn't the default, this field also names it: `ready · plan` or `ready · AUTO-ALLOW`. `AUTO-ALLOW` is the one thing on this line guaranteed to keep showing even on a very narrow terminal — it's a genuine safety signal, and the field most likely to matter if you've forgotten you're in it. |
 | `model` | `anthropic/claude-sonnet-4-6` | The focused agent's serving model. Omitted until its first turn has routed. |
-| `ctx` | `ctx 42%`, or `ctx 12.3k` when the model's context window isn't known | Cumulative context-window occupancy for the focused agent, from `models.metadata_path`. |
+| `ctx` | `ctx 42%`, or `ctx 12.3k` when the model's context window isn't known | Cumulative context-window occupancy for the focused agent, from the same resolved `(backend, model)` capability index [`conway routes explain`](routing.md#asking-why-a-route-was-chosen) reads. When the window itself is only a `floor (assumed)` — the model's own dialect declares no sourced figure, so this is not a fact about this specific model — the figure carries that same marker: `ctx 31% floor (assumed)`. A `verified` (compiled-in table, or a dialect's own documented per-provider figure), `models.json` (an operator-editable override), or `probed` window never carries it. |
 | `tokens` | `1.4k tok (88% cached)`, or `1.4k tok (cache: not reported by ollama)` | The focused agent's cumulative token spend; the cached-percentage parenthetical is the prompt-cache hit rate — `cache_read / (input + cache_read + cache_write)`. **Declaration honesty**: the percentage shows whenever the backend actually reported cache figures for at least one cache-relevant token — including a genuine `0% cached` — and is omitted only when the denominator itself is 0 (no cache-relevant tokens processed yet). When the backend's wire format carries no cache field at all (e.g. Ollama's native `/api/chat` path, see [providers.md](providers.md)), the field instead shows `cache: not reported by <backend>` — a `0%` here would claim an observation the backend never made. |
 | `activity` | `⠋ thinking… 12s · +45 tok` while active, `⠋ asking… 12s` while an `/ask` is in flight, `idle` otherwise | The working indicator: elapsed time and new context tokens added this turn. An in-flight `/ask` takes this field over outright (its own clock, no token figure — it's a different agent than the one this field otherwise tracks). |
 | `hint` | `Enter submit · Ctrl-E expand · /help · /agents to view` | A persistent reminder of the essentials. Also names the focused agent when you're off-root and `lineage` isn't part of your configured fields. |
@@ -707,6 +871,144 @@ dropped — its own single degrade step removes the `ready`/`awaiting
 permission` word and keeps only the permission-mode label, so `AUTO-ALLOW`
 is the last thing standing on even the narrowest terminal that shows
 anything at all.
+
+## Keybindings
+
+Every key conway recognizes routes through ONE dispatch table (board item
+`01M1YVJ4RA5V7FF95MFRQMTQW3`), built once at startup by merging built-in
+defaults with `$CONWAY_CONFIG_DIR/keybindings.json` (or
+`~/.conway/keybindings.json` when that env var is unset — the same
+directory `settings.json`/`history` already live in), if it exists.
+`/help` always shows the EFFECTIVE bindings — defaults as overridden by
+your file, never the bare defaults — and this section documents the exact
+same table (`crate::tui::keybindings::ACTIONS`, in `conway-cli`).
+
+### The keymap file
+
+`$CONWAY_CONFIG_DIR/keybindings.json`, shaped:
+
+```json
+{
+  "transcript": {
+    "toggle_tool_output": ["Ctrl-O"]
+  }
+}
+```
+
+Top level: context name → `{ action: [key, key, ...] }`. An entry you
+supply REPLACES that action's default keys wholesale — rebinding
+`toggle_tool_output` off `Ctrl-E` really turns `Ctrl-E` off, not "off by
+default but still there." Binding an action to `[]` disables it with no
+replacement. The same key bound in two DIFFERENT contexts is fine (only
+one context is ever active at a time); the same key bound twice WITHIN one
+context is a load error.
+
+Key strings: an optional `Ctrl-`/`Alt-`/`Shift-` prefix (combinable, e.g.
+`Ctrl-Shift-X`), then a single character (`g`, `v`, `y`, ...) or a named
+key (`Enter`, `Esc`, `Tab`, `BackTab`, `Backspace`, `Left`, `Right`, `Up`,
+`Down`, `Home`, `End`, `PageUp`, `PageDown`, `Delete`, `Insert`, `Space`,
+`F1`-`F12`). `Shift-Tab` and `BackTab` are the same physical key (different
+terminals encode it differently) and are treated as one binding either way
+you spell it.
+
+**A load error refuses to guess.** An unknown context, an unknown action, a
+key string that doesn't parse, or a same-context collision fails to load
+and names the exact `context.action` entry at fault — never a silent drop
+of the bad entry, and never a fallback to "whatever half of the file
+parsed." A malformed file is surfaced as a visible notice at the start of
+the session (and the session still runs, on plain built-in defaults).
+
+### `Ctrl-G`: edit the prompt in your own editor
+
+Writes the current input to a temp file, suspends the TUI (leaves the
+alternate screen and raw mode, the same teardown a clean exit uses), runs
+`$VISUAL` (falling back to `$EDITOR`, then `vi`), and replaces the input
+with whatever the editor left behind when it exits 0. An editor that exits
+non-zero, a missing temp file, or an editor that can't even be started
+leaves your input UNCHANGED and shows a notice — never a silent clear. An
+EMPTY result (you deleted everything and saved) also leaves the input
+unchanged, rather than clearing it. Works while a turn is running — the
+edit is entirely local until you submit.
+
+### Action vocabulary
+
+Every action below is grouped by context; `/help` (press it any time) shows
+the same list with your OWN effective bindings, not these defaults.
+
+#### `prompt`
+
+- `prompt.open_editor` — default `Ctrl-G` — open the current input in
+  `$VISUAL`/`$EDITOR` (see above).
+- `prompt.delete_word_back` — default `Ctrl-W` — delete the previous word.
+- `prompt.history_prev` — default `Ctrl-P` — recall the previous
+  input-history entry.
+- `prompt.history_next` — default `Ctrl-N` — recall the next input-history
+  entry.
+
+#### `transcript`
+
+- `transcript.toggle_tool_output` — default `Ctrl-E` — expand/collapse all
+  tool output.
+- `transcript.scroll_page_up` — default `PageUp` — scroll the transcript up
+  one page.
+- `transcript.scroll_page_down` — default `PageDown` — scroll the
+  transcript down one page.
+- `transcript.cycle_permission_mode` — default `Shift-Tab` — cycle the
+  permission mode: prompt → plan → auto-allow.
+
+#### `palette`
+
+- `palette.navigate_up` — default `Up` — move the `/` command-palette
+  selection up.
+- `palette.navigate_down` — default `Down` — move the `/` command-palette
+  selection down.
+
+#### `agents_panel`
+
+- `agents_panel.scroll_up` — default `Up` — move the `/agents` panel
+  selection up.
+- `agents_panel.scroll_down` — default `Down` — move the `/agents` panel
+  selection down.
+- `agents_panel.cycle_visibility` — default `v` — cycle the panel's
+  visibility filter (active / all / finished).
+
+#### `permission_prompt`
+
+- `permission_prompt.allow_once` — default `y` — allow this call once.
+- `permission_prompt.allow_always` — default `a` — allow always, at the
+  current grant scope.
+- `permission_prompt.cycle_grant_scope` — default `s` — cycle the
+  remembered-grant scope: session → agent → subtree.
+- `permission_prompt.edit_pattern` — default `p` — narrow the grant to
+  specific argument fields before allowing.
+- `permission_prompt.deny` — default `n` — deny this call.
+- `permission_prompt.deny_with_feedback` — default `Esc` — deny this call,
+  with a typed reason.
+- `permission_prompt.scroll_up` — default `PageUp` — scroll the shown
+  command up.
+- `permission_prompt.scroll_down` — default `PageDown` — scroll the shown
+  command down.
+
+#### `settings`
+
+- `settings.move_up` — default `Up` — move the selection up.
+- `settings.move_down` — default `Down` — move the selection down.
+- `settings.activate` — default `Enter` — toggle a display setting, or
+  expand/collapse a group.
+- `settings.step_left` — default `Left` — step the numeric setting down.
+- `settings.step_right` — default `Right` — step the numeric setting up.
+- `settings.close` — default `Esc` — close the settings menu.
+
+### Fixed, not remappable
+
+Text-editing primitives (typing, `Backspace`, `Left`/`Right`/`Home`/`End`
+cursor movement, `Enter`/`Alt-Enter`/`Shift-Enter`, bare-arrow transcript
+scroll) and the two safety chords `Ctrl-C` (interrupt) and `Ctrl-D` (quit
+on empty input) stay fixed. So do the ask-modal/intent-confirm/
+trust-preview decision keys and the agent panel's own `Esc` (close panel,
+then return to root) — none of those live in the six rebindable contexts
+above. No vim mode and no chords/leader keys either — a separate item owns
+vim mode; this is scoped to single-key rebinding only.
 
 ## Ending a session
 

@@ -176,7 +176,7 @@ async fn a_claude_plugin_directorys_mcp_server_declaration_becomes_a_real_workin
     // Step 2: the translated declaration becomes a REAL McpPluginSpec, fed
     // to the exact same discovery path `conway-cli`'s own `mcp_plugins.rs`
     // uses for an operator-authored `[plugins].mcp[]` entry.
-    let spec = report.mcp_servers[0].clone().into_spec(5_000);
+    let spec = report.mcp_servers[0].clone().into_spec(5_000, 5_000);
     let plugin = McpPlugin::discover(spec)
         .await
         .expect("the translated MCP declaration must discover successfully");

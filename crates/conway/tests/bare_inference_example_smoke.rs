@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{ConwayConfig, PermissionsConfig, PermissionsConfigMode, ToolsConfig};
+use conway::config::schema::{ConwayConfig, ToolsConfig};
 use conway::test_support::base_config;
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
@@ -30,13 +30,10 @@ const T: Duration = Duration::from_secs(5);
 /// The same parameterized config the example's `config_with_tools` builds.
 fn config_with_tools(tools: ToolsConfig) -> ConwayConfig {
     let mut config = base_config();
-    // See the example's own doc comment for why this is `Deny`, not the
-    // crate's `presets::default_permissions_for_one_shot` (that preset
-    // fails `config::merge::validate`'s own check unconditionally).
-    config.permissions = PermissionsConfig {
-        mode: PermissionsConfigMode::Deny,
-        ..PermissionsConfig::default()
-    };
+    // No `permissions`/gate selection needed here at all: `build()` below
+    // always injects its own gate (`with_permission_gate`), so
+    // `config.permissions` -- which no longer carries a gate selection in
+    // any case -- is never consulted.
     config.tools = tools;
     config
 }

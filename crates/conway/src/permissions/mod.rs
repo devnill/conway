@@ -88,6 +88,22 @@ pub struct PermissionLoadReport {
     /// already-parsed [`Rule`], never about the file failing to parse at
     /// all).
     pub parse_errors: Vec<String>,
+    /// Board item 01M1YVP3FDPHY4WZ72SXMWAN2D: whether the PROJECT-scope
+    /// permissions file (`self.paths`'s first entry -- always project
+    /// scope, per `crate::config::discovery::permission_file_paths`'s own
+    /// construction) is trusted, by the SAME computation this loader
+    /// already performs internally to decide whether that file's `allow`
+    /// rules install (`is_global || trust_store.is_trusted(path,
+    /// &contents)`). Exposed so `conway-cli`'s TUI startup can gate a
+    /// PROJECT-scope `settings.json`'s `permissions.default_mode` on the
+    /// identical trust decision, rather than either inventing a second
+    /// trust subject for that key or re-deriving this bool from scratch (a
+    /// second place that computation could silently drift from this one).
+    /// `false` by default (`#[derive(Default)]`): a project with no
+    /// permissions file at all, or one that failed to parse, is
+    /// UNTRUSTED, the same fail-closed direction every other condition
+    /// this loader can hit already takes.
+    pub project_permissions_trusted: bool,
 }
 
 /// The result of `Conway::trust_permission_file` -- the trust-path parallel
@@ -567,6 +583,11 @@ pub(crate) fn load_permission_files(
     let mut notices = Vec::new();
     let mut registration_errors = Vec::new();
     let mut parse_errors = Vec::new();
+    // `paths`' own construction (`permission_file_paths`'s doc) always
+    // pushes project scope first -- this is the ONE path
+    // `project_permissions_trusted` (below) tracks.
+    let project_path = paths.first().cloned();
+    let mut project_permissions_trusted = false;
 
     for path in &paths {
         let Ok(contents) = std::fs::read_to_string(path) else {
@@ -645,6 +666,9 @@ pub(crate) fn load_permission_files(
         }
 
         let trusted = is_global || trust_store.is_trusted(path, &contents);
+        if project_path.as_deref() == Some(path.as_path()) {
+            project_permissions_trusted = trusted;
+        }
         let allow_rules = permission_pattern::parse_rules(&contents);
         if !trusted {
             if !allow_rules.is_empty() {
@@ -687,6 +711,7 @@ pub(crate) fn load_permission_files(
         notices,
         registration_errors,
         parse_errors,
+        project_permissions_trusted,
     }
 }
 

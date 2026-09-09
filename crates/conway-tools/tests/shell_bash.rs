@@ -315,6 +315,85 @@ async fn timeout_kills_the_process_group_and_reports_is_error() {
     let text = text_of(&out);
     assert!(text.contains("timed out after 300ms"), "text was {text:?}");
 
+    // ONE true thing, never both: a call that timed out never validly
+    // completed, so it must never ALSO carry an exit code -- the exact bug
+    // (`exit code: 0` and `timed out after ...ms` on the same result) this
+    // item exists to fix.
+    assert!(!text.contains("exit code"), "text was {text:?}");
+
     let pgid = find_pgid(&handles.events.events());
     assert_group_dead(pgid);
+}
+
+// ------------------------------------------------------ backgrounding ---
+
+/// Acceptance test 1: `sleep 30 &` through a 5s-timeout `bash` call must NOT
+/// hold the call to that timeout, must report a clean `exit code: 0`
+/// (never `timed out` alongside it), must name the backgrounded pid, and
+/// the sleeper must still genuinely be alive afterwards -- not merely "no
+/// error was reported", which a silent kill would also produce.
+#[cfg(unix)]
+#[tokio::test]
+async fn backgrounded_child_does_not_hold_the_call_to_its_timeout() {
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp"));
+
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        BashTool::new().invoke(
+            call(serde_json::json!({
+                "command": "sleep 30 & echo $!",
+                "timeout_ms": 5000,
+            })),
+            ctx,
+        ),
+    )
+    .await
+    .expect("invoke should return well under the outer 5s guard");
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "should return as soon as the shell itself exits, not wait out the \
+         5s timeout for a backgrounded grandchild to release its pipes: \
+         took {elapsed:?}"
+    );
+
+    let out = result.expect("a backgrounded child must not turn a clean exit into an error");
+    assert!(!out.is_error, "should be a clean, non-error return");
+    let text = text_of(&out);
+    assert!(text.contains("exit code: 0"), "text was {text:?}");
+    assert!(!text.contains("timed out"), "text was {text:?}");
+    assert!(
+        text.contains("background process(es) still running"),
+        "text was {text:?}"
+    );
+
+    // `echo $!` (run right after backgrounding `sleep 30`) prints its pid --
+    // this is also the pid the "still running" note must name.
+    let pid: i32 = stdout_section(text).trim().parse().expect("printed pid");
+    assert!(
+        text.contains(&pid.to_string()),
+        "still-running note should name pid {pid}: {text:?}"
+    );
+
+    // Alive, not merely "unreported" -- `kill(pid, 0)` delivers no signal
+    // but still fails with ESRCH if the process is gone.
+    let still_alive = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        None::<nix::sys::signal::Signal>,
+    )
+    .is_ok();
+    // Clean up regardless of the assertion outcome, so a failing run doesn't
+    // leak a 30s sleeper into the test process's own group.
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        Some(nix::sys::signal::Signal::SIGKILL),
+    );
+    assert!(
+        still_alive,
+        "backgrounded sleep {pid} should still be alive right after a \
+         successful return -- a successful return must never kill what the \
+         model deliberately backgrounded"
+    );
 }

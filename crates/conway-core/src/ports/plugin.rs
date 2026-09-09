@@ -450,6 +450,18 @@ pub trait Plugin: Send + Sync + 'static {
     /// to opt out of chaining narrows only its own segments and leaves the
     /// rest untouched, which composes cleanly with a sibling that narrows
     /// different segments.
+    ///
+    /// **Relationship to script hooks (point 13).** Rust `ContextHook`s
+    /// chain: each hook sees the previous hook's edited payload. Script
+    /// hooks on `request_assembled`/`context_overflow` do NOT chain —
+    /// they each see the same payload and compose by union (exclusions
+    /// union, appends concatenate). A script hook never sees another
+    /// script hook's edits. The payload a script receives differs by
+    /// event: for `request_assembled`, scripts see the POST-Rust-chain
+    /// payload (the output of this trait's own `before_request`); for
+    /// `context_overflow`, scripts see the PRE-Rust-hook payload (the
+    /// original, before `on_overflow` runs), though their deltas are
+    /// applied to the post-Rust-hook result.
     fn context_hooks(&self) -> Vec<Arc<dyn ContextHook>> {
         Vec::new()
     }
@@ -730,6 +742,47 @@ pub trait Plugin: Send + Sync + 'static {
     fn hooks(&self) -> Vec<PluginHookRule> {
         Vec::new()
     }
+
+    /// Applies this plugin's own slice of an operator's `[plugins.config.<id>]`
+    /// table -- free-form JSON keyed by this plugin's own
+    /// [`PluginManifest::id`], validated and applied by the plugin itself,
+    /// never interpreted by this trait or by the host that calls it. Called
+    /// EXACTLY ONCE, by whatever binary/embedder constructs this plugin,
+    /// BEFORE it is wrapped in the `Arc<dyn Plugin>` every other seam on this
+    /// trait receives -- `&mut self`, not `&self`, is what makes that
+    /// ordering possible: `Arc::new` freezes shared ownership, so a plugin's
+    /// own config must land before that point or not at all. A caller only
+    /// invokes this when it has a `[plugins.config.<id>]` table to hand the
+    /// plugin in the first place; a plugin never sees this method called
+    /// with nothing to apply.
+    ///
+    /// **Refuses an unknown key BY NAME, never silently ignores one.** A
+    /// typo'd or renamed key parsing as a harmless no-op is exactly the
+    /// class of failure `#[serde(deny_unknown_fields)]` already refuses for
+    /// conway's own settings tree -- this method is the plugin-owned
+    /// extension of that same rule one level down, where only the plugin
+    /// itself knows its own vocabulary and can validate a value against it.
+    /// [`PluginConfigureError::UnknownKey`] names the offending key so the
+    /// caller's own error message can quote it back rather than report a
+    /// bare "invalid config".
+    ///
+    /// **The default is a no-op that accepts nothing and rejects nothing** --
+    /// every existing `Plugin` implementor keeps compiling unmodified, the
+    /// SAME zero-cost-default precedent every other method on this trait
+    /// establishes, and a plugin that never overrides this method has,
+    /// correctly, no operator-tunable settings at all -- see
+    /// `conway_plugin_trim::TrimPlugin::configure` for the first real
+    /// implementor, which accepts exactly one key (`keep_turns`) and refuses
+    /// every other by name.
+    ///
+    /// **Not a schema-declaration method.** This seam validates and applies
+    /// a value handed to it; it does not give a caller a machine-readable
+    /// shape to render a TUI editor or export a JSON schema ahead of calling
+    /// it -- see `docs/plugins/authoring.md`'s "Configuration" section for
+    /// exactly what is and is not built as of this method landing.
+    fn configure(&mut self, _value: &serde_json::Value) -> Result<(), PluginConfigureError> {
+        Ok(())
+    }
 }
 
 /// One hook rule a plugin registers via [`Plugin::hooks`] -- the SAME seven
@@ -971,6 +1024,38 @@ pub enum PluginConfigError {
          the requested value does not"
     )]
     WouldWiden { key: String },
+}
+
+/// A plugin refused an operator-authored `[plugins.config.<id>]` value at
+/// [`Plugin::configure`] time -- the DIFFERENT config channel from
+/// [`PluginConfigError`] immediately above: that type governs a CHILD
+/// agent's per-agent narrowing of an already-accepted value
+/// ([`PluginConfig::narrow`]); this one governs whether the OPERATOR's own
+/// top-level value is accepted in the first place. A value this method
+/// cannot honor must stop the build rather than be silently ignored or
+/// silently clamped -- the same fail-loud posture
+/// `#[serde(deny_unknown_fields)]` already gives conway's own settings tree,
+/// applied here to a vocabulary only the plugin itself knows.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PluginConfigureError {
+    /// `key` is not a key this plugin recognizes under its own
+    /// `[plugins.config.<id>]` table -- refused BY NAME, never dropped as a
+    /// harmless no-op, so a typo'd or renamed key surfaces as a config error
+    /// naming exactly what was wrong rather than silently doing nothing.
+    #[error("plugin config key '{key}' is not recognized")]
+    UnknownKey { key: String },
+    /// `key` is recognized, but the supplied value is invalid for it (wrong
+    /// JSON type, out of range, ...) -- `message` names why, in the
+    /// plugin's own words.
+    #[error("plugin config key '{key}' is invalid: {message}")]
+    InvalidValue { key: String, message: String },
+    /// The whole `[plugins.config.<id>]` value was not a JSON object --
+    /// every plugin's own keys are named fields, never a bare scalar or
+    /// array, so `actual` (e.g. `"array"`, `"string"`) names what was
+    /// supplied instead.
+    #[error("plugin config must be a JSON object, got {actual}")]
+    NotAnObject { actual: String },
 }
 
 /// One instruction fragment a plugin declares via [`Plugin::instructions`]

@@ -80,10 +80,12 @@ use ratatui::Frame;
 
 use super::modal;
 use super::theme::Theme;
+use crate::tui::keybindings::{self, Context, ACTIONS};
+use crate::tui::state::AppState;
 
 /// One row: a key/chord and what it does.
 struct Binding {
-    keys: &'static str,
+    keys: String,
     action: &'static str,
 }
 
@@ -91,177 +93,184 @@ struct Binding {
 /// by its rows.
 struct Group {
     title: &'static str,
-    bindings: &'static [Binding],
+    bindings: Vec<Binding>,
 }
 
-/// The overlay's whole content, grouped exactly as verified against
-/// `input.rs` at HEAD (never any spec text, which can go stale). Kept as
-/// one `const` so
-/// [`no_binding_row_mentions_mouse`] can scan it directly, with no rendered
-/// buffer needed.
-const GROUPS: &[Group] = &[
-    Group {
+/// One row in a [`FixedGroup`] -- the const-friendly counterpart of
+/// [`Binding`] for the keys that stay hardcoded (see
+/// `crate::tui::keybindings`'s own "Not (yet) rebindable" doc): both fields
+/// are `&'static str`, so [`FIXED_GROUPS`] can be a plain `const`.
+struct FixedBinding {
+    keys: &'static str,
+    action: &'static str,
+}
+
+struct FixedGroup {
+    title: &'static str,
+    bindings: &'static [FixedBinding],
+}
+
+/// The overlay's FIXED content -- keys `crate::tui::keybindings::ACTIONS`
+/// does not cover at all (text-editing primitives, the two safety chords,
+/// the ask-modal/intent-confirm/agent-panel-Esc decision keys), verified
+/// against `input.rs` at HEAD (never any spec text, which can go stale).
+/// [`build_groups`] appends one further, DYNAMIC group per
+/// `crate::tui::keybindings::Context` after these, generated from
+/// `AppState::keybindings` -- the SAME table `input.rs`'s dispatcher
+/// resolves real keystrokes against -- see this module's own top-of-file
+/// doc, "Keybindings only," and `crate::tui::keybindings`'s own "one
+/// table" doc.
+const FIXED_GROUPS: &[FixedGroup] = &[
+    FixedGroup {
         title: "input & editing",
         bindings: &[
-            Binding {
+            FixedBinding {
                 keys: "Enter",
                 action: "submit",
             },
-            Binding {
+            FixedBinding {
                 keys: "Alt-Enter / Shift-Enter",
                 action: "insert a newline (both bound -- some terminals encode \
                           Shift-Enter as a plain Enter)",
             },
-            Binding {
+            FixedBinding {
                 keys: "Left / Right",
                 action: "move the cursor",
             },
-            Binding {
+            FixedBinding {
                 keys: "Backspace",
                 action: "delete back",
             },
-            Binding {
-                keys: "Ctrl-W",
-                action: "delete the previous word",
-            },
-            Binding {
+            FixedBinding {
                 keys: "Ctrl-D",
                 action: "quit -- only when the input is empty",
             },
-            Binding {
+            FixedBinding {
                 keys: "Ctrl-C",
                 action: "interrupt",
             },
         ],
     },
-    Group {
+    FixedGroup {
         title: "history & navigation",
         bindings: &[
-            Binding {
+            FixedBinding {
                 keys: "Up / Down",
                 action: "scroll the transcript one line -- or move the \
                           palette/agent-panel selection, or a multi-line \
                           draft's own lines, whichever currently owns the \
                           key. Your mouse wheel arrives here too.",
             },
-            Binding {
-                keys: "Ctrl-P / Ctrl-N",
-                action: "recall previous/next input history",
-            },
-            Binding {
+            FixedBinding {
                 keys: "Home / End",
                 action: "jump the transcript to top/tail -- only when the \
                           input is empty; with text present, moves the \
                           cursor to the line's start/end",
             },
-            Binding {
-                keys: "PageUp / PageDown",
-                action: "scroll the transcript by a page",
-            },
         ],
     },
-    Group {
-        title: "tools & display",
-        bindings: &[
-            Binding {
-                keys: "Ctrl-E",
-                action: "expand/collapse all tool output",
-            },
-            Binding {
-                keys: "Shift-Tab",
-                action: "cycle the permission mode: prompt -> plan -> \
-                          auto-allow -- the same cycle as the /settings \
-                          mode row, only while typing (not while a \
-                          permission prompt or other modal is up)",
-            },
-        ],
-    },
-    Group {
-        title: "settings menu (only while /settings is open)",
-        bindings: &[
-            Binding {
-                keys: "Up / Down",
-                action: "move the selection",
-            },
-            Binding {
-                keys: "Enter",
-                action: "toggle a display setting, or expand/collapse a group",
-            },
-            Binding {
-                keys: "Left / Right",
-                action: "adjust the numeric setting (tool preview lines)",
-            },
-            Binding {
-                keys: "Esc",
-                action: "close the settings menu",
-            },
-        ],
-    },
-    Group {
+    FixedGroup {
         title: "modal keys (only while that modal is up)",
         bindings: &[
-            Binding {
+            FixedBinding {
                 keys: "/ask modal: f",
                 action: "fork",
             },
-            Binding {
+            FixedBinding {
                 keys: "/ask modal: p",
                 action: "pull in",
             },
-            Binding {
+            FixedBinding {
                 keys: "/ask modal: Esc",
                 action: "discard",
             },
-            Binding {
+            FixedBinding {
                 keys: "intent-confirm card: Enter",
                 action: "confirm",
             },
-            Binding {
+            FixedBinding {
                 keys: "intent-confirm card: e",
                 action: "edit",
             },
-            Binding {
+            FixedBinding {
                 keys: "intent-confirm card: Esc",
                 action: "manual",
             },
-            Binding {
-                keys: "permission prompt: y",
-                action: "allow once",
-            },
-            Binding {
-                keys: "permission prompt: a",
-                action: "allow always",
-            },
-            Binding {
-                keys: "permission prompt: n",
-                action: "deny",
-            },
-            Binding {
-                keys: "permission prompt: Esc",
-                action: "deny with feedback",
-            },
-            Binding {
-                keys: "permission prompt: PageUp / PageDown",
-                action: "scroll the command",
-            },
         ],
     },
-    Group {
+    FixedGroup {
         title: "agent panel",
-        bindings: &[
-            Binding {
-                keys: "v",
-                action: "cycle the panel's visibility filter -- only while \
-                          the panel is open",
-            },
-            Binding {
-                keys: "Esc",
-                action: "close the panel (keeping the focused agent); press \
+        bindings: &[FixedBinding {
+            keys: "Esc",
+            action: "close the panel (keeping the focused agent); press \
                           again to return to the root conversation",
-            },
-        ],
+        }],
     },
 ];
+
+/// The prose heading [`build_groups`] gives each DYNAMIC, keymap-driven
+/// group -- one per `crate::tui::keybindings::Context`, in
+/// [`Context::all`]'s own order.
+fn context_title(context: Context) -> &'static str {
+    match context {
+        Context::Prompt => "prompt (rebindable -- keybindings.json)",
+        Context::Transcript => "transcript (rebindable -- keybindings.json)",
+        Context::Permission => "permission prompt (rebindable -- only while a call is pending)",
+        Context::AgentsPanel => "agent panel (rebindable -- only while the panel is open)",
+        Context::Palette => "command palette (rebindable -- only while `/` is showing matches)",
+        Context::Settings => "settings menu (rebindable -- only while /settings is open)",
+    }
+}
+
+/// [`FIXED_GROUPS`], plus one further group per
+/// `crate::tui::keybindings::Context`, each listing that context's
+/// [`ACTIONS`] with their CURRENT keys from `keymap` -- the EFFECTIVE
+/// bindings (defaults as overridden by `keybindings.json`, if any), never
+/// the bare defaults. An action rebound to `[]` (deliberately disabled, see
+/// `crate::tui::keybindings::Keymap::keys_for`'s own doc) renders as
+/// `(unbound)` rather than an empty string, so the row still reads as a
+/// deliberate choice rather than a rendering glitch.
+fn build_groups(keymap: &keybindings::Keymap) -> Vec<Group> {
+    let mut groups: Vec<Group> = FIXED_GROUPS
+        .iter()
+        .map(|g| Group {
+            title: g.title,
+            bindings: g
+                .bindings
+                .iter()
+                .map(|b| Binding {
+                    keys: b.keys.to_string(),
+                    action: b.action,
+                })
+                .collect(),
+        })
+        .collect();
+
+    for context in Context::all() {
+        let bindings: Vec<Binding> = ACTIONS
+            .iter()
+            .filter(|spec| spec.context == context)
+            .map(|spec| {
+                let keys = keymap.keys_for(spec.context, spec.name);
+                let keys = if keys.is_empty() {
+                    "(unbound)".to_string()
+                } else {
+                    keys.join(" / ")
+                };
+                Binding {
+                    keys,
+                    action: spec.description,
+                }
+            })
+            .collect();
+        groups.push(Group {
+            title: context_title(context),
+            bindings,
+        });
+    }
+
+    groups
+}
 
 /// The freeform note about the mouse wheel -- prose, deliberately never a
 /// [`Binding`] row (see this module's own doc).
@@ -310,14 +319,19 @@ const CAP_DENOMINATOR: u16 = 2;
 /// that could silently drift apart (steering P-14; mirrors `view/
 /// settings.rs::build_tree` being the one tree both `modal_rect` and `draw`
 /// build from).
-fn build_body(theme: &Theme) -> Paragraph<'static> {
+fn build_body(state: &AppState, theme: &Theme) -> Paragraph<'static> {
+    // Board item `01M1YVJ4RA5V7FF95MFRQMTQW3`: `state.keybindings` is this
+    // session's effective table -- defaults as overridden by
+    // `keybindings.json`, if any -- the same one `input.rs`'s dispatcher
+    // resolves every keystroke against.
+    let groups = build_groups(&state.keybindings);
     let mut body_lines: Vec<Line> = Vec::new();
-    for group in GROUPS {
+    for group in &groups {
         body_lines.push(Line::from(Span::styled(group.title, theme.emphasized)));
-        for binding in group.bindings {
+        for binding in &group.bindings {
             body_lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(binding.keys, theme.help_key),
+                Span::styled(binding.keys.clone(), theme.help_key),
                 Span::raw("  -- "),
                 Span::raw(binding.action),
             ]));
@@ -339,18 +353,18 @@ fn build_body(theme: &Theme) -> Paragraph<'static> {
 /// height -- see this module's own doc, the `CAP_DENOMINATOR` correction,
 /// for why a cap alone was not enough.
 ///
-/// Takes only `transcript_area` (unlike `settings::modal_rect`, which also
-/// takes `state`) because this overlay's own HEIGHT depends on nothing but
-/// its wrapped line count -- see this module's own doc, "No other
-/// `AppState` is needed": [`GROUPS`] is a `const`, so there is no
-/// `AppState` to thread through at all. [`build_body`] does need a `Theme`
-/// (for styling), but `Paragraph::line_count` measures wrapped rows from
-/// TEXT alone -- style never changes how many rows a `Line` wraps to -- so
-/// this passes `Theme::default()` rather than asking `view::mod::layout`
-/// (which has no `Theme` of its own to give it) to thread one through just
-/// for a value the row count can never actually depend on.
-pub(crate) fn modal_rect(transcript_area: Rect) -> Rect {
-    let body = build_body(&Theme::default());
+/// Takes `state` (board item `01M1YVJ4RA5V7FF95MFRQMTQW3` -- before this
+/// item, it took only `transcript_area`, unlike `settings::modal_rect`,
+/// which always took `state`): [`build_groups`]'s dynamic content now
+/// comes from `state.keybindings`, so this overlay's own HEIGHT depends on
+/// it too. [`build_body`] does need a `Theme` (for styling), but
+/// `Paragraph::line_count` measures wrapped rows from TEXT alone -- style
+/// never changes how many rows a `Line` wraps to -- so this passes
+/// `Theme::default()` rather than asking `view::mod::layout` (which has no
+/// `Theme` of its own to give it) to thread one through just for a value
+/// the row count can never actually depend on.
+pub(crate) fn modal_rect(state: &AppState, transcript_area: Rect) -> Rect {
+    let body = build_body(state, &Theme::default());
     let content_rows = body
         .line_count(modal::body_width(transcript_area))
         .min(u16::MAX as usize) as u16;
@@ -360,14 +374,16 @@ pub(crate) fn modal_rect(transcript_area: Rect) -> Rect {
 /// Draws the `/help` overlay over `transcript_area` via the shared
 /// [`modal`] primitive (V1): bottom-anchored, sized to the binding list's
 /// own wrapped height, capped at [`CAP_DENOMINATOR`] of the transcript
-/// area, and SCROLLING (`scroll`, `AppState::modal_scroll`) past the cap
-/// rather than clipping. No other `AppState` is needed -- every line of
-/// content here is static.
+/// area, and SCROLLING (`state.modal_scroll`) past the cap rather than
+/// clipping. Board item `01M1YVJ4RA5V7FF95MFRQMTQW3`: takes `state` (not
+/// just a bare `scroll: u16`) now that the binding list itself is
+/// `state.keybindings`-dependent -- mirrors `settings::draw`'s own
+/// `(frame, transcript_area, state, theme)` shape exactly.
 ///
 /// Never panics on a tiny area -- [`modal::modal_area`]'s own clamp
 /// covers that; see its doc for why the floor can never exceed the ceiling.
-pub fn draw(frame: &mut Frame, transcript_area: Rect, scroll: u16, theme: &Theme) {
-    let body = build_body(theme);
+pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &Theme) {
+    let body = build_body(state, theme);
     let content_rows = body
         .line_count(modal::body_width(transcript_area))
         .min(u16::MAX as usize) as u16;
@@ -376,7 +392,7 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, scroll: u16, theme: &Theme
     // area that could disagree with what `view::mod::layout` already
     // reserved (steering P-14, mirrors `view/settings.rs::draw`'s own
     // `modal_rect`-then-`draw_modal_frame_in` shape).
-    let area = modal_rect(transcript_area);
+    let area = modal_rect(state, transcript_area);
 
     let frame_areas = modal::draw_modal_frame_in(
         frame,
@@ -387,7 +403,7 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, scroll: u16, theme: &Theme
     );
 
     let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
-    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    let clamped_scroll = modal::clamp_scroll(state.modal_scroll, body_max_scroll);
     frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
 
     let hint = if body_max_scroll > 0 {
@@ -418,8 +434,9 @@ mod tests {
     /// the guard now protects only against inventing a mouse *key*.
     #[test]
     fn no_binding_row_claims_a_mouse_key() {
-        for group in GROUPS {
-            for binding in group.bindings {
+        let groups = build_groups(&keybindings::Keymap::defaults());
+        for group in &groups {
+            for binding in &group.bindings {
                 assert!(
                     !binding.keys.to_lowercase().contains("mouse"),
                     "group {:?}: binding key {:?} must not name a mouse key -- \
@@ -435,5 +452,72 @@ mod tests {
     fn mouse_note_exists_and_mentions_mouse() {
         assert!(MOUSE_NOTE.to_lowercase().contains("mouse"));
         assert!(MOUSE_NOTE.to_lowercase().contains("scrollback"));
+    }
+
+    /// Every default action's default key(s) show up under plain
+    /// [`keybindings::Keymap::defaults`] -- proves [`build_groups`] is
+    /// really reading `crate::tui::keybindings::ACTIONS`, not a stale
+    /// second copy.
+    #[test]
+    fn every_default_action_and_key_appears_in_the_built_groups() {
+        let groups = build_groups(&keybindings::Keymap::defaults());
+        let rendered: Vec<&str> = groups
+            .iter()
+            .flat_map(|g| g.bindings.iter().map(|b| b.keys.as_str()))
+            .collect();
+        for spec in ACTIONS {
+            for default_key in spec.defaults.iter().copied() {
+                assert!(
+                    rendered.iter().any(|k| k.contains(default_key)),
+                    "default key {default_key:?} for {}.{} must appear in the rendered \
+                     groups -- got {rendered:?}",
+                    spec.context.key(),
+                    spec.name
+                );
+            }
+        }
+    }
+
+    /// Acceptance check (b) ("shows in `/help`"): a `keybindings.json`
+    /// rebind changes what [`build_groups`] renders for that action's key,
+    /// and the OLD default key no longer appears for it -- proves `/help`
+    /// shows the EFFECTIVE bindings, not the compiled-in defaults, when fed
+    /// a non-default [`keybindings::Keymap`].
+    #[test]
+    fn build_groups_reflects_a_rebind_not_the_compiled_in_default() {
+        // `Keymap::load` is the only public constructor for a non-default
+        // table, so this round-trips through a real temp file exactly like
+        // `keybindings.rs`'s own tests do, rather than poking private
+        // fields.
+        let path = std::env::temp_dir().join(format!(
+            "conway-help-test-rebind-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#,
+        )
+        .expect("write must succeed");
+        let keymap = keybindings::Keymap::load(&path).expect("a valid rebind must load");
+        let _ = std::fs::remove_file(&path);
+
+        let groups = build_groups(&keymap);
+        let transcript_group = groups
+            .iter()
+            .find(|g| g.title.starts_with("transcript"))
+            .expect("a transcript group must exist");
+        let toggle_row = transcript_group
+            .bindings
+            .iter()
+            .zip(ACTIONS.iter().filter(|a| a.context == Context::Transcript))
+            .find(|(_, spec)| spec.name == "toggle_tool_output")
+            .map(|(binding, _)| binding)
+            .expect("toggle_tool_output must be one of the transcript rows");
+
+        assert_eq!(toggle_row.keys, "Ctrl-O", "must show the rebound key");
+        assert_ne!(
+            toggle_row.keys, "Ctrl-E",
+            "must NOT show the compiled-in default once rebound"
+        );
     }
 }

@@ -91,7 +91,7 @@ and one spawn mechanism underneath, not three.
 
 | Surface | Fork | Spawn |
 | --- | --- | --- |
-| Interactive TUI | `/fork [<text>]` or `/fork @<agent> <directive>` | `/spawn [@<agent_def>] [<prompt>]` |
+| Interactive TUI | `/fork [--role <alias>\|--model <backend/model>] [<text>]` or `/fork [--role <alias>\|--model <backend/model>] @<agent> <directive>` | `/spawn [--role <alias>\|--model <backend/model>] [@<agent_def>] [<prompt>]` |
 | Embeddable library | `SessionHandle::fork(from, ForkSpec)` | `SessionHandle::spawn(from, SpawnSpec)` |
 | Model tool call | `conway_fork` (or `conway_ask` for the fork-and-read-the-reply shorthand) | `conway_spawn` |
 
@@ -101,6 +101,16 @@ and one spawn mechanism underneath, not three.
 (with a target/def named explicitly) start an **autonomous** child: it runs
 to completion in the background while you keep working with whatever you had
 focused, and you see it appear (and finish) in the `/agents` panel.
+
+`--role <alias>`/`--model <backend/model>` (mutually exclusive) choose the
+child's routing explicitly, on either form: `--role` names a routing role
+alias, exactly like the model-invoked tools' own `role` argument above;
+`--model` pins a specific backend/model pair outright, bypassing routing —
+an OPERATOR-only capability the model-invoked tools deliberately do not
+expose (see the "A model tool call" section above for why). This is the
+parity rule in practice: anything a model can do to the session's own agents
+through `conway_fork`/`conway_spawn`, the operator can do too, from one
+typed command — and, with `--model`, more.
 
 A **bare** `/fork` or `/spawn` — no explicit target, just optionally some
 free text — instead opens a fresh **interactive, keep-alive** child and
@@ -154,6 +164,30 @@ for `conway_spawn`). Both take the same remaining arguments: `prompt`, and
 optional `agent_def`/`role`/`budget`/`tools`/`result_contract`, plus `await`
 (default `true`) to block for the child's result or return its `agent_id`
 immediately for fan-out.
+
+`role` names a routing role alias — the same vocabulary `roles.<alias>` in
+settings and `conway routes explain <role>` use — so the child's turns route
+through that role's own configured fallback chain instead of inheriting this
+agent's. Deliberately NOT a raw `model` argument: a model choosing its own
+child's backend/model pair directly would bypass routing's fallbacks,
+capability filters, and `/why` reasons entirely, and could name a
+backend/model the operator never configured. An alias that names no
+configured role is rejected before the child ever starts — an unconfigured
+`role` is a mistake in the call's own arguments, not something the child
+silently falls back from (inheriting this agent's role, or the configured
+default) and only discovers deep in its own first turn. The rejection
+names the configured roles that WERE available (e.g. `role 'fats' is not a
+configured routing role alias (configured roles: fast, planner)`), so a
+model (or an operator using `/spawn --role`/`/fork --role`) that guessed
+wrong is told the real options, not just that its guess was wrong.
+
+**A role can also narrow which tools the child ever announces**, on top of
+whatever `tools`/its own `agent_def` already narrows it to — see
+[`routing.md`'s "Narrowing a role's own tool
+set"](routing.md#narrowing-a-roles-own-tool-set) for `roles.<alias>.tools`.
+This composes with the call's own `tools` argument as an AND, never an
+override: routing a fork/spawn through a narrowing role can only shrink its
+announced set further, not widen it back out.
 
 **For `conway_fork`, the fan-out discount above ("the same point means the
 same assistant turn") only materializes if every sibling fork is issued as
@@ -226,6 +260,99 @@ for an agent you expect to be idle rather than mid-turn. `SessionHandle::
 cancel_with` is the embedder-facing counterpart; `SessionHandle::cancel`
 keeps calling it with `CancelMode::Immediate`, unchanged from before this
 distinction existed.
+
+### What a parent sees when a child dies (board item A5.3)
+
+conway's stated guarantee is that whatever happens to a child — a crash, a
+blown budget, a cancellation — a final result is written down, so a parent
+that delegated work is never left guessing. That guarantee has THREE
+layers, and it is worth being precise about which one covers which shape
+of "child", because they were not all equally solid before this item.
+
+1. **An in-process child (`conway_fork`/`conway_spawn`, awaited via
+   `conway_await` or the mailbox-notification path above).** Always
+   guaranteed, and has been since `crates/conway-runtime/src/supervisor.rs`
+   existed: a normal finish, a budget trip, a cancellation, or a caught
+   panic all resolve to a real `AgentResult` that `conway_await`
+   eventually returns. What this item found and closed was a narrower,
+   still-real gap in that guarantee's DURABILITY: before A5.3, a panicked
+   or grace-timed-out child's synthesized result was published to the
+   live, in-memory agent tree (so a same-process `conway_await` saw it
+   immediately) but was never written to that child's own persisted
+   session log at all — only a normal `AgentLoop::finish` call ever wrote
+   the terminal `agent_result` record, and a panicking task never reaches
+   that method. A session whose owning task panicked would therefore end
+   its on-disk transcript mid-turn with no result, even though the live
+   process had already moved on. `supervisor::supervise` now persists a
+   synthesized result too, through the identical function `finish` itself
+   calls, gated on the identical "did I win the publish race" check so a
+   session's log never gets two terminal records for one race.
+2. **The one-shot CLI process itself, killed by an OS signal.** `conway -p`
+   installs no signal handling of any kind before this item: an uncaught
+   `SIGTERM`/`SIGHUP`/`SIGINT` runs no process code before the OS tears the
+   process down, indistinguishable, durability-wise, from `SIGKILL` for
+   anything not already written to disk. `conway -p` now catches all
+   three (`crates/conway-cli/src/signal.rs`): the first delivery cancels
+   the running root through the SAME `SessionHandle::cancel` call an
+   operator-driven cancel already uses, giving the normal `AgentLoop::
+   finish_cancelled` -> `finish` path (layer 1's own single writer) a
+   bounded grace window to publish and persist a real `Cancelled { reason:
+   "signal: SIGTERM" }` (or `"signal: SIGHUP"`) result before the process
+   exits with a documented code (`docs/scripting.md`'s exit-code table:
+   143 for SIGTERM, 129 for SIGHUP, 130 for SIGINT). A SECOND delivery of
+   any of the three forces an immediate, unconditional exit — the
+   graceful path depends on the render loop noticing and reacting, and
+   that safety valve must not depend on it. `SIGKILL` itself cannot be
+   caught by anything, ever; nothing in this codebase claims otherwise.
+3. **A raw OS process, delegated by shelling out (`conway -p ... &` from
+   inside a `bash` tool call) rather than through `conway_fork`/
+   `conway_spawn`.** This is NOT `conway_await`-tracked delegation — it is
+   an ordinary background job, and conway's delegation guarantee (layers 1
+   and 2, above) applies to it only insofar as THAT CHILD PROCESS is
+   itself a `conway -p` invocation and therefore benefits from layer 2's
+   own signal handling. A 2026-09-07 incident diagnosed for this item
+   traced exactly this shape: two `conway -p ... &` workers, launched from
+   a THIRD, unrelated orchestrator process via plain shell backgrounding,
+   died mid-edit with no result, no error, and no explanation in their own
+   session logs. The diagnosis (high confidence, corroborated by exact
+   timing — the parent's own `bash` tool call independently hit its
+   120000ms timeout at the same moment, to the second, both workers'
+   processes stopped writing anything): `conway-tools`' `bash` tool, before
+   a companion fix (board item A5.5), waited for a backgrounded command's
+   stdout/stderr pipes to reach EOF before considering its own call
+   complete — which a `cmd &` grandchild holding those same pipes open
+   never lets happen under non-interactive `bash -c` (job control is off,
+   so `&` does not fork a new process group). The call spun to its own
+   timeout, then killed its ENTIRE process group — including the
+   deliberately-backgrounded `conway -p` children, which shared that
+   group because non-interactive backgrounding never gives them one of
+   their own. Structurally, `kill_group` (`crates/conway-tools/src/
+   process.rs`), AT THE TIME of this incident, sent `SIGTERM` first and
+   only escalated to `SIGKILL` if its own direct child had not exited
+   within a 2s grace window; the `bash -c` shell itself had already exited
+   (it only started a background job and returned) by the time the
+   timeout fired, so that escalation check almost certainly never fired
+   here, and a bare, uncaught `SIGTERM` is the most probable actual cause
+   of both deaths — layer 2's own new signal handling would very likely
+   have caught exactly this and left a real `Cancelled` result behind
+   instead. This cannot be verified with certainty after the fact (the OS
+   keeps no record of which signal actually delivered the kill once the
+   process is gone), so treat it as the best-evidenced explanation, not a
+   certainty. **`kill_group`'s grace window has since been fixed to watch
+   the whole process group, not merely its own direct child** (see
+   `docs/tools.md`'s "What `&` does inside `bash`" section) — a fresh
+   recurrence of exactly this shape would now escalate to `SIGKILL`
+   reliably regardless of how quickly the `bash -c` leader itself exits,
+   though layer 2's own signal handling (described just above) remains the
+   right fix for a `conway -p` child specifically, since it leaves a real
+   `Cancelled` result rather than a silent, uncaught `SIGTERM`. The
+   takeaway for an
+   operator or agent writing an orchestration script: **use `conway_fork`/
+   `conway_spawn` + `conway_await` when you need conway's own delegation
+   guarantee; a shelled-out background `conway -p` process gets the
+   guarantee only through its own signal handling (layer 2), never through
+   the parent's tool-call reporting, which has no way to observe a
+   sibling process's death at all.**
 
 ## Budgets
 
@@ -360,6 +487,66 @@ budget** — it gets its own defaults and you set the rest explicitly:
 
 A fan-out is where this matters: ten children with no explicit budget is ten
 independent 40-step allowances, and nothing bounds the tree as a whole.
+
+### Warned before it trips, and told about the neighbors (board item A5.6)
+
+An agent's own budget hard-trips at 100% (`AgentLoop::check_budget`, above)
+without warning, but nothing about that trip is ever the model's FIRST sign
+of trouble. `conway_runtime::runway` computes, once per turn, how close
+each of the four dimensions above is to its ceiling, and at 80% of any one
+(`runway::BUDGET_WARN_FRACTION`) appends a plain-language `SystemNote` to
+the agent's OWN transcript — e.g. `"runway: 4 of 5 max_steps used this
+session (max_steps=5). Wrap up or report now."` for a `max_steps` crossing,
+or naming the elapsed/total seconds for `deadline`. **This already covers
+every agent identically, root or child**: `runway` is called from exactly
+one place in `AgentLoop::run_inner`, and every fork/spawn child runs
+through the same `AgentLoop` code the root does — there has never been a
+second, child-specific copy of this arithmetic to drift out of sync, and
+A5.6 (which investigated exactly this question before building anything
+further) confirmed it rather than assuming otherwise.
+
+What A5.6 actually added is what happens next, for a CHILD specifically —
+the two gaps a real incident exposed (a delegated child died on its own
+10-minute deadline mid-verification, and its parent learned only from the
+terminal `"budget_exceeded"` result, with no warning to either side):
+
+- **The parent learns about the crossing too, while the child is still
+  running.** The moment a child's own runway note fires for a BUDGET
+  dimension (never a context-window-fill note — a context window has no
+  parent-side equivalent), the same crossing reaches the parent two ways:
+  a `SystemNote { reason: "child_budget" }` record appended to the
+  PARENT's own session log (observed the same way [a child's
+  completion](#what-a-parent-sees-when-a-child-dies-board-item-a53) already
+  is when nobody is blocked on `conway_await` — landing in the parent's
+  mailbox and becoming visible on the parent's own next turn), and a live
+  `Event::BudgetWarning { agent_id, limit, text }` on the event stream. The
+  TUI's `/agents` panel marks that row with a `!budget` tag the instant it
+  sees the event — visible before the child is gone, not only in hindsight
+  — so an orchestrating model or the operator can extend the child's
+  budget for a NEW attempt, steer it to wrap up, or simply accept whatever
+  partial work it has, before any of that is lost to a hard trip.
+- **A budget-triggered termination that catches a tool call genuinely mid-
+  flight now says so.** Ending a turn between two model round-trips (the
+  ordinary shape `check_budget` catches) never interrupts anything — by
+  the time it runs, the previous turn's tool calls have already completed.
+  But a deadline can also elapse WHILE a dispatched tool call (a slow
+  `bash` verification run, say) is still executing; before A5.6 that raced
+  path fell back to a bare, unexplained `"cancelled"` reason with no
+  mention of budget OR of what was running. The terminal `AgentResult` now
+  names the elapsed deadline (`"budget: deadline=<ts> elapsed"`) and the
+  interrupted call itself, tool name plus a short truncated argument
+  summary (e.g. `"interrupted mid-call: bash(cargo test --workspace)"`),
+  appended to the summary text. This is deliberately narrow: it fires ONLY
+  for that specific race (no explicit external-cancel reason already
+  stashed, and the agent's own deadline has actually elapsed) — an
+  ordinary hard cancel (`conway_cancel`, `/steer`'s hard mode, a `SIGTERM`)
+  keeps reporting exactly as it always has, unchanged, even when it also
+  happens to catch a tool call in flight.
+
+**No change to what trips a budget, when, or by how much.** `AgentLoop::
+check_budget` itself, and every default `Budget` value, are untouched —
+this section is entirely about what an agent (and its parent) are TOLD,
+never about extending, retrying, or softening a ceiling automatically.
 
 ## Result contracts
 
@@ -540,6 +727,17 @@ not just the one you're currently in, which the live `/agents` panel can't
 do: a resumed session's own past fork/spawn children don't come back as
 live tree nodes (their history stays fully readable, just not through the
 live tree).
+
+**The `tool registry` entry's `tokens_est` reflects every tool actually
+announced that turn — including any MCP server or subprocess plugin
+installed.** A single external MCP server can dominate this entry (a real
+session measured ~10,087 estimated tokens with one installed, versus ~4.4k
+with only built-in tools). Installing
+[`conway.toolindex`](plugins/toolindex.md) narrows every non-built-in
+tool's announced schema down to a one-line index entry, which is what
+shrinks this SAME `/context` line — `/context` does not (yet) break the
+`tool registry` entry down further by which plugin or server contributed
+which tool; that breakdown is a separate, not-yet-built item.
 
 ## `--cwd` and `--root`
 

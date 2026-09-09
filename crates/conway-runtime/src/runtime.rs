@@ -99,6 +99,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use chrono::Utc;
 use conway_core::agent::{
     AgentDefRef, AgentKnobs, AgentResult, AgentStatus, AgentTreeSnapshot, SubagentSpec,
+    ToolSelector,
 };
 use conway_core::capabilities::{CacheMode, HeadroomPolicy, ToolResultBoundPolicy};
 use conway_core::config::{AgentDef, SkillDef, DEFAULT_MAX_PARALLEL_TOOLS};
@@ -284,6 +285,28 @@ pub struct Runtime {
     /// `skills` immediately above. `root.rs`'s `resolve_instructions` reads
     /// it on every `start_root`/`resume_root` call.
     instructions: Arc<Vec<PluginInstruction>>,
+    /// `[roles.<alias>.tools]` (board item `01M1YS138H8T0HNV5YMZ6KD767` part
+    /// 2), already resolved to a concrete `ToolSelector::Only` per role by
+    /// `conway::ConwayBuilder::build` (`conway_core::config::schema::
+    /// RoleToolsConfig::resolve` against the real installed-plugin tool
+    /// universe -- see that method's own doc). A role absent from this map
+    /// (every role with no `tools` table, or the default value every
+    /// pre-existing config resolves to) narrows nothing -- see
+    /// `root::narrow_tools_for_role`'s own doc for the "no entry -> base
+    /// selector unchanged" contract this depends on.
+    ///
+    /// `RwLock`, not a plain `Arc<HashMap<..>>` set once at construction
+    /// (unlike `skills`/`instructions` immediately above): mirrors
+    /// `LoopDeps::context_hook`/`artifact_writer`'s own "purely additive
+    /// post-construction setter" shape ([`Self::set_role_tools`]) precisely
+    /// because `RuntimeDeps` is constructed by field literal in ~30
+    /// existing call sites across this crate and `conway`'s own test suite
+    /// -- a new REQUIRED `RuntimeDeps` field would have broken every one of
+    /// them for a channel most of them have no reason to configure.
+    /// `RwLock::new(Arc::new(HashMap::new()))` here (an empty map, narrowing
+    /// nothing) preserves every existing caller's behavior exactly until
+    /// `set_role_tools` is called.
+    role_tools: RwLock<Arc<HashMap<RoleAlias, ToolSelector>>>,
     /// Held so `Runtime` reflects the spec's illustrative fields even though
     /// no method here reaches back into them directly (both are already
     /// shared, via clones, with `loop_deps`'s `ToolRunner`).
@@ -387,6 +410,13 @@ impl Runtime {
                 .expect("RuntimeDeps.plugins must register without duplicate tool names"),
         );
         let broker = Arc::new(PermissionBroker::new(gate, event_bus.clone()));
+        // Without this, the permission-decision record is fully built and
+        // tested but INERT in production: `decide()` would resolve every
+        // call exactly as before and persist nothing, so `conway sessions
+        // show` would never print a decision. A post-construction setter
+        // rather than a `PermissionBroker::new` parameter so the broker's
+        // ~15 other construction sites stay unchanged -- see `set_store`.
+        broker.set_store(store.clone());
         let tool_runner = Arc::new(ToolRunner::new(
             registry.clone(),
             broker.clone(),
@@ -472,6 +502,7 @@ impl Runtime {
                 agent_defs,
                 skills,
                 instructions,
+                role_tools: RwLock::new(Arc::new(HashMap::new())),
                 registry,
                 broker,
                 hooks,
@@ -523,6 +554,20 @@ impl Runtime {
     /// already call.
     pub(crate) fn instructions(&self) -> &Arc<Vec<PluginInstruction>> {
         &self.instructions
+    }
+
+    /// `Self::role_tools`, for `subagent.rs`'s `impl SubagentHost for
+    /// Runtime` -- mirrors [`Self::skills`]'s own "descendant module sees a
+    /// private field, sibling needs this accessor" doc exactly. Returns a
+    /// cloned `Arc` (a refcount bump, not a deep copy) rather than a
+    /// reference, since the field lives behind a `RwLock` a caller cannot
+    /// hold a borrow across (board item `01M1YS138H8T0HNV5YMZ6KD767` part
+    /// 2).
+    pub(crate) fn role_tools(&self) -> Arc<HashMap<RoleAlias, ToolSelector>> {
+        self.role_tools
+            .read()
+            .expect("role_tools lock poisoned")
+            .clone()
     }
 
     pub(crate) fn tree_ref(&self) -> &Arc<AgentTree> {
@@ -614,6 +659,34 @@ impl Runtime {
             .artifact_writer
             .write()
             .expect("artifact_writer lock poisoned") = writer;
+    }
+
+    /// Replaces the whole per-role tool-narrowing table (board item
+    /// `01M1YS138H8T0HNV5YMZ6KD767` part 2) `start_root`/`resume_root`
+    /// (`runtime::root`'s `narrow_tools_for_role`) and `subagent.rs`'s
+    /// `SubagentHost::start` consult on every root/fork/spawn. Mirrors
+    /// [`Self::set_context_hook`]'s own shape exactly, for the identical
+    /// reason: `RuntimeDeps` is constructed by field literal in ~30 existing
+    /// call sites a new required field would break, so this is a purely
+    /// additive post-construction setter rather than a new `RuntimeDeps`
+    /// field.
+    ///
+    /// `conway::ConwayBuilder::build` is the sole production caller: it
+    /// resolves each configured role's `RoleToolsConfig` (`[roles.<alias>.
+    /// tools]`) against the real installed-plugin tool universe via
+    /// `RoleToolsConfig::resolve`, ONCE, before this is called -- the value
+    /// here is already the concrete per-role `ToolSelector`, never the raw
+    /// include/exclude config. A role absent from `role_tools` (every role
+    /// whose `[roles.<alias>.tools]` table is absent or empty --
+    /// `RoleToolsConfig::is_unset`) narrows nothing: `narrow_tools_for_role`
+    /// returns the base selector unchanged when `role_tools.get(&role)` is
+    /// `None`.
+    ///
+    /// Not called at all (the default) leaves `role_tools` empty, so every
+    /// agent's announced tool set is exactly what it was before this method
+    /// existed.
+    pub fn set_role_tools(&self, role_tools: HashMap<RoleAlias, ToolSelector>) {
+        *self.role_tools.write().expect("role_tools lock poisoned") = Arc::new(role_tools);
     }
 
     /// Registers (or clears, via
@@ -807,6 +880,7 @@ impl Runtime {
             task,
             hooks: self.hooks.clone(),
             parent,
+            store: self.store.clone(),
         });
 
         let handle = AgentHandle {
@@ -894,6 +968,16 @@ impl Runtime {
     /// plugins" line `conway tools list` prints.
     pub fn tool_plugin_count(&self) -> usize {
         self.registry.plugin_count()
+    }
+
+    /// Board item `01M1YS138H8T0HNV5YMZ6KD767` part 2: `/context`'s
+    /// per-plugin tool-registry breakdown reads this, zipped against
+    /// [`Self::tool_specs`] by name, to group the announced set by
+    /// declaring plugin -- see `PluginRegistry::tool_plugin_ids`'s own doc
+    /// for why this is a bulk map rather than a per-name lookup like
+    /// `tool_render_kind`/`tool_path_args` above.
+    pub fn tool_plugin_ids(&self) -> HashMap<ToolName, String> {
+        self.registry.tool_plugin_ids()
     }
 
     /// A4: every registered tool's `(name, category, render_kind)` metadata,

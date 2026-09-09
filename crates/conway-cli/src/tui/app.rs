@@ -46,6 +46,7 @@ use crate::tui::view::Theme;
 mod ask;
 mod await_cmd;
 mod defaults;
+mod editor;
 mod focus;
 mod marketplace;
 mod plugin_cmd;

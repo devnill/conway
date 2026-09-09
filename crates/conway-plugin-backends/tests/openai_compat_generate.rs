@@ -187,6 +187,7 @@ fn capabilities_returns_build_capabilities_output_for_present_and_absent_models(
         dialect_defaults: Dialect::Ollama.defaults(),
         metadata: ModelMetadataStore::defaults().get(&present_model),
         overrides: None,
+        probed_max_context_tokens: None,
     });
     assert_eq!(present, expected_present);
 
@@ -197,6 +198,7 @@ fn capabilities_returns_build_capabilities_output_for_present_and_absent_models(
         dialect_defaults: Dialect::Ollama.defaults(),
         metadata: None,
         overrides: None,
+        probed_max_context_tokens: None,
     });
     assert_eq!(absent, expected_absent);
 }

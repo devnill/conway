@@ -1,0 +1,3 @@
+### Changed
+
+- **The TUI status line's `ctx` field now carries the same "floor (assumed)" provenance marker `conway routes explain` already shows** for a model whose context window is not a sourced fact (`ContextTokensSource::Unverified`) — e.g. `ctx 31% floor (assumed)`. The number and its provenance now both come from `Conway::capability_index()`, the same resolved `(backend, model)` index `routes explain`, the runway notice, and the admission gate already read, rather than reading `Conway::model_metadata()`'s bare `max_context_tokens` directly (which carried no provenance at all). A `verified`, `models.json`, or `probed` window never carries the marker.

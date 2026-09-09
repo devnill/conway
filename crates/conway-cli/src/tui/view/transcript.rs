@@ -143,6 +143,18 @@ fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
                 state.show_timestamps,
                 theme,
             );
+            // Board item 01M1YVEJB6GAPST5YZET4KZZE2: a settled `edit`/
+            // `write` entry's own diff (computed once at result time and
+            // stored in `state.tool_diffs`, keyed by `call_id` -- see that
+            // field's own doc) is appended here, AFTER `entry_lines`'
+            // pure output, rather than threaded through `entry_lines`/
+            // `tool_lines`'s own parameters: this keeps their signatures
+            // (and every one of their ~30 existing test call sites in this
+            // file) untouched, since the diff is state-associated auxiliary
+            // data, not part of the `Entry`'s own stored content. See
+            // `append_diff_lines`'s own doc for the folding rule this
+            // mirrors from `tool_lines`'s own output-preview cap.
+            append_diff_lines(&mut lines, entry, state, theme);
             if streaming_assistant && Some(i) == last_assistant_idx {
                 if let Some(last) = lines.last_mut() {
                     // Reuse the assistant body style for the cursor so it
@@ -262,6 +274,12 @@ pub(super) fn entry_row_starts(state: &AppState, width: u16, scroll_row: u16) ->
             state.show_timestamps,
             &theme,
         );
+        // Mirrors `build_lines`'s identical append just above (see that
+        // call site's own doc) -- omitting it here would make this
+        // function under-count a settled `edit`/`write` entry's rows by
+        // exactly the diff's own row count, for every entry after it,
+        // for as long as the diff is showing.
+        append_diff_lines(&mut lines, entry, state, &theme);
         if (streaming_assistant && Some(i) == last_assistant_idx)
             || (streaming_reasoning && Some(i) == last_reasoning_idx)
         {
@@ -304,6 +322,10 @@ pub(super) fn entry_row_starts(state: &AppState, width: u16, scroll_row: u16) ->
 ///   collapsed, pretty-printed while expanded) and any accumulated
 ///   `progress` notes (dim `-> {note}` lines) between the args and the
 ///   output block.
+/// - `Entry::PermissionDecision` renders its own pre-formatted `text` as a
+///   single dim line, no prefix, right where `AppState::apply` pushed it
+///   (chronologically beneath the tool call it belongs to -- see that
+///   variant's own doc).
 pub fn entry_lines(
     entry: &Entry,
     tool_cap: u32,
@@ -390,6 +412,15 @@ pub fn entry_lines(
             text.split('\n')
                 .map(|line| Line::from(Span::styled(line.to_string(), style)))
                 .collect()
+        }
+        // A prompted `Event::PermissionDecision`'s own dim one-line note --
+        // see `Entry::PermissionDecision`'s own doc for why this is
+        // `theme.dim` (the SAME slot a tool's own `progress`/`args:` lines
+        // already use), not `theme.notice`/`theme.error`: a SYSTEM audit
+        // fact must never read as either model output or an operator
+        // message.
+        Entry::PermissionDecision { text, .. } => {
+            vec![Line::from(Span::styled(text.clone(), theme.dim))]
         }
     }
 }
@@ -549,11 +580,7 @@ fn tool_lines(
             }
         } else {
             let flat: String = args.split('\n').collect::<Vec<_>>().join(" ");
-            let preview_str = if flat.len() > ARGS_COLLAPSED_LIMIT {
-                format!("{}…", &flat[..ARGS_COLLAPSED_LIMIT])
-            } else {
-                flat
-            };
+            let preview_str = truncate_chars_with_ellipsis(&flat, ARGS_COLLAPSED_LIMIT);
             lines.push(Line::from(Span::styled(
                 format!("args: {preview_str}"),
                 theme.dim,
@@ -620,6 +647,37 @@ fn tool_lines(
 /// truncated with a `…` sentinel and revealed in full by Ctrl-E.
 const ARGS_COLLAPSED_LIMIT: usize = 120;
 
+/// Truncates `text` to at most `budget` CHARACTERS (not bytes), replacing
+/// the tail with a single `…` sentinel once it doesn't fit whole -- never
+/// panics on any input, including one where the byte at `budget` falls
+/// inside a multi-byte character. A prior version of this file's own args
+/// preview sliced `&flat[..ARGS_COLLAPSED_LIMIT]` directly (a raw BYTE
+/// index into a `String`, despite the limit's own doc calling it a
+/// character count) and crashed the whole TUI (`byte index 120 is not a
+/// char boundary`) the first time a tool call's JSON args happened to put
+/// a multi-byte character (an em dash, in the field report) straddling
+/// that byte offset. Mirrors `view::header::truncate_chars_with_ellipsis`
+/// exactly (not shared: each `tui::view` submodule is private with no
+/// common utils module today, and this crate already carries a handful of
+/// near-identical small per-file truncation helpers with slightly
+/// different contracts -- `status::truncate_to_width`,
+/// `state::transcript::truncate_tail_chars` -- so duplicating this one
+/// matches established local practice rather than a real gap).
+fn truncate_chars_with_ellipsis(text: &str, budget: usize) -> String {
+    if text.chars().count() <= budget {
+        return text.to_string();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+    if budget == 1 {
+        return "…".to_string();
+    }
+    let mut truncated: String = text.chars().take(budget - 1).collect();
+    truncated.push('…');
+    truncated
+}
+
 /// Maps a [`ToolStatus`] to its `[tag]` label and the theme slot for the
 /// tag's color. Kept as a free function so the per-status -> style mapping
 /// is testable on its own and so `tool_lines` reads as plain formatting.
@@ -656,6 +714,90 @@ pub(super) fn node_status_style(status: NodeStatus, theme: &Theme) -> (&'static 
         NodeStatus::Failed => ("failed", theme.agent_failed),
         NodeStatus::Cancelled => ("cancelled", theme.agent_cancelled),
     }
+}
+
+/// Board item 01M1YVEJB6GAPST5YZET4KZZE2: appends a settled `edit`/`write`
+/// entry's own diff (`state.tool_diffs.get(call_id)` -- computed exactly
+/// once, at result time, in `AppState::finish_tool`, never recomputed from
+/// disk here or anywhere else in this render path) to `lines`, styled
+/// through the `diff_add`/`diff_del` theme slots and folded under the SAME
+/// `tool_preview_lines` cap + `Ctrl-E` affordance [`tool_lines`]'s own
+/// output preview already uses (reusing `entry.expanded` -- args, output,
+/// and now the diff all expand/collapse together via that one flag). A
+/// no-op for any entry that is not a settled `Entry::Tool` named `edit`/
+/// `write`, or one with nothing stored in `tool_diffs` (every other tool,
+/// a failed call, or a call whose diff was empty).
+fn append_diff_lines(
+    lines: &mut Vec<Line<'static>>,
+    entry: &Entry,
+    state: &AppState,
+    theme: &Theme,
+) {
+    let Entry::Tool {
+        call_id,
+        name,
+        expanded,
+        ..
+    } = entry
+    else {
+        return;
+    };
+    if !matches!(name.as_str(), "edit" | "write") {
+        return;
+    }
+    let Some(diff_text) = state.tool_diffs.get(call_id) else {
+        return;
+    };
+    // Trailing `\n` on `unified_diff`'s own output means a naive `split`
+    // would yield one spurious empty final element -- filtered out below
+    // rather than trusting the producer's exact trailing-newline shape.
+    let all_lines: Vec<&str> = diff_text.split('\n').filter(|l| !l.is_empty()).collect();
+    if all_lines.is_empty() {
+        return;
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("diff:", theme.dim)));
+    let total = all_lines.len();
+    let cap = state.tool_preview_lines.max(1) as usize;
+    let shown: &[&str] = if *expanded || total <= cap {
+        &all_lines
+    } else {
+        &all_lines[..cap]
+    };
+    for line in shown {
+        lines.push(diff_styled_line(line, theme));
+    }
+    if !*expanded && total > cap {
+        let hidden = total - cap;
+        lines.push(Line::from(Span::styled(
+            format!("… (+{hidden} lines, Ctrl-E to expand)"),
+            theme.dim,
+        )));
+    }
+}
+
+/// Styles ONE physical line of a `crate::diff::unified_diff` unified-diff
+/// text: `+`-prefixed (not the `+++` file header) in [`Theme::diff_add`],
+/// `-`-prefixed (not `---`) in [`Theme::diff_del`], and every other line
+/// (a ` `-prefixed context line, an `@@` hunk header, or a `---`/`+++` file
+/// header) dim. The WHOLE line is always kept as ONE `Span`'s text content
+/// -- never sliced by byte offset (the marker check below is
+/// `starts_with`/`chars().next()`, never `&line[1..]`), so a multi-byte
+/// character anywhere in the line, including immediately after the marker,
+/// can never land this on a non-char-boundary byte index the way a raw
+/// slice could (`view/transcript.rs`'s own `truncate_chars_with_ellipsis`
+/// doc tells that exact incident).
+pub(super) fn diff_styled_line(line: &str, theme: &Theme) -> Line<'static> {
+    let style = if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
+        theme.dim
+    } else {
+        match line.chars().next() {
+            Some('+') => theme.diff_add,
+            Some('-') => theme.diff_del,
+            _ => Style::default(),
+        }
+    };
+    Line::from(Span::styled(line.to_string(), style))
 }
 
 #[cfg(test)]
@@ -708,6 +850,10 @@ mod tests {
             Entry::Error {
                 text: "fatal error: boom".to_string(),
                 fatal: true,
+            },
+            Entry::PermissionDecision {
+                call_id: "c1".to_string(),
+                text: "allowed once · waited 4m 12s".to_string(),
             },
         ];
 
@@ -2028,6 +2174,236 @@ mod tests {
             "the streaming cursor pushes a boundary-width assistant line onto a \
              second wrapped row, so the following entry must start one row lower; \
              idle={idle:?} streaming={streaming:?}"
+        );
+    }
+
+    /// Field-reported crash: a collapsed `args:` preview whose flattened
+    /// JSON happens to put a multi-byte character (an em dash, `—`, 3
+    /// bytes) straddling `ARGS_COLLAPSED_LIMIT`'s byte offset panicked the
+    /// whole TUI with "byte index 120 is not a char boundary". Built to
+    /// reproduce exactly that shape: 118 ASCII bytes, then `—`, so the
+    /// naive byte-120 cut lands inside it.
+    #[test]
+    fn args_preview_truncates_on_a_char_boundary_not_mid_multibyte_char() {
+        let prefix = "x".repeat(118);
+        let args = format!(
+            r#"{{"prompt":"{prefix}—rest of a much longer prompt that keeps going well past the limit"}}"#
+        );
+        assert!(args.len() > ARGS_COLLAPSED_LIMIT);
+
+        let entry = Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "task".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: String::new(),
+            args,
+            progress: String::new(),
+            expanded: false,
+            ts: None,
+        };
+
+        // Must not panic (the field-reported crash), and the collapsed
+        // preview must still end in the `…` sentinel truncation produces.
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let args_line = lines
+            .iter()
+            .map(plain_text)
+            .find(|t| t.starts_with("args:"))
+            .expect("a collapsed args line");
+        assert!(
+            args_line.ends_with('…'),
+            "expected a truncated args preview, got: {args_line:?}"
+        );
+    }
+
+    /// [`truncate_chars_with_ellipsis`] counts CHARACTERS, not bytes -- a
+    /// budget of 5 keeps exactly 5 multi-byte characters (not 5 bytes'
+    /// worth, which would keep fewer), and never panics regardless of
+    /// where a multi-byte character falls relative to the budget.
+    #[test]
+    fn truncate_chars_with_ellipsis_counts_chars_not_bytes() {
+        let text = "—".repeat(10); // each `—` is 3 bytes
+        let truncated = truncate_chars_with_ellipsis(&text, 5);
+        assert_eq!(truncated.chars().count(), 5, "4 kept chars + 1 sentinel");
+        assert!(truncated.ends_with('…'));
+    }
+
+    // ---- Board item 01M1YVEJB6GAPST5YZET4KZZE2: settled edit/write diff ----
+
+    /// A settled `edit` entry with a stored diff (`state.tool_diffs`) folds
+    /// colored `-`/`+` lines into `build_lines`' output, styled through
+    /// `theme.diff_add`/`theme.diff_del` -- distinct from the plain
+    /// `Style::default()` a context/header line gets.
+    #[test]
+    fn a_settled_edit_entrys_diff_renders_colored_plus_minus_lines() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.transcript.push(Entry::Tool {
+            call_id: "tc_1".to_string(),
+            name: "edit".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "edited f.txt: 1 replacement(s)".to_string(),
+            args: serde_json::json!({"path": "f.txt", "old_string": "a", "new_string": "b"})
+                .to_string(),
+            progress: String::new(),
+            expanded: true,
+            ts: None,
+        });
+        state.tool_diffs.insert(
+            "tc_1".to_string(),
+            "--- f.txt\n+++ f.txt\n@@ -1,1 +1,1 @@\n-a\n+b\n".to_string(),
+        );
+
+        let theme = Theme::default();
+        let lines = build_lines(&state, &theme);
+        let minus = lines
+            .iter()
+            .find(|l| plain_text(l) == "-a")
+            .expect("a removed line");
+        let plus = lines
+            .iter()
+            .find(|l| plain_text(l) == "+b")
+            .expect("an added line");
+        assert_eq!(minus.spans[0].style, theme.diff_del);
+        assert_eq!(plus.spans[0].style, theme.diff_add);
+    }
+
+    /// The diff folds under the SAME `tool_preview_lines` cap the output
+    /// preview already uses, with the identical `Ctrl-E to expand`
+    /// affordance wording, while `expanded` is `false`.
+    #[test]
+    fn a_collapsed_edit_entrys_diff_folds_under_the_preview_cap() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.tool_preview_lines = 2;
+        state.transcript.push(Entry::Tool {
+            call_id: "tc_1".to_string(),
+            name: "edit".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: String::new(),
+            args: serde_json::json!({"path": "f.txt", "old_string": "a", "new_string": "b"})
+                .to_string(),
+            progress: String::new(),
+            expanded: false,
+            ts: None,
+        });
+        // 5 real diff lines -- more than the 2-line cap.
+        state.tool_diffs.insert(
+            "tc_1".to_string(),
+            "--- f.txt\n+++ f.txt\n@@ -1,3 +1,3 @@\n-a\n+b\n".to_string(),
+        );
+
+        let lines = build_lines(&state, &Theme::default());
+        let text = lines.iter().map(plain_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("Ctrl-E to expand"), "{text}");
+        assert!(
+            !text.contains("-a"),
+            "collapsed must hide lines past the cap: {text}"
+        );
+    }
+
+    /// The item's own required check, at the transcript render level too: a
+    /// multi-byte character mid-line in a stored diff must render through
+    /// the REAL `draw` pass without panicking.
+    #[test]
+    fn a_settled_edit_diff_with_a_multibyte_character_mid_line_never_panics() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.transcript.push(Entry::Tool {
+            call_id: "tc_1".to_string(),
+            name: "edit".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: String::new(),
+            args: serde_json::json!({"path": "f.txt", "old_string": "x", "new_string": "y"})
+                .to_string(),
+            progress: String::new(),
+            expanded: true,
+            ts: None,
+        });
+        state.tool_diffs.insert(
+            "tc_1".to_string(),
+            "--- f.txt\n+++ f.txt\n@@ -1,1 +1,1 @@\n-price: 10\u{2014}20\n+price: 15\u{2014}25\n"
+                .to_string(),
+        );
+
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        // Must not panic.
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+    }
+
+    /// The diff's own decoration (markers, the `diff:` label, the fold
+    /// affordance) never introduces a box-drawing glyph -- the clean-copy
+    /// guarantee this module's own doc describes extends to the diff block,
+    /// not only to `entry_lines`' own output.
+    #[test]
+    fn a_settled_edit_diffs_own_decoration_has_no_box_drawing_glyphs() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.tool_preview_lines = 1;
+        state.transcript.push(Entry::Tool {
+            call_id: "tc_1".to_string(),
+            name: "edit".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: String::new(),
+            args: serde_json::json!({"path": "f.txt", "old_string": "a", "new_string": "b"})
+                .to_string(),
+            progress: String::new(),
+            expanded: false,
+            ts: None,
+        });
+        state.tool_diffs.insert(
+            "tc_1".to_string(),
+            "--- f.txt\n+++ f.txt\n@@ -1,2 +1,2 @@\n-a\n-c\n+b\n+d\n".to_string(),
+        );
+
+        let lines = build_lines(&state, &Theme::default());
+        for line in &lines {
+            let text = plain_text(line);
+            assert!(
+                !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
+                "box-drawing chrome leaked into the diff block: {text:?}"
+            );
+        }
+    }
+
+    /// `Entry::PermissionDecision` renders its pre-formatted `text` as a
+    /// single DIM line -- `theme.dim`, the same slot a tool's own
+    /// `progress`/`args:` lines already use, never `theme.notice` (cyan,
+    /// what an ordinary informational line -- or a future accidental
+    /// "system record read as an operator message" bug -- would use
+    /// instead). What a wrong implementation styling this as `theme.notice`
+    /// would still pass: a test only checking the TEXT renders. This one
+    /// checks the STYLE, which is the property this variant's own doc says
+    /// must never be mistaken for a routine notice.
+    #[test]
+    fn permission_decision_entry_renders_dim_not_notice() {
+        let entry = Entry::PermissionDecision {
+            call_id: "c1".to_string(),
+            text: "allowed once · waited 4m 12s".to_string(),
+        };
+        let theme = Theme::default();
+        let lines = entry_lines(&entry, 3, false, &theme);
+        assert_eq!(
+            lines.len(),
+            1,
+            "a single dim line, per this variant's own doc"
+        );
+        assert_eq!(plain_text(&lines[0]), "allowed once · waited 4m 12s");
+        let style = lines[0].spans[0].style;
+        assert_eq!(
+            style, theme.dim,
+            "must render in theme.dim (the SAME slot progress/args lines use), not theme.notice"
+        );
+        assert_ne!(
+            style, theme.notice,
+            "a permission-decision line must not be visually indistinguishable from an \
+             ordinary Entry::Notice"
         );
     }
 }

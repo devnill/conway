@@ -71,6 +71,21 @@ pub struct Cli {
     #[arg(long, value_enum, default_value = "allowlist")]
     pub permission_mode: OneShotPermissionMode,
 
+    /// Overrides the TUI's STARTING permission mode for this one launch --
+    /// mirrors `permissions.default_mode` in `settings.json`
+    /// (`conway::config::schema::PermissionsConfig::default_mode`), taking
+    /// precedence over it exactly the way every other CLI flag here
+    /// outranks its `settings.json` counterpart. Distinct from `Shift-Tab`/
+    /// `/settings -> permissions`, which still cycle the SESSION's current
+    /// mode after startup -- this flag only ever sets where the session
+    /// BEGINS. Ignored by one-shot (`-p`), which has no notion of a
+    /// "starting mode" (see `--permission-mode`'s own doc for why the two
+    /// flags cannot share a name). `None` (the default): the TUI starts in
+    /// whichever mode `permissions.default_mode` resolves to (`prompt` if
+    /// unset).
+    #[arg(long, value_enum)]
+    pub default_permission_mode: Option<TuiPermissionMode>,
+
     /// Run the root agent under this role instead of the configured
     /// `default_role`. A role is an alias resolved to a model chain by
     /// `roles.<alias>` in settings -- see `conway routes explain <role>`.
@@ -170,18 +185,62 @@ pub struct Cli {
     /// exists, passing one here always resolves to the "already exists,
     /// use --resume instead" usage error below, exactly as passing that
     /// session's own id would.
-    #[arg(long, conflicts_with_all = ["resume", "fork_from"])]
+    ///
+    /// Still one-shot-only (board item `01M1YS4FMJH004D1Y619MTBY7A` did not
+    /// extend this one): the TUI has no "create with this exact id" use
+    /// case the way a script does, so `--session` at TUI startup keeps the
+    /// refusal `--resume`/`--fork-from`/`--continue` just below shed.
+    #[arg(long, conflicts_with_all = ["resume", "fork_from", "continue_session"])]
     pub session: Option<String>,
 
     /// Reattach to a persisted session and continue its transcript. Also
     /// accepts an operator-chosen name (`conway sessions name`) wherever it
     /// accepts an id.
-    #[arg(long, conflicts_with_all = ["session", "fork_from"])]
+    ///
+    /// Board item `01M1YS4FMJH004D1Y619MTBY7A`: now honored at TUI startup
+    /// too, not just by one-shot -- opens the TUI on the named session with
+    /// its history backfilled into the transcript, exactly as `/resume
+    /// <id|name>` does once the TUI is already running. See
+    /// `tui::app::startup::App::resolve_handle`'s own doc for the
+    /// resulting flag interactions (budget/prompt flags still refused
+    /// alongside it, matching one-shot's own `resolve_session`).
+    #[arg(long, conflicts_with_all = ["session", "fork_from", "continue_session"])]
     pub resume: Option<String>,
 
     /// Branch a new session from `<session-id-or-name>[@<seq>]`.
-    #[arg(long, value_name = "SID[@SEQ]", conflicts_with_all = ["session", "resume"])]
+    ///
+    /// Board item `01M1YS4FMJH004D1Y619MTBY7A`: now honored at TUI startup
+    /// too -- see `--resume`'s own doc, above, for what that means for the
+    /// TUI specifically.
+    #[arg(
+        long,
+        value_name = "SID[@SEQ]",
+        conflicts_with_all = ["session", "resume", "continue_session"]
+    )]
     pub fork_from: Option<String>,
+
+    /// Resume the most recently WRITTEN-TO session for this project (the
+    /// same project-keyed `session.root` directory `--resume`/`--session`
+    /// already scope to) -- "pick up where I left off," with no id to
+    /// look up first. Board item `01M1YS4FMJH004D1Y619MTBY7A`.
+    ///
+    /// Ranked by each candidate session's own log file's last-write time,
+    /// NOT `SessionMeta::created` (that session's birth) -- an older
+    /// session chatted in five minutes ago must outrank a brand-new,
+    /// still-empty one. See
+    /// `tui::app::startup::most_recently_written_session`'s own doc for the
+    /// mechanism and why `SessionMeta` alone cannot answer this.
+    ///
+    /// TUI-only in this release (mirrors `--resume`'s own current scope):
+    /// one-shot's own `resolve_session` has no `--continue` arm yet, since
+    /// this item's acceptance criteria only ever exercise the interactive
+    /// path.
+    #[arg(
+        short = 'c',
+        long = "continue",
+        conflicts_with_all = ["session", "resume", "fork_from"]
+    )]
+    pub continue_session: bool,
 
     /// Settings file to use as the project layer, instead of discovering the
     /// nearest `.conway/settings.json` by walking up from `--cwd`. It does
@@ -268,17 +327,46 @@ pub enum OutputFormat {
 }
 
 /// `--permission-mode`: how one-shot mode's tool gate is built. Distinct
-/// from `conway::config`'s own `permissions.mode`
-/// (`conway::config::schema::PermissionsConfigMode`, which additionally has
-/// a `Prompt` variant meaningful only to the TUI/an embedder) -- one-shot
-/// mode never prompts (notes), so this CLI-facing enum only has the two
-/// variants a non-interactive run can actually use. Also distinct from
-/// `conway::PermissionMode` (`Prompt`/`Plan`/`AutoAllow`, the TUI's
-/// operator-facing runtime mode) -- three unrelated types once shared this
-/// name; this one and the config-schema one were each given a disambiguating
-/// name, and the TUI's own kept `PermissionMode` unchanged.
+/// from `conway::gates::GateMode` (`conway::gates::GateConfig::mode`,
+/// which additionally has a `Prompt` variant meaningful only to an
+/// embedder with no gate/prompt handler of its own) -- one-shot mode never
+/// prompts (notes), so this CLI-facing enum only has the two variants a
+/// non-interactive run can actually use. Also distinct from `--default-
+/// permission-mode` (`TuiPermissionMode`/`conway::PermissionMode`,
+/// `Prompt`/`Plan`/`AutoAllow`) -- the TUI's own STARTING mode, an
+/// unrelated axis this flag has no equivalent of, since one-shot has no
+/// session for a "starting mode" to mean anything about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum OneShotPermissionMode {
     Allowlist,
     Deny,
+}
+
+/// `--default-permission-mode`: the TUI's own, unrelated flag -- see
+/// `Cli::default_permission_mode`'s own doc for why it cannot share
+/// [`OneShotPermissionMode`]'s flag name or value space.
+///
+/// `#[value(rename_all = "snake_case")]`, not clap's default kebab-case:
+/// this must accept exactly the same wire spelling
+/// `permissions.default_mode` does in `settings.json`
+/// (`conway_core::permission_mode::PermissionMode`'s own `#[serde(rename_all
+/// = "snake_case")]`) -- `--default-permission-mode auto_allow`, matching
+/// `default_mode = "auto_allow"`, not the kebab-case `auto-allow` clap
+/// would otherwise pick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum TuiPermissionMode {
+    Prompt,
+    Plan,
+    AutoAllow,
+}
+
+impl From<TuiPermissionMode> for conway::PermissionMode {
+    fn from(mode: TuiPermissionMode) -> Self {
+        match mode {
+            TuiPermissionMode::Prompt => conway::PermissionMode::Prompt,
+            TuiPermissionMode::Plan => conway::PermissionMode::Plan,
+            TuiPermissionMode::AutoAllow => conway::PermissionMode::AutoAllow,
+        }
+    }
 }

@@ -389,6 +389,34 @@ pub fn classify(msg: AgentMessage) -> DrainEffect {
                 prov: Provenance::ChildResult { from },
             })
         }
+        // Board item A5.6: a child crossing 80% of one of its OWN budget
+        // dimensions (`agent_loop.rs`'s runway block, the ONE place this
+        // message is ever sent). Persists as a plain `SystemNote` --
+        // `reason: "child_budget"` distinguishes it from this agent's own
+        // `"runway"`-reasoned notes in the same log -- the same
+        // `DrainEffect::Persist` shape `Steer`/`Result` already take, so it
+        // lands on the parent's log and is read back like any other record
+        // on the parent's very next turn (no code path injects into a
+        // context outside `drain_inbox`; see this module's own doc). `text`
+        // is already the fully-composed, child-attributed sentence
+        // `AgentMessage::BudgetNotice`'s own doc describes -- this arm does
+        // no further formatting, mirroring `Steer`'s identical
+        // pass-the-text-through shape.
+        // `from` is not carried into `Provenance::SystemNote` (which has no
+        // slot for it, unlike `Provenance::ChildResult`) -- `text` already
+        // names the crossing child explicitly (`AgentMessage::BudgetNotice`'s
+        // own send site composes it that way), so nothing is lost.
+        AgentMessage::BudgetNotice { from: _, text } => {
+            DrainEffect::Persist(LogRecord::SystemNote {
+                seq: LogSeq::ZERO,
+                ts: Utc::now(),
+                text,
+                reason: "child_budget".to_string(),
+                prov: Provenance::SystemNote {
+                    reason: "child_budget".to_string(),
+                },
+            })
+        }
         _ => DrainEffect::Unknown,
     }
 }
@@ -490,6 +518,38 @@ mod tests {
             }),
             DrainEffect::Persist(LogRecord::ChildResultRecord { .. })
         ));
+        assert!(matches!(
+            classify(AgentMessage::BudgetNotice {
+                from,
+                text: "child nearing a limit".into(),
+            }),
+            DrainEffect::Persist(LogRecord::SystemNote { .. })
+        ));
+    }
+
+    /// Board item A5.6: the persisted record's `reason` distinguishes a
+    /// forwarded child crossing (`"child_budget"`) from this agent's OWN
+    /// `"runway"`-reasoned notes in the same log, and carries the text
+    /// verbatim -- `classify` does no further formatting of its own.
+    #[test]
+    fn budget_notice_persists_as_a_system_note_reasoned_child_budget() {
+        let from = AgentId::new();
+        match classify(AgentMessage::BudgetNotice {
+            from,
+            text: "child ... is nearing a budget limit -- runway: 4 of 5 max_steps used".into(),
+        }) {
+            DrainEffect::Persist(LogRecord::SystemNote {
+                text, reason, prov, ..
+            }) => {
+                assert_eq!(reason, "child_budget");
+                assert!(text.contains("4 of 5 max_steps"));
+                match prov {
+                    Provenance::SystemNote { reason } => assert_eq!(reason, "child_budget"),
+                    other => panic!("expected Provenance::SystemNote, got {other:?}"),
+                }
+            }
+            other => panic!("expected DrainEffect::Persist(SystemNote), got {other:?}"),
+        }
     }
 
     /// The persisted record carries

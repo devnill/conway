@@ -29,8 +29,8 @@ use conway::backend_usability::Usability;
 use conway::config::schema::BackendEntry;
 use conway::plugin::PluginStatusContribution;
 use conway::{
-    AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq, PermissionMode, ResultStatus,
-    SegmentId, SubagentMode, Usage,
+    AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq, ModelRef, PermissionDecisionKind,
+    PermissionMode, ResultStatus, RoleAlias, RoutingReason, SegmentId, SubagentMode, Usage,
 };
 
 use super::config::StatusLineConfig;
@@ -47,7 +47,7 @@ mod transcript;
 mod turn_summary;
 
 pub use agent_panel::AgentVisibility;
-pub use agent_tree::{AgentTreeView, NodeStatus, TreeNode};
+pub use agent_tree::{AgentTreeView, NodeStatus, SpawnRoleOrModel, TreeNode};
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use modal::{
     AddProviderContextWindowState, AddProviderCredentialState, AskFate, AskModal,
@@ -55,7 +55,14 @@ pub use modal::{
     DEFAULT_DENY_FEEDBACK,
 };
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
-pub use transcript::{clamp_tool_preview_lines, Entry, ToolStatus};
+pub use transcript::{backfill_entries, clamp_tool_preview_lines, Entry, ToolStatus};
+
+/// Board item A1d: how many `Event::ModelDecision` envelopes
+/// [`AppState::model_decision_history`] retains, oldest dropped first --
+/// enough for `/why` to show a genuinely useful session history (INTENT.md
+/// §5c's own example session saw six flips) without an unbounded session
+/// growing this field forever.
+pub const MODEL_DECISION_HISTORY_CAP: usize = 10;
 
 /// One installed plugin command, projected into the shape `/help`'s pointer
 /// to the palette and `view::palette` need -- `commands::CommandRegistry::palette_entries`
@@ -292,21 +299,25 @@ pub struct PluginBrowserEntry {
 pub struct AppState {
     pub transcript: Vec<Entry>,
     pub tree: AgentTreeView,
-    /// The last `Event::ModelDecision` envelope seen, for `/why`. Populated
-    /// by `app.rs`'s run loop on `Event::ModelDecision` and read by
-    /// `commands::render_why`; `apply` intentionally leaves it untouched so
-    /// it stays pure.
-    pub last_model_decision: Option<Envelope>,
-    /// The `ModelDecision` envelope this session saw immediately BEFORE
-    /// [`Self::last_model_decision`] -- i.e. what the decision *was*, so
-    /// `/why` (`commands::render_why`) can report what changed after a
-    /// `/model`/`/role` switch, not merely the latest decision in
-    /// isolation. Populated the SAME place `last_model_decision` is
-    /// (`app.rs`'s run loop shifts the old value here before overwriting
-    /// it), for the identical reason: `apply` stays pure. `None` until a
-    /// SECOND `ModelDecision` has been seen this session -- the ordinary
-    /// "nothing to compare against yet" case for a session's first turn.
-    pub previous_model_decision: Option<Envelope>,
+    /// Board item A1d ("say why a turn fell back"): every `Event::
+    /// ModelDecision` envelope this session has seen, oldest first, capped
+    /// at [`MODEL_DECISION_HISTORY_CAP`] entries -- what lets `/why`
+    /// (`commands::render_why`) show a short SESSION history of routing
+    /// changes ("mid-session model changes are ordinary") rather than only
+    /// the latest decision. Populated by `app.rs`'s run loop on
+    /// `Event::ModelDecision`; `apply` intentionally leaves it untouched so
+    /// it stays pure -- the same split the single-slot `last_model_decision`
+    /// field this replaced always used.
+    ///
+    /// **Supersedes the former `last_model_decision`/
+    /// `previous_model_decision` pair** (a fixed two-slot cache -- the
+    /// newest decision and the one immediately before it, nothing older):
+    /// both were reachable ONLY through `render_why`, so widening the
+    /// question from "what changed last" to "what changed this session"
+    /// meant replacing the pair rather than adding a third field beside
+    /// them. `back()` is today's `last_model_decision`;
+    /// `iter().rev().nth(1)` is today's `previous_model_decision`.
+    pub model_decision_history: VecDeque<Envelope>,
     pub input: String,
     /// Cursor position within `input`, as a *char* index (not byte offset)
     /// -- `input.rs` translates to a byte offset via `char_indices` before
@@ -323,6 +334,16 @@ pub struct AppState {
     /// disagree the broker wins, and the visible consequence is a stale
     /// label -- which is why `/settings` writes both together.
     pub permission_mode: PermissionMode,
+    /// V2b (board item 01M1YVP3FDPHY4WZ72SXMWAN2D): the mode this session
+    /// STARTED in -- the resolved, trust-gated `permissions.default_mode`
+    /// (or `--default-permission-mode`) `App::new` computed once, before
+    /// the first `Shift-Tab`/`/settings` change to [`Self::permission_mode`]
+    /// could ever happen. Never mutated after `App::new` sets it: this is
+    /// what `/settings -> permissions` shows BESIDE the current, cycling
+    /// [`Self::permission_mode`] row so the two are never confused (a
+    /// standing surface ruling -- see `App::new`'s own doc for the
+    /// precedence/trust computation).
+    pub default_permission_mode: PermissionMode,
     /// V2b: where a newly-granted pattern is persisted, in precedence
     /// order (project first, then global). Resolved once at `App::new`.
     /// Empty when neither scope resolves, in which case a grant applies
@@ -624,6 +645,56 @@ pub struct AppState {
     /// arrives -- this set exists only to refuse a duplicate `/await`, never
     /// to gate whether/where the notice is shown.
     pub awaiting_agents: HashSet<AgentId>,
+    /// Board item A5.6: every agent (root or child) this session has
+    /// observed cross 80% of one of its OWN budget dimensions
+    /// (`Event::BudgetWarning`), so the `/agents` panel can mark the row --
+    /// the acceptance criterion this field exists for. A SEPARATE side-table
+    /// from `AgentTreeView`/`TreeNode` (mirrors `agent_names`' own "alongside,
+    /// never a `TreeNode` field" shape, `view/agents.rs`'s `agent_name`
+    /// doc) rather than a new `TreeNode` field: `TreeNode` is constructed by
+    /// plain struct literal at every one of this crate's own call sites (no
+    /// `Default` impl, deliberately -- every field is meant to be an
+    /// explicit choice at each construction site), so adding a field there
+    /// would touch every one of them for a marker only THIS event ever
+    /// sets. Once an agent crosses, it stays marked for the rest of the
+    /// session -- the crossing already happened and stays a true fact about
+    /// that agent's run even after it later finishes; nothing clears an
+    /// entry.
+    pub budget_warned_agents: HashSet<AgentId>,
+    /// Board item A1d ("say why a turn fell back"), the "switch-forks do not
+    /// pile up" half: every `/model`/`/role` switch's OWN child, mapped to
+    /// the agent it replaced -- `switch_session`'s (`commands.rs`) one write
+    /// site, right after the fork it just made succeeds. A side-table
+    /// alongside `AgentTreeView`/`TreeNode`, mirroring `budget_warned_
+    /// agents`' own reasoning just above (`TreeNode` has no `Default`, so a
+    /// marker only ONE call site ever sets does not belong on it): the
+    /// runtime's own fork/spawn machinery has no notion of "this fork was
+    /// PURELY a model/role switch" at all (a `/model` switch and a plain
+    /// `/fork` build byte-identical `ForkSpec`s save for the `.model`/
+    /// `.role` override -- see `switch_session`'s own doc), so this fact
+    /// exists ONLY here, in the one place that actually decided to make the
+    /// switch. [`Self::is_switch_replaced`] and
+    /// [`Self::switch_history`] are the two ways this gets read.
+    pub switch_lineage: HashMap<AgentId, AgentId>,
+    /// What an operator-typed `--role`/`--model` flag on `/spawn`/`/fork`
+    /// named for a child, keyed by the child's own `AgentId` --
+    /// `commands::bare_fork`/`bare_spawn`'s (and the explicit-target
+    /// `/fork @<agent> --role`/`--model` arm's) one write site, right after
+    /// the fork/spawn that used the flag succeeds. A side-table alongside
+    /// `AgentTreeView`/`TreeNode`, mirroring `budget_warned_agents`'/
+    /// `switch_lineage`'s own reasoning just above (`TreeNode` has no
+    /// `Default`, so a marker only a few call sites ever set does not
+    /// belong on it): the runtime's own `Event::AgentSpawned` carries no
+    /// role/model field at all (routing is resolved lazily, per turn, off
+    /// the child's own `AgentSpec` -- see `conway_runtime::subagent::start`),
+    /// so this fact exists ONLY here, in the one place that actually typed
+    /// the flag -- a model-invoked `conway_spawn`/`conway_fork` tool call
+    /// elsewhere in the tree has no entry here at all, and its row shows the
+    /// plain recipe exactly as it did before this field existed.
+    /// `view::agents::recipe_parts`/`view::agents::hop_label` are the two
+    /// places this gets read (the `/agents` panel row and the status
+    /// line's lineage breadcrumb).
+    pub spawn_role_or_model: HashMap<AgentId, SpawnRoleOrModel>,
     /// The shared modal body-scroll offset (V1; originated as the
     /// permission-overlay-only `permission_scroll`, bug fix
     ///: "no way to see the entire command" for a
@@ -720,6 +791,16 @@ pub struct AppState {
     /// `ctx 12.3k`) instead of a percentage. Reset to `None` on
     /// [`Self::focus_agent`].
     pub focused_model_max_context: Option<u32>,
+    /// T3 sibling of [`Self::focused_model_max_context`]: the resolved
+    /// window's `ContextTokensSource` for the SAME focused model, looked up
+    /// from [`Self::model_max_context_source`] at the exact same two sites
+    /// (and with the exact same fallback-to-bare-model-id rule) as
+    /// `focused_model_max_context` itself, so the two can never disagree
+    /// about which model they describe (board item
+    /// `01M1ZJ796E0YP6Y8QWS8HB0AVB`). `None` under the identical conditions
+    /// `focused_model_max_context` is `None`. Reset to `None` on
+    /// [`Self::focus_agent`], alongside its sibling.
+    pub focused_model_max_context_source: Option<conway::ContextTokensSource>,
     /// T3: the focused agent's cumulative context-occupancy estimate, the
     /// deduped-by-`SegmentId` sum of every
     /// `Event::ContextSegmentAdded { tokens_est }` observed on the focused
@@ -791,18 +872,36 @@ pub struct AppState {
     /// never a panic).
     pub tool_preview_lines: u32,
     /// T3: the local model-metadata map (`"backend/model"` -> max context
-    /// tokens), derived once at `App::new` from `Conway::model_metadata()`
-    /// (no longer a second, independent read of
-    /// `[models.metadata_path]` -- `ConwayBuilder::build` already loaded and
-    /// parsed that file once; `App::new` now reuses that SAME parse instead
-    /// of re-reading the file itself, so there is exactly one code path
-    /// that can drift from the file's actual contents). `apply`'s
-    /// `ModelDecision` arm, and `app.rs`'s `try_focus_agent` re-fetch alike,
-    /// look up the chosen model here to set `focused_model_max_context`.
-    /// Empty when the builder found no metadata file or it named no models
-    /// -- the status line then renders raw context tokens instead of a
+    /// tokens), derived once at `App::new`. Board item
+    /// `01M1ZJ796E0YP6Y8QWS8HB0AVB` (context-window-provenance, status-line
+    /// half): the window NUMBER now comes from `Conway::capability_index()`
+    /// -- the same resolved index `routes explain`/the runway
+    /// notice/the admission gate already read -- rather than
+    /// `Conway::model_metadata()`'s bare `max_context_tokens` directly;
+    /// [`Self::model_max_context_source`] is the companion map carrying
+    /// each entry's provenance. The known key set (which `"backend/model"`
+    /// strings even get looked up) still comes from `model_metadata()`,
+    /// since that map is still the one place `models.json` names which
+    /// pairs exist at all -- only the VALUE for each key changed source.
+    /// `apply`'s `ModelDecision` arm, and `app.rs`'s `try_focus_agent`
+    /// re-fetch alike, look up the chosen model here to set
+    /// `focused_model_max_context`. Empty when the builder found no
+    /// metadata file, it named no models, or the index has no entry for a
+    /// named pair (its backend was never configured/injected) -- the
+    /// status line then renders raw context tokens instead of a
     /// percentage.
     pub model_max_context: HashMap<String, u32>,
+    /// T3 sibling of [`Self::model_max_context`], keyed identically:
+    /// `"backend/model"` -> the resolved window's `ContextTokensSource`
+    /// (board item `01M1ZJ796E0YP6Y8QWS8HB0AVB`). Populated from the SAME
+    /// `Conway::capability_index()` lookup that fills `model_max_context`,
+    /// so a key present in one is present in the other (both come from the
+    /// identical `CapabilityIndex::get`/`::context_window_source` pair per
+    /// model ref) -- never independently resolved. The status line's `ctx`
+    /// field reads [`Self::focused_model_max_context_source`] (this map's
+    /// per-focused-agent projection) to decide whether to append the
+    /// "floor (assumed)" marker -- see `view::status::ctx_label`'s own doc.
+    pub model_max_context_source: HashMap<String, conway::ContextTokensSource>,
     /// T4: whether reasoning-trace entries ([`Entry::Reasoning`]) are
     /// rendered in the transcript. Defaults `true` (reasoning EXPANDED by
     /// default) -- the user opts OUT from the `/settings` menu's "show
@@ -1019,6 +1118,22 @@ pub struct AppState {
     /// been read, so a LATER, unrelated `ask_question` is never mistaken for
     /// a pending model switch.
     pub model_picker_active: bool,
+    /// [`Self::model_picker_active`]'s own sibling for bare `/resume`'s
+    /// picker (board item `01M1YS550T52VR1VW8NMETXQS1`): set the instant
+    /// `commands::execute`'s `Resume { sid: None }` arm opens `Mode::
+    /// UiForm` over `commands::open_session_picker`'s rows, read and
+    /// cleared by the identical `run.rs` dispatch arm BEFORE the generic
+    /// `AppState::resolve_ui_form` call, for the identical reason: telling
+    /// "the form just answered was the session picker" apart from a real
+    /// model-called `ask_question` (which touches neither this flag nor
+    /// `model_picker_active`). The two flags are mutually exclusive in
+    /// practice (only one picker is ever open at a time -- `Mode::UiForm`
+    /// itself has room for exactly one), but each is read/cleared
+    /// independently rather than folded into one shared flag, matching
+    /// [`Self::model_picker_active`]'s own precedent: a THIRD picker
+    /// reusing this same furniture later gets its own flag too, not a
+    /// widening enum every existing call site would have to learn.
+    pub session_picker_active: bool,
     /// The installed plugin commands, for `/help`'s pointer to the palette
     /// and `view::palette`'s own live-filtered listing. **NOT reset by `/resume`** despite
     /// `AppState::new` seeding it empty by default -- this is
@@ -1105,6 +1220,75 @@ pub struct AppState {
     /// `Conway`-level, process-lifetime-reachable data, not something a
     /// resume should reset to empty and wait a full tick to refill.
     pub plugin_status_contributions: Vec<PluginStatusContribution>,
+    /// The TUI renders a dim one-line entry under a tool call for a
+    /// PROMPTED permission decision (source: operator, reaching
+    /// `PermissionGate::check` live) -- built from TWO sibling events for
+    /// the same `call_id`, correlated here rather than duplicating either
+    /// one's own data: `Event::PermissionResolved`'s `PermissionDecisionKind`
+    /// (`AllowOnce`/`AllowAlways`/`Denied`/`DeniedWithFeedback`/`Cached`,
+    /// already reachable via `conway::PermissionDecisionKind` -- P-14, this
+    /// crate never restates that mapping) supplies the WORDING;
+    /// `Event::PermissionDecision`'s own `waited_ms`/`feedback` (a newer,
+    /// audit-record-shaped event whose `decision`/`source` fields this crate
+    /// has no dependency reachable to NAME -- `conway-core` is a
+    /// `[dev-dependencies]`-only crate for `conway-cli`, so a production
+    /// match arm can read those two fields' VALUES structurally but cannot
+    /// write a pattern naming their enum types) supplies the DURATION and
+    /// any denial reason. `PermissionResolved` always precedes its sibling
+    /// `PermissionDecision` for the same call (`PermissionBroker::decide`'s
+    /// own emission order, `conway-runtime`), so the `PermissionResolved`
+    /// arm stashes its kind here keyed by `call_id`; the `PermissionDecision`
+    /// arm below reads and removes it (one-shot per call, never leaked
+    /// across a session) to build the rendered line. Entries with no
+    /// stashed kind (a `PermissionDecision` this session never watched the
+    /// matching `PermissionResolved` for -- e.g. a fresh subscription mid-
+    /// call) still render, falling back to a wording derived from
+    /// `feedback.is_some()` alone (see
+    /// `transcript::format_permission_decision_note`'s own doc).
+    pub permission_decision_pending: HashMap<String, PermissionDecisionKind>,
+    /// Board item `01M1YVJ4RA5V7FF95MFRQMTQW3`: this session's EFFECTIVE
+    /// rebindable keymap -- built-in defaults (`AppState::new`) merged with
+    /// `$CONWAY_CONFIG_DIR/keybindings.json`, if any, once at `App::new`
+    /// (`app/startup.rs`). `input.rs`'s dispatcher and `/help`'s overlay
+    /// both resolve through THIS SAME field -- an ordinary `AppState`
+    /// field, not a thread-local/process-global, because this crate's own
+    /// `#[tokio::main]` runtime is multi-threaded: a task can resume on a
+    /// DIFFERENT OS thread after any `.await`, which would silently strand
+    /// a thread-local's installed value on the thread that happened to
+    /// install it. Threading it through `AppState` like every other piece
+    /// of session state (module doc, "one `AppState`, driven by explicit
+    /// field writes") sidesteps that hazard entirely, and mirrors how this
+    /// crate's tests already inject config explicitly rather than mutating
+    /// process-global env/statics (`crate::tui::keybindings`'s own doc).
+    pub keybindings: crate::tui::keybindings::Keymap,
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: this session's running
+    /// per-path content tracker for `edit`/`write` tool calls -- the FIRST
+    /// time a path is seen (in `Event::ToolCallProposed`, below), its
+    /// current on-disk bytes are read ONCE and stored here; every
+    /// subsequent successful call to that same path folds its own change
+    /// on top (`AppState::finish_tool`, via `crate::diff::apply_touch`),
+    /// with no further disk access. This is what lets both a per-call
+    /// settled-entry diff (stored once in [`Self::tool_diffs`], never
+    /// recomputed) and the `/diff` command's cumulative view be computed
+    /// from in-memory state alone after the first touch to a given path.
+    pub(crate) diff_track: HashMap<String, String>,
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: one settled `edit`/`write`
+    /// tool call's own unified diff (`crate::diff::unified_diff`), keyed by
+    /// `call_id` and computed EXACTLY ONCE, in
+    /// `AppState::finish_tool`, at the moment the call settles --
+    /// never recomputed later (the file may have moved on by the time the
+    /// transcript renders again, and the transcript must show the diff that
+    /// actually happened, not a diff against whatever the file looks like
+    /// now). Absent (no entry) for a call with nothing to show: any
+    /// non-`edit`/`write` tool, a failed call, or a call whose computed
+    /// diff was empty. `view/transcript.rs` looks this up by the entry's
+    /// own `call_id` to fold the diff under `tool_preview_lines`, the same
+    /// way the entry's own `preview` already folds -- kept as a SEPARATE
+    /// map rather than a new field on `Entry::Tool` itself, since that
+    /// variant has ~54 construction sites across this module (several in
+    /// `input.rs`'s own tests) that would all need updating for one new
+    /// required field; this keeps the change additive instead.
+    pub(crate) tool_diffs: HashMap<String, String>,
 }
 
 impl AppState {
@@ -1123,12 +1307,12 @@ impl AppState {
         Self {
             transcript: Vec::new(),
             tree,
-            last_model_decision: None,
-            previous_model_decision: None,
+            model_decision_history: VecDeque::new(),
             input: String::new(),
             cursor: 0,
             mode: Mode::Normal,
             permission_mode: PermissionMode::default(),
+            default_permission_mode: PermissionMode::default(),
             permission_paths: Vec::new(),
             permission_grants: Vec::new(),
             structured_allow_rules: Vec::new(),
@@ -1170,6 +1354,9 @@ impl AppState {
             ask_started_at: None,
             ask_abandoned: false,
             awaiting_agents: HashSet::new(),
+            budget_warned_agents: HashSet::new(),
+            switch_lineage: HashMap::new(),
+            spawn_role_or_model: HashMap::new(),
             modal_scroll: 0,
             pending_intent_confirm: None,
             pending_trust_preview: None,
@@ -1180,6 +1367,7 @@ impl AppState {
             turn_transcript_start: 0,
             focused_model: None,
             focused_model_max_context: None,
+            focused_model_max_context_source: None,
             focused_ctx_tokens: 0,
             focused_seen_segments: HashSet::new(),
             git_branch: None,
@@ -1187,6 +1375,7 @@ impl AppState {
             status_line_config: StatusLineConfig::default(),
             tool_preview_lines: 3,
             model_max_context: HashMap::new(),
+            model_max_context_source: HashMap::new(),
             show_reasoning: true,
             show_timestamps: false,
             history: VecDeque::new(),
@@ -1205,6 +1394,7 @@ impl AppState {
             known_role_names: Vec::new(),
             configured_models: Vec::new(),
             model_picker_active: false,
+            session_picker_active: false,
             // empty here by default
             // (mirrors every other collection field's construction-time
             // default) -- `App::new` overwrites this immediately after
@@ -1213,6 +1403,15 @@ impl AppState {
             // `/resume` must NOT go through this default a second time.
             plugin_commands: std::sync::Arc::new(Vec::new()),
             plugin_status_contributions: Vec::new(),
+            permission_decision_pending: HashMap::new(),
+            // Plain built-in defaults -- `App::new` (`app/startup.rs`)
+            // overwrites this immediately after construction with the
+            // real, resolved `Keymap::load` result, mirroring
+            // `plugin_commands`'s own "constructed here as a default,
+            // `App::new` overwrites it" doc just above.
+            keybindings: crate::tui::keybindings::Keymap::defaults(),
+            diff_track: HashMap::new(),
+            tool_diffs: HashMap::new(),
         }
     }
 
@@ -1290,6 +1489,7 @@ impl AppState {
         // `ctx 0%` / no model, pending its own first live turn.
         self.focused_model = None;
         self.focused_model_max_context = None;
+        self.focused_model_max_context_source = None;
         self.focused_ctx_tokens = 0;
         self.focused_seen_segments.clear();
     }
@@ -1645,11 +1845,12 @@ impl AppState {
             // map populated at `App::new`. The status line's `model` field
             // renders the display name; `ctx%` divides `focused_ctx_tokens`
             // by this max. `app.rs` already captures the whole
-            // `ModelDecision` envelope for `/why` (`last_model_decision`),
-            // but that field is intentionally left untouched by `apply`
-            // -- this arm only updates the display-name/max-context
-            // pair on the focused agent's own stream.
-            Event::ModelDecision { chosen, .. } => {
+            // `ModelDecision` envelope for `/why`
+            // (`model_decision_history`), but that field is intentionally
+            // left untouched by `apply` -- this arm only updates the
+            // display-name/max-context pair on the focused agent's own
+            // stream.
+            Event::ModelDecision { chosen, reason, .. } => {
                 if env.agent == self.focused_agent {
                     let name = chosen.to_string();
                     let max = self.model_max_context.get(&name).copied().or_else(|| {
@@ -1658,8 +1859,43 @@ impl AppState {
                         // on the model id alone.
                         self.model_max_context.get(chosen.model.as_str()).copied()
                     });
+                    // Board item 01M1ZJ796E0YP6Y8QWS8HB0AVB: the identical
+                    // lookup (same key, same bare-model-id fallback) against
+                    // `model_max_context_source`, so `focused_model_max_
+                    // context` and `focused_model_max_context_source` are
+                    // never resolved from different keys.
+                    let source = self
+                        .model_max_context_source
+                        .get(&name)
+                        .copied()
+                        .or_else(|| {
+                            self.model_max_context_source
+                                .get(chosen.model.as_str())
+                                .copied()
+                        });
                     self.focused_model = Some(name);
                     self.focused_model_max_context = max;
+                    self.focused_model_max_context_source = source;
+
+                    // Board item A1d ("say why a turn fell back"): a
+                    // one-line dim notice on the turn itself, not only
+                    // reachable via `/why` -- the incident that motivated it
+                    // (six silent primary/fallback flips in one real
+                    // session, `route_reason.after` empty every time) was
+                    // invisible in the transcript, not merely unexplained
+                    // on request. Fires only when `after` actually names
+                    // something (a `Fallback` whose predecessors were all
+                    // pinned/primary-selected, or any other reason kind,
+                    // renders nothing here -- `/why` remains the place to
+                    // ask for a reason that has nothing to add). Uses the
+                    // EXISTING `Entry::Notice` variant/rendering -- no new
+                    // transcript entry kind, no `view/transcript.rs`
+                    // change.
+                    if let RoutingReason::Fallback { after, .. } = reason {
+                        if let Some(text) = fallback_notice_text(chosen, after) {
+                            self.transcript.push(Entry::Notice { text });
+                        }
+                    }
                 }
             }
             Event::ToolCallProposed {
@@ -1685,6 +1921,30 @@ impl AppState {
                     expanded: false,
                     ts: Some(env.ts),
                 });
+                // Board item 01M1YVEJB6GAPST5YZET4KZZE2: the FIRST time this
+                // session sees `edit`/`write` propose a call against a given
+                // `path`, read its current on-disk bytes ONCE and seed
+                // `diff_track` with them -- this is the ONLY disk read this
+                // whole diff feature performs per path; `finish_tool` folds
+                // every later successful call on top in memory (see
+                // `diff_track`'s own doc). Read here, at PROPOSE time
+                // (before the call runs), so the captured bytes are
+                // genuinely the "before" state -- reading at finish time
+                // would already see this call's own result on disk. A
+                // read failure (missing file, permission, non-UTF-8) is
+                // folded to an empty baseline rather than skipped entirely:
+                // an `edit` against a nonexistent/unreadable path is going
+                // to fail anyway (surfaced by the tool's own error text),
+                // and a `write` creating a brand-new file legitimately has
+                // no prior content -- both cases want "nothing here yet",
+                // not "diff unavailable".
+                if matches!(tool.as_str(), "edit" | "write") {
+                    if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                        self.diff_track
+                            .entry(path.to_string())
+                            .or_insert_with(|| std::fs::read_to_string(path).unwrap_or_default());
+                    }
+                }
                 self.set_tree_status(env.agent, NodeStatus::Running);
                 if env.agent == self.focused_agent {
                     self.activity = Activity::RunningTool(tool.to_string());
@@ -1729,6 +1989,31 @@ impl AppState {
                         text: format!("tool call {call_id} denied"),
                     });
                 }
+                // Stashed for the sibling `Event::PermissionDecision` (always
+                // emitted right after this one, same call, same tick --
+                // `PermissionBroker::decide`'s own emission order) to build
+                // the transcript's dim decision line from -- see
+                // `AppState::permission_decision_pending`'s own doc.
+                self.permission_decision_pending
+                    .insert(call_id.clone(), *decision);
+            }
+            // The TUI renders a dim one-line entry under the tool call it
+            // belongs to, for a PROMPTED decision only -- `waited_ms` is
+            // `Some` exactly when this call reached `PermissionGate::check`
+            // live (`crate::log::PermissionDecisionSource::Operator`'s own
+            // doc, in `conway-core`): every other source resolves without
+            // any wait, so a `None` here means this decision never reached
+            // the operator at all, and nothing is rendered for it -- a
+            // silent pattern/rule/hook/mode resolution would otherwise
+            // clutter the transcript with a line for every one of the vast
+            // majority of calls that never involve the operator.
+            Event::PermissionDecision {
+                call_id,
+                waited_ms,
+                feedback,
+                ..
+            } => {
+                self.apply_permission_decision(call_id, *waited_ms, feedback.clone());
             }
             Event::ToolCallStarted { call_id } => {
                 self.set_tool_status(call_id, ToolStatus::Running);
@@ -1821,9 +2106,52 @@ impl AppState {
                     text: format!("turn ended: {limit} reached; type to continue"),
                 });
             }
+            // Board item A5.6: a child (or the root) crossed 80% of one of
+            // its own budget dimensions -- the model-facing wrap-up notice
+            // this event's own doc says it mirrors already reached the
+            // crossing agent's own transcript as a `SystemNote`/
+            // `AgentProgress`; this arm is what lets an operator watching a
+            // DIFFERENT agent (or the `/agents` panel as a whole) learn
+            // about it too, without switching focus. Unconditional (not
+            // gated on `env.agent == self.focused_agent`), matching
+            // `Event::TurnAborted`'s own convention immediately above --
+            // and `budget_warned_agents` records the crossing regardless
+            // of focus, since the panel shows every agent's row at once.
+            Event::BudgetWarning {
+                agent_id, limit, ..
+            } => {
+                self.budget_warned_agents.insert(*agent_id);
+                self.transcript.push(Entry::Notice {
+                    text: format!("agent {agent_id} is nearing a budget limit ({limit})"),
+                });
+            }
             _ => {}
         }
     }
+}
+
+/// Board item A1d: the one-line dim notice `apply`'s `Event::ModelDecision`
+/// arm pushes onto the transcript when a turn routed past a named
+/// candidate. `None` when `after` is empty -- an ordinary primary/pinned
+/// selection, or a `Fallback` whose `after` a caller has not (yet)
+/// populated, says nothing rather than announcing a fallback with no
+/// content to show. Every skip's `error` text already carries its own
+/// numbers (`conway_plugin_routing::router::render_reason` /
+/// `conway_runtime::attempt`'s admission-refusal text) -- this fn only
+/// joins them, it never reformats a number itself.
+fn fallback_notice_text(
+    chosen: &conway::ModelRef,
+    after: &[conway::AttemptFailure],
+) -> Option<String> {
+    if after.is_empty() {
+        return None;
+    }
+    let skipped = after
+        .iter()
+        .map(|f| format!("{} skipped: {}", f.model, f.error))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!("routed to {chosen} — {skipped}"))
 }
 
 #[cfg(test)]

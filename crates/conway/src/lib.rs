@@ -437,6 +437,13 @@ pub mod plugin {
     /// "What else a plugin can declare" section named this as a facade
     /// parity gap; closed here rather than only noted).
     pub use conway_core::ports::NarrowingRule;
+    /// [`Plugin::configure`]'s own error type -- an implementor of that
+    /// method needs to name it in its own return signature without
+    /// depending on `conway-core` directly, the same reason every other
+    /// `Plugin`-method return-type element in this module is re-exported.
+    /// `conway_plugin_trim::TrimPlugin::configure` (`[plugins.config.
+    /// conway.trim]`'s `keep_turns`) is the first real implementor.
+    pub use conway_core::ports::PluginConfigureError;
     /// [`Plugin::description`]'s own return type -- see that method's own
     /// doc for why this is a distinct type from [`InstructionFragment`],
     /// argued rather than assumed (two audiences, two cardinalities).
@@ -532,6 +539,33 @@ pub mod plugin {
     /// exactly as it would if built-in tools had never existed.
     #[cfg(all(unix, feature = "builtin-tools"))]
     pub use conway_tools::process::unix::{kill_group, TERM_GRACE};
+
+    /// Spawn-with-retry for the OS-level `ETXTBSY` race (board item
+    /// `01M1X2ZCCZEW322YCMGW57K75D`): a thin wrapper around
+    /// `tokio::process::Command::spawn()` that retries only
+    /// `std::io::ErrorKind::ExecutableFileBusy` -- the error a kernel returns
+    /// when asked to `execve` a file still being written to -- a small bounded
+    /// number of times with a short sleep between attempts, and returns any
+    /// OTHER error kind immediately on the first attempt.
+    ///
+    /// **Why this is re-exported here, the same way [`kill_group`] is.**
+    /// `conway-plugin-subprocess`'s `spawn_one_shot` writes a subprocess-plugin
+    /// script to a `TempDir` and then spawns it; on a loaded CI host the write
+    /// can land microseconds before `spawn()` tries to `exec` it and the kernel
+    /// momentarily reports the file as busy. A first-party plugin crate may not
+    /// depend on `conway-tools` directly (the plugin tier gets exactly this
+    /// facade, nothing more privileged -- see [`kill_group`]'s own re-export
+    /// doc for the full argument), so the helper lives once in
+    /// `conway_tools::process::spawn_retry` and reaches the subprocess plugin
+    /// through this re-export, the identical route [`kill_group`] and
+    /// [`ChildSession`] already take. Gated identically:
+    /// `cfg(all(unix, feature = "builtin-tools"))` -- both real call sites
+    /// (`conway-plugin-subprocess`'s `spawn_one_shot` and
+    /// `conway_tools::process::child_session::ChildSession::spawn`) are
+    /// unix-only, and the helper only exists in a build where the optional,
+    /// default-on `builtin-tools` feature pulls `conway-tools` in.
+    #[cfg(all(unix, feature = "builtin-tools"))]
+    pub use conway_tools::process::spawn_retry::spawn_with_retry;
 
     /// The shared child-process SESSION lifecycle (spawn once, an
     /// id-correlated NDJSON round trip, a per-call timeout, and fail-closed
@@ -650,6 +684,46 @@ pub mod plugin {
     /// declared directly here, ungated, rather than routed through
     /// `conway-tools`.
     pub const DEFAULT_TIMEOUT_MS: u64 = 5000;
+
+    /// Applied when a `conway_plugin_mcp::McpPluginSpec` does not name its
+    /// own `first_call_timeout_ms`: the deadline the FIRST ordinary round
+    /// trip after a session's `initialize` handshake gets, instead of
+    /// [`DEFAULT_TIMEOUT_MS`] -- board item `01M1YQ3MJQSCQTMVAZ3GCSTB8P`.
+    ///
+    /// **A third tier, between [`DEFAULT_TIMEOUT_MS`] and
+    /// `conway_plugin_mcp::DEFAULT_STARTUP_TIMEOUT_MS`.** The opening
+    /// handshake's 120s budget covers the process becoming able to answer
+    /// anything at all (a Claude Code plugin's first-launch `npm install &&
+    /// npm run build`, minutes on a cold cache). This budget covers a
+    /// DIFFERENT, smaller cost: the first REAL request after a server is
+    /// already up and has already answered `initialize`/`tools/list` often
+    /// still pays a one-time warm-up -- opening a database connection,
+    /// priming a cache, JIT-compiling a hot path -- that an ordinary
+    /// already-warm call never pays again. 20 seconds is generous for that
+    /// (four times [`DEFAULT_TIMEOUT_MS`]) without approaching the
+    /// first-launch-build scale `DEFAULT_STARTUP_TIMEOUT_MS` exists for; a
+    /// server whose FIRST real request needs longer than 20s to open a
+    /// connection is a server this host should hear about, not wait out
+    /// indefinitely.
+    ///
+    /// **The incident this answers, 2026-09-07.** A dogfooding session's
+    /// `ideate` MCP plugin died on its first real tool call
+    /// (`record_read`), not on `initialize`/`tools/list` (which had already
+    /// succeeded): `cargo build` competing for CPU pushed that one
+    /// ordinarily 5-second-budgeted call past its deadline, and the
+    /// old flat per-call budget applied to it exactly as it would to the
+    /// thousandth call on an already-warm session. This tier, plus the
+    /// bounded grace `conway_tools::process::child_session::ChildSession::
+    /// await_response` now applies to every round trip, together give that
+    /// first call more room without weakening the fail-closed guarantee a
+    /// genuinely hung server still hits.
+    ///
+    /// **Reachable from `crates/conway/src/config/schema.rs`'s
+    /// `McpPluginEntry`/`ClaudeCompatPluginEntry`, the same way
+    /// [`DEFAULT_TIMEOUT_MS`] already is** (`default_hook_timeout_ms`'s own
+    /// doc): an operator-configured knob draws from this ONE authority
+    /// rather than a second crate-local literal risking drift.
+    pub const DEFAULT_FIRST_CALL_TIMEOUT_MS: u64 = 20_000;
 }
 
 /// The `Backend` authoring surface:
@@ -745,6 +819,12 @@ pub mod plugin {
 ///   `admit` with a real dialect-aware estimator cannot declare what it
 ///   achieved without naming this type, the same way it cannot honour
 ///   `admit` without naming `check_admission` above.
+/// - `CacheReporting` — `Backend::cache_reporting`'s return type (board item
+///   A5.7, "prompt caching reads zero on every real session"): a
+///   third-party `Backend` declaring whether its wire dialect carries a
+///   cache-usage field at all cannot override that provided method without
+///   naming this type, the same way it cannot honour `token_fidelity`
+///   without naming that one.
 /// - `async_trait` — `Backend` is `#[async_trait]`-transformed, the same
 ///   reason `pub mod plugin` re-exports the macro for its own three
 ///   traits.
@@ -779,8 +859,8 @@ pub mod backend {
     pub use conway_core::error::BackendError;
     pub use conway_core::ids::{BackendId, ModelId, PrefixKey};
     pub use conway_core::ports::{
-        check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse,
-        StreamChunk, TokenCountFidelity,
+        check_admission, Admission, Backend, BoxStream, CacheReporting, GenerateRequest,
+        GenerateResponse, StreamChunk, TokenCountFidelity,
     };
     pub use conway_core::segment::PromptSegment;
 }
@@ -872,6 +952,35 @@ pub use conway_core::routing::{
 // to name it without depending on `conway-core` directly, the same
 // dual-export shape `Provenance` already has (root, and `pub mod plugin`).
 pub use conway_core::ports::TokenCountFidelity;
+
+// Hosted OpenAI-compatible models item: `ExplainEntry::context_window_source`
+// is a public field of a type re-exported above (`ExplainEntry`), so this
+// facade must let a caller name its type too -- the exact same reasoning
+// `TokenCountFidelity` immediately above already establishes for its own
+// sibling field. Already re-exported from `conway_plugin_backends::
+// capabilities` for that crate's own callers; this is the facade-level
+// re-export `conway routes explain`'s own caller needs.
+pub use conway_core::capabilities::ContextTokensSource;
+
+// Board item A5.7: `ExplainEntry::cache_reporting` is a public field of a
+// type re-exported above (`ExplainEntry`), so this facade must let a caller
+// name its type too -- the exact same reasoning `TokenCountFidelity`/
+// `ContextTokensSource` immediately above already establish for their own
+// sibling fields. Already re-exported inside `pub mod backend` (for a
+// third-party `Backend` implementing `cache_reporting()`); this is the
+// second, root-level re-export `conway routes explain`'s own caller needs.
+pub use conway_core::ports::CacheReporting;
+
+// Board item 01M1ZJ796E0YP6Y8QWS8HB0AVB (context-window-provenance,
+// status-line half): `Conway::capability_index()` hands back a
+// `&CapabilityIndex`, so a caller holding only a `conway` dependency must be
+// able to name that return type too -- the same reasoning every re-export in
+// this section already establishes for its own signature. Already
+// re-exported for a `RouterFactory` implementor building a `RouterBuildContext`
+// by hand (`RouterBuildContext::capability_index` is this exact type); this
+// is the root-level re-export a `Conway::capability_index()` caller needs
+// without depending on `conway-core` directly.
+pub use conway_core::ports::CapabilityIndex;
 
 // `RouterFactory` joins the
 // extension surface above, so the field types of what its `build` receives

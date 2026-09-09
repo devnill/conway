@@ -509,10 +509,30 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
         // of `PatternRule::describe()`.
         group_node(PERMISSIONS_GROUP, state, {
             let rows = vec![
+                // Board item 01M1YVP3FDPHY4WZ72SXMWAN2D: "current" and
+                // "default" are two different questions and a standing
+                // surface ruling requires both stay visible and never
+                // confusable -- "current" is this SESSION's live,
+                // `Shift-Tab`-cycling mode (interactive, selectable, ends
+                // with this session); "default" is the persistent
+                // `permissions.default_mode` a NEW session starts in
+                // (`settings.json`-owned, a static row here -- this menu
+                // has no writer for it, matching every other config-file-
+                // owned value shown in this pane). Each row's own label
+                // names which question it answers, so neither can be
+                // mistaken for the other.
                 MenuNode::leaf(
-                    format!("mode -- {} (Enter to cycle)", state.permission_mode.label()),
+                    format!(
+                        "current mode -- {} (Enter to cycle for this session)",
+                        state.permission_mode.label()
+                    ),
                     LEAF_PERMISSION_MODE,
                 ),
+                MenuNode::static_row(format!(
+                    "default mode -- {} (permissions.default_mode in settings.json; \
+                     applies to the NEXT session started)",
+                    state.default_permission_mode.label()
+                )),
                 group_node(ALLOW_GROUP, state, {
                     let mut allow = Vec::new();
                     if state.permission_grants.is_empty() && state.structured_allow_rules.is_empty()
@@ -1059,6 +1079,36 @@ mod tests {
 
         state.permission_mode = conway::PermissionMode::Plan;
         assert!(plain_rows(&state).contains("mode -- plan"));
+    }
+
+    /// Board item 01M1YVP3FDPHY4WZ72SXMWAN2D (acceptance 1): `/settings`
+    /// shows the SESSION's current mode and the persistent default mode
+    /// as two distinct rows, each labeled so neither is mistaken for the
+    /// other -- proven by setting them to DIFFERENT values and asserting
+    /// each row's own, distinctly-worded label carries the value it owns.
+    /// A test that only checked one row's presence would pass against an
+    /// implementation that renders just one of the two (the exact
+    /// "default and current get confused" defect the standing surface
+    /// ruling this row exists to satisfy warns against).
+    #[test]
+    fn settings_shows_current_and_default_mode_as_two_distinct_rows() {
+        let mut state = AppState::new(AgentId::new());
+        state.permission_mode = conway::PermissionMode::AutoAllow;
+        state.default_permission_mode = conway::PermissionMode::Plan;
+
+        let text = plain_rows(&state);
+        assert!(
+            text.contains("current mode -- AUTO-ALLOW"),
+            "current-session row must show the CURRENT (cycling) mode: {text}"
+        );
+        assert!(
+            text.contains("default mode -- plan"),
+            "a separate row must show the persistent DEFAULT mode: {text}"
+        );
+        assert!(
+            text.contains("permissions.default_mode"),
+            "the default-mode row must name the settings.json key it reflects: {text}"
+        );
     }
 
     /// Helper: the menu's visible row labels as one string.

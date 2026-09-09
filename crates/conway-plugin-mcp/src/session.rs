@@ -54,11 +54,20 @@
 //! `PersistentSession`/`SubprocessPluginError`'s discipline.** A session
 //! that dies mid-call (the child exits, or closes stdout) surfaces a typed
 //! [`crate::McpPluginError::SessionDied`], never a hang and never a silent
-//! retry. **No automatic reconnect** (an MCP server that died has lost
-//! whatever session state it had; the death is surfaced and the caller must
-//! re-`discover`). Once a session is marked dead, every subsequent call fails
-//! fast with `SessionDied` -- the session is NOT re-spawned. A server that
-//! never answers a framed response is killed and reported
+//! retry. **This session itself never reconnects** -- an `McpSession` whose
+//! child died has genuinely lost whatever conversational state that child
+//! held, and this type has no mechanism to resurrect it; once marked dead,
+//! every subsequent call on THIS `McpSession` fails fast with `SessionDied`.
+//! What changed (see `crate::McpPluginError::SessionDied`'s own doc, and
+//! `SessionSlot` in `lib.rs`) is what sits ABOVE this type: `McpPlugin` no
+//! longer hands each tool a fixed `Arc<McpSession>` it holds forever --
+//! it hands a swappable handle, and the FIRST call that finds this session
+//! dead transparently spawns a brand new `McpSession` (a fresh child, a
+//! fresh handshake, no memory of the old one) and retries against THAT.
+//! This module's own session-level contract is unchanged by that: an
+//! `McpSession` is still a one-shot handle to one child, dead is still
+//! permanently dead, and this type still performs no reconnect of its own.
+//! A server that never answers a framed response is killed and reported
 //! [`crate::McpPluginError::TimedOut`] within `timeout_ms` (the per-call
 //! deadline on the framed read, NOT a session-wide idle kill -- a session
 //! that legitimately sits idle between calls is left alone). An
@@ -79,10 +88,6 @@
 //! four-way-join-starvation avoidance, the stderr-drain-but-discard
 //! disclosure, and the process-group Drop-time kill this module used to
 //! disclose locally.
-
-use std::time::Duration;
-
-use tokio::time::timeout;
 
 use conway::plugin::{CancellationToken, ChildSession, NotificationRoute, ToolError};
 
@@ -144,6 +149,7 @@ impl McpSession {
                 &spec.command,
                 &spec.env,
                 spec.timeout_ms,
+                spec.first_call_timeout_ms,
                 NotificationRoute::WarnAndDrop,
             )
             .await?;
@@ -156,14 +162,29 @@ impl McpSession {
 
     /// True once the session has been torn down. A subsequent
     /// `framed_round_trip` fails fast.
-    fn is_dead(&self) -> bool {
+    ///
+    /// `pub(crate)`, not private: `McpTool::invoke` (`lib.rs`) reads this
+    /// BEFORE attempting a round trip, so a session already known dead goes
+    /// straight to a respawn (never a doomed call first, and never a retry
+    /// of this call once the respawn completes) -- see `SessionSlot::
+    /// respawn`'s own doc.
+    pub(crate) fn is_dead(&self) -> bool {
         self.inner.is_dead()
     }
 
     /// The typed death reason (if the session is dead). The handshake uses
     /// this directly (it returns `McpPluginError`); `tools_call` maps it onto
     /// `ToolError` via `Self::death_tool_error`.
-    fn death_error(&self) -> Option<McpPluginError> {
+    ///
+    /// `pub(crate)`, not private: `McpTool::invoke` consults this to tell a
+    /// GENUINE `SessionDied` (auto-respawn-eligible) apart from any other
+    /// terminal cause a round trip that just failed might have left the
+    /// session in (e.g. `TimedOut`) -- only a `SessionDied` cause on the
+    /// call that JUST failed triggers a respawn (never a retry of that same
+    /// call -- see `lib.rs`'s own `SessionSlot::respawn` doc for why); see
+    /// `lib.rs`'s own disclosure of why `TimedOut` does not trigger a
+    /// respawn at all.
+    pub(crate) fn death_error(&self) -> Option<McpPluginError> {
         self.inner.death_error()
     }
 
@@ -191,16 +212,38 @@ impl McpSession {
     /// The one-time `initialize` handshake: sends `initialize`, awaits the
     /// response, verifies the server offers `tools`, sends the
     /// `notifications/initialized` notification (no reply), then calls
-    /// `tools/list` and returns the server's declared tools. Fail-closed on
+    /// `tools/list` and returns the server's declared tools -- PLUS the
+    /// names of whichever of those tools declared
+    /// `annotations.idempotentHint: true` (see this crate's own
+    /// `SessionSlot::idempotent_tool_names` in `lib.rs` for what that set
+    /// governs and its declaration-honesty disclosure). Fail-closed on
     /// every structural problem (a missing `result`, an `id` mismatch, a
     /// server that does not offer `tools`, a `tools/list` JSON-RPC `error`,
     /// or a malformed `tools/list` answer). A transport-level death during
     /// the handshake surfaces as `SessionDied`/`TimedOut`; the just-spawned
     /// child is dropped by `discover`'s `?`, and its `Drop` kills the
     /// group, so the child is never orphaned.
+    ///
+    /// **Why `idempotentHint` is extracted HERE, from the raw response,
+    /// rather than added to `wire::ListedTool`/
+    /// `wire::parse_tools_list_response`.** Both live in this crate's
+    /// `wire` module, which this pass leaves untouched; the extraction
+    /// below reads the SAME already-validated `value` this method already
+    /// has in hand for `tools/list`, entirely within this module, after
+    /// `parse_tools_list_response` has already confirmed the overall shape
+    /// (a `result.tools` array of objects each carrying a `name`) -- so
+    /// this second, narrower pass is defensive-but-simple, never a second
+    /// source of fail-closed structural errors.
     pub(crate) async fn handshake(
         &self,
-    ) -> Result<(InitializeResult, Vec<crate::wire::ListedTool>), McpPluginError> {
+    ) -> Result<
+        (
+            InitializeResult,
+            Vec<crate::wire::ListedTool>,
+            std::collections::BTreeSet<String>,
+        ),
+        McpPluginError,
+    > {
         // initialize
         let id = self.inner.next_id();
         let req = initialize_request(id);
@@ -243,7 +286,15 @@ impl McpSession {
         // the session (the server is not draining stdin).
         self.write_notification(&initialized_notification()).await?;
 
-        // tools/list
+        // tools/list -- still part of the OPENING handshake (the server has
+        // answered `initialize` but the caller has not yet learned what
+        // tools exist), so this rides the SAME `startup_timeout_ms` budget
+        // as `initialize` rather than the ordinary/first-call machinery.
+        // Deliberate: `ChildSession::next_round_trip_timeout_ms` hands the
+        // warm-up budget to the FIRST call that goes through it, and that
+        // slot is meant for this session's first REAL `tools/call` (the
+        // incident this item answers), not for `tools/list` -- an explicit
+        // deadline here, like `initialize`'s own, does not consume it.
         let id = self.inner.next_id();
         let req = tools_list_request(id);
         let mut json = serde_json::to_vec(&req).map_err(|err| McpPluginError::HandshakeFailed {
@@ -251,7 +302,10 @@ impl McpSession {
             detail: format!("failed to serialize tools/list request: {err}"),
         })?;
         json.push(b'\n');
-        let value = self.inner.framed_round_trip(id, json).await?;
+        let value = self
+            .inner
+            .framed_round_trip_within(id, json, self.startup_timeout_ms)
+            .await?;
         let tools = parse_tools_list_response(&value, id).map_err(|detail| {
             let err = McpPluginError::HandshakeFailed {
                 config_id: self.inner.config_id().to_string(),
@@ -260,8 +314,9 @@ impl McpSession {
             self.inner.kill_all(err.clone());
             err
         })?;
+        let idempotent_tool_names = extract_idempotent_tool_names(&value);
 
-        Ok((init, tools))
+        Ok((init, tools, idempotent_tool_names))
     }
 
     /// One `tools/call` round-trip over the persistent channel: assigns a
@@ -306,6 +361,15 @@ impl McpSession {
             }));
         }
 
+        // The deadline for THIS round trip: the warm-up budget if this is
+        // genuinely the session's first ordinary call (its first real
+        // `tools/call`, after `initialize`/`tools/list` -- see
+        // `ChildSession::next_round_trip_timeout_ms`'s own doc), the
+        // ordinary per-call deadline otherwise. Read BEFORE the request is
+        // even built so a cancelled-before-send call never consumes the
+        // once-per-session warm-up slot for nothing.
+        let timeout_ms = self.inner.next_round_trip_timeout_ms();
+
         let id = self.inner.next_id();
         let req = tools_call_request(id, &name, &arguments);
         let mut json = serde_json::to_vec(&req).map_err(|err| ToolError::Internal {
@@ -324,33 +388,20 @@ impl McpSession {
             .await
             .map_err(McpPluginError::into_tool_error)?;
 
-        // Race ONLY the read against cancellation. A cancel here drops
-        // `_guard`, removing the pending entry; the session stays alive. The
-        // `timeout_ms` read deadline is the ultimate fail-closed bound.
+        // Race the grace-aware read against cancellation. A cancel here
+        // drops `_guard`, removing the pending entry; the session stays
+        // alive. `await_response` is the SAME wait `framed_round_trip_within`
+        // uses (warm-up/ordinary deadline, then ONE bounded grace extension
+        // on elapse, never a resend) -- racing the WHOLE future here, rather
+        // than hand-rolling a second `timeout(..)` + kill, is what lets this
+        // call inherit that treatment without a second copy of it -- one
+        // implementation, many callers.
+        // The eventual `TimedOut`/kill on the full ceiling elapsing remains
+        // the ultimate fail-closed bound.
         let value = tokio::select! {
-            res = timeout(Duration::from_millis(self.inner.timeout_ms()), rx) => match res {
-                Ok(Ok(value)) => Ok(value),
-                Ok(Err(_canceled)) => {
-                    // The reader dropped the sender -- the session died while we
-                    // were waiting. `kill_all` already recorded the typed death
-                    // reason; surface THAT, not a generic "session died".
-                    Err(self.death_tool_error().unwrap_or_else(|| {
-                        McpPluginError::SessionDied {
-                            config_id: self.inner.config_id().to_string(),
-                            detail: "the session died before it answered this call".into(),
-                        }
-                        .into_tool_error()
-                    }))
-                }
-                Err(_elapsed) => {
-                    self.inner.kill_group_now().await;
-                    Err(McpPluginError::TimedOut {
-                        config_id: self.inner.config_id().to_string(),
-                        after_ms: self.inner.timeout_ms(),
-                    }
-                    .into_tool_error())
-                }
-            },
+            res = self.inner.await_response(rx, timeout_ms) => {
+                res.map_err(McpPluginError::into_tool_error)
+            }
             _ = cancel_watched(cancel) => Err(ToolError::Cancelled),
         }?;
 
@@ -371,6 +422,64 @@ impl McpSession {
     pub(crate) fn shared_kill_all(&self, reason: McpPluginError) {
         self.inner.kill_all(reason);
     }
+}
+
+/// Extracts the NAMES of tools whose `tools/list` entry declared
+/// `annotations.idempotentHint: true`, read directly from the raw
+/// JSON-RPC 2.0 `tools/list` response `value` `handshake` already has in
+/// hand -- see `McpSession::handshake`'s own doc for why this walk lives
+/// here, entirely separate from `wire::parse_tools_list_response`, rather
+/// than adding a field to `wire::ListedTool`.
+///
+/// **Advisory and server-self-declared, not a guarantee this host can
+/// check.** MCP's `ToolAnnotations` are documented by the protocol's own
+/// authors as a risk vocabulary the SERVER volunteers, not something a
+/// client can verify independently -- there is no wire-level proof that
+/// calling a tool twice is actually safe. `SessionSlot` (`lib.rs`) trusts
+/// the set this returns to decide whether a call that hit a mid-flight
+/// session death may be retried against the fresh session a respawn puts
+/// in place. A server that declares `idempotentHint: true` for a tool that
+/// is NOT actually safe to call twice can cause conway to double-execute
+/// that tool's side effect -- that is the declaring server's error, not a
+/// bug in this client, but the operator deserves to know conway relies on
+/// the server telling the truth here.
+///
+/// **Softly parsed, never fail-closed, unlike the rest of this handshake.**
+/// Called only after `parse_tools_list_response` has already validated
+/// `value`'s overall shape, so a missing `result.tools` array, a
+/// non-object tool entry, or a tool with no string `name` here would
+/// already have failed the handshake before this function ever runs --
+/// this walk defends against those anyway (`.and_then`/`unwrap_or` chains,
+/// never a panic, never a second fail-closed error) purely so a change to
+/// `parse_tools_list_response`'s own validation order can never make this
+/// function unsound. Per-tool, `annotations.idempotentHint` collapses to
+/// `false` on anything other than a literal JSON `true`: an absent
+/// `annotations` object, an absent `idempotentHint` key, a non-boolean
+/// value, or an explicit `false` all read as "do not retry" -- matching
+/// MCP's own documented default for the field.
+fn extract_idempotent_tool_names(value: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let Some(tools) = value
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+    else {
+        return out;
+    };
+    for tool in tools {
+        let Some(name) = tool.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let idempotent = tool
+            .get("annotations")
+            .and_then(|a| a.get("idempotentHint"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if idempotent {
+            out.insert(name.to_string());
+        }
+    }
+    out
 }
 
 /// The interval the cancel watcher polls `token.is_cancelled()`. The

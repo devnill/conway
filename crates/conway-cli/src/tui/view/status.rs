@@ -217,7 +217,7 @@ use ratatui::Frame;
 
 use super::agents;
 use super::theme::Theme;
-use conway::{AgentId, PermissionMode, ResultStatus};
+use conway::{AgentId, ContextTokensSource, PermissionMode, ResultStatus};
 
 use crate::tui::config::StatusLineConfig;
 use crate::tui::state::{should_animate, Activity, AppState, Mode, SPINNER_FRAMES};
@@ -664,7 +664,22 @@ fn field_ladder(
             Some(name) => vec![vec![Span::raw(name.to_string())], vec![]],
             None => vec![vec![]],
         },
-        StatusLineField::Ctx => vec![vec![Span::raw(ctx_label(state))], vec![]],
+        StatusLineField::Ctx => {
+            let base = ctx_label(state);
+            if ctx_is_assumed_floor(state) {
+                // Board item `01M1ZJ796E0YP6Y8QWS8HB0AVB`: an extra rung
+                // ahead of the bare figure -- under width pressure the
+                // marker is what gives way first (the number itself is the
+                // more load-bearing half), never the reverse.
+                vec![
+                    vec![Span::raw(format!("{base} {CTX_ASSUMED_FLOOR_MARKER}"))],
+                    vec![Span::raw(base)],
+                    vec![],
+                ]
+            } else {
+                vec![vec![Span::raw(base)], vec![]]
+            }
+        }
         StatusLineField::Tokens => vec![vec![Span::raw(tokens_label(state))], vec![]],
         StatusLineField::Activity => activity_ladder(state, theme),
         StatusLineField::Hint => hint_ladder(state, theme, lineage_present),
@@ -894,11 +909,12 @@ fn contributions_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static
 /// follow-up No behavior change vs. the original cap -- only the
 /// intent is now documented.
 ///
-/// `pub(super)`: the sticky context header (`view/header.rs`) shows the
-/// same `ctx%`/raw-tokens figure and reuses this function directly rather
-/// than recomputing the percentage formula a second time, so the header and
-/// the status line's `ctx` field can never drift apart on the cap/fallback
-/// logic.
+/// `pub(super)`: this is the base figure, with no provenance marker --
+/// [`CTX_ASSUMED_FLOOR_MARKER`] (via [`ctx_is_assumed_floor`]) is the
+/// separate piece `field_ladder`'s `StatusLineField::Ctx` arm appends on
+/// top, kept apart so a caller wanting only the bare number/percentage
+/// (this function had no other reader in the tree as of this writing) is
+/// not forced to also decide whether to show provenance.
 pub(super) fn ctx_label(state: &AppState) -> String {
     match state.focused_model_max_context {
         Some(max) if max > 0 => {
@@ -909,6 +925,31 @@ pub(super) fn ctx_label(state: &AppState) -> String {
         }
         _ => format!("ctx {}", compact_tokens(state.focused_ctx_tokens)),
     }
+}
+
+/// The exact wording `conway routes explain` already uses for
+/// `ContextTokensSource::Unverified` (`crates/conway-cli/src/commands/
+/// routes.rs`'s own `render_context_window_source`) -- reused verbatim here
+/// rather than a second phrasing, so an operator sees one vocabulary for
+/// "this window is not a sourced fact about this model" across both
+/// surfaces (board item `01M1ZJ796E0YP6Y8QWS8HB0AVB`).
+const CTX_ASSUMED_FLOOR_MARKER: &str = "floor (assumed)";
+
+/// Whether [`ctx_label`]'s figure should carry [`CTX_ASSUMED_FLOOR_MARKER`]
+/// -- true ONLY for `ContextTokensSource::Unverified`, never for
+/// `DialectDefaultFloor` (a per-dialect figure `routes explain` itself
+/// labels `verified`, not `floor (assumed)` -- see that command's own
+/// `render_context_window_source`), `Override`, or `Probed`. Reads
+/// `AppState::focused_model_max_context_source`, itself resolved from
+/// `Conway::capability_index()` -- the single place a `(backend, model)`
+/// pair's provenance is ever decided (`conway_plugin_backends::
+/// capabilities::max_context_tokens_source`); this predicate only asks
+/// which already-resolved variant came back, it never resolves one itself.
+fn ctx_is_assumed_floor(state: &AppState) -> bool {
+    matches!(
+        state.focused_model_max_context_source,
+        Some(ContextTokensSource::Unverified)
+    )
 }
 
 /// The `tokens` field's text: `<total> tok (<n%> cached)` -- ALWAYS shown,
@@ -1145,7 +1186,7 @@ fn agent_field(state: &AppState, detail: LineageDetail) -> String {
             .nodes
             .iter()
             .find(|n| n.agent_id == *id)
-            .map(agents::hop_label)
+            .map(|n| agents::hop_label(n, state.spawn_role_or_model.get(&n.agent_id)))
             .unwrap_or_else(|| agents::short_agent_id(*id))
     };
     // The chain's own head reads as literal "root" when it actually IS the
@@ -1654,6 +1695,61 @@ mod tests {
             line.contains("ctx 100%"),
             "ctx%% must cap at 100, not show 500%%: {line}"
         );
+    }
+
+    /// Board item `01M1ZJ796E0YP6Y8QWS8HB0AVB`, the positive half of the
+    /// required pair: `ctx`'s figure carries the "floor (assumed)" marker
+    /// when the focused model's resolved provenance is exactly
+    /// `ContextTokensSource::Unverified`. Catches a marker that is missing
+    /// entirely -- a status line that never labels an assumed window is
+    /// exactly the defect the provenance marker exists to close.
+    #[test]
+    fn ctx_field_marks_an_unverified_dialect_floor_as_assumed() {
+        let mut state = AppState::new(AgentId::new());
+        state.focused_model_max_context = Some(32_768);
+        state.focused_model_max_context_source = Some(ContextTokensSource::Unverified);
+        state.focused_ctx_tokens = 8_192; // 25%
+        let line = status_line(&state);
+        assert!(
+            line.contains("ctx 25% floor (assumed)"),
+            "an Unverified window must carry the assumed-floor marker, in \
+             `routes explain`'s own wording: {line}"
+        );
+    }
+
+    /// Board item `01M1ZJ796E0YP6Y8QWS8HB0AVB`, the negative half of the
+    /// required pair: a fixture that only ever leaves
+    /// `focused_model_max_context_source` at its default (`None`) cannot
+    /// tell a working marker from one that is unconditionally on -- this
+    /// test sets the source EXPLICITLY to each of the three non-assumed
+    /// variants and asserts none of them render the marker. Catches a
+    /// predicate that fires regardless of source (e.g. "always show the
+    /// marker once *any* source is known") as surely as the positive test
+    /// catches one that never fires at all.
+    #[test]
+    fn ctx_field_omits_the_marker_for_every_non_assumed_source() {
+        for source in [
+            ContextTokensSource::Override,
+            ContextTokensSource::Metadata,
+            ContextTokensSource::Probed,
+            ContextTokensSource::DialectDefaultFloor,
+        ] {
+            let mut state = AppState::new(AgentId::new());
+            state.focused_model_max_context = Some(32_768);
+            state.focused_model_max_context_source = Some(source);
+            state.focused_ctx_tokens = 8_192; // 25%
+            let line = status_line(&state);
+            assert!(
+                line.contains("ctx 25%"),
+                "the figure itself must still render for {source:?}: {line}"
+            );
+            assert!(
+                !line.contains("floor (assumed)"),
+                "{source:?} must not carry the assumed-floor marker \
+                 (`DialectDefaultFloor` is `routes explain`'s own \
+                 `verified`, not `floor (assumed)`): {line}"
+            );
+        }
     }
 
     #[test]

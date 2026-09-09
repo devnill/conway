@@ -261,7 +261,7 @@ async fn browsing_installing_and_using_a_marketplace_plugin_works_end_to_end() {
     assert_eq!(report.mcp_servers.len(), 1);
     assert_eq!(report.mcp_servers[0].name, "acme-search");
 
-    let spec = report.mcp_servers[0].clone().into_spec(5_000);
+    let spec = report.mcp_servers[0].clone().into_spec(5_000, 5_000);
     let plugin = McpPlugin::discover(spec)
         .await
         .expect("the installed MCP server must discover successfully");

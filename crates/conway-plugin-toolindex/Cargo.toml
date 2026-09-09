@@ -1,0 +1,53 @@
+[package]
+name = "conway-plugin-toolindex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin (board item 01M1YS138H8T0HNV5YMZ6KD767), `conway.toolindex`: narrows every non-built-in tool's announced JSON schema down to a one-line index entry, and offers a describe_tool tool that fetches the full schema on demand and keeps that tool fully announced for the rest of the session"
+
+# Versioned WITH the workspace, like every other first-party plugin -- see
+# `conway-plugin-skills`/`conway-plugin-checkpoint`'s own Cargo.toml doc
+# comments for the full reasoning, restated there rather than re-derived
+# here: this crate carries none of `conway-core`'s strict-semver discipline
+# (ARCHITECTURE.md §2), because that discipline exists for the crate
+# third-party plugins depend on, and this is, from `conway`'s own point of
+# view, just another consumer of the public `conway`/`conway::plugin`
+# surface.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets (GP-03/P-6). `Plugin`,
+# `Tool`, `ContextHook`, `ContextPayload`, `ToolSpec`, and
+# `conway::presets::builtin_plugins` (the SAME built-in candidate list
+# `conway`'s own `with_builtin_plugins` uses, read here only to compute
+# which tool names stay always-announced -- see `lib.rs`'s own module doc)
+# are all reachable through `conway`/`conway::plugin` alone, mirroring
+# `conway-plugin-skills`'s own "no privileged channel" precedent.
+conway = { path = "../conway" }
+# `ToolSpec::schema`/`DeferredToolArgs`/`DescribeToolArgs` are schemars
+# `RootSchema`/derive types, and `ToolCall::arguments`/`ToolOutput` carry
+# plain JSON -- deliberately NOT re-exported by `conway::plugin` (see that
+# module's own doc: "name them in your own Cargo.toml, at the same version
+# conway uses"). Both are already pinned `[workspace.dependencies]` used
+# throughout this tree, so this is not a new dependency to the workspace
+# (C-04).
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+# Board item `01M0TV8MSFRHHQ5BNZV3NHZCEW`: this crate's end-to-end tests
+# reach `conway::test_support` (the shared `build_conway`/`test_builder`
+# wiring), which is behind the facade's off-by-default `test-support`
+# feature. Dev-only: nothing in `src/` may name it.
+conway = { path = "../conway", features = ["test-support"] }
+# Test-only: builds a real `Conway` (fake backend/store/gate/router) to
+# drive this plugin's hook + tool through a real turn end to end -- the
+# same precedent `conway-plugin-skills`'s own `tests/skills_e2e.rs`
+# establishes.
+conway-core = { path = "../conway-core" }
+conway-testkit = { path = "../conway-testkit" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

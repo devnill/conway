@@ -502,6 +502,70 @@ impl SubagentHost for Runtime {
             // so this reaches the literal only if the parent itself has none.
             .or_else(|| parent_meta.role.clone())
             .unwrap_or_else(|| RoleAlias::new("default"));
+        // Eager "fail loud" check: ONLY when the CALL SITE itself named a role explicitly
+        // (`spec.knobs.role.is_some()`, e.g. the `conway_fork`/`conway_spawn`
+        // tools' `role` argument, or the TUI's `/spawn --role`/`/fork
+        // --role`) does an unconfigured alias reject the spawn/fork BEFORE
+        // any session is created, rather than silently starting a child that
+        // can only ever discover the mistake on its own first turn (deep in
+        // `AgentLoop`, folded into a `Failed` `AgentResult` the caller only
+        // sees after paying for a session and, if `await: false`, only on a
+        // LATER `conway_await`/`ctx.subagents.await_result` call). A role
+        // reached by inheritance (agent_def/parent) is deliberately left
+        // alone here: it was every bit as unvalidated before this check
+        // existed, and validating it now would be new, unrelated behavior
+        // for callers who never named a role at all.
+        //
+        // `self.loop_deps().router` is the SAME `Router` a real turn routes
+        // through (`AgentLoop`'s `deps.router.resolve`); probing it here
+        // with `est_tokens: 0`/`RequiredCaps::default()` is deliberately
+        // cheap and approximate -- ONLY `RoutingError::UnknownRole` (the
+        // alias itself is absent from `RoutingConfig::roles`) is actionable
+        // here, so a probe result of `NoCandidate`/`ContextTooLarge` (the
+        // alias IS configured, but no candidate clears these placeholder
+        // requirements) is deliberately ignored and left for the real,
+        // fully-informed routing attempt at the child's first turn -- this
+        // check exists only to catch a typo/nonexistent alias, not to
+        // duplicate full routing admission.
+        if spec.knobs.role.is_some() {
+            let probe = conway_core::routing::RouteRequest {
+                role: role.clone(),
+                pin: None,
+                required: conway_core::capabilities::RequiredCaps::default(),
+                est_tokens: 0,
+                agent_id,
+            };
+            if let Err(conway_core::error::RoutingError::UnknownRole { role: unknown }) =
+                self.loop_deps().router.resolve(&probe)
+            {
+                // Name the real options, not just the miss -- an operator (or
+                // a model calling `conway_fork`/`conway_spawn`) who guessed
+                // wrong needs to be told what the configured aliases
+                // actually are, not merely that theirs was wrong.
+                // `Router::known_roles` is defaulted to empty for every
+                // implementor that has no role table (most test doubles), so
+                // this degrades to a bare "no roles are configured" rather
+                // than crashing or lying about what exists.
+                let mut known: Vec<String> = self
+                    .loop_deps()
+                    .router
+                    .known_roles()
+                    .iter()
+                    .map(|known_role| known_role.as_str().to_string())
+                    .collect();
+                known.sort();
+                let roles_desc = if known.is_empty() {
+                    "no roles are configured".to_string()
+                } else {
+                    format!("configured roles: {}", known.join(", "))
+                };
+                return Err(invalid_spec(ConwayError::Config {
+                    detail: format!(
+                        "role '{unknown}' is not a configured routing role alias ({roles_desc})"
+                    ),
+                }));
+            }
+        }
         let system_prompt = agent_def.map(|d| SystemPromptSpec {
             agent_def: d.name.clone(),
             text: d.system_prompt.clone(),
@@ -525,6 +589,19 @@ impl SubagentHost for Runtime {
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
+        // `[roles.<alias>.tools]` (board item `01M1YS138H8T0HNV5YMZ6KD767`
+        // part 2): a fork/spawn child gets the SAME narrowing a root
+        // started with the same role gets -- `crate::runtime::root::
+        // narrow_tools_for_role` is the identical function `start_root`/
+        // `resume_root` call, against this child's own resolved `role`
+        // (already fork/parent-inherited above) and the registry this
+        // runtime shares with every agent. See that function's own doc for
+        // the AND and the "no entry -> unchanged" contract.
+        let tools = crate::runtime::root::narrow_tools_for_role(
+            tools,
+            self.role_tools().get(&role),
+            &self.loop_deps().registry,
+        );
         // `spec.knobs.model` (a caller-supplied override, e.g. `ForkSpec::
         // model`) takes precedence over the (possibly fork-inherited)
         // agent_def's own configured model -- the same "call-site override

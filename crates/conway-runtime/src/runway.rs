@@ -33,34 +33,41 @@
 //! resolved model's `max_context_tokens` -- never a second, independently
 //! written `est + headroom` sum.
 //!
-//! ## The "is the window even known" gap, disclosed
+//! ## The "is the window even known" gap, closed
 //!
 //! `conway-runtime` depends on `conway-core` only (see this crate's
-//! `Cargo.toml`) -- it cannot see `conway-plugin-backends::capabilities::
-//! ContextTokensSource`, the real signal for "this ceiling is a sourced
-//! fact vs. an internal admission-safety clamp nobody actually declared"
-//! (that crate's own `Backend::capabilities` doc). `conway_core::
-//! capabilities::Capabilities::max_context_tokens` is a plain, mandatory
-//! `u32` with no room for "unknown" today, and widening it would ripple
-//! through the ~40 call sites that construct a `Capabilities` by field
-//! literal across the workspace -- out of this item's scope. Until that
-//! signal is threaded all the way down through `conway_core::ports::Backend`
-//! (a real, larger follow-up, not done here), [`crate::attempt::
-//! AttemptEngine`] reports [`TurnInputs::max_context_tokens`] as `None`
-//! only for the one sentinel a real dialect never legitimately returns --
-//! `u32::MAX` -- see [`crate::attempt::AttemptOutcome::max_context_tokens`]'s
-//! own doc for the exact conversion. Every real backend today (Anthropic,
-//! every `openai-compat` dialect, verified or not) resolves to a real,
-//! finite number, so in production this module's window note fires
-//! whenever a route is chosen at all; the `u32::MAX` seam exists so a test
-//! double -- and a future, properly-wired `Unverified` signal -- can turn it
-//! off honestly rather than the module having to guess.
+//! `Cargo.toml`); it used to be unable to see `conway-plugin-backends::
+//! capabilities::ContextTokensSource`, the real signal for "this ceiling is
+//! a sourced fact vs. an internal admission-safety clamp nobody actually
+//! declared" (that crate's own `Backend::capabilities` doc). The hosted
+//! OpenAI-compatible models item closed this by moving that enum down into
+//! `conway-core::capabilities` (this crate's one dependency) and adding
+//! `conway_core::ports::Backend::context_window_source` -- a provided
+//! trait method beside `Backend::capabilities` itself, so
+//! [`crate::attempt::AttemptEngine`] (which already holds the `Arc<dyn
+//! Backend>` `capabilities()` came from) reads it directly, no new
+//! dependency and no second resolution. [`TurnInputs::
+//! max_context_tokens_source`] carries that value into `window_note`,
+//! which now names the provenance in its own text whenever a floor
+//! governs -- see that function's doc for exactly which two
+//! `ContextTokensSource` variants trigger the "assumed" wording.
+//!
+//! `TurnInputs::max_context_tokens` itself stays `Option<u32>`, still keyed
+//! off the `u32::MAX` sentinel a real dialect never legitimately returns
+//! (`conway_runtime::attempt::window_of`'s own doc) -- that answers a
+//! DIFFERENT question ("is there a number to report at all", still `None`
+//! only for a test double declaring it has nothing) from `
+//! max_context_tokens_source` ("how much can the number be trusted",
+//! always present, `Unverified` being the honest floor answer). A real
+//! backend's `Unverified`-sourced floor still carries a real, usable
+//! `max_context_tokens` -- the two fields are orthogonal, not a fallback
+//! chain of each other.
 
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 use conway_core::agent::Budget;
-use conway_core::capabilities::RequiredCaps;
+use conway_core::capabilities::{ContextTokensSource, RequiredCaps};
 use conway_core::ids::ModelRef;
 
 /// Percent-of-window checkpoints the model is told about, once each, per
@@ -121,6 +128,14 @@ pub struct TurnInputs<'a> {
     /// own doc on why `None` is the honest answer more often than a fully
     /// wired implementation would prefer.
     pub max_context_tokens: Option<u32>,
+    /// `max_context_tokens`'s provenance (hosted OpenAI-compatible models
+    /// item) -- `AttemptOutcome::max_context_tokens_source`, read straight
+    /// from `Backend::context_window_source`. Independent of whether
+    /// `max_context_tokens` itself is `Some`/`None`: a test double can set
+    /// this to anything regardless of its own `max_context_tokens` choice,
+    /// though every production caller's two fields describe the same
+    /// resolved `Capabilities` value and therefore agree in practice.
+    pub max_context_tokens_source: ContextTokensSource,
     pub model: &'a ModelRef,
     pub budget: &'a Budget,
     /// Gates whether `max_steps`/`max_tool_calls` read as "this turn" (a
@@ -141,14 +156,76 @@ pub struct TurnInputs<'a> {
     pub now: DateTime<Utc>,
 }
 
+/// One note [`notes_for_turn`] produced this turn, tagged with what kind of
+/// crossing it reports. Introduced by board item A5.6 so a caller can tell
+/// a context-window-fill note (self-facing only -- there is no "parent" for
+/// a context window to notify) apart from a BUDGET-dimension crossing
+/// (`max_steps`/`max_tool_calls`/`max_tokens`/`deadline`), which A5.6 also
+/// forwards to the agent's parent (`AgentMessage::BudgetNotice`) and to the
+/// live event stream (`Event::BudgetWarning`) -- WITHOUT re-deriving which
+/// notes are which from the rendered `text` (string-matching a human
+/// sentence to recover a fact this module already knows at the point it
+/// formats it would be exactly the kind of second, drifting implementation
+/// this module's own doc forbids).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunwayNote {
+    /// The exact model-facing sentence, unchanged from every caller that
+    /// existed before this struct did -- `notes_for_turn`'s callers that
+    /// only want the text (persisting it as the model-facing `SystemNote`)
+    /// read this field and nothing else.
+    pub text: String,
+    pub kind: RunwayNoteKind,
+}
+
+/// Which threshold `RunwayNote` reports crossing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunwayNoteKind {
+    /// A context-window-fill threshold (`WINDOW_THRESHOLDS`) -- always
+    /// self-facing; `RunwayNoteKind::limit_key` is always `None` for this
+    /// variant, since window-fill has no `Budget` dimension name to carry.
+    Window,
+    /// A `Budget` dimension crossed [`BUDGET_WARN_FRACTION`]. `limit_key`
+    /// names the exact dimension (e.g. `"max_steps=5"`, the same string
+    /// `AgentResult::BudgetExceeded::limit` uses for the SAME dimension's
+    /// hard trip) -- what `Event::BudgetWarning::limit` and
+    /// `AgentMessage::BudgetNotice` both need and would otherwise have to
+    /// re-parse out of `text`.
+    Budget { limit_key: String },
+}
+
+impl RunwayNote {
+    /// `true` for [`RunwayNoteKind::Budget`] -- the ONLY kind A5.6 forwards
+    /// to a parent / the live event stream. `false` for `Window`: a context
+    /// window has no owner outside this agent to notify, and forwarding a
+    /// window-fill note to a parent would misrepresent it as the CHILD's
+    /// own resource pressure, which it partly is not (the parent has its
+    /// own, entirely separate window).
+    pub fn is_budget(&self) -> bool {
+        matches!(self.kind, RunwayNoteKind::Budget { .. })
+    }
+
+    /// The bare `"<key>=<n>"` this note reports, when it has one
+    /// (`RunwayNoteKind::Budget` only) -- `Event::BudgetWarning::limit`'s
+    /// exact source.
+    pub fn limit_key(&self) -> Option<&str> {
+        match &self.kind {
+            RunwayNoteKind::Budget { limit_key } => Some(limit_key.as_str()),
+            RunwayNoteKind::Window => None,
+        }
+    }
+}
+
 /// Computes, and records in `tracker`, every runway note this turn's
 /// numbers newly justify. Called once per turn; returns an empty `Vec` on
 /// the overwhelmingly common turn where nothing has newly crossed a
 /// threshold.
-pub fn notes_for_turn(tracker: &mut RunwayTracker, inputs: &TurnInputs<'_>) -> Vec<String> {
+pub fn notes_for_turn(tracker: &mut RunwayTracker, inputs: &TurnInputs<'_>) -> Vec<RunwayNote> {
     let mut notes = Vec::new();
-    if let Some(note) = window_note(tracker, inputs) {
-        notes.push(note);
+    if let Some(text) = window_note(tracker, inputs) {
+        notes.push(RunwayNote {
+            text,
+            kind: RunwayNoteKind::Window,
+        });
     }
     notes.extend(budget_notes(tracker, inputs));
     notes
@@ -178,14 +255,46 @@ fn window_note(tracker: &mut RunwayTracker, inputs: &TurnInputs<'_>) -> Option<S
         tracker.window_crossed.insert(t);
     }
 
+    let max_k = compact_k(max);
+    let provenance = provenance_clause(inputs.max_context_tokens_source, &max_k);
+
     Some(format!(
-        "runway: context window {pct}% full ({used}k of {max_k}k tokens est., {model}). Fork \
-         the remaining exploration to a child and keep only its distillate; do not accumulate \
-         large tool results inline.",
+        "runway: context window {pct}% full ({used} of {max_k} tokens est.{provenance}, \
+         {model}). Fork the remaining exploration to a child and keep only its distillate; do \
+         not accumulate large tool results inline.",
         used = compact_k(inputs.total_tokens_est),
-        max_k = compact_k(max),
         model = inputs.model,
     ))
+}
+
+/// The provenance clause `window_note` appends to its own message when
+/// `source` is a FLOOR, not a real declared fact -- GP-14 (declaration
+/// honesty): a floor must say so everywhere it is shown, and the runway
+/// notice is model-facing prose an operator reads over the model's
+/// shoulder, not exempt from that rule just because its audience is mixed.
+/// Empty string for every other source (`Override`/`Metadata`/`Probed`): a
+/// real declared or discovered window needs no caveat.
+///
+/// **`DialectDefaultFloor` also gets the clause,** not only `Unverified` --
+/// unlike `ContextTokensSource`'s own doc (which frames `DialectDefaultFloor`
+/// as "not invented, a real per-provider figure"), THIS specific number is
+/// still not a fact about the routed MODEL, only about the provider in
+/// general (`openai`'s `128_000`, Anthropic's `200_000`) -- an operator
+/// reading a per-turn window-fill note about one specific model deserves
+/// the same "this may not be this model's real ceiling" caveat either way.
+fn provenance_clause(source: ContextTokensSource, max_k: &str) -> String {
+    match source {
+        ContextTokensSource::DialectDefaultFloor | ContextTokensSource::Unverified => {
+            // `max_k` ALREADY carries its own `k` (`compact_k(32_768)` is
+            // "32.7k"). Appending another produced "32.7kk" in real
+            // sessions long after the identical bug was fixed in
+            // `window_note`'s own template above -- the first fix corrected
+            // the one call site it was reported against and left this one,
+            // which is why the paired test below now covers BOTH.
+            format!(", {max_k} assumed -- set the real window in .conway/models.json")
+        }
+        _ => String::new(),
+    }
 }
 
 /// One budget dimension's current standing, resolved by the caller
@@ -203,7 +312,7 @@ struct BudgetDim {
     turn_scoped: bool,
 }
 
-fn budget_notes(tracker: &mut RunwayTracker, inputs: &TurnInputs<'_>) -> Vec<String> {
+fn budget_notes(tracker: &mut RunwayTracker, inputs: &TurnInputs<'_>) -> Vec<RunwayNote> {
     let mut notes = Vec::new();
 
     let dims = [
@@ -255,9 +364,13 @@ fn budget_notes(tracker: &mut RunwayTracker, inputs: &TurnInputs<'_>) -> Vec<Str
         let used = dim.used;
         let name = dim.name;
         let limit_key = dim.limit_key;
-        notes.push(format!(
-            "runway: {used} of {limit} {name} used {scope} ({limit_key}). Wrap up or report now."
-        ));
+        notes.push(RunwayNote {
+            text: format!(
+                "runway: {used} of {limit} {name} used {scope} ({limit_key}). Wrap up or \
+                 report now."
+            ),
+            kind: RunwayNoteKind::Budget { limit_key },
+        });
     }
 
     if let Some(deadline) = inputs.budget.deadline {
@@ -268,10 +381,15 @@ fn budget_notes(tracker: &mut RunwayTracker, inputs: &TurnInputs<'_>) -> Vec<Str
                 let warn_at = (total_secs as f64 * BUDGET_WARN_FRACTION) as u64;
                 if elapsed_secs >= warn_at {
                     tracker.budget_crossed.insert(DEADLINE);
-                    notes.push(format!(
-                        "runway: {elapsed_secs} of {total_secs} seconds used this session \
-                         (deadline={deadline}). Wrap up or report now."
-                    ));
+                    notes.push(RunwayNote {
+                        text: format!(
+                            "runway: {elapsed_secs} of {total_secs} seconds used this session \
+                             (deadline={deadline}). Wrap up or report now."
+                        ),
+                        kind: RunwayNoteKind::Budget {
+                            limit_key: format!("deadline={deadline}"),
+                        },
+                    });
                 }
             }
         }
@@ -320,6 +438,10 @@ mod tests {
             total_tokens_est: 0,
             headroom: 0,
             max_context_tokens: None,
+            // A real, declared window by default -- tests that specifically
+            // want the "assumed floor" wording set this explicitly (see
+            // `window_note_names_the_floor_as_assumed_and_never_does_for_a_declared_window`).
+            max_context_tokens_source: ContextTokensSource::Override,
             model,
             budget,
             keep_alive: true,
@@ -347,7 +469,11 @@ mod tests {
             1,
             "one note even though two thresholds cleared at once"
         );
-        assert!(notes[0].contains("80%"), "{}", notes[0]);
+        assert!(notes[0].text.contains("80%"), "{}", notes[0].text);
+        // A5.6: a window-fill note is never a `Budget` crossing -- there is
+        // no parent-facing counterpart for context-window pressure.
+        assert!(!notes[0].is_budget());
+        assert_eq!(notes[0].limit_key(), None);
 
         // Same size again: no NEW threshold crossed (80% < 90%, and 50/75
         // are already recorded) -- no note.
@@ -362,7 +488,70 @@ mod tests {
         inputs.total_tokens_est = 3_700; // 92.5%
         let notes = notes_for_turn(&mut tracker, &inputs);
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("92%"), "{}", notes[0]);
+        assert!(notes[0].text.contains("92%"), "{}", notes[0].text);
+    }
+
+    /// Board item `01M1YS0B0NYTMWM1M5C7250FFT`: `window_note`'s old template appended a literal `k`
+    /// after both `{used}` and `{max_k}`, which `compact_k` had *already*
+    /// suffixed with its own `k` for any value >= 1000 -- `10.6kk of
+    /// 32.7kk tokens` instead of `10.6k of 32.7k tokens`. Both `used` and
+    /// `max` are chosen >= 1000 here specifically so a regression that
+    /// reintroduces the doubled suffix is caught on both terms at once, not
+    /// only the one this test happens to check first.
+    #[test]
+    fn window_note_units_never_double_the_k_suffix() {
+        let model = model();
+        let budget = budget(0);
+        let mut tracker = RunwayTracker::default();
+        let mut inputs = base_inputs(&model, &budget);
+        // 21_000 / 32_768 = 64% -- both used and max render with a `k`
+        // suffix (`compact_k(21_000) == "21.0k"`, `compact_k(32_768) ==
+        // "32.7k"`), the exact shape that exposed the doubled-`k` defect.
+        inputs.total_tokens_est = 21_000;
+        inputs.max_context_tokens = Some(32_768);
+        let notes = notes_for_turn(&mut tracker, &inputs);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].text.contains("21.0k of 32.7k tokens"),
+            "{}",
+            notes[0].text
+        );
+        assert!(
+            !notes[0].text.contains("kk"),
+            "units must never double the `k` suffix: {}",
+            notes[0].text
+        );
+
+        // THE OTHER SITE THAT BUILDS THIS TEXT. `provenance_clause` appends
+        // the "assumed" caveat, and it interpolated `max_k` -- already
+        // `k`-suffixed -- followed by another literal `k`. The assertion
+        // above never reached it, because the default source is not a
+        // floor and the clause is empty for every other source. So the
+        // doubled suffix survived in real sessions ("32.7kk assumed") long
+        // after the template above was fixed. Both floor variants, since
+        // both produce the clause.
+        for floor_source in [
+            ContextTokensSource::DialectDefaultFloor,
+            ContextTokensSource::Unverified,
+        ] {
+            let mut tracker = RunwayTracker::default();
+            let mut inputs = base_inputs(&model, &budget);
+            inputs.total_tokens_est = 21_000;
+            inputs.max_context_tokens = Some(32_768);
+            inputs.max_context_tokens_source = floor_source;
+            let notes = notes_for_turn(&mut tracker, &inputs);
+            assert_eq!(notes.len(), 1);
+            assert!(
+                notes[0].text.contains("32.7k assumed"),
+                "{floor_source:?} must name the window once, with one `k`: {}",
+                notes[0].text
+            );
+            assert!(
+                !notes[0].text.contains("kk"),
+                "{floor_source:?} must never double the `k` suffix: {}",
+                notes[0].text
+            );
+        }
     }
 
     #[test]
@@ -374,6 +563,60 @@ mod tests {
         inputs.total_tokens_est = 1_000_000;
         inputs.max_context_tokens = None;
         assert!(notes_for_turn(&mut tracker, &inputs).is_empty());
+    }
+
+    /// **Hosted OpenAI-compatible models item, acceptance criterion 4:**
+    /// the runway notice names the window's provenance when it is a floor
+    /// (`DialectDefaultFloor`/`Unverified`), and says nothing extra when a
+    /// real source declared it (`Override`/`Metadata`/`Probed`) -- GP-14,
+    /// shown at exactly the surface the reported incident (a floor-governed
+    /// window that looked exactly like a real one) crossed.
+    #[test]
+    fn window_note_names_the_floor_as_assumed_and_never_does_for_a_declared_window() {
+        let model = model();
+        let budget = budget(0);
+
+        for floor_source in [
+            ContextTokensSource::DialectDefaultFloor,
+            ContextTokensSource::Unverified,
+        ] {
+            let mut tracker = RunwayTracker::default();
+            let mut inputs = base_inputs(&model, &budget);
+            inputs.total_tokens_est = 3_200;
+            inputs.max_context_tokens = Some(4_000);
+            inputs.max_context_tokens_source = floor_source;
+            let notes = notes_for_turn(&mut tracker, &inputs);
+            assert_eq!(notes.len(), 1);
+            assert!(
+                notes[0].text.contains("assumed"),
+                "{floor_source:?} must be labelled assumed: {}",
+                notes[0].text
+            );
+            assert!(
+                notes[0].text.contains(".conway/models.json"),
+                "must point the operator at the fix: {}",
+                notes[0].text
+            );
+        }
+
+        for declared_source in [
+            ContextTokensSource::Override,
+            ContextTokensSource::Metadata,
+            ContextTokensSource::Probed,
+        ] {
+            let mut tracker = RunwayTracker::default();
+            let mut inputs = base_inputs(&model, &budget);
+            inputs.total_tokens_est = 3_200;
+            inputs.max_context_tokens = Some(4_000);
+            inputs.max_context_tokens_source = declared_source;
+            let notes = notes_for_turn(&mut tracker, &inputs);
+            assert_eq!(notes.len(), 1);
+            assert!(
+                !notes[0].text.contains("assumed"),
+                "{declared_source:?} must not be labelled assumed: {}",
+                notes[0].text
+            );
+        }
     }
 
     #[test]
@@ -399,8 +642,13 @@ mod tests {
         inputs.steps_this_turn = 4; // 80% of 5
         let notes = notes_for_turn(&mut tracker, &inputs);
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("4 of 5"), "{}", notes[0]);
-        assert!(notes[0].contains(MAX_STEPS), "{}", notes[0]);
+        assert!(notes[0].text.contains("4 of 5"), "{}", notes[0].text);
+        assert!(notes[0].text.contains(MAX_STEPS), "{}", notes[0].text);
+        // A5.6: a budget-dimension crossing, unlike a window-fill note,
+        // carries the exact `<key>=<n>` a parent notice / `Event::
+        // BudgetWarning` needs.
+        assert!(notes[0].is_budget());
+        assert_eq!(notes[0].limit_key(), Some("max_steps=5"));
 
         // Still within the same turn/user-turn: repeating (or exceeding)
         // the same step count must not re-fire.
@@ -437,7 +685,16 @@ mod tests {
 
         let notes = notes_for_turn(&mut tracker, &inputs);
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("80 of 100 seconds"), "{}", notes[0]);
+        assert!(
+            notes[0].text.contains("80 of 100 seconds"),
+            "{}",
+            notes[0].text
+        );
+        assert!(notes[0].is_budget());
+        assert_eq!(
+            notes[0].limit_key(),
+            Some(format!("deadline={deadline}")).as_deref()
+        );
 
         // No repeat.
         assert!(notes_for_turn(&mut tracker, &inputs).is_empty());

@@ -30,13 +30,14 @@ fn settings_path(fixture: &Fixture) -> PathBuf {
 /// DEFAULT_OPINION_SET` ever disagree, that is exactly the drift this test
 /// exists to catch -- so this is deliberately NOT `use`d from the source
 /// crate.
-const DEFAULT_IDS: [&str; 6] = [
+const DEFAULT_IDS: [&str; 7] = [
     "conway.idiom",
     "conway.stepguard",
     "conway.skills",
     "conway.memory",
     "conway.names",
     "conway.history",
+    "conway.checkpoint",
 ];
 
 /// Acceptance 1: on a fixture with no `plugins.install` at all, `conway

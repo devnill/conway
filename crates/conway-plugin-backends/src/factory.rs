@@ -85,10 +85,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway_core::capabilities::Capabilities;
 use conway_core::error::ConwayError;
 use conway_core::ids::ModelId;
-use conway_core::ports::{Backend, BackendBuildContext, BackendFactory};
+use conway_core::ports::{Backend, BackendBuildContext, BackendFactory, ProbedCapability};
 
 use crate::config::{AnthropicConfig, OpenAiCompatConfig, SecretString};
 use crate::probe::{CapabilityProbe, DISCOVERY_TIMEOUT};
@@ -519,7 +518,7 @@ impl BackendFactory for OpenAiCompatBackendFactory {
     /// hard error, since [`Self::build`] (above) already validates both
     /// fields as hard errors when the backend itself is constructed, and a
     /// probe is best-effort on top of a backend that already exists.
-    fn probe_capabilities(&self, ctx: &BackendBuildContext) -> BTreeMap<ModelId, Capabilities> {
+    fn probe_capabilities(&self, ctx: &BackendBuildContext) -> BTreeMap<ModelId, ProbedCapability> {
         let Some(dialect_raw) = ctx.dialect.as_deref() else {
             tracing::warn!(
                 backend = %ctx.id,
@@ -568,7 +567,29 @@ impl BackendFactory for OpenAiCompatBackendFactory {
             );
             return BTreeMap::new();
         }
-        result.capabilities
+        // `capabilities`/`context_window_source` are keyed identically
+        // (`DiscoveryResult`'s own doc) -- every model present in one is
+        // present in the other, so this loses nothing by driving off
+        // `capabilities` and looking `context_window_source` up alongside
+        // it, rather than zipping two independently-ordered iterators.
+        result
+            .capabilities
+            .into_iter()
+            .map(|(model_id, capabilities)| {
+                let context_window_source = result
+                    .context_window_source
+                    .get(&model_id)
+                    .copied()
+                    .unwrap_or(conway_core::capabilities::ContextTokensSource::Unverified);
+                (
+                    model_id,
+                    ProbedCapability {
+                        capabilities,
+                        context_window_source,
+                    },
+                )
+            })
+            .collect()
     }
 }
 

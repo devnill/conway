@@ -1,0 +1,67 @@
+[package]
+name = "conway-plugin-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin, `conway.web`: a web_fetch tool (GET a URL, reduced to readable text, bounded and SSRF-guarded), plus an optional web_search tool that registers only when an operator configures a search provider"
+
+# Versioned WITH the workspace, like every other first-party plugin -- see
+# `conway-plugin-checkpoint`/`conway-plugin-stepguard`'s own Cargo.toml doc
+# comments for the full reasoning, restated here rather than re-derived:
+# this crate carries none of `conway-core`'s strict-semver discipline
+# (ARCHITECTURE.md §2), because that discipline exists for the crate
+# third-party plugins depend on, and this is, from `conway`'s own point of
+# view, just another consumer of the public `conway`/`conway::plugin`
+# surface.
+#
+# **Opt-in, not in the default opinion set -- see this crate's own `lib.rs`
+# module doc for the reasoning.** Unlike `conway.checkpoint` (recently
+# reversed INTO the default set after a cross-harness convergence review),
+# this plugin gives the model outbound network reach, which is a materially
+# different trust posture from "reads/writes files this agent could already
+# reach" -- exactly the "wanted, not required" tier the project's own rule
+# reserves for a first-party plugin that ships opinionated but declines
+# itself.
+#
+# **Dependency minimalism.** `reqwest` is already a workspace dependency
+# (`conway-plugin-marketplace`, `conway-plugin-backends` are its two
+# existing consumers -- see either crate's own Cargo.toml doc); this crate
+# is a THIRD consumer, not a new dependency in `Cargo.lock`. `url` is
+# likewise already pinned (`reqwest`'s own dependency, and used directly
+# here -- see `src/fetch.rs`'s module doc for why: its WHATWG-compliant
+# host parser is load-bearing for this crate's own SSRF guard, not merely a
+# convenience). No HTML-parsing crate was added: `src/fetch.rs::reduce_html`
+# is a small, hand-rolled tag-stripping reducer rather than a dependency on
+# an unaudited new crate for a job this crate's own "what NOT to build"
+# scope (no JS execution, no rendering) does not actually require a real
+# HTML/CSS engine for.
+
+[dependencies]
+conway = { path = "../conway" }
+reqwest = { workspace = true }
+url = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+async-trait = { workspace = true }
+# `fetch::read_bounded`'s chunked, bounded read loop needs `StreamExt::next`
+# over `reqwest::Response::bytes_stream()` (the `stream` feature, already
+# enabled workspace-wide for `reqwest` -- see that crate's own workspace
+# entry) -- already a pinned workspace dependency (`conway-runtime` and
+# others depend on the full `futures` crate already), reused rather than
+# pulling in `futures-util` as a second, narrower way to name the same
+# trait.
+futures = { workspace = true }
+# `fetch::guard_url`'s DNS-name branch resolves via `tokio::net::
+# lookup_host` -- the ONE new feature this crate turns on beyond the
+# workspace's own base `["rt", "time", "macros", "sync"]` tokio features
+# (`crate::fetch`'s own module doc has the full SSRF-guard argument,
+# including what this resolve-then-classify step does and does not close).
+tokio = { workspace = true, features = ["net"] }
+
+[dev-dependencies]
+conway-testkit = { path = "../conway-testkit" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+wiremock = { workspace = true }

@@ -132,10 +132,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, kill_group, CapabilityError, CapabilityProvider, CapabilityRegistration,
-    ChildSessionError, EventSinkHandle, HostCapability, PathArgs, Plugin, PluginManifest,
-    PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution, RenderKind, Tool,
-    ToolCall, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    async_trait, kill_group, spawn_with_retry, CapabilityError, CapabilityProvider,
+    CapabilityRegistration, ChildSessionError, EventSinkHandle, HostCapability, PathArgs, Plugin,
+    PluginManifest, PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution,
+    RenderKind, Tool, ToolCall, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec,
+    TruncationPolicy,
 };
 
 mod session;
@@ -475,12 +476,12 @@ async fn spawn_one_shot(
             .stderr(Stdio::piped())
             .process_group(0);
 
-        let mut child = command
-            .spawn()
-            .map_err(|err| SubprocessPluginError::Spawn {
+        let mut child = spawn_with_retry(|| command.spawn()).await.map_err(|err| {
+            SubprocessPluginError::Spawn {
                 config_id: spec.config_id.clone(),
                 detail: format!("failed to spawn '{program}': {err}"),
-            })?;
+            }
+        })?;
 
         let pgid = child.id().ok_or_else(|| SubprocessPluginError::Spawn {
             config_id: spec.config_id.clone(),

@@ -267,14 +267,28 @@ fn head_skipped_chain_survivor_keeps_its_chain_index_not_survivor_index() {
     let routes = router.resolve(&request("planner", 1_000)).unwrap();
     assert_eq!(routes.len(), 1);
     assert_eq!(routes[0].model, c.model);
-    assert_eq!(
-        routes[0].reason,
-        RoutingReason::Fallback {
-            position: 2,
-            after: vec![]
-        },
-        "survivor at chain position 2 must not be AliasPrimary"
-    );
+    // Board item A1d ("say why a turn fell back"): `after` now names both
+    // earlier-in-chain candidates the router itself skipped, not an empty
+    // placeholder -- `a` and `b` are both unknown to the capability index
+    // (see `index_with` above), the exact same "capability:
+    // capabilities: unknown (backend, model) pair" text
+    // `router.rs::check_candidate` produces.
+    let RoutingReason::Fallback { position, after } = &routes[0].reason else {
+        panic!(
+            "survivor at chain position 2 must not be AliasPrimary, got {:?}",
+            routes[0].reason
+        );
+    };
+    assert_eq!(*position, 2);
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0].model, a);
+    assert_eq!(after[1].model, b);
+    for failure in after {
+        assert_eq!(
+            failure.error,
+            "capability: capabilities: unknown (backend, model) pair"
+        );
+    }
 }
 
 #[test]
@@ -435,12 +449,18 @@ fn headroom_flips_selection_across_chain_positions() {
     let routes = router.resolve(&request("planner", 34_000)).unwrap();
     assert_eq!(routes.len(), 1);
     assert_eq!(routes[0].model, large.model);
+    // Board item A1d: `after` now names `small`'s own headroom rejection,
+    // with its numbers, instead of an empty placeholder.
+    let RoutingReason::Fallback { position, after } = &routes[0].reason else {
+        panic!("expected Fallback, got {:?}", routes[0].reason);
+    };
+    assert_eq!(*position, 1);
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].model, small);
     assert_eq!(
-        routes[0].reason,
-        RoutingReason::Fallback {
-            position: 1,
-            after: vec![]
-        }
+        after[0].error,
+        "capability: context: needs 34000 input + 16000 headroom = 50000, model \
+         max_context_tokens is 40000"
     );
 }
 

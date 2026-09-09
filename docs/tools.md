@@ -1,6 +1,6 @@
 # Built-in tools
 
-conway ships twelve built-in tools across four plugins. This page is the
+conway ships fourteen built-in tools across four plugins. This page is the
 reference table: every tool's name, what it does, its **category** (what
 [`permissions.md`](permissions.md)'s plan mode and category-based rules
 select by), its **permission class** (`Safe`, `Requires approval`, or
@@ -132,6 +132,31 @@ exactly which OS this guarantee is verified on. Unlike `bash`
 PLUGIN — install it with `[plugins].install = ["conway.confine"]`, not
 `tools.builtin_plugins` — and it requires `--root`: a call with no root
 configured for its agent is refused outright, never run unconfined.
+
+## `web_fetch` / `web_search` (`conway.web`, first-party plugin, opt-in)
+
+| Tool | Does | Category | Path arguments confinable | Truncation | Permission class |
+| --- | --- | --- | --- | --- | --- |
+| `web_fetch` | GETs an `http(s)` URL and returns its body reduced to readable text (HTML tags stripped, entities decoded). | Read | N/A — no path arguments | Head (200,000 bytes by default) | Requires approval |
+| `web_search` | Searches the web via an operator-configured provider; **absent entirely unless one is configured.** | Search | N/A — no path arguments | Head (32,768 bytes) | Requires approval |
+
+`web_fetch` renders as the bare URL, not a JSON dump — the same reason
+`bash` renders as its bare command — so a `{ "select": { "tools":
+["web_fetch"] }, "when": { "domains": [...] }, "then": "allow" }` rule
+(see [`permissions.md`](permissions.md)) has something to compare a
+hostname against. It is `RenderKind::Structured`, not `ShellCommand`: the
+URL is not interpreted by a shell, so `command_prefix`/`domains` allow
+grants apply to it normally (unlike `bash`, which no pattern grant can ever
+authorize).
+
+Refuses any scheme other than `http`/`https`, and refuses a loopback,
+private (RFC 1918), link-local (including cloud-metadata endpoints),
+carrier-grade-NAT, or documentation-range target by default — see
+[`docs/plugins/web.md`](plugins/web.md) for the exact SSRF-guard coverage,
+stated precisely rather than implied complete. `web_search` is registered
+only when `[plugins.config."conway.web"].search` names a provider —
+installing `conway.web` with no `search` configured gives you `web_fetch`
+alone, never a `web_search` that would fail every call.
 
 ## The `subagent` tools (`conway.subagent`, on by default)
 
@@ -283,3 +308,78 @@ round-trips but has no effect on a live run; only an embedder constructing
 `ToolBatchCtx` directly benefits right now. Same shape, same cause, as
 `max_parallel_tools`'s own pre-existing gap (`docs/agents.md`'s example);
 see `crates/conway/src/builder.rs`'s module doc for both.
+
+## What `&` does inside `bash`
+
+Backgrounding a job with a trailing `&` — `long-build.sh &`, `conway -p ... &`
+— is the oldest shell trick there is, and it works inside a `bash` call
+exactly as it would in a terminal: **`bash` returns as soon as the `bash -c`
+process itself exits, not when every backgrounded job finishes.** A `bash`
+call that ends with `sleep 30 &` returns almost immediately, reports its own
+(the shell's) exit code, and names the still-running job so nothing is
+silently dropped:
+
+```
+stdout:
+12345
+
+stderr:
+(empty)
+
+exit code: 0
+1 background process(es) still running: pid 12345
+```
+
+**Why this needed fixing, and what the underlying mechanism was.**
+`bash`'s run loop streams stdout/stderr by reading lines until EOF. A
+backgrounded grandchild inherits the SAME stdout/stderr pipes as the `bash -c`
+process that spawned it (non-interactive `bash -c` runs with job control
+off, so `&` does not fork a new process group or redirect its fds) — so the
+pipe's write end stays open, and EOF never arrives, for as long as that
+grandchild keeps running. The tool used to wait for EOF on top of the
+shell's own exit before declaring the call complete, which meant a
+backgrounded `sleep 30 &` held the call to its FULL `timeout_ms`, and the
+timeout path then killed the whole process group — including the job the
+caller deliberately backgrounded. The result was also self-contradictory: a
+completed, successful shell reported both `exit code: 0` and
+`timed out after ...ms` on the same line, because the "timeout" was really
+just this tool waiting on pipes nobody was going to close.
+
+The fix: the launched `bash -c` process's own exit is the call's completion,
+full stop. On that exit, `bash` drains whatever output is *already* sitting
+in the pipe buffers (a zero-wait read, not a wait for more), closes its own
+read ends, and lists any other still-alive member of the process group as a
+"background process(es) still running" note naming its pid(s) — output that
+job produces AFTER this point is not captured, since nothing is reading its
+pipes any more. The process group is still killed, exactly as before, in the
+two cases where that is the documented safety property: **timeout** (`bash`'s
+own `timeout_ms` firing) and **cancellation** (the caller cancelling the
+call). A normal, successful return never kills anything the model
+backgrounded.
+
+**The group-kill escalation watches the whole group, not just the `bash -c`
+leader.** `kill_group` (`crates/conway-tools/src/process.rs`) SIGTERMs the
+whole process group first and gives it a 2s grace period before escalating
+to SIGKILL — but that grace period polls whether ANY member of the group is
+still alive, not merely whether the `bash -c` leader has exited. This
+matters precisely for the backgrounded-job shape described above: on
+timeout or cancellation, the leader — having nothing left to do — typically
+exits within milliseconds of the group SIGTERM, almost always well inside
+the grace window. A backgrounded grandchild that ignores SIGTERM (rare, but
+possible) does not exit with it. Watching only the leader's own exit would
+resolve the grace period the instant the leader dies and skip SIGKILL
+entirely, leaving that grandchild to survive teardown — exactly the case a
+`kill_group` caller relies on this mechanism for. Escalation to SIGKILL
+fires whenever any group member is still alive once the full 2s grace
+period elapses, regardless of whether the leader in particular already
+exited.
+
+**This is not a background-job manager.** There is no way to poll a
+backgrounded job's status, read its output after the `bash` call that
+started it returns, or wait on it from a later call — conway has no job
+table. A real answer to "start a long job and check on it later" is
+`docs/vision/CATALOGUE.md` item 4 ("Background / async tool execution",
+also referenced as review item B8) — not yet built. Until it is, `&` inside
+`bash` is useful for genuinely fire-and-forget work (a server you'll check
+on with a separate `bash` call, e.g. `curl localhost:PORT`) and a poor fit
+for anything whose output you need back.

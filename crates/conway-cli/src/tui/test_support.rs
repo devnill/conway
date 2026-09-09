@@ -161,6 +161,12 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         | Action::Submit(_)
         | Action::CtrlC
         | Action::Quit
+        // Board item `01M1YVJ4RA5V7FF95MFRQMTQW3`: `Ctrl-G` needs a live
+        // `Terminal`/child-process suspend-resume (`app::editor`'s own
+        // doc) this terminal-free harness does not have, so it is applied
+        // in `app.rs`'s run loop only -- mirrors every other
+        // needs-a-live-facade-or-terminal action in this same arm.
+        | Action::OpenExternalEditor
         | Action::FocusAgent(_)
         | Action::AskFate(_)
         | Action::IntentConfirm(_)
@@ -173,7 +179,14 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // reorder needs a real facade/filesystem context this
         // terminal-free harness does not have, so it is applied in
         // `app.rs`'s run loop only.
-        | Action::PromoteSessionModelToDefault => {}
+        | Action::PromoteSessionModelToDefault
+        // The `/model` picker's own "make default" key: mirrors
+        // `PromoteSessionModelToDefault` immediately above for the
+        // identical reason -- the chain-reorder write needs a real
+        // facade/filesystem context this terminal-free harness does not
+        // have, so it is applied in `app.rs`'s run loop only (see
+        // `Action::MakeModelDefault`'s own doc in `input.rs`).
+        | Action::MakeModelDefault(_) => {}
     }
     action
 }

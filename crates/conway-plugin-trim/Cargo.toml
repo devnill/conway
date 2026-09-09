@@ -24,6 +24,14 @@ description = "First-party plugin (board item 01M0EMAC4CCDQ8QJYM21RXPKRY): conwa
 # a compile-time fixture; this crate is the answer.
 conway = { path = "../conway" }
 async-trait = { workspace = true }
+# `Plugin::configure`'s own value type is `&serde_json::Value` -- a
+# third-party crate every plugin author may depend on directly, the same
+# footing `conway_plugin_memory`/`conway_plugin_skills` already establish
+# for their own JSON-shaped config, never a facade-boundary violation the
+# way depending on `conway-core` directly would be (board item
+# 01M1YVM9CHFCJ6112XDYHCFS84, `TrimPlugin::configure`, the first real
+# implementor of that method).
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # Test-only: builds a real `Arc<dyn SessionStore>` fake to construct a
@@ -31,6 +39,5 @@ async-trait = { workspace = true }
 # dev-dependency on this crate establishes (see e.g.
 # `conway-plugin-memory/Cargo.toml`'s own comment).
 conway-testkit = { path = "../conway-testkit" }
-serde_json = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

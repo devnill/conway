@@ -619,12 +619,13 @@ async fn apply_opinion_set_after_finish_setup_writes_exactly_the_six_ruled_ids()
         "conway.memory",
         "conway.names",
         "conway.history",
+        "conway.checkpoint",
     ];
     let applied = first_run::apply_opinion_set(&path).expect("apply_opinion_set must succeed");
     assert_eq!(
         applied,
         expected.to_vec(),
-        "apply_opinion_set must return exactly the six ruled ids, in order"
+        "apply_opinion_set must return exactly the ruled default set, in order"
     );
 
     let text = std::fs::read_to_string(&path).expect("read settings.json");
@@ -640,7 +641,7 @@ async fn apply_opinion_set_after_finish_setup_writes_exactly_the_six_ruled_ids()
     expected_sorted.sort();
     assert_eq!(
         ids, expected_sorted,
-        "settings.json's plugins.install must contain exactly the six ruled ids: {text}"
+        "settings.json's plugins.install must contain exactly the ruled default set: {text}"
     );
 
     // A second call against the same file must be a no-op -- no rewrite.

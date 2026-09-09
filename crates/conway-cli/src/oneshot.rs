@@ -278,6 +278,27 @@
 //!      and the elapsed wall-clock time -- before this item, a one-shot
 //!      `BudgetExceeded` termination produced only a bare exit code 5, no
 //!      stderr explanation at all.
+//! 10. **A denied tool call's REASON, in `text` mode (board item
+//!     `01M1YS2ACS0TKJYKF8TBPESTTC`; `docs/dogfooding.md`'s "Known
+//!     friction": "the model sees a reason, the operator does not").**
+//!     `conway_runtime::permission::PermissionBroker::decide` now emits a
+//!     new `Event::PermissionDecision` alongside its pre-existing
+//!     `Event::PermissionResolved` for every call it resolves, carrying a
+//!     `feedback: Option<String>` that is `Some(reason)` for every
+//!     DENY-shaped decision and `None` for every allow-shaped one (see
+//!     that event's own doc, `conway-core`). [`run`]'s loop now prints
+//!     that reason directly (`text` mode only) the moment such an event
+//!     arrives, and -- to keep the "exactly once" contract this item's own
+//!     acceptance criteria names -- suppresses forwarding the OLD,
+//!     reason-less `PermissionResolved` denial to the renderer for `text`
+//!     mode only (`jsonl`/`json` still see BOTH events, completely
+//!     unfiltered, per this module's own "no event-kind filtering"
+//!     contract for `jsonl`): `render::TextRenderer`'s own pre-existing
+//!     `PermissionResolved` handling is untouched (out of this module's
+//!     file scope), so suppression -- not a change to that handler -- is
+//!     what keeps the two from printing the same denial twice. See the
+//!     `Event::PermissionDecision`/`Event::PermissionResolved` match arms
+//!     in [`run`]'s own event loop for the exact mechanism.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -285,8 +306,8 @@ use std::time::Duration;
 
 use conway::gates::AllowListGate;
 use conway::{
-    AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, ResultStatus, RoleAlias, SessionHandle,
-    SessionSpec, ToolName, ToolSelector,
+    AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, PermissionDecisionKind, ResultStatus,
+    RoleAlias, SessionHandle, SessionSpec, ToolName, ToolSelector,
 };
 use futures::StreamExt;
 use schemars::schema::RootSchema;
@@ -304,6 +325,46 @@ use crate::{diag, render, signal};
 /// is hung, long enough not to read as spam on an ordinarily-paced run.
 const PROGRESS_NOTICE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Reconciliation #10: `(call_id, reason)` when `event` is a DENY-shaped
+/// `Event::PermissionDecision`, `None` otherwise -- pure, so it is unit-
+/// testable independent of a live event stream. Trusts `feedback.is_some()`
+/// as the complete "was this call denied" test, matching
+/// `conway_runtime::permission::PermissionBroker::record_decision`'s own
+/// contract (`Some(reason)` for every deny-shaped decision, `None` for
+/// every allow-shaped one) -- no `decision`/`source` field needs reading
+/// here at all.
+fn permission_denial_reason(event: &Event) -> Option<(&str, &str)> {
+    match event {
+        Event::PermissionDecision {
+            call_id,
+            feedback: Some(reason),
+            ..
+        } => Some((call_id.as_str(), reason.as_str())),
+        _ => None,
+    }
+}
+
+/// Reconciliation #10: whether `event` is the OLD, reason-less denial line
+/// `render::TextRenderer` already prints from `Event::PermissionResolved`
+/// (`Denied`/`DeniedWithFeedback` -- the same two decisions that module's
+/// own `decision_is_denied` matches, out of this module's file scope to
+/// change directly). [`run`]'s loop skips forwarding such an event to the
+/// renderer, `text` mode only, once [`permission_denial_reason`] has
+/// already reported the identical denial with its reason attached on an
+/// earlier iteration -- see this module's doc comment, reconciliation #10,
+/// for why suppression (not a change to `TextRenderer` itself) is what
+/// keeps a denial from printing twice.
+fn is_reasonless_permission_denial(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::PermissionResolved { decision, .. }
+            if matches!(
+                decision,
+                PermissionDecisionKind::Denied | PermissionDecisionKind::DeniedWithFeedback
+            )
+    )
+}
+
 /// One-shot mode's entry point (dispatched from `main.rs` when
 /// `cli.print.is_some()`). `conway`'s `Runtime` already has this module's
 /// [`build_gate`] wired in as its `PermissionGate` -- see reconciliation #1
@@ -320,6 +381,14 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
     let _turn = handle.prompt(text).await?;
 
     let sigint = signal::install();
+    // Board item A5.3: the SIGTERM/SIGHUP sibling of `sigint` above -- see
+    // `signal.rs`'s own module doc for why an uncaught delivery of either
+    // is otherwise indistinguishable, durability-wise, from an uncatchable
+    // `SIGKILL`. `term_cause`, declared alongside `grace_deadline`/
+    // `final_result` below, records which (if either) actually fired this
+    // run, so the exit-code computation at the bottom of this function can
+    // apply `ExitCode::from_result_with_signal`'s precedence rule.
+    let termination = signal::install_termination();
     let mut renderer = render::make(
         cli.output_format,
         Box::new(std::io::BufWriter::new(std::io::stdout())),
@@ -332,6 +401,10 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
     renderer.set_root(root);
     let mut final_result: Option<AgentResult> = None;
     let mut grace_deadline: Option<tokio::time::Instant> = None;
+    // Board item A5.3: `Some` once `termination.notified()` fires below --
+    // the first (and only) termination-class signal this run observed, for
+    // the final exit-code computation's `from_result_with_signal` call.
+    let mut term_cause: Option<signal::TermSignal> = None;
 
     // Reconciliation #9: text mode's own "prove the run is alive" ticker.
     // `turn_started` is this invocation's own clock for both the ticker's
@@ -380,6 +453,26 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
                     // "never stdout": intercepted here, before any
                     // renderer (of any --output-format) ever sees it.
                     diag::warn(format!("event stream lagged: {skipped} event(s) dropped"));
+                    continue;
+                }
+                // Reconciliation #10: the reason behind a denied call,
+                // `text` mode only. `PermissionResolved`'s own emission
+                // always precedes this call's own `PermissionDecision`
+                // (`PermissionBroker::decide` emits the former, then calls
+                // `record_decision`, which emits the latter) -- by the time
+                // the suppression arm just below fires for a given denial,
+                // the detailed line (if any) has already been printed on an
+                // earlier loop iteration.
+                if let Some((call_id, reason)) = permission_denial_reason(&env.event) {
+                    if cli.output_format == OutputFormat::Text {
+                        diag::warn(format!("permission denied for call {call_id}: {reason}"));
+                    }
+                }
+                // Suppressed for `text` mode ONLY -- never `jsonl`/`json`,
+                // which forward every event unfiltered.
+                if cli.output_format == OutputFormat::Text
+                    && is_reasonless_permission_denial(&env.event)
+                {
                     continue;
                 }
                 // Root-scoped: a subagent's own `ModelDecision` (its
@@ -433,8 +526,27 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
                 let _ = handle.cancel(root, "sigint").await;
                 grace_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
             }
+            // Board item A5.3: SIGTERM/SIGHUP's identical reaction --
+            // cancel the root through the SAME `SessionHandle::cancel`
+            // call SIGINT uses immediately above, so the terminal
+            // `Cancelled` result this produces is written by the SAME
+            // single writer (`AgentLoop::finish_cancelled` -> `finish`)
+            // every other cancellation reason routes through. `term_cause`
+            // is set here (not inside `signal::TerminationWatch` itself)
+            // so this loop, not the watcher, decides which signal "won"
+            // when both fire close together -- `notified()` only resolves
+            // once per process (`TerminationWatch`'s own doc), so this arm
+            // fires at most once regardless.
+            _ = termination.notified(), if grace_deadline.is_none() => {
+                let cause = termination
+                    .observed()
+                    .expect("notified() only resolves after a signal was recorded");
+                term_cause = Some(cause);
+                let _ = handle.cancel(root, cause.reason()).await;
+                grace_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+            }
             _ = grace, if grace_deadline.is_some() => {
-                diag::warn("no terminal result within the SIGINT grace window; exiting");
+                diag::warn("no terminal result within the signal grace window; exiting");
                 break;
             }
             _ = progress_tick, if !output_started => {
@@ -449,14 +561,31 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
     renderer.finish(final_result.as_ref())?;
 
     let sigint_seen = sigint.hits() > 0;
-    let code = match &final_result {
-        Some(result) => ExitCode::from_result_with_sigint(result, sigint_seen),
-        None if sigint_seen => ExitCode::Interrupted,
+    // Board item A5.3: `term_cause` takes precedence over `sigint_seen`
+    // whenever both are somehow set (the loop's shared `grace_deadline`
+    // guard means at most one of the sigint/termination `select!` arms
+    // ever actually fires and drives `final_result`'s cancellation reason
+    // -- `term_cause` reflects precisely that, so it is the more precise
+    // of the two signals available here, exactly mirroring why
+    // `sigint_seen` alone was already sufficient before this signal
+    // existed).
+    let code = match (&final_result, term_cause) {
+        (Some(result), Some(cause)) => ExitCode::from_result_with_signal(result, Some(cause)),
+        (Some(result), None) => ExitCode::from_result_with_sigint(result, sigint_seen),
+        // The grace window elapsed with no terminal result at all -- still
+        // report the documented signal-specific code rather than falling
+        // through to the generic `AgentFailed` below.
+        (None, Some(cause)) => match cause {
+            signal::TermSignal::Term => ExitCode::TerminatedBySigterm,
+            signal::TermSignal::Hup => ExitCode::TerminatedBySighup,
+        },
+        (None, None) if sigint_seen => ExitCode::Interrupted,
         // The event stream ended without ever producing a terminal result
-        // and without a SIGINT -- not expected in practice (the broadcast
-        // bus only closes once every `Arc<Runtime>` is dropped), but this
-        // fn must still return *something* rather than hang or panic.
-        None => ExitCode::AgentFailed,
+        // and without a SIGINT/SIGTERM/SIGHUP -- not expected in practice
+        // (the broadcast bus only closes once every `Arc<Runtime>` is
+        // dropped), but this fn must still return *something* rather than
+        // hang or panic.
+        (None, None) => ExitCode::AgentFailed,
     };
     Ok(code)
 }
@@ -1232,6 +1361,7 @@ mod tests {
             allowed_tools: allowed,
             deny_tools: denied,
             permission_mode: mode,
+            default_permission_mode: None,
             role_override: None,
             model: None,
             agent: None,
@@ -1244,6 +1374,7 @@ mod tests {
             session: None,
             resume: None,
             fork_from: None,
+            continue_session: false,
             config: None,
             cwd: None,
             root: None,
@@ -1357,5 +1488,81 @@ mod tests {
             "one-shot mode must never construct a {needle} -- it has no interactive channel to \
              prompt through"
         );
+    }
+
+    /// Reconciliation #10's own test doubles/fixtures for
+    /// `permission_denial_reason`/`is_reasonless_permission_denial` --
+    /// pure functions, so no live event stream or `Conway` is needed.
+    mod permission_denial_text {
+        use conway_core::log::{PermissionDecisionRecordKind, PermissionDecisionSource};
+
+        use super::*;
+
+        fn decision_event(feedback: Option<&str>) -> Event {
+            Event::PermissionDecision {
+                call_id: "tc_1".into(),
+                tool: ToolName::new("bash"),
+                decision: if feedback.is_some() {
+                    PermissionDecisionRecordKind::DenyWithFeedback
+                } else {
+                    PermissionDecisionRecordKind::Allow
+                },
+                source: PermissionDecisionSource::Operator,
+                waited_ms: Some(120),
+                feedback: feedback.map(str::to_string),
+            }
+        }
+
+        fn resolved_event(decision: PermissionDecisionKind) -> Event {
+            Event::PermissionResolved {
+                call_id: "tc_1".into(),
+                decision,
+            }
+        }
+
+        #[test]
+        fn permission_denial_reason_reads_a_deny_shaped_decisions_feedback() {
+            let event = decision_event(Some("too risky right now"));
+            assert_eq!(
+                permission_denial_reason(&event),
+                Some(("tc_1", "too risky right now"))
+            );
+        }
+
+        #[test]
+        fn permission_denial_reason_is_none_for_an_allow_shaped_decision() {
+            let event = decision_event(None);
+            assert_eq!(permission_denial_reason(&event), None);
+        }
+
+        #[test]
+        fn permission_denial_reason_ignores_every_other_event_kind() {
+            assert_eq!(
+                permission_denial_reason(&resolved_event(PermissionDecisionKind::Denied)),
+                None,
+                "the OLD event carries no reason at all -- only the NEW \
+                 Event::PermissionDecision does"
+            );
+        }
+
+        #[test]
+        fn is_reasonless_permission_denial_matches_both_denial_kinds() {
+            assert!(is_reasonless_permission_denial(&resolved_event(
+                PermissionDecisionKind::Denied
+            )));
+            assert!(is_reasonless_permission_denial(&resolved_event(
+                PermissionDecisionKind::DeniedWithFeedback
+            )));
+        }
+
+        #[test]
+        fn is_reasonless_permission_denial_is_false_for_an_allow_and_for_the_new_event() {
+            assert!(!is_reasonless_permission_denial(&resolved_event(
+                PermissionDecisionKind::AllowOnce
+            )));
+            assert!(!is_reasonless_permission_denial(&decision_event(Some(
+                "denied by rule"
+            ))));
+        }
     }
 }

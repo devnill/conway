@@ -29,10 +29,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[cfg(feature = "jsonl-store")]
-use conway::config::schema::{
-    BackendEntry, ConwayConfig, ModelsConfig, PermissionsConfig, PermissionsConfigMode, RoleEntry,
-    SessionConfig,
-};
+use conway::config::schema::{BackendEntry, ConwayConfig, ModelsConfig, RoleEntry, SessionConfig};
+#[cfg(feature = "jsonl-store")]
+use conway::gates::{GateConfig, GateMode};
 use conway::plugin::{
     async_trait, Artifact, ArtifactKind, ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter,
     CancellationToken, CapabilityError, CapabilityProvider, CapabilityRegistration, ContentBlock,
@@ -329,10 +328,6 @@ fn facade_only_config(
         root: Some(session_root),
         ..SessionConfig::default()
     };
-    config.permissions = PermissionsConfig {
-        mode: PermissionsConfigMode::Deny,
-        ..PermissionsConfig::default()
-    };
     // full literal: `ModelsConfig` has exactly two fields and both are
     // load-bearing here -- `metadata_path` is this fixture's own JSON
     // file and `probe_on_startup: false` keeps the startup probe out of
@@ -387,6 +382,10 @@ fn plugin_tool_and_hook_register_through_the_builder() {
         // its factory is the third-party-shaped way this now-genuinely-
         // constructed (never contacted) backend resolves.
         .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
+        .with_gate_config(GateConfig {
+            mode: GateMode::Deny,
+            ..GateConfig::default()
+        })
         .build()
         .expect("a facade-only plugin/tool/hook must register and build");
 }

@@ -8,6 +8,25 @@
 //! session-root accessors ([`AppState::root_agent`],
 //! [`AppState::is_root_focused`]). The tree DATA these read is
 //! [`super::agent_tree`]'s own seam -- this module never mutates it.
+//!
+//! ## Board item A1d: switch-forks do not pile up
+//!
+//! **Option (a) chosen** (over (b), reusing the focused agent in place for
+//! a pure switch): [`AppState::visible_agent_nodes`] collapses a chain of
+//! `/model`/`/role` switches into ONE row -- its own live tip -- with the
+//! chain itself recoverable via [`AppState::switch_history`]. (a) is the
+//! spec's own stated safer default, and this crate's own reasons for
+//! forking rather than mutating in place (`commands::switch_session`'s own
+//! doc: no live-mutation seam exists on a running `AgentLoop`, and
+//! `AgentTree::attach` refuses a second registration under one id) apply
+//! here without qualification -- (b) would need one of those two things to
+//! stop being true, and neither is a board item A1d concern to change.
+//! Every fork this collapse hides is still a REAL, independently
+//! addressable agent in `AgentTreeView`/`tree.nodes` -- collapsing is a
+//! draw-time projection over [`AppState::switch_lineage`], never a mutation
+//! of the tree data itself, so the underlying log semantics (a
+//! `LogRecord::Assistant`/`route_reason` per real agent, per real turn)
+//! are exactly what they would be with no collapsing at all.
 
 use super::*;
 
@@ -158,13 +177,65 @@ impl AppState {
     }
 
     /// The panel's visible rows under the current [`Self::agent_visibility`]
-    /// filter (item A2), in tree insertion order. This is the ONLY thing the
-    /// filter affects -- `tree.nodes` itself stays unfiltered, so provenance
-    /// survives -- and it is what the panel's row count, selection clamping,
-    /// and Enter-to-focus all index into.
+    /// filter (item A2) AND the switch-lineage collapse (board item A1d,
+    /// option (a) of "switch-forks do not pile up" -- see this struct's own
+    /// `switch_lineage` field doc for why it exists and
+    /// [`Self::switch_history`] for how a collapsed row's history is
+    /// recovered). This is the ONLY thing either filter affects --
+    /// `tree.nodes` itself stays unfiltered, so provenance survives, and a
+    /// replaced switch-child's OWN row is never destroyed, only hidden
+    /// here -- and it is what the panel's row count, selection clamping,
+    /// and Enter-to-focus all index into: a `/model`/`/role` switch chain of
+    /// any length collapses to exactly the one row of its own live tip.
     pub fn visible_agent_nodes(&self) -> impl Iterator<Item = &TreeNode> {
         let mode = self.agent_visibility;
-        self.tree.nodes.iter().filter(move |n| mode.shows(n))
+        self.tree
+            .nodes
+            .iter()
+            .filter(move |n| mode.shows(n) && !self.is_switch_replaced(n.agent_id))
+    }
+
+    /// `true` when `id` was replaced by a LATER `/model`/`/role` switch --
+    /// i.e. `id` appears as a value somewhere in [`Self::switch_lineage`]
+    /// (some other agent's own key names it as "the agent I replaced").
+    /// Such a node is never removed from `tree.nodes`
+    /// (provenance survives), only hidden from
+    /// [`Self::visible_agent_nodes`] -- the collapse is a draw-time
+    /// projection, exactly like [`AgentVisibility`]'s own filter.
+    pub fn is_switch_replaced(&self, id: AgentId) -> bool {
+        self.switch_lineage.values().any(|&replaced| replaced == id)
+    }
+
+    /// The full switch-lineage chain ending at `tip`, oldest first, `tip`
+    /// itself last -- what a collapsed row's "switch history in its detail"
+    /// (board item A1d) recovers: every agent id a `/model`/`/role` switch
+    /// walked through to reach the one now shown. A single-element `vec![tip]`
+    /// when `tip` was never itself the PRODUCT of a switch (an ordinary
+    /// `/fork`/`/spawn`, or the session root) -- not an empty `Vec`, so a
+    /// caller never has to special-case "no history" as a separate shape
+    /// from "history of one".
+    ///
+    /// Each step's OWN role/model change is not repeated here -- it is
+    /// already recoverable from `/why`'s own bounded session history
+    /// (`AppState::model_decision_history`, item A1d's other half): focus
+    /// follows every switch this method's chain records, so the identical
+    /// sequence of `ModelDecision`s already names what each step actually
+    /// changed to.
+    pub fn switch_history(&self, tip: AgentId) -> Vec<AgentId> {
+        let mut chain = vec![tip];
+        let mut current = tip;
+        // `switch_lineage` is built by successive `insert(child, parent)`
+        // calls off a `focused_agent` that is itself, at the moment of
+        // insertion, a real live agent (never `id` itself, since a fork's
+        // child id is always freshly minted) -- so this walk terminates in
+        // at most `switch_lineage.len()` steps and can never cycle back to
+        // an id already in `chain`.
+        while let Some(&predecessor) = self.switch_lineage.get(&current) {
+            chain.push(predecessor);
+            current = predecessor;
+        }
+        chain.reverse();
+        chain
     }
 
     /// Cycles the `/agents` panel's visibility filter (item A2, the `v` key
@@ -246,6 +317,55 @@ mod tests {
         assert_eq!(state.agent_selected, 0);
         state.agent_scroll(-1);
         assert_eq!(state.agent_selected, 0, "clamps at the first row");
+    }
+
+    /// Board item A1d ("say why a turn fell back"): three consecutive
+    /// `/model`/`/role` switches off the root -- root -> a -> b -> c, each
+    /// step recorded in `switch_lineage` exactly as `commands::
+    /// switch_session` records one -- must collapse to a single visible
+    /// row (`c`, the live tip), with the OTHER three (root, a, b) still
+    /// present in `tree.nodes` (provenance survives) but hidden from
+    /// `visible_agent_nodes`.
+    #[test]
+    fn three_consecutive_switches_collapse_to_one_visible_row() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let a = AgentId::new();
+        let b = AgentId::new();
+        let c = AgentId::new();
+        for (id, parent) in [(a, root), (b, a), (c, b)] {
+            state.tree.insert(TreeNode {
+                agent_id: id,
+                parent: Some(parent),
+                agent_def: None,
+                status: NodeStatus::Running,
+                kind: None,
+                inherited_upto: None,
+                ephemeral: false,
+            });
+            state.switch_lineage.insert(id, parent);
+        }
+
+        // Four real agents in the tree (provenance intact)...
+        assert_eq!(state.tree.nodes.len(), 4);
+        // ...but exactly one visible row: the live tip.
+        let visible: Vec<AgentId> = state.visible_agent_nodes().map(|n| n.agent_id).collect();
+        assert_eq!(visible, vec![c]);
+
+        // Switch history is fully recoverable from the collapsed row.
+        assert_eq!(state.switch_history(c), vec![root, a, b, c]);
+    }
+
+    /// A node nobody ever replaced (the ordinary case -- no `/model`/`/role`
+    /// switch touched it) is its own one-element switch history, not
+    /// treated as "no history" -- see `switch_history`'s own doc for why
+    /// that shape was chosen.
+    #[test]
+    fn switch_history_of_an_unreplaced_node_is_itself_alone() {
+        let root = AgentId::new();
+        let state = AppState::new(root);
+        assert_eq!(state.switch_history(root), vec![root]);
+        assert!(!state.is_switch_replaced(root));
     }
 
     #[test]

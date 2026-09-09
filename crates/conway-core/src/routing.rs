@@ -18,13 +18,13 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::capabilities::{
-    Capabilities, ReliabilityTier, RequiredCaps, StructuredOutput, ToolCallSupport,
-    DEFAULT_HEADROOM_TOKENS,
+    Capabilities, ContextTokensSource, ReliabilityTier, RequiredCaps, StructuredOutput,
+    ToolCallSupport, DEFAULT_HEADROOM_TOKENS,
 };
 use crate::content::SamplingParams;
 use crate::error::RoutingError;
 use crate::ids::{AgentId, BackendId, EndpointId, ModelId, ModelRef, RoleAlias};
-use crate::ports::{HealthRegistry, Router, RoutingExplainer, TokenCountFidelity};
+use crate::ports::{CacheReporting, HealthRegistry, Router, RoutingExplainer, TokenCountFidelity};
 
 fn default_headroom_tokens() -> u32 {
     DEFAULT_HEADROOM_TOKENS
@@ -213,6 +213,28 @@ pub struct ExplainEntry {
     /// from before this field existed still parses.
     #[serde(default)]
     pub token_fidelity: Option<TokenCountFidelity>,
+    /// This candidate's resolved `capabilities.max_context_tokens`
+    /// provenance (hosted OpenAI-compatible models item) -- the
+    /// operator-visible surface for `Backend::context_window_source`, read
+    /// via `CapabilityIndex::context_window_source` (the same index
+    /// `capabilities` above is read from). `None` under the exact same
+    /// conditions `capabilities` is `None` (this candidate has no
+    /// capability-index entry at all -- an unindexed model, or
+    /// `MinimalRouter`'s config-only fallback). `#[serde(default)]` so a
+    /// report decoded from before this field existed still parses.
+    #[serde(default)]
+    pub context_window_source: Option<ContextTokensSource>,
+    /// This candidate's backend's declared [`crate::ports::CacheReporting`]
+    /// (board item A5.7, "prompt caching reads zero on every real
+    /// session") -- the operator-visible surface for `Backend::
+    /// cache_reporting`, read via `CapabilityIndex::cache_reporting` (keyed
+    /// like `token_fidelity`, by backend id alone). `None` under the exact
+    /// same conditions `token_fidelity` is `None` -- the producing
+    /// `RoutingExplainer` could not reach a live `Backend` instance (e.g.
+    /// `MinimalRouter`'s config-only fallback). `#[serde(default)]` so a
+    /// report decoded from before this field existed still parses.
+    #[serde(default)]
+    pub cache_reporting: Option<CacheReporting>,
 }
 
 /// The full "why did this model run, and why not the others" answer for one
@@ -594,6 +616,14 @@ impl Router for MinimalRouter {
             })
             .collect())
     }
+
+    fn known_roles(&self) -> Vec<RoleAlias> {
+        self.config
+            .roles
+            .keys()
+            .map(|name| RoleAlias::new(name.clone()))
+            .collect()
+    }
 }
 
 impl RoutingExplainer for MinimalRouter {
@@ -623,6 +653,8 @@ impl RoutingExplainer for MinimalRouter {
                     // `Arc<dyn Backend>`, so it has no honest answer, the
                     // same reason `capabilities` above is `None` here too.
                     token_fidelity: None,
+                    context_window_source: None,
+                    cache_reporting: None,
                 }
             })
             .collect();
@@ -930,6 +962,8 @@ mod tests {
                 state: BreakerState::Closed,
             },
             token_fidelity: Some(TokenCountFidelity::Calibrated),
+            context_window_source: None,
+            cache_reporting: None,
         };
         let mut value = serde_json::to_value(&entry).unwrap();
         value
@@ -956,6 +990,61 @@ mod tests {
                 state: BreakerState::Closed,
             },
             token_fidelity: Some(TokenCountFidelity::Calibrated),
+            context_window_source: None,
+            cache_reporting: None,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: ExplainEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    /// `cache_reporting` (board item A5.7) must `#[serde(default)]`,
+    /// mirroring `token_fidelity`'s own precedent: an `ExplainEntry` encoded
+    /// before this field existed has no `cache_reporting` key at all, and
+    /// must still decode -- to `None`, not a decode error.
+    #[test]
+    fn explain_entry_without_cache_reporting_key_decodes_to_none() {
+        let entry = ExplainEntry {
+            model_ref: "local/m1".parse().unwrap(),
+            chain_position: Some(0),
+            outcome: EntryOutcome::Selected {
+                reason: RoutingReason::PinnedByApi,
+            },
+            capabilities: None,
+            breaker: BreakerSnapshot {
+                state: BreakerState::Closed,
+            },
+            token_fidelity: None,
+            context_window_source: None,
+            cache_reporting: Some(CacheReporting::Reported),
+        };
+        let mut value = serde_json::to_value(&entry).unwrap();
+        value
+            .as_object_mut()
+            .expect("ExplainEntry serializes to an object")
+            .remove("cache_reporting")
+            .expect("cache_reporting key present before removal");
+
+        let decoded: ExplainEntry =
+            serde_json::from_value(value).expect("pre-field-existing shape still decodes");
+        assert_eq!(decoded.cache_reporting, None);
+    }
+
+    #[test]
+    fn explain_entry_cache_reporting_round_trips() {
+        let entry = ExplainEntry {
+            model_ref: "local/m1".parse().unwrap(),
+            chain_position: Some(0),
+            outcome: EntryOutcome::Selected {
+                reason: RoutingReason::PinnedByApi,
+            },
+            capabilities: None,
+            breaker: BreakerSnapshot {
+                state: BreakerState::Closed,
+            },
+            token_fidelity: None,
+            context_window_source: None,
+            cache_reporting: Some(CacheReporting::NotReported),
         };
         let json = serde_json::to_string(&entry).unwrap();
         let back: ExplainEntry = serde_json::from_str(&json).unwrap();

@@ -21,6 +21,9 @@ pub mod form;
 pub mod gate;
 pub mod history;
 pub mod input;
+pub mod keybindings;
+pub mod model_picker;
+pub mod session_picker;
 pub mod state;
 #[cfg(test)]
 pub(crate) mod test_support;

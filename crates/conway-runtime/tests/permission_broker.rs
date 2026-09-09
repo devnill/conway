@@ -119,6 +119,30 @@ async fn next_envelope(stream: &mut (impl futures::Stream<Item = Envelope> + Unp
     stream.next().await.expect("event stream ended early")
 }
 
+/// The next envelope that is part of the REQUESTED/RESOLVED lifecycle,
+/// skipping `Event::PermissionDecision`.
+///
+/// WHY THIS EXISTS. The broker also emits a `PermissionDecision` event --
+/// the live twin of the durable `permission_decision` record -- once per
+/// resolved call. The two tests below are about the lifecycle pair: that
+/// each decision emits EXACTLY ONE `PermissionRequested` and EXACTLY ONE
+/// `PermissionResolved`, in that seq order, including on a cache hit. That
+/// is still exactly what they assert; they simply may no longer assume the
+/// pair is ADJACENT in the stream, which was an artifact of there having
+/// been only two event kinds when they were written, never a property they
+/// meant to pin. Filtering here keeps each test's own claim intact and
+/// leaves it robust to any further event kind that joins the stream.
+async fn next_lifecycle_envelope(
+    stream: &mut (impl futures::Stream<Item = Envelope> + Unpin),
+) -> Envelope {
+    loop {
+        let envelope = next_envelope(stream).await;
+        if !matches!(envelope.event, Event::PermissionDecision { .. }) {
+            return envelope;
+        }
+    }
+}
+
 #[tokio::test]
 async fn allow_always_session_caches_second_identical_call() {
     let gate = ScriptedGate::new(vec![PermissionDecision::AllowAlways {
@@ -310,7 +334,7 @@ async fn each_decision_emits_exactly_one_requested_then_one_resolved_in_seq_orde
     broker.decide(&c, &call("c3")).await;
 
     for expected_call_id in ["c1", "c2", "c3"] {
-        let requested = next_envelope(&mut stream).await;
+        let requested = next_lifecycle_envelope(&mut stream).await;
         match &requested.event {
             Event::PermissionRequested { call_id, .. } => {
                 assert_eq!(call_id, expected_call_id)
@@ -318,7 +342,7 @@ async fn each_decision_emits_exactly_one_requested_then_one_resolved_in_seq_orde
             other => panic!("expected PermissionRequested, got {other:?}"),
         }
 
-        let resolved = next_envelope(&mut stream).await;
+        let resolved = next_lifecycle_envelope(&mut stream).await;
         match &resolved.event {
             Event::PermissionResolved { call_id, .. } => {
                 assert_eq!(call_id, expected_call_id)
@@ -351,20 +375,20 @@ async fn cached_hit_still_emits_requested_then_resolved_pair() {
 
     // First pair (gate consulted).
     assert!(matches!(
-        next_envelope(&mut stream).await.event,
+        next_lifecycle_envelope(&mut stream).await.event,
         Event::PermissionRequested { .. }
     ));
     assert!(matches!(
-        next_envelope(&mut stream).await.event,
+        next_lifecycle_envelope(&mut stream).await.event,
         Event::PermissionResolved { .. }
     ));
 
     // Second pair (cache hit) — still exactly one Requested + one Resolved.
     assert!(matches!(
-        next_envelope(&mut stream).await.event,
+        next_lifecycle_envelope(&mut stream).await.event,
         Event::PermissionRequested { .. }
     ));
-    let resolved = next_envelope(&mut stream).await;
+    let resolved = next_lifecycle_envelope(&mut stream).await;
     match resolved.event {
         Event::PermissionResolved { decision, .. } => {
             assert_eq!(decision, conway_core::agent::PermissionDecisionKind::Cached);

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::capabilities::HeadroomPolicy;
 use crate::error::{ConwayError, RoutingError};
-use crate::ids::EndpointId;
+use crate::ids::{EndpointId, RoleAlias};
 use crate::routing::{
     BreakerState, ExplainReport, Observation, Route, RouteRequest, RoutingConfig,
 };
@@ -65,6 +65,22 @@ pub trait Router: Send + Sync {
     /// ever matters; it exposes the seam without moving routing policy into
     /// core, which ships the seam and leaves the policy to a hook.
     fn resolve(&self, req: &RouteRequest) -> Result<Vec<Route>, RoutingError>;
+
+    /// Every role alias this router currently has a chain configured for --
+    /// used only to build a helpful rejection when a caller names an alias
+    /// `resolve` cannot find (`RoutingError::UnknownRole`): "here is what
+    /// you could have named instead". Order is unspecified; a caller
+    /// wanting a stable presentation sorts it.
+    ///
+    /// Defaulted to an empty `Vec` so every existing `Router` implementor
+    /// keeps compiling unchanged -- only an implementor that actually holds
+    /// a role table (`crate::routing::MinimalRouter`,
+    /// `conway_plugin_routing::DeclarativeRouter`) has anything truthful to
+    /// return, and a test double standing in for a router in a test that
+    /// never exercises the unknown-role path has no reason to grow one.
+    fn known_roles(&self) -> Vec<RoleAlias> {
+        Vec::new()
+    }
 }
 
 /// Tracks per-endpoint circuit-breaker state, independent of routing policy.

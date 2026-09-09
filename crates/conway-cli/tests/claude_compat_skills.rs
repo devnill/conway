@@ -172,6 +172,7 @@ mod registry_wiring {
             id: PLUGIN_NAME.to_string(),
             dir: fixture_plugin_dir(),
             timeout_ms: 5_000,
+            first_call_timeout_ms: 5_000,
         });
         config
     }

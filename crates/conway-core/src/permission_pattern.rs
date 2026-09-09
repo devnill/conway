@@ -471,6 +471,91 @@ fn prefix_matches(prefix: &str, rendered: &str) -> bool {
     }
 }
 
+/// Extracts the lowercased host from `rendered`, if and only if `rendered`
+/// is exactly an `http://` or `https://` URL (optionally followed by a
+/// path/query/fragment). Returns `None` for anything else -- a bare
+/// hostname, a non-`http(s)` scheme, a shell command, a JSON dump whose
+/// `url` field is buried inside it -- deliberately: this is a strict parse,
+/// not a best-effort search, so [`When::Domains`] cannot be tricked into
+/// matching a host that merely appears as a substring somewhere in
+/// `rendered`.
+///
+/// Handles userinfo (`user:pass@host`) and a bracketed IPv6 literal
+/// (`[::1]:8080`) in the authority, and strips an explicit port. Does not
+/// validate that the host is a well-formed domain or IP literal beyond
+/// that -- [`domain_suffix_matches`] only ever compares it against
+/// configured domain strings, never treats it as a network address, so a
+/// malformed host simply fails to match anything.
+fn extract_url_host(rendered: &str) -> Option<String> {
+    let rest = rendered.trim();
+    let after_scheme = rest
+        .strip_prefix("http://")
+        .or_else(|| rest.strip_prefix("https://"))?;
+    let end = after_scheme
+        .find(|c: char| c == '/' || c == '?' || c == '#' || c.is_whitespace())
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..end];
+    if authority.is_empty() {
+        return None;
+    }
+    // Userinfo, if present, is everything before the LAST `@` (a password
+    // could itself contain `@` when percent-encoded, but never unescaped;
+    // taking the last `@` is the same rule URL authorities use).
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        // Bracketed IPv6 literal: the host is everything up to `]`.
+        let idx = rest.find(']')?;
+        &rest[..idx]
+    } else {
+        match host_port.rfind(':') {
+            Some(idx) => &host_port[..idx],
+            None => host_port,
+        }
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+/// Whether `host` (already lowercased by [`extract_url_host`]) is `configured`
+/// itself, or a subdomain of it. `configured` is trimmed of a leading/
+/// trailing `.` and lowercased before comparing, so `"docs.rs"`, `"docs.rs."`,
+/// and `".docs.rs"` all mean the same rule. An empty `configured` (after
+/// trimming) never matches anything -- it names no host, so treating it as a
+/// wildcard would silently widen the rule past what the operator wrote.
+fn domain_suffix_matches(configured: &str, host: &str) -> bool {
+    let configured = configured.trim().trim_matches('.').to_ascii_lowercase();
+    if configured.is_empty() {
+        return false;
+    }
+    // NORMALIZE BOTH SIDES, not just `configured`. DNS hostnames are
+    // case-insensitive, and an earlier version of this function lowercased
+    // only the configured entry, while the doc above already promised both
+    // sides were normalized. That asymmetry is fail-OPEN for a `deny` rule:
+    // a rule denying `evil.com` would not have matched a rendered URL whose
+    // host arrived as `EVIL.COM`. `extract_url_host` happens to hand us an
+    // already-lowercased host today (the `url` crate normalizes the host of
+    // a special scheme), so nothing reached this in practice -- but this
+    // function is `pub(crate)` to its module's tests and must be correct on
+    // its own terms rather than on a caller's incidental guarantee.
+    let host = host.trim().trim_matches('.').to_ascii_lowercase();
+    host == configured || host.ends_with(&format!(".{configured}"))
+}
+
+/// The [`When::Domains`] predicate: `rendered` must parse as an `http(s)`
+/// URL ([`extract_url_host`]) whose host matches one of `domains`
+/// ([`domain_suffix_matches`]). Shared by the allow and deny/prompt
+/// evaluators so the two never drift on what "matches" means, mirroring
+/// [`prefix_matches`]'s own role for [`When::CommandPrefix`].
+fn domains_match(domains: &[String], rendered: &str) -> bool {
+    match extract_url_host(rendered) {
+        Some(host) => domains.iter().any(|d| domain_suffix_matches(d, &host)),
+        None => false,
+    }
+}
+
 // =====================================================================
 // F12: the structured rule form -- `Rule { select, when, then }`.
 //
@@ -587,6 +672,26 @@ pub enum When {
     /// decision time), so [`Rule::matches_allow_render`] returns `false` for
     /// this variant -- the same pattern [`When::PathsUnder`] uses.
     ArgsMatch(ArgsMatchSpec),
+    /// Host-suffix containment for a URL-fetching tool: the call's `rendered`
+    /// text must parse as an `http(s)` URL whose host equals one of these
+    /// entries, or is a subdomain of one (`"docs.rs"` matches `docs.rs` and
+    /// `foo.docs.rs`, never `evildocs.rs`). Matching happens directly against
+    /// `rendered`, unlike [`When::PathsUnder`]: a fetch tool's URL argument
+    /// needs no filesystem canonicalization or `cwd` resolution to compare a
+    /// hostname, so this stays inside [`Rule::matches_allow_render`]/
+    /// [`Rule::matches_deny_render`] instead of moving to the broker.
+    ///
+    /// **Fails closed in both directions, mirroring [`When::PathsUnder`]'s
+    /// own asymmetry.** For an `allow` rule, `rendered` that cannot be
+    /// parsed as an `http(s)` URL with a host (or evidence
+    /// `rendered_evidence_is_untrustworthy`) never matches -- the call
+    /// falls through to the operator's gate, never auto-allowed on a guess.
+    /// For a `deny`/`prompt` rule the same unparseable case matches instead
+    /// (the deny/prompt fires) -- a narrowing rule must never go silently
+    /// inert just because its evidence could not be classified. Comparison
+    /// is case-insensitive; a configured entry with a leading or trailing
+    /// `.` is trimmed before comparing.
+    Domains(Vec<String>),
 }
 
 /// The effect a [`Rule`] has when its `select` + `when` both match.
@@ -712,6 +817,10 @@ impl Rule {
             // Evaluated in the broker (`rule_allows`), which has the call's
             // `arguments` -- this signature does not, and must not, take it.
             When::ArgsMatch(_) => false,
+            // Unparseable `rendered` never satisfies an allow rule -- see
+            // `When::Domains`'s own doc for the fail-closed asymmetry with
+            // `matches_deny_render` below.
+            When::Domains(domains) => domains_match(domains, rendered),
         }
     }
 
@@ -740,6 +849,19 @@ impl Rule {
             // Allow-only this round; deny/prompt `ArgsMatch` is a follow-on
             // (would need the same broker-side special-casing as allow).
             When::ArgsMatch(_) => false,
+            When::Domains(domains) => {
+                if rendered_evidence_is_untrustworthy(rendered) {
+                    return true;
+                }
+                match extract_url_host(rendered) {
+                    // Unparseable `rendered` fails closed toward the
+                    // restriction: a narrowing rule must never go silently
+                    // inert just because its evidence could not be
+                    // classified -- see `When::Domains`'s own doc.
+                    None => true,
+                    Some(host) => domains.iter().any(|d| domain_suffix_matches(d, &host)),
+                }
+            }
         }
     }
 
@@ -795,6 +917,9 @@ impl Rule {
                 format!("{select_label} commands starting with `{p}`")
             }
             (_, When::PathsUnder(prefix)) => format!("{select_label} under `{prefix}`"),
+            (_, When::Domains(domains)) => {
+                format!("{select_label} to domains [{}]", domains.join(", "))
+            }
             (_, When::CategoryIn(cats)) => format!(
                 "{select_label} in categories [{}]",
                 cats.iter()
@@ -2698,6 +2823,179 @@ mod f12_tests {
         ));
         // A Structured tool passes the gate:
         assert!(Rule::gate_allows(RenderKind::Structured));
+    }
+
+    // ---- Domains: host-suffix containment for a URL-fetching tool ----
+
+    /// The core containment property: an exact host and a subdomain of it
+    /// both match; a host that merely ENDS WITH the configured string
+    /// without a `.` boundary (`evildocs.rs` vs `docs.rs`) must not. Catches
+    /// a naive `host.ends_with(configured)` implementation, which would
+    /// wrongly widen `docs.rs` to cover `evildocs.rs`.
+    #[test]
+    fn domain_suffix_matches_the_host_and_its_subdomains_only() {
+        assert!(domain_suffix_matches("docs.rs", "docs.rs"));
+        assert!(domain_suffix_matches("docs.rs", "foo.docs.rs"));
+        assert!(domain_suffix_matches("docs.rs", "a.b.docs.rs"));
+        assert!(
+            !domain_suffix_matches("docs.rs", "evildocs.rs"),
+            "a boundary-less suffix match must not treat evildocs.rs as covered by docs.rs"
+        );
+        assert!(!domain_suffix_matches("docs.rs", "rs.docs.example"));
+    }
+
+    /// A configured entry with a leading/trailing `.` means the same rule as
+    /// the bare host, and comparison is case-insensitive on both sides.
+    #[test]
+    fn domain_suffix_matches_trims_dots_and_ignores_case() {
+        assert!(domain_suffix_matches(".Docs.rs.", "docs.rs"));
+        assert!(domain_suffix_matches("docs.rs", "DOCS.RS"));
+    }
+
+    /// An empty configured domain (after trimming) matches nothing -- it
+    /// must never silently become a wildcard. Catches an implementation
+    /// that treats `""` as "any host" because `host.ends_with("")` is
+    /// always true.
+    #[test]
+    fn domain_suffix_never_matches_an_empty_configured_entry() {
+        assert!(!domain_suffix_matches("", "docs.rs"));
+        assert!(!domain_suffix_matches(".", "docs.rs"));
+    }
+
+    /// `extract_url_host` is a strict parse: a bare hostname with no scheme,
+    /// or a non-`http(s)` scheme, yields `None` rather than guessing --
+    /// catches an implementation that falls back to treating any string as
+    /// "probably a host".
+    #[test]
+    fn extract_url_host_refuses_anything_that_is_not_an_http_or_https_url() {
+        assert_eq!(extract_url_host("docs.rs"), None);
+        assert_eq!(extract_url_host("ftp://docs.rs/x"), None);
+        assert_eq!(extract_url_host("file:///etc/passwd"), None);
+        assert_eq!(extract_url_host("bash(\"curl docs.rs\")"), None);
+    }
+
+    /// Userinfo, an explicit port, and a bracketed IPv6 literal are all
+    /// stripped from the authority before the host is returned, and the
+    /// path/query/fragment never leaks into it.
+    #[test]
+    fn extract_url_host_strips_userinfo_port_and_path_and_unwraps_ipv6_brackets() {
+        assert_eq!(
+            extract_url_host("https://user:pass@docs.rs:8443/path?q=1#frag"),
+            Some("docs.rs".to_string())
+        );
+        assert_eq!(
+            extract_url_host("http://[::1]:8080/"),
+            Some("::1".to_string())
+        );
+        assert_eq!(
+            extract_url_host("https://DOCS.RS"),
+            Some("docs.rs".to_string())
+        );
+    }
+
+    /// The allow-side evaluator: a `domains` rule authorizes a fetch of a
+    /// listed host and its subdomains, and does not authorize a different
+    /// host -- the acceptance-2 shape (`allow` for `docs.rs`, fall through
+    /// to the gate for anything else).
+    #[test]
+    fn domains_allow_rule_matches_the_listed_host_and_not_others() {
+        let rule = Rule {
+            select: Select::Tools(vec!["web_fetch".into()]),
+            when: When::Domains(vec!["docs.rs".into()]),
+            then: Then::Allow,
+        };
+        assert!(rule.matches_allow_render(
+            "web_fetch",
+            ToolCategory::Read,
+            "https://docs.rs/serde/latest/serde/",
+            RenderKind::Structured,
+        ));
+        assert!(rule.matches_allow_render(
+            "web_fetch",
+            ToolCategory::Read,
+            "https://sub.docs.rs/x",
+            RenderKind::Structured,
+        ));
+        assert!(
+            !rule.matches_allow_render(
+                "web_fetch",
+                ToolCategory::Read,
+                "https://example.com/",
+                RenderKind::Structured,
+            ),
+            "a host not on the list must not be auto-allowed"
+        );
+    }
+
+    /// Fail-closed, allow side: `rendered` that cannot be parsed as an
+    /// `http(s)` URL never satisfies an allow rule, so the call falls
+    /// through to the operator's gate rather than being auto-allowed on a
+    /// guess. Catches an implementation that defaults an unparseable host to
+    /// "matches" (which would auto-allow calls this rule was never written
+    /// to cover) or that substring-searches `rendered` for the configured
+    /// domain instead of requiring a real URL.
+    #[test]
+    fn domains_allow_rule_never_matches_unparseable_rendered() {
+        let rule = Rule {
+            select: Select::Tools(vec!["web_fetch".into()]),
+            when: When::Domains(vec!["docs.rs".into()]),
+            then: Then::Allow,
+        };
+        assert!(!rule.matches_allow_render(
+            "web_fetch",
+            ToolCategory::Read,
+            "web_fetch(url mentions docs.rs but is not a URL)",
+            RenderKind::Structured,
+        ));
+    }
+
+    /// Fail-closed, deny/prompt side: `rendered` that cannot be parsed as an
+    /// `http(s)` URL MATCHES a deny/prompt rule -- the restriction fires
+    /// rather than going silently inert. Catches an implementation that
+    /// mirrors the allow side's `None => false`, which would let a
+    /// `domains` deny rule be defeated simply by making `rendered`
+    /// unparseable.
+    #[test]
+    fn domains_deny_rule_matches_unparseable_rendered_fail_closed() {
+        let rule = Rule {
+            select: Select::Tools(vec!["web_fetch".into()]),
+            when: When::Domains(vec!["docs.rs".into()]),
+            then: Then::Deny,
+        };
+        assert!(rule.matches_deny_render("web_fetch", ToolCategory::Read, "not a url at all",));
+    }
+
+    /// The deny/prompt evaluator otherwise agrees with the allow evaluator
+    /// on a well-formed URL: a listed host matches, an unlisted one does
+    /// not.
+    #[test]
+    fn domains_deny_rule_matches_the_listed_host_and_not_others() {
+        let rule = Rule {
+            select: Select::Tools(vec!["web_fetch".into()]),
+            when: When::Domains(vec!["internal.example".into()]),
+            then: Then::Deny,
+        };
+        assert!(rule.matches_deny_render(
+            "web_fetch",
+            ToolCategory::Read,
+            "https://internal.example/secrets",
+        ));
+        assert!(!rule.matches_deny_render("web_fetch", ToolCategory::Read, "https://docs.rs/",));
+    }
+
+    /// `describe` renders a `domains` rule readably for the review surfaces,
+    /// the same way `PathsUnder`/`CategoryIn` already do.
+    #[test]
+    fn domains_describe_renders_the_configured_hosts() {
+        let rule = Rule {
+            select: Select::Tools(vec!["web_fetch".into()]),
+            when: When::Domains(vec!["docs.rs".into(), "example.com".into()]),
+            then: Then::Allow,
+        };
+        assert_eq!(
+            rule.describe(),
+            "web_fetch to domains [docs.rs, example.com]"
+        );
     }
 
     // ---- registration error ----

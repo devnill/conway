@@ -21,8 +21,15 @@
 //! and [`ConwayConfig::routing`] converts it into the authoritative
 //! `conway_core::routing::RoutingConfig`/`RoleConfig` (parsing each chain
 //! string via `ModelRef::from_str`, mapping the capability-floor fields into
-//! `RequiredCaps`, and filling `params` with its `Default` value — the
-//! documented schema never populates that sub-table).
+//! `RequiredCaps`, and converting [`RoleEntry::params`] — a facade-local
+//! [`RoleParams`] mirror of `conway_core::content::SamplingParams`, needed
+//! for the same `#[serde(deny_unknown_fields)]` reason as everything else in
+//! this module — into that `SamplingParams` sub-table. Sampling/reasoning
+//! settings were the one field of `RoleConfig` this conversion always
+//! discarded in favor of `SamplingParams::default()`; a role's `params` now
+//! reaches the backend adapter that reads it, e.g.
+//! `conway_plugin_backends::anthropic::wire`'s `params.extra
+//! ["reasoning_budget_tokens"]`).
 //!
 //! `[health]` does NOT embed `conway_core::routing::HealthConfig` directly,
 //! even though that type has a container-level `#[serde(default)]`: it has
@@ -253,7 +260,7 @@ impl ConwayConfig {
                 conway_core::routing::RoleConfig {
                     chain,
                     required,
-                    params: conway_core::content::SamplingParams::default(),
+                    params: entry.params.clone().into(),
                     headroom_tokens: entry.headroom_tokens,
                 },
             );
@@ -413,43 +420,97 @@ impl Default for LimitsConfig {
 }
 
 /// `[permissions]`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// **Board item 01M1YVP3FDPHY4WZ72SXMWAN2D removed three keys that used to
+/// live here: `mode`, `allowed_tools`, `denied_tools`.** They selected a
+/// *fallback gate* (`gates::from_config`'s old input) that only an
+/// embedder calling `ConwayBuilder::build()` with no gate of its own AND
+/// no prompt handler could ever reach -- `conway-cli`'s `main.rs` supplies
+/// its own gate on every dispatch target (TUI, one-shot, and every
+/// subcommand alike), so the keys parsed and did nothing for anyone
+/// running the real `conway` binary. That is precisely the declaration-
+/// honesty failure this schema exists to prevent elsewhere (see this
+/// module's own doc). An embedder that still wants that fallback gate now
+/// selects it directly, in Rust, via `gates::GateConfig` and
+/// `ConwayBuilder::with_gate_config` -- seeing "unknown field" for any of
+/// the three old keys points at `permissions.json` (allow/deny rules) or
+/// `default_mode` (the mode) instead of a bare parse failure (see
+/// `config::merge::validate`'s permissions-key rejection tests).
+///
+/// `default_mode` replaces them with the setting operators actually asked
+/// for: the mode a new TUI session STARTS in
+/// (`Prompt`/`Plan`/`AutoAllow` -- the same three values `Shift-Tab` and
+/// `/settings -> permissions` cycle at runtime,
+/// `conway_core::permission_mode::PermissionMode`, re-exported as
+/// `conway::PermissionMode`). Session-only before this item: there was no
+/// way to say "always start me in plan mode" at all. **Project scope is
+/// gated on trust, user scope is not** -- see
+/// `conway_cli::tui::app::startup`'s own doc for the mechanism (it reuses
+/// the SAME `/trust permissions` decision `permissions.json`'s `allow`
+/// half already requires, rather than inventing a second trust subject):
+/// a cloned repository's `.conway/settings.json` cannot silently start a
+/// session in `auto_allow`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PermissionsConfig {
-    pub mode: PermissionsConfigMode,
-    pub allowed_tools: Vec<String>,
-    pub denied_tools: Vec<String>,
+    pub default_mode: conway_core::permission_mode::PermissionMode,
 }
 
-impl Default for PermissionsConfig {
-    fn default() -> Self {
-        Self {
-            mode: PermissionsConfigMode::Prompt,
-            allowed_tools: Vec::new(),
-            denied_tools: Vec::new(),
-        }
+// `Default` is exactly the derived one: `PermissionMode`'s own default.
+
+/// Reads ONLY `permissions.default_mode` from the raw JSON at `path`,
+/// without going through the full `ConwayConfig` deserialize/merge/
+/// validate pipeline (`config::merge::load`) -- board item
+/// 01M1YVP3FDPHY4WZ72SXMWAN2D: the trust-gating check at TUI startup
+/// (`conway_cli::tui::app::startup`) needs to know whether ONE scope's
+/// settings file, specifically, sets this key, a question the five-source
+/// merge cannot answer once every layer is already combined into one
+/// `ConwayConfig`. Mirrors `config::writer::plugin_install_key_present`'s
+/// own single-key, single-file read for the identical reason.
+///
+/// Best-effort, like that sibling: the caller only ever reaches this after
+/// `ConwayBuilder::build()` has already validated the FULL merged config
+/// successfully, so a missing file, unreadable file, invalid JSON, or a
+/// `default_mode` value that fails to parse are all folded into `None`
+/// rather than re-erroring over a file this process already accepted once.
+pub fn read_default_mode(
+    path: &std::path::Path,
+) -> Option<conway_core::permission_mode::PermissionMode> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let document: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    let raw = document.get("permissions")?.get("default_mode")?.clone();
+    serde_json::from_value(raw).ok()
+}
+
+/// Checks the raw, merged `settings.json` document's `[permissions]` table
+/// for one of the three keys board item 01M1YVP3FDPHY4WZ72SXMWAN2D removed
+/// (`mode`/`allowed_tools`/`denied_tools`), returning a friendly, POINTING
+/// error when one is present -- rather than letting `PermissionsConfig`'s
+/// `#[serde(deny_unknown_fields)]` reach the operator as a bare "unknown
+/// field `mode`, expected `default_mode`" with nowhere to go next.
+/// `config::merge::load_impl` calls this BEFORE the generic `ConwayConfig`
+/// deserialize, so this is the message an operator actually sees.
+/// Mirrors `conway_core::permission_pattern::permission_file_unknown_field_
+/// error`'s own established shape: a targeted pre-check ahead of the
+/// generic parse, not a change to the generic parse itself.
+pub fn permissions_removed_key_error(document: &serde_json::Value) -> Option<String> {
+    let permissions = document.get("permissions")?.as_object()?;
+    if permissions.contains_key("mode") {
+        return Some(
+            "permissions.mode is no longer a setting: for the mode a session STARTS in, set \
+             permissions.default_mode = \"prompt\" | \"plan\" | \"auto_allow\" instead; for \
+             allow/deny tool rules, use permissions.json (see docs/permissions.md)"
+                .to_string(),
+        );
     }
-}
-
-/// `permissions.mode`'s wire values (`"prompt"`/`"allowlist"`/`"deny"`),
-/// meaningful only to a library embedder assembling a `Conway` with no gate
-/// of its own -- `gates::from_config` is the sole consumer. Distinct from
-/// two other, unrelated types that used to share this same name:
-/// `conway_cli::cli::OneShotPermissionMode` (one-shot mode's own,
-/// narrower `--permission-mode` flag, `Allowlist`/`Deny` only -- the
-/// `conway` binary's `-p` and TUI paths always supply their own gate and
-/// never construct a `PermissionsConfigMode` at all) and
-/// `conway_core::permission_mode::PermissionMode` (the TUI's operator-facing
-/// runtime mode, `Prompt`/`Plan`/`AutoAllow`, re-exported at this crate's
-/// root as `conway::PermissionMode` -- see that type's own doc). Wire values
-/// are unchanged by this rename; only the three Rust identifiers were ever
-/// ambiguous.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PermissionsConfigMode {
-    Prompt,
-    Allowlist,
-    Deny,
+    if permissions.contains_key("allowed_tools") || permissions.contains_key("denied_tools") {
+        return Some(
+            "permissions.allowed_tools/permissions.denied_tools are no longer settings.json \
+             keys: allow/deny tool rules now live in permissions.json (see docs/permissions.md)"
+                .to_string(),
+        );
+    }
+    None
 }
 
 /// `[backends.<id>]`. Facade-owned: distinct from
@@ -819,6 +880,155 @@ pub struct RoleEntry {
     /// to) the headroom-aware per-request gate — see
     /// `conway_core::capabilities::RequiredCaps::min_context`'s own doc.
     pub min_context: Option<u32>,
+    /// This role's sampling/reasoning settings — `[roles.<alias>.params]`.
+    /// Distinct from every field above: those are capability FLOORS a
+    /// candidate model must clear before it is routed to at all;
+    /// `params` is what conway actually SENDS once one is chosen. Converted
+    /// 1:1 into `conway_core::routing::RoleConfig::params`
+    /// (`conway_core::content::SamplingParams`) by [`ConwayConfig::routing`]
+    /// — the one place this conversion happens; a backend adapter reads the
+    /// resolved `SamplingParams` off its request and never re-derives it
+    /// from `settings.json` itself. This is where `roles.thinking.params
+    /// .extra.reasoning_budget_tokens` (Anthropic extended thinking) or
+    /// `roles.fast.params.temperature` (any OpenAI-compatible backend)
+    /// lives — see `docs/routing.md`'s worked recipe.
+    #[serde(default)]
+    pub params: RoleParams,
+    /// `[roles.<alias>.tools]` (board item `01M1YS138H8T0HNV5YMZ6KD767`
+    /// part 2): the tool subset this role's agents may be announced at
+    /// all -- narrower than `Self::chain`/`Self::params`'s "which model,
+    /// with what sampling settings" concern, this is "which tools that
+    /// model ever sees". See `RoleToolsConfig`'s own doc for the
+    /// include/exclude semantics and `RoleToolsConfig::resolve` for the
+    /// pure function that turns this config into a concrete
+    /// `conway_core::agent::ToolSelector`.
+    ///
+    /// **This IS threaded into a live agent's announced tool set.**
+    /// `ConwayBuilder::build` resolves each role's entry against the real
+    /// registry's tool names and hands the resulting
+    /// `HashMap<RoleAlias, ToolSelector>` to the runtime, which ANDs it
+    /// into whatever `AgentSpec.tools` the call site and any agent
+    /// definition already produced. Both entry points are covered -- a
+    /// root (started or resumed) and a fork/spawn child -- so a role that
+    /// narrows a root's tools narrows its children's too. A role with no
+    /// entry here is left completely alone; absence never means "select
+    /// nothing".
+    #[serde(default)]
+    pub tools: RoleToolsConfig,
+}
+
+/// `[roles.<alias>.tools]`: an include/exclude tool-name filter for one
+/// role, board item `01M1YS138H8T0HNV5YMZ6KD767` part 2. Each list is a
+/// set of glob patterns in the SAME vocabulary
+/// `conway_core::agent::ToolSelector` already uses elsewhere (an
+/// `AgentDef`'s own `tools:` frontmatter, `SessionSpec::tools`): exact
+/// match, or a trailing `*` for a prefix match. Both lists default to
+/// empty, meaning "this role does not narrow its own tool set at all" --
+/// the same "absent key changes nothing" contract every other optional
+/// `RoleEntry` field already holds.
+///
+/// **Both fields may be set together** -- `include` narrows to an
+/// allowlist, `exclude` then removes any of ITS matches from that
+/// allowlist (exclude always wins a name matched by both). This is why
+/// `Self::resolve` takes the full universe of registered tool names rather
+/// than trying to express "include AND NOT exclude" as a single
+/// `conway_core::agent::ToolSelector` value: that enum's `Only`/`Except`
+/// variants are each a single pattern list, mutually exclusive, with no
+/// variant expressing both at once (and extending it is `conway-core`'s
+/// call, out of this item's scope) -- so the AND is computed here, once,
+/// against the concrete name set, and handed onward as an explicit
+/// `ToolSelector::Only` naming exactly the survivors.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct RoleToolsConfig {
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+}
+
+impl RoleToolsConfig {
+    /// `true` for the default, all-empty config -- the "this role does not
+    /// narrow its own tool set" case every existing `[roles.<alias>]` table
+    /// (none of which name a `tools` key today) parses to.
+    pub fn is_unset(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
+
+    /// Resolves this role's include/exclude filter against `universe` (the
+    /// full set of tool names actually registered for a build -- e.g.
+    /// `conway_runtime::tools::PluginRegistry::specs(None)`'s names) into
+    /// an explicit `ToolSelector::Only` naming exactly the tools that
+    /// survive both lists, or `None` when `Self::is_unset` (so an ordinary
+    /// role with no `tools` table costs nothing and changes nothing).
+    ///
+    /// Reuses `conway_core::agent::ToolSelector::selects` for BOTH halves
+    /// (`Only(include)` and `Except(exclude)`) rather than re-implementing
+    /// the glob rule here a second time -- this function's whole job is
+    /// the AND those two selectors cannot express on their own (see this
+    /// type's own doc), not the pattern matching itself.
+    pub fn resolve(
+        &self,
+        universe: impl IntoIterator<Item = conway_core::ids::ToolName>,
+    ) -> Option<conway_core::agent::ToolSelector> {
+        if self.is_unset() {
+            return None;
+        }
+        let include = (!self.include.is_empty())
+            .then(|| conway_core::agent::ToolSelector::Only(self.include.clone()));
+        let exclude = (!self.exclude.is_empty())
+            .then(|| conway_core::agent::ToolSelector::Except(self.exclude.clone()));
+        let selected: Vec<String> = universe
+            .into_iter()
+            .filter(|name| {
+                include.as_ref().is_none_or(|s| s.selects(name))
+                    && exclude.as_ref().is_none_or(|s| s.selects(name))
+            })
+            .map(|name| name.as_str().to_string())
+            .collect();
+        Some(conway_core::agent::ToolSelector::Only(selected))
+    }
+}
+
+/// `[roles.<alias>.params]`. A facade-local mirror of
+/// `conway_core::content::SamplingParams`, field-for-field, existing for the
+/// same reason every other section of this schema has its own facade type
+/// instead of embedding the `conway_core` one directly (see this module's
+/// own doc comment): `SamplingParams` has no
+/// `#[serde(deny_unknown_fields)]`, so embedding it here would let a typo'd
+/// key (`tempurature`) parse silently and do nothing, rather than failing
+/// the load loudly the way every other mistyped key in this schema does.
+///
+/// `extra` stays a free `serde_json::Map` — deliberately unvalidated here.
+/// It is the one field this struct does NOT close off, because its whole
+/// job is carrying provider-specific keys (`reasoning_budget_tokens` for
+/// Anthropic, `reasoning_effort` for an OpenAI-compatible dialect) this
+/// schema has no way to enumerate in advance; a backend adapter's own wire
+/// layer is where those keys are read, and an adapter that receives a
+/// key it does not act on logs a `tracing::warn!` naming the field and the
+/// backend rather than accepting it silently — see
+/// `conway_plugin_backends::anthropic::wire`/`openai_compat::wire` for
+/// where that happens.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct RoleParams {
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub stop: Vec<String>,
+    pub seed: Option<u64>,
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl From<RoleParams> for conway_core::content::SamplingParams {
+    fn from(p: RoleParams) -> Self {
+        Self {
+            temperature: p.temperature,
+            top_p: p.top_p,
+            max_tokens: p.max_tokens,
+            stop: p.stop,
+            seed: p.seed,
+            extra: p.extra,
+        }
+    }
 }
 
 /// Facade-local wire vocabulary for [`RoleEntry::tool_calling`]: `"none"` |
@@ -940,7 +1150,7 @@ impl Default for ModelsConfig {
 /// it via `--allowed-tools` -- one-shot's own registration was never
 /// gated by this key to begin with (see this crate's `presets::
 /// default_permissions_for_one_shot` and `conway-cli`'s own wiring), only
-/// its invocation was, and remains, gated by the permission mode.
+/// its invocation was, and remains, gated by the permission gate/mode.
 ///
 /// `fs`/`subagent`/`report` staying on by default is a deliberate,
 /// considered choice, not an oversight: none of the three is a
@@ -948,8 +1158,8 @@ impl Default for ModelsConfig {
 /// own threat model), each is load-bearing for conway's own out-of-the-box
 /// usability (a `conway` with no filesystem tool cannot edit code; the
 /// TUI's own dogfooding depends on `fs`), and each was already reachable
-/// under the SAME `permissions.mode`/`--allowed-tools` invocation gate bash
-/// always was -- registration was never the actual gap for those three.
+/// under the SAME gate/`--allowed-tools` invocation check bash always was
+/// -- registration was never the actual gap for those three.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ToolsConfig {
@@ -1153,6 +1363,47 @@ pub struct PluginsConfig {
     /// directory here is exactly as trusted as naming a command directly.
     #[serde(default)]
     pub claude_compat: Vec<ClaudeCompatPluginEntry>,
+    /// **`[plugins.config.<id>]` -- the seam board item
+    /// `01M1YVM9CHFCJ6112XDYHCFS84` opens: a plugin's OWN persistent
+    /// settings, keyed by its own
+    /// [`PluginManifest`](conway_core::ports::PluginManifest)`::id`,
+    /// free-form JSON validated and applied by the
+    /// PLUGIN ITSELF, not by this schema.** This closes the gap
+    /// `PHILOSOPHY.md` §6, this crate's own former doc comment here, and
+    /// `docs/plugins/README.md`'s "What `[plugins].install` decides, and
+    /// what it does not" paragraph used to state as settled: "a first-party
+    /// plugin ships an opinionated default and no `settings.json` field of
+    /// its own." That was true because no seam existed for a plugin to
+    /// validate its own key against; [`conway_core::ports::Plugin::
+    /// configure`] is that seam now, and this field is the wire shape that
+    /// reaches it.
+    ///
+    /// **Why untyped `serde_json::Value` here, never a schema this crate
+    /// enumerates.** Exactly the same reason [`BackendEntry::extra`] and
+    /// [`RoleParams::extra`] (this module's own siblings, see either
+    /// one's doc) are untyped: this crate is the FACADE, and enumerating
+    /// every first-party plugin's own keys here would mean recompiling
+    /// `conway` itself for every plugin that ever adds a setting -- the same
+    /// coupling the facade/plugin split exists to avoid everywhere else.
+    /// This crate deliberately does no validation of what is inside a given
+    /// plugin's own object; a value under an id no installed plugin
+    /// recognizes, or a key that id's plugin does not recognize, is caught
+    /// by [`conway_core::ports::Plugin::configure`] at the install choke
+    /// point that reads this field (`crates/conway-cli/src/
+    /// first_party_plugins.rs`'s `bundle`), never here.
+    ///
+    /// **`#[serde(default)]`, keyed rather than positional.** A
+    /// `settings.json` predating this field parses as an empty map --
+    /// "no plugin has an operator-authored config value" -- never a
+    /// deserialization error, the identical backward-compatible posture
+    /// every other field on this struct added after `install` already has.
+    /// Keyed by plugin id (a `BTreeMap`, not a `Vec`) because a table
+    /// entry's own JSON key IS the plugin it configures --
+    /// `{"plugins": {"config": {"conway.trim": {...}}}}` -- there is no
+    /// positional order to preserve the way `install`'s own `Vec<String>`
+    /// needs one.
+    #[serde(default)]
+    pub config: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for PluginsConfig {
@@ -1163,6 +1414,7 @@ impl Default for PluginsConfig {
             subprocess: Vec::new(),
             mcp: Vec::new(),
             claude_compat: Vec::new(),
+            config: BTreeMap::new(),
         }
     }
 }
@@ -1198,6 +1450,18 @@ pub struct ClaudeCompatPluginEntry {
     /// entry, reused here rather than inventing a second default.
     #[serde(default = "default_hook_timeout_ms")]
     pub timeout_ms: u64,
+    /// Milliseconds this directory's `.mcp.json` server's FIRST ordinary
+    /// round trip after `initialize` (its first real `tools/call`) is
+    /// allowed to run before the reading binary kills it -- the identical
+    /// warm-up deadline [`McpPluginEntry::first_call_timeout_ms`] applies to
+    /// an operator-authored MCP entry, reused here for the same reason
+    /// `timeout_ms` immediately above is. `timeout_ms` stays the ordinary
+    /// per-call deadline it always was; this governs only the one round
+    /// trip most likely to pay a one-time warm-up cost (board item
+    /// `01M1YQ3MJQSCQTMVAZ3GCSTB8P` -- the incident this answers involved
+    /// exactly this reading binary's translated `ideate` entry).
+    #[serde(default = "default_mcp_first_call_timeout_ms")]
+    pub first_call_timeout_ms: u64,
 }
 
 impl Default for ClaudeCompatPluginEntry {
@@ -1206,6 +1470,7 @@ impl Default for ClaudeCompatPluginEntry {
             id: String::new(),
             dir: PathBuf::new(),
             timeout_ms: default_hook_timeout_ms(),
+            first_call_timeout_ms: default_mcp_first_call_timeout_ms(),
         }
     }
 }
@@ -1344,6 +1609,19 @@ pub struct McpPluginEntry {
     /// A PER-CALL deadline, not a session-wide idle kill.
     #[serde(default = "default_hook_timeout_ms")]
     pub timeout_ms: u64,
+    /// Milliseconds this server's FIRST ordinary round trip after
+    /// `initialize` (its first real `tools/call`) is allowed to run before
+    /// the reading binary/embedder kills the process group -- board item
+    /// `01M1YQ3MJQSCQTMVAZ3GCSTB8P`. A one-time warm-up cost (opening a
+    /// database connection, priming a cache) is common on a freshly-spawned
+    /// server's first real request and is not the same risk `timeout_ms`
+    /// bounds for every call after it, so it gets its own, larger budget --
+    /// see `conway::plugin::DEFAULT_FIRST_CALL_TIMEOUT_MS`'s own doc for the
+    /// full argument. `timeout_ms` stays the ordinary per-call deadline it
+    /// always was; an operator who tuned it alone sees no change in what it
+    /// governs.
+    #[serde(default = "default_mcp_first_call_timeout_ms")]
+    pub first_call_timeout_ms: u64,
     /// Explicit environment pairs the child inherits IN ADDITION to the parent
     /// process's own env -- acceptance 3 (credential/connection-lifecycle
     /// scoping is EXPLICIT, not left to implicit env inheritance). Empty by
@@ -1365,6 +1643,7 @@ impl Default for McpPluginEntry {
             id: String::new(),
             command: Vec::new(),
             timeout_ms: default_hook_timeout_ms(),
+            first_call_timeout_ms: default_mcp_first_call_timeout_ms(),
             env: Vec::new(),
         }
     }
@@ -1474,13 +1753,22 @@ impl Default for McpPluginEntry {
 ///   HookDispatcher::dispatch_context`'s own doc has the reasoning).
 ///
 ///   A Rust `ContextHook` (`ConwayBuilder::with_context_hook`) and a
-///   configured script hook on the SAME event coexist: both are evaluated
-///   independently against the SAME pre-edit payload (decision
-///   `01KYTQVYPJW0PAAXRBEMAKZY0V`, "no chaining between context-editing
-///   hooks") and their edits compose -- exclusions union, appends
-///   concatenate in configured order. Two or more script hooks on the same
-///   event compose the identical way. Every edit, Rust or script, is run
-///   through the SAME tool-call/result coherence guard
+///   configured script hook on the SAME event coexist. **Rust hooks chain
+///   in install order** (`ChainedContextHook` in `crates/conway/src/
+///   builder.rs`): each hook's `before_request` output feeds the next.
+///   **Script hooks do NOT chain** — each receives the same payload (a
+///   clone, never another script's output) and their edits compose by
+///   union (decision `01KYTQVYPJW0PAAXRBEMAKZY0V`, "no chaining between
+///   context-editing hooks"): exclusions union, appends concatenate in
+///   configured order. Two or more script hooks on the same event compose
+///   the identical way. **The payload a script receives depends on the
+///   event**: for `request_assembled`, scripts see the POST-Rust-chain
+///   payload (after `ContextHook::before_request`); for
+///   `context_overflow`, scripts see the PRE-Rust-hook payload (the
+///   original, before `ContextHook::on_overflow`), though their deltas
+///   are applied to the Rust hook's result. A script hook never sees
+///   another hook's edits, Rust or script. Every edit, Rust or script, is
+///   run through the SAME tool-call/result coherence guard
 ///   (`conway_runtime::context::hook_guard::ensure_hook_payload_coherent`,
 ///   board item `01M00RGARPESWXYAVY960KDE7S`) before it can reach a
 ///   request -- a script hook that orphans a tool call/result pair is
@@ -1554,8 +1842,7 @@ pub struct HookEntry {
     /// serde-level required field, matching this schema's established
     /// pattern of a lenient parse (missing key -> this type's own default)
     /// plus a named semantic check for the actual domain invariant (e.g.
-    /// `permissions.mode = "allowlist"` requiring non-empty
-    /// `allowed_tools`).
+    /// `fsync = "interval"` requiring `fsync_interval_ms > 0`).
     ///
     /// Load-bearing for the later operator-visibility item, which lists
     /// hook rules individually and revokes one by name: deriving this from
@@ -1740,6 +2027,15 @@ fn default_hook_timeout_ms() -> u64 {
     crate::plugin::DEFAULT_TIMEOUT_MS
 }
 
+/// Backs [`McpPluginEntry::first_call_timeout_ms`]/
+/// [`ClaudeCompatPluginEntry::first_call_timeout_ms`] -- the identical
+/// "one authority, not a second literal" reasoning
+/// [`default_hook_timeout_ms`]'s own doc gives for `timeout_ms`, applied to
+/// the warm-up deadline (board item `01M1YQ3MJQSCQTMVAZ3GCSTB8P`).
+fn default_mcp_first_call_timeout_ms() -> u64 {
+    crate::plugin::DEFAULT_FIRST_CALL_TIMEOUT_MS
+}
+
 fn default_hook_enabled() -> bool {
     true
 }
@@ -1747,6 +2043,7 @@ fn default_hook_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use conway_core::ids::ToolName;
 
     const HOOKS_BLOCK: &str = r#"
     {
@@ -1988,5 +2285,353 @@ mod tests {
             Some("anthropic/claude-sonnet-4-6")
         );
         assert_eq!(ConwayConfig::model_for(&roles, "unknown-role"), None);
+    }
+
+    // -----------------------------------------------------------------
+    // `[roles.<alias>.params]` -- `ConwayConfig::routing()` threading
+    // `RoleEntry::params` into `conway_core::routing::RoleConfig::params`
+    // instead of always producing `SamplingParams::default()`.
+    // -----------------------------------------------------------------
+
+    /// ACCEPTANCE (this item's headline scenario): a `thinking` role's
+    /// `params.extra.reasoning_budget_tokens` survives all the way through
+    /// `ConwayConfig::routing()` into that role's `RoleConfig.params.extra`
+    /// -- the exact slot `conway_plugin_backends::anthropic::wire::
+    /// reasoning_budget_tokens` reads. This only proves the config-side
+    /// half of the wire; `conway-plugin-backends`' own tests prove the
+    /// wire adapter actually places that value in the Anthropic request
+    /// body.
+    #[test]
+    fn routing_threads_role_params_extra_reasoning_budget_tokens() {
+        let json = r#"
+        {
+          "default_role": "thinking",
+          "roles": {
+            "thinking": {
+              "chain": ["anthropic/claude-sonnet-4-6"],
+              "params": { "extra": { "reasoning_budget_tokens": 8000 } }
+            }
+          }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        let routing = cfg.routing().expect("must convert to RoutingConfig");
+        let role = routing.roles.get("thinking").expect("role must be present");
+        assert_eq!(
+            role.params.extra.get("reasoning_budget_tokens"),
+            Some(&serde_json::json!(8000))
+        );
+    }
+
+    /// A `fast` role's `params.temperature` reaches `RoleConfig.params`
+    /// unchanged -- the OpenAI-compatible-adapter side of the same wiring,
+    /// covering a typed field rather than `extra`.
+    #[test]
+    fn routing_threads_role_params_temperature() {
+        let json = r#"
+        {
+          "default_role": "fast",
+          "roles": {
+            "fast": {
+              "chain": ["kimi/k3"],
+              "params": { "temperature": 0.0 }
+            }
+          }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        let routing = cfg.routing().expect("must convert to RoutingConfig");
+        let role = routing.roles.get("fast").expect("role must be present");
+        assert_eq!(role.params.temperature, Some(0.0));
+    }
+
+    /// A role with no `params` key at all still routes -- and gets
+    /// `SamplingParams::default()`, exactly conway's pre-this-item
+    /// behavior, so every existing config that never named `params` is
+    /// unaffected.
+    #[test]
+    fn routing_defaults_role_params_when_params_key_is_absent() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": { "coder": { "chain": ["anthropic/claude-sonnet-4-6"] } }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        let routing = cfg.routing().expect("must convert to RoutingConfig");
+        let role = routing.roles.get("coder").expect("role must be present");
+        assert_eq!(role.params, conway_core::content::SamplingParams::default());
+    }
+
+    /// ACCEPTANCE: a typo'd key inside `params` (`"tempurature"`) is a load
+    /// error naming the field -- `RoleParams` carries its own
+    /// `#[serde(deny_unknown_fields)]`, matching every other sub-table in
+    /// this schema, rather than silently accepting and discarding it the
+    /// way embedding `conway_core::content::SamplingParams` directly would
+    /// (see `RoleParams`'s own doc comment).
+    #[test]
+    fn typo_d_role_params_key_is_rejected_by_deny_unknown_fields() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": {
+            "coder": {
+              "chain": ["anthropic/claude-sonnet-4-6"],
+              "params": { "tempurature": 0.5 }
+            }
+          }
+        }
+        "#;
+        let result: Result<ConwayConfig, _> = serde_json::from_str(json);
+        let err = result
+            .expect_err("typo'd params key must be rejected")
+            .to_string();
+        assert!(
+            err.contains("tempurature"),
+            "error must name the unrecognized field: {err}"
+        );
+    }
+
+    /// `params.extra` itself is NOT subject to `deny_unknown_fields` --
+    /// it is a deliberate free map for provider-specific keys (see
+    /// `RoleParams`'s own doc comment), so an arbitrary key under `extra`
+    /// parses and round-trips unchanged.
+    #[test]
+    fn role_params_extra_accepts_arbitrary_provider_specific_keys() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": {
+            "coder": {
+              "chain": ["kimi/k3"],
+              "params": { "extra": { "reasoning_effort": "high" } }
+            }
+          }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        let routing = cfg.routing().expect("must convert to RoutingConfig");
+        let role = routing.roles.get("coder").expect("role must be present");
+        assert_eq!(
+            role.params.extra.get("reasoning_effort"),
+            Some(&serde_json::json!("high"))
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // `[roles.<alias>.tools]` (board item `01M1YS138H8T0HNV5YMZ6KD767`
+    // part 2) -- `RoleToolsConfig` parsing, defaults, strictness, and its
+    // pure `resolve` conversion into a `ToolSelector`.
+    // -----------------------------------------------------------------
+
+    /// A role with no `tools` key at all parses to the all-empty default,
+    /// which `RoleToolsConfig::is_unset` reports as unset -- the "absent
+    /// key changes nothing" contract every other optional `RoleEntry`
+    /// field already holds.
+    #[test]
+    fn role_with_no_tools_key_parses_to_an_unset_default() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": { "coder": { "chain": ["anthropic/claude-sonnet-4-6"] } }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        let role = cfg.roles.get("coder").expect("role must be present");
+        assert!(role.tools.is_unset());
+        assert_eq!(role.tools.resolve(std::iter::empty()), None);
+    }
+
+    /// `include`/`exclude` round-trip through `settings.json` exactly as
+    /// written, matching every other list-shaped role sub-table in this
+    /// schema.
+    #[test]
+    fn role_tools_include_and_exclude_round_trip() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": {
+            "coder": {
+              "chain": ["anthropic/claude-sonnet-4-6"],
+              "tools": { "include": ["read", "grep*"], "exclude": ["grep_secrets"] }
+            }
+          }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        let role = cfg.roles.get("coder").expect("role must be present");
+        assert_eq!(
+            role.tools.include,
+            vec!["read".to_string(), "grep*".to_string()]
+        );
+        assert_eq!(role.tools.exclude, vec!["grep_secrets".to_string()]);
+    }
+
+    /// ACCEPTANCE (this item's part-2 headline scenario, restated as a pure
+    /// function test since the runtime threading is not yet wired -- see
+    /// `RoleEntry::tools`'s own doc): a role with `tools.exclude:
+    /// ["ideate/*"]` resolves to a selector that excludes every `ideate/*`
+    /// tool from the announced universe and NOTHING else -- "announces none
+    /// of them" restated as "the resolved `ToolSelector` selects none of
+    /// them".
+    #[test]
+    fn exclude_only_config_drops_every_matching_tool_and_keeps_the_rest() {
+        let config = RoleToolsConfig {
+            include: vec![],
+            exclude: vec!["ideate/*".to_string()],
+        };
+        let universe = [
+            ToolName::new("ideate/claim"),
+            ToolName::new("ideate/complete"),
+            ToolName::new("read"),
+            ToolName::new("bash"),
+        ];
+        let selector = config
+            .resolve(universe.iter().cloned())
+            .expect("a non-empty exclude list must resolve to Some");
+        for name in &universe {
+            let expect_selected = !name.as_str().starts_with("ideate/");
+            assert_eq!(
+                selector.selects(name),
+                expect_selected,
+                "{name} selection must match its exclude status"
+            );
+        }
+    }
+
+    /// `include` alone narrows to exactly its own matches.
+    #[test]
+    fn include_only_config_keeps_only_its_own_matches() {
+        let config = RoleToolsConfig {
+            include: vec!["read".to_string(), "grep".to_string()],
+            exclude: vec![],
+        };
+        let universe = [
+            ToolName::new("read"),
+            ToolName::new("grep"),
+            ToolName::new("write"),
+            ToolName::new("bash"),
+        ];
+        let selector = config.resolve(universe.iter().cloned()).unwrap();
+        assert!(selector.selects(&ToolName::new("read")));
+        assert!(selector.selects(&ToolName::new("grep")));
+        assert!(!selector.selects(&ToolName::new("write")));
+        assert!(!selector.selects(&ToolName::new("bash")));
+    }
+
+    /// Both lists set together: `exclude` wins a name matched by both,
+    /// exactly [`RoleToolsConfig`]'s own doc states.
+    #[test]
+    fn exclude_wins_over_include_for_a_name_matched_by_both() {
+        let config = RoleToolsConfig {
+            include: vec!["ideate/*".to_string()],
+            exclude: vec!["ideate/dangerous".to_string()],
+        };
+        let universe = [
+            ToolName::new("ideate/claim"),
+            ToolName::new("ideate/dangerous"),
+            ToolName::new("read"),
+        ];
+        let selector = config.resolve(universe.iter().cloned()).unwrap();
+        assert!(selector.selects(&ToolName::new("ideate/claim")));
+        assert!(!selector.selects(&ToolName::new("ideate/dangerous")));
+        assert!(
+            !selector.selects(&ToolName::new("read")),
+            "a name outside `include` is never selected even when `exclude` doesn't name it"
+        );
+    }
+
+    /// ACCEPTANCE: a typo'd key inside `tools` (`"includ"`) is a load error
+    /// naming the field -- `RoleToolsConfig` carries its own
+    /// `#[serde(deny_unknown_fields)]`, matching every other sub-table in
+    /// this schema.
+    #[test]
+    fn typo_d_role_tools_key_is_rejected_by_deny_unknown_fields() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": {
+            "coder": {
+              "chain": ["anthropic/claude-sonnet-4-6"],
+              "tools": { "includ": ["read"] }
+            }
+          }
+        }
+        "#;
+        let result: Result<ConwayConfig, _> = serde_json::from_str(json);
+        let err = result
+            .expect_err("typo'd tools key must be rejected")
+            .to_string();
+        assert!(
+            err.contains("includ"),
+            "error must name the unrecognized field: {err}"
+        );
+    }
+
+    /// Board item `01M1YVM9CHFCJ6112XDYHCFS84`: `[plugins.config.<id>]`
+    /// parses into `PluginsConfig::config`, keyed by the exact id string,
+    /// carrying whatever JSON the operator wrote UNTOUCHED -- this crate
+    /// does no validation of a plugin's own keys (that is
+    /// `conway_core::ports::Plugin::configure`'s job, exercised in
+    /// `crates/conway-plugin-trim`'s own test suite and
+    /// `conway-cli`'s `apply_plugin_config` tests, not here).
+    #[test]
+    fn plugins_config_table_parses_keyed_by_plugin_id() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "plugins": {
+            "install": ["conway.trim"],
+            "config": { "conway.trim": { "keep_turns": 3 } }
+          }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        assert_eq!(cfg.plugins.install, vec!["conway.trim".to_string()]);
+        assert_eq!(
+            cfg.plugins.config.get("conway.trim"),
+            Some(&serde_json::json!({ "keep_turns": 3 }))
+        );
+
+        let reserialized = serde_json::to_string(&cfg).expect("must serialize");
+        let cfg2: ConwayConfig = serde_json::from_str(&reserialized).expect("must re-parse");
+        assert_eq!(cfg.plugins.config, cfg2.plugins.config, "must round-trip");
+    }
+
+    /// A `settings.json` predating `[plugins.config.<id>]` -- no `config`
+    /// key under `[plugins]` at all -- parses as an EMPTY table, never a
+    /// deserialization error, the same `#[serde(default)]` backward
+    /// compatibility every other field `PluginsConfig` grew after `install`
+    /// already has.
+    #[test]
+    fn plugins_config_defaults_to_empty_when_absent() {
+        let json = r#"{ "default_role": "coder", "plugins": { "install": ["conway.trim"] } }"#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse without config");
+        assert!(cfg.plugins.config.is_empty());
+    }
+
+    /// `[plugins]` itself stays a CLOSED, `deny_unknown_fields` table even
+    /// though `config`'s own CONTENTS are free-form: an unrecognized key
+    /// directly under `[plugins]` (never mind under `[plugins.config.<id>]`,
+    /// which is a different question this crate does not answer) is still
+    /// refused at load time. This is the check that would fail if
+    /// `[plugins.config.<id>]` were wired in as a way to let ANY key
+    /// through, rather than one specifically-named field.
+    #[test]
+    fn plugins_section_still_refuses_an_unrecognized_top_level_key() {
+        // Confirms an otherwise-minimal, valid document (bare `default_role`,
+        // no other section) parses cleanly, so the failure asserted below is
+        // attributable to the `[plugins]` typo alone, not to some other
+        // missing required field.
+        let baseline = r#"{ "default_role": "coder" }"#;
+        serde_json::from_str::<ConwayConfig>(baseline)
+            .expect("a bare default_role with no [plugins] section must parse");
+
+        let json = r#"{ "default_role": "coder", "plugins": { "not_a_real_field": true } }"#;
+        let result: Result<ConwayConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "an unrecognized top-level [plugins] key must still fail to parse"
+        );
     }
 }

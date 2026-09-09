@@ -9,7 +9,7 @@ use conway_core::capabilities::RequiredCaps;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
-use conway_core::ports::{RoutingExplainer, SessionStore};
+use conway_core::ports::{CapabilityIndex, RoutingExplainer, SessionStore};
 use conway_core::routing::{ExplainReport, MinimalRouter, RouteRequest};
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
 
@@ -145,6 +145,23 @@ pub struct Conway {
     // the file from disk on its own, a second code path that could drift
     // from the builder's.
     model_metadata: Arc<ModelMetadata>,
+    /// The SAME `(backend, model) -> Capabilities`/`ContextTokensSource`
+    /// index `ConwayBuilder::build` resolves at step 5 (`CapabilityIndex::
+    /// from_backends`, optionally overlaid by the startup capability probe)
+    /// -- kept here for the identical reason [`Self::model_metadata`] is:
+    /// so a consumer reads the SAME already-resolved figures the router
+    /// itself admits against (and `Self::explain_routing` projects through),
+    /// rather than a second, independently-recomputed notion of a model's
+    /// window built from `model_metadata` alone. Board item
+    /// `01M1ZJ796E0YP6Y8QWS8HB0AVB` (context-window-provenance,
+    /// status-line half): before this field existed, the TUI status line's
+    /// `ctx%` figure read `model_metadata()` directly for the window number
+    /// -- correct as a NUMBER (`ModelMetadata`'s `max_context_tokens` is one
+    /// of the index's own inputs) but blind to PROVENANCE, since
+    /// `model_metadata` carries no `ContextTokensSource` at all. See
+    /// [`Self::capability_index`]'s own doc for the accessor this field
+    /// backs.
+    capability_index: Arc<CapabilityIndex>,
     /// Set via
     /// `ConwayBuilder::with_root` -- see that method's own doc for the
     /// default (`None`, unconfined, unchanged) and the operator-facing
@@ -195,6 +212,7 @@ impl Conway {
         router_explain: Option<Arc<dyn RoutingExplainer>>,
         warnings: Vec<ConfigWarning>,
         model_metadata: ModelMetadata,
+        capability_index: CapabilityIndex,
         root: Option<std::path::PathBuf>,
         plugin_status_contributions: Vec<conway_core::ports::PluginStatusContribution>,
         live_plugins: Vec<Arc<dyn conway_core::ports::Plugin>>,
@@ -206,6 +224,7 @@ impl Conway {
             router_explain,
             warnings: Arc::new(warnings),
             model_metadata: Arc::new(model_metadata),
+            capability_index: Arc::new(capability_index),
             root,
             plugin_status_contributions,
             live_plugins,
@@ -478,6 +497,28 @@ impl Conway {
     /// plugins" line `conway tools list` prints.
     pub fn tool_plugin_count(&self) -> usize {
         self.rt.tool_plugin_count()
+    }
+
+    /// Board item `01M1YS138H8T0HNV5YMZ6KD767` part 2: the facade half of
+    /// [`Self::tool_specs`]'s plugin attribution -- `conway-cli`'s
+    /// `/context` per-plugin tool-registry breakdown zips this against
+    /// `tool_specs()` by name to group the announced set by declaring
+    /// plugin.
+    ///
+    /// **Deliberately widens this file beyond the role-table threading this
+    /// board item's file assignment otherwise scoped it to**: no existing
+    /// read surface, in this crate or `conway-runtime`, attributes a
+    /// registered tool to its declaring plugin at all --
+    /// `conway_core::content::ToolSpec` itself carries no `plugin_id` field
+    /// (it is the backend-facing wire shape, not harness bookkeeping), and
+    /// [`Self::tool_plugin_count`] gives only a DISTINCT-COUNT, never the
+    /// per-tool mapping a breakdown needs -- so the per-plugin breakdown
+    /// genuinely could not be built without one new thin read surface.
+    /// Kept to the smallest shape that unblocks it, mirroring
+    /// [`Self::tool_specs`]'s own "enumerate the whole registry, unfiltered"
+    /// pattern exactly rather than inventing a second one.
+    pub fn tool_plugin_ids(&self) -> std::collections::HashMap<conway_core::ids::ToolName, String> {
+        self.rt.tool_plugin_ids()
     }
 
     /// Every active PROMPT rule, paired with its origin -- the prompt
@@ -1026,6 +1067,32 @@ impl Conway {
     /// `config::model_metadata::load`'s own "missing is expected" contract.
     pub fn model_metadata(&self) -> &ModelMetadata {
         &self.model_metadata
+    }
+
+    /// The router's own resolved `(backend, model) -> Capabilities`/
+    /// `ContextTokensSource` index (`CapabilityIndex::from_backends`, step 5
+    /// of `ConwayBuilder::build`, optionally overlaid by the startup
+    /// capability probe) -- the SAME index a compiled-in router factory's
+    /// `RouterBuildContext::capability_index` receives, and the source
+    /// [`Self::explain_routing`]'s `ExplainEntry::context_window_source`
+    /// ultimately traces back to. `CapabilityIndex::get`/`::
+    /// context_window_source` are the two lookups a caller needs: the
+    /// resolved window (a `Capabilities::max_context_tokens` figure) and its
+    /// provenance, for a given `(backend, model)` pair, both `None` when
+    /// this index has no entry for that pair at all (the pair's backend was
+    /// never configured/injected, or it names no `models.json` entry) --
+    /// the identical "missing is expected" contract [`Self::model_metadata`]
+    /// already documents for its own empty-map case.
+    ///
+    /// Board item `01M1ZJ796E0YP6Y8QWS8HB0AVB`: this is the accessor that
+    /// closes the gap the item's own background section describes -- before
+    /// it existed, a consumer holding only a `Conway` (never a live
+    /// `Backend`/router-factory context) had no way to reach a resolved
+    /// pair's `ContextTokensSource` at all, so the only number `Conway`
+    /// could hand back was `model_metadata()`'s bare `max_context_tokens`,
+    /// with no provenance riding alongside it.
+    pub fn capability_index(&self) -> &CapabilityIndex {
+        &self.capability_index
     }
 
     /// Creates a new session and starts its root agent.

@@ -207,6 +207,35 @@ conway-plugin-statusline = { path = "../conway-plugin-statusline" }
 # tool-contributing entry above uses; NOT installed by default. See
 # `docs/plugins/confine.md`.
 conway-plugin-confine = { path = "../conway-plugin-confine" }
+# `conway.checkpoint`: snapshots a file's bytes around every write/edit
+# tool call and rolls them back on the operator's own typed command.
+# Resolved through the SAME `[plugins].install`/`src/first_party_plugins.rs`
+# choke point every other tool-contributing entry above uses; in the
+# default opinion set (`first_party_plugins::DEFAULT_OPINION_SET`). See
+# `docs/plugins/checkpoint.md`.
+conway-plugin-checkpoint = { path = "../conway-plugin-checkpoint" }
+# Board item 01M1YVDYEBJENX4NFC6NCSD9B9: `conway.web`, a web_fetch tool
+# (GET an http(s) URL, reduced to readable text, bounded and SSRF-guarded),
+# plus an optional web_search tool that registers only when an operator
+# configures a search provider. Resolved through the SAME
+# `[plugins].install`/`src/first_party_plugins.rs` choke point every other
+# tool-contributing entry above uses; NOT installed by default -- this
+# plugin gives the model outbound network reach, a materially different
+# trust posture from every other bundle member above, so an operator opts
+# in the same explicit way they would for `conway.confine`. See this
+# crate's own `lib.rs` module doc and `conway-plugin-web/Cargo.toml`'s own
+# doc for the full reasoning.
+conway-plugin-web = { path = "../conway-plugin-web" }
+# Board item 01M1YS138H8T0HNV5YMZ6KD767 part 1: `conway.toolindex`, deferred
+# tool schemas -- narrows every non-built-in tool's announced JSON schema
+# down to a one-line index entry, plus a `describe_tool` tool that fetches
+# the full schema on demand. Resolved through the SAME
+# `[plugins].install`/`src/first_party_plugins.rs` choke point every other
+# tool-contributing entry above uses; NOT installed by default -- see this
+# crate's own `first_party_plugins.rs` bundle doc and
+# `conway-plugin-toolindex/src/lib.rs`'s own "Default set or opt-in" section
+# for the full reasoning.
+conway-plugin-toolindex = { path = "../conway-plugin-toolindex" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }

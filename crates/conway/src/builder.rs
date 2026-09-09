@@ -26,10 +26,11 @@
 //! - **`with_prompt_handler` exists**: `gates::from_config` is called with
 //!   whatever handler
 //!   [`ConwayBuilder::with_prompt_handler`] supplied, `None` when it was
-//!   never called. Since `permissions.mode` defaults to `"prompt"`
-//!   (`config::merge::default_document`), an embedder using an unmodified
-//!   default config and neither `with_prompt_handler` nor
-//!   `with_permission_gate` gets a named `FacadeError::Config` from
+//!   never called, against whatever [`gates::GateConfig`]
+//!   [`ConwayBuilder::with_gate_config`] supplied, or [`gates::GateConfig::
+//!   default`] (`GateMode::Prompt`) when it was never called either. So an
+//!   embedder that calls neither `with_gate_config`, `with_prompt_handler`,
+//!   nor `with_permission_gate` gets a named `FacadeError::Config` from
 //!   `build()` — deliberately (see that method's own doc):
 //!   the fix is a direct path to the one closure a host almost always
 //!   already has, not a silent default gate choice.
@@ -233,12 +234,24 @@ pub struct ConwayBuilder {
     backends: Vec<Arc<dyn Backend>>,
     plugins: Vec<Arc<dyn Plugin>>,
     gate: Option<Arc<dyn PermissionGate>>,
+    /// Selects (and, for [`gates::GateMode::Allowlist`], configures) the
+    /// fallback gate [`Self::build`]'s step 9 builds via `gates::
+    /// from_config` when no [`Self::with_permission_gate`] override is set.
+    /// `None` (the default) is `gates::GateConfig::default`
+    /// (`GateMode::Prompt`, no allow/deny lists) -- see
+    /// [`Self::with_gate_config`]'s own doc. Board item
+    /// 01M1YVP3FDPHY4WZ72SXMWAN2D: this used to be read straight off
+    /// `config.permissions` (`permissions.mode`/`allowed_tools`/
+    /// `denied_tools`, `settings.json` keys that parsed and did nothing
+    /// for the real `conway` binary); it is now this explicit,
+    /// Rust-constructed field instead.
+    gate_config: Option<gates::GateConfig>,
     /// The handler [`Self::build`]'s step 9 passes to `gates::from_config`
-    /// when `permissions.mode = "prompt"` and no [`Self::with_permission_gate`]
-    /// override is set. `None` (the default) means an unmodified default
-    /// config (`permissions.mode`
-    /// defaults to `"prompt"` -- `config::merge::default_document`) with
-    /// neither this nor `with_permission_gate` set still fails `build()`
+    /// when the effective [`gates::GateConfig::mode`] is `Prompt` and no
+    /// [`Self::with_permission_gate`] override is set. `None` (the
+    /// default) means an unmodified default config (`GateMode` defaults to
+    /// `Prompt` -- `gates::GateConfig::default`) with neither this nor
+    /// `with_permission_gate` set still fails `build()`
     /// with a named `FacadeError::Config` naming exactly that, rather than
     /// silently choosing `AllowAlways`/`DenyAll` on a caller's behalf -- see
     /// [`Self::with_prompt_handler`]'s own doc for what setting this closes.
@@ -445,6 +458,7 @@ impl ConwayBuilder {
             backends: Vec::new(),
             plugins: Vec::new(),
             gate: None,
+            gate_config: None,
             prompt_handler: None,
             store: None,
             path_store: None,
@@ -693,19 +707,39 @@ impl ConwayBuilder {
         &self.warnings
     }
 
-    /// Overrides `permissions.mode`-derived gate selection entirely.
+    /// Overrides `gate_config`-derived gate selection entirely.
     pub fn with_permission_gate(mut self, gate: Arc<dyn PermissionGate>) -> Self {
         self.gate = Some(gate);
         self
     }
 
-    /// Supplies the handler `gates::from_config` needs when `permissions.mode`
-    /// resolves to `"prompt"` -- the config default (`config::merge::
-    /// default_document`), and therefore what `ConwayBuilder::discover()`
-    /// hands a host that changed nothing about permissions.
+    /// Supplies the [`gates::GateConfig`] `gates::from_config` selects the
+    /// fallback gate from, when no [`Self::with_permission_gate`] override
+    /// is set. Not called at all (the default) is [`gates::GateConfig::
+    /// default`] (`GateMode::Prompt`, no allow/deny lists) -- the same
+    /// value `ConwayBuilder::discover()` hands a host that changed nothing
+    /// about permissions.
+    ///
+    /// Board item 01M1YVP3FDPHY4WZ72SXMWAN2D: replaces the old
+    /// `permissions.mode`/`allowed_tools`/`denied_tools` `settings.json`
+    /// keys, which parsed and did nothing for the real `conway` binary
+    /// (see `gates`'s own module doc). An embedder that used to write
+    /// `config.permissions = PermissionsConfig { mode: ..., allowed_tools:
+    /// ..., denied_tools: ... }` now calls this method with the equivalent
+    /// [`gates::GateConfig`] instead.
+    pub fn with_gate_config(mut self, gate_config: gates::GateConfig) -> Self {
+        self.gate_config = Some(gate_config);
+        self
+    }
+
+    /// Supplies the handler `gates::from_config` needs when the effective
+    /// [`gates::GateConfig::mode`] resolves to [`gates::GateMode::Prompt`]
+    /// -- the config default (`gates::GateConfig::default`), and
+    /// therefore what `ConwayBuilder::discover()` hands a host that
+    /// changed nothing about permissions.
     ///
     /// **The direct path to satisfying an unmodified default config's
-    /// `permissions.mode = "prompt"`.** The alternative,
+    /// `GateMode::Prompt`.** The alternative,
     /// [`Self::with_permission_gate`], requires implementing the whole
     /// [`PermissionGate`] trait (`check`'s full signature: tool name,
     /// arguments, render kind, scope) just to answer one async question, "may
@@ -721,18 +755,18 @@ impl ConwayBuilder {
     /// **Precedence: [`Self::with_permission_gate`] wins unconditionally over
     /// this.** If both are called, `build()`'s gate step (9) never even
     /// constructs a `PromptingGate` from this handler -- the injected gate is
-    /// used outright, exactly as it always has been when `permissions.mode`
-    /// is something this handler is irrelevant to (`"deny"`/`"allowlist"`).
-    /// Calling only this method, with `permissions.mode` resolving to
-    /// anything other than `"prompt"`, is harmless: the handler is simply
-    /// never invoked, since `gates::from_config`'s `"deny"`/`"allowlist"`
+    /// used outright, exactly as it always has been when the effective
+    /// `GateMode` is something this handler is irrelevant to (`Deny`/
+    /// `Allowlist`). Calling only this method, with `GateMode` resolving to
+    /// anything other than `Prompt`, is harmless: the handler is simply
+    /// never invoked, since `gates::from_config`'s `Deny`/`Allowlist`
     /// arms never read it.
     ///
-    /// **Not called at all (the default):** `permissions.mode = "prompt"`
+    /// **Not called at all (the default):** `GateMode::Prompt`
     /// with no
     /// `with_permission_gate` override fails `build()` with a named
-    /// [`FacadeError::Config`] stating exactly that ("permissions.mode =
-    /// \"prompt\" requires a prompt handler to be supplied") -- never a
+    /// [`FacadeError::Config`] stating exactly that ("GateConfig { mode:
+    /// Prompt, .. } requires a prompt handler to be supplied") -- never a
     /// silent `AllowAlways`/`DenyAll` substitute. A host that wants the
     /// friendliest default (ask, rather than deny or blanket-allow) has a
     /// direct path to it via this method.
@@ -1301,6 +1335,7 @@ impl ConwayBuilder {
             backends,
             plugins,
             gate,
+            gate_config,
             prompt_handler,
             store,
             path_store,
@@ -1468,7 +1503,7 @@ impl ConwayBuilder {
         let mut index_builder =
             CapabilityIndex::from_backends(&all_backends, &model_refs).into_builder();
         for (id, factory, ctx) in &probe_targets {
-            for (model_id, caps) in factory.probe_capabilities(ctx) {
+            for (model_id, probed) in factory.probe_capabilities(ctx) {
                 if !ctx.models.contains_key(model_id.as_str()) {
                     tracing::debug!(
                         backend = %id,
@@ -1479,10 +1514,39 @@ impl ConwayBuilder {
                     );
                     continue;
                 }
-                index_builder = index_builder.insert(BackendId::new(id.clone()), model_id, caps);
+                // The overlay carries a probed pair's `ContextTokensSource`
+                // (hosted OpenAI-compatible models item) alongside its
+                // `Capabilities`, exactly like the RESTRICT eligibility
+                // check just above -- so a candidate whose window was
+                // established by `probe_on_startup` reports `Probed`
+                // through `routes explain`/the runway notice, never the
+                // `Unverified` a plain `Backend::capabilities()`-only
+                // overlay would have left it at.
+                index_builder = index_builder
+                    .insert(
+                        BackendId::new(id.clone()),
+                        model_id.clone(),
+                        probed.capabilities,
+                    )
+                    .insert_context_window_source(
+                        BackendId::new(id.clone()),
+                        model_id,
+                        probed.context_window_source,
+                    );
             }
         }
         let capability_index = index_builder.build();
+        // Board item 01M1ZJ796E0YP6Y8QWS8HB0AVB (context-window-provenance,
+        // status-line half): a clone kept for `Conway::new` below --
+        // `capability_index` itself is moved into `RouterBuildContext` in
+        // the router-factory branch two steps down, and dropped
+        // unconsumed in the `MinimalRouter`/injected-router branches
+        // either way, so without this clone `Conway::capability_index()`
+        // would have nothing to hand back once a router factory took the
+        // original. `CapabilityIndex` derives `Clone` for exactly this
+        // kind of "the router needs one, the facade needs to keep reading
+        // it too" split.
+        let capability_index_for_conway = capability_index.clone();
 
         // 6. Resolve routing/headroom config.
         //: `conway` itself no longer links a
@@ -1668,14 +1732,17 @@ impl ConwayBuilder {
             None => build_default_path_store(&cwd, &effective_session_root)?,
         };
 
-        // 9. Gate: injected, else selected from config.permissions --
-        //    `prompt_handler` (Self::with_prompt_handler) is what lets a
-        //    "permissions.mode = prompt" config (the default) build at all
-        //    without an injected gate; see that method's own doc for the
-        //    precedence between the two.
+        // 9. Gate: injected, else selected from `gate_config` (Self::
+        //    with_gate_config), else GateConfig::default() (GateMode::
+        //    Prompt) -- `prompt_handler` (Self::with_prompt_handler) is
+        //    what lets a `GateMode::Prompt` selection (the default) build
+        //    at all without an injected gate; see that method's own doc
+        //    for the precedence between the two. Board item
+        //    01M1YVP3FDPHY4WZ72SXMWAN2D: no longer derived from
+        //    `config.permissions` -- see `gates`'s own module doc.
         let gate: Arc<dyn PermissionGate> = match gate {
             Some(gate) => gate,
-            None => gates::from_config(&config.permissions, prompt_handler)?,
+            None => gates::from_config(&gate_config.unwrap_or_default(), prompt_handler)?,
         };
 
         // 10. Plugins: built-ins (filtered by `selection`) ++ injected;
@@ -2355,6 +2422,42 @@ impl ConwayBuilder {
         // called, and `Runtime::set_artifact_writer(None)` is a harmless
         // no-op identical to never calling it at all.
         rt.set_artifact_writer(artifact_writer);
+        // `[roles.<alias>.tools]` (board item `01M1YS138H8T0HNV5YMZ6KD767`
+        // part 2): resolves each configured role's `RoleToolsConfig`
+        // (`config.roles[alias].tools`) against the full set of tool names
+        // every installed plugin actually contributes -- exactly the
+        // "`ToolName` universe in, `Option<ToolSelector>` out" shape
+        // `RoleToolsConfig::resolve` was written and tested for (see that
+        // method's own doc). Read from `live_plugins` (the SAME clone
+        // `Conway::plugin_status_contributions` retains for its own later
+        // use, taken above) rather than a second `PluginRegistry`: only the
+        // registered tool NAMES are needed here, and `PluginRegistry::
+        // from_plugins`'s schema compilation -- run once already, inside
+        // `Runtime::new` a few lines up -- would be wasted, duplicate work
+        // for that. A role whose `[roles.<alias>.tools]` table is absent or
+        // empty (`RoleToolsConfig::is_unset`) contributes no entry to this
+        // map at all, so `Runtime::set_role_tools` narrows nothing for it --
+        // see that method's own doc, and `conway_runtime::runtime::root::
+        // narrow_tools_for_role`'s, for the "no entry -> unchanged" contract
+        // this depends on.
+        let role_tools: HashMap<conway_core::ids::RoleAlias, conway_core::agent::ToolSelector> = {
+            let universe: HashSet<conway_core::ids::ToolName> = live_plugins
+                .iter()
+                .flat_map(|p| p.tools())
+                .map(|t| t.spec().name)
+                .collect();
+            config
+                .roles
+                .iter()
+                .filter_map(|(name, entry)| {
+                    entry
+                        .tools
+                        .resolve(universe.iter().cloned())
+                        .map(|selector| (conway_core::ids::RoleAlias::new(name.clone()), selector))
+                })
+                .collect()
+        };
+        rt.set_role_tools(role_tools);
         // Mirrors the `context_hook` wiring immediately above: the single
         // curator the runtime accepts is composed here from TWO sources, in
         // this order -- (1) an embedder's explicit `with_curator`-injected
@@ -2537,6 +2640,7 @@ impl ConwayBuilder {
             router_explain,
             warnings,
             metadata,
+            capability_index_for_conway,
             root,
             plugin_status_contributions,
             live_plugins,

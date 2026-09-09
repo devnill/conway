@@ -27,6 +27,7 @@ a summary pointing somewhere else.
 | [`idiom.md`](idiom.md) — `conway.idiom` | What does the prepended conway-idioms instruction fragment actually say, where does it land relative to an agent def's own system prompt, and why does a subagent never see it? | You want a bare interactive session to carry any harness orientation at all, or you're evaluating what this fragment assumes about which tools are announced. |
 | [`skills.md`](skills.md) — `conway.skills` | What does progressive skill disclosure narrow, and what does `read_skill` cost? | You have full-body skills in context and want to try narrowing them to a one-line index. |
 | [`names.md`](names.md) — `conway.names` | What does naming an agent actually change, and how does a name interact with the id and short-id it sits alongside? | You are steering more than a couple of agents by id and want a handle you remember instead. |
+| [`trim.md`](trim.md) — `conway.trim` | What does dropping old tool call/result round-trips actually do, and how do you set the window it drops them by? | You have a long session accumulating context it no longer needs, or you're evaluating what a curator like this one may and may not touch. |
 | [`mcp.md`](mcp.md) — the MCP client | How do I bring an existing MCP server's tools into conway, and what is conway's own MCP client (not server) posture? | You have an MCP server already and want its tools available to the model, or you're evaluating what naming one in `[plugins].mcp` actually trusts. |
 | [`claude-compat.md`](claude-compat.md) — Claude Code plugin compatibility | I have a Claude Code plugin directory already on disk — what does conway actually do with it, and what does it name but not use? | You want to point conway at an existing Claude Code plugin, or you're deciding whether its MCP-only, read-at-runtime scope is enough for what you have. |
 | [`marketplace.md`](marketplace.md) — installing a plugin from a marketplace | How do I fetch a plugin from a marketplace instead of cloning it myself, where does conway put it, and what does the trust ruling say about a fetched artifact? | You want conway to fetch a plugin for you rather than pointing it at a directory you already prepared, or you're evaluating what naming a marketplace URL actually trusts. |
@@ -36,6 +37,9 @@ a summary pointing somewhere else.
 | [`statusline.md`](statusline.md) — `conway.statusline` | How do I show a shell command's output on the status line, since conway's own status line is a closed vocabulary? How often does it actually spawn, and what does a slow or failing command do to the UI? | You are migrating a Claude Code `statusLine.command`, or evaluating what naming a command in `[tui.status_line_command]` actually trusts and costs. |
 | [`cookbook.md`](cookbook.md) — worked examples | What does a real hook look like end to end — spilling bulky output to a file, compaction, a permission guardrail, progressive skill disclosure, a status-line observer? | You learn faster from a worked example than from a contract. Five examples, each labeled implementable-today, partially-implementable, or blocked, with two treated explicitly as the architecture's own acceptance tests. |
 | [`confine.md`](confine.md) — `conway.confine` | What does the `confined_bash` tool confine, and what does it not (reads/network unaffected — writes only)? Which exact OS command does it invoke, and on which OS is that guarantee actually verified in this tree? | You want a shell tool `--root` genuinely confines, not merely a convention `bash` has always been outside of — or you're evaluating whether blanket approval of a confined shell is actually safe. |
+| [`checkpoint.md`](checkpoint.md) — `conway.checkpoint` | What does `/conway.checkpoint.rollback` actually restore, how does it preserve a hand edit you made yourself, and what does it not capture (`bash`-driven changes)? | The model edited the wrong file, or took a right one too far, and you want the FILES back the way `/conway.history.rewind` already puts the conversation back. |
+| [`web.md`](web.md) — `conway.web` | What does `web_fetch` refuse by default (and what does that guard NOT cover), and when does `web_search` actually appear? | You want the model to read a URL or search the web, or you're evaluating exactly what network reach installing this plugin actually grants. |
+| [`toolindex.md`](toolindex.md) — `conway.toolindex` | What does deferred tool schemas narrow, what does `describe_tool` cost, and why does calling it keep a tool fully announced for the rest of the session? | You have a large MCP server or subprocess plugin installed and the tool-registry segment of your context is eating your window before the conversation starts. |
 
 ## Start here: a working hook, honestly scoped
 
@@ -66,7 +70,7 @@ full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
 
-## Twelve shipped first-party plugins
+## Fifteen shipped first-party plugins
 
 **The membership rule for this section:** every id
 [`first_party_plugins::bundle()`](../../crates/conway-cli/src/first_party_plugins.rs)
@@ -83,33 +87,36 @@ omitting the id. `conway.routing` installs the same way but is resolved by
 this section's rule; see [`docs/routing.md`](../routing.md) for the former.
 
 **What `[plugins].install` decides, and what it does not.** Naming an id
-here decides *whether* that plugin runs; nothing here decides *how* it
-behaves once it does. Every id below ships with an opinionated default and
-no `settings.json` field of its own — `PluginsConfig` accepts `install`
-plus the backends exception and rejects any other key outright
-(`#[serde(deny_unknown_fields)]`), so the absence is not something waiting
-to be filled in later. Per-agent plugin configuration is a real, separate
-mechanism (`conway_core::ports::PluginConfig`, narrowed down a subagent
-tree via `Plugin::narrowable_keys`, `conway.fs`'s `root` key its one
-production consumer today), but it is reachable only from embedding code,
+here decides *whether* that plugin runs; `[plugins.config.<id>]`, a
+SEPARATE table (board item `01M1YVM9CHFCJ6112XDYHCFS84`), decides *how* it
+behaves once it does. Every id below still ships with an opinionated
+default — nothing changes behavior until an operator opts into a value —
+but `PluginsConfig` no longer refuses every key here outright: `install`,
+the backends exception, and `config` (a free-form, per-plugin-id JSON
+table, validated and applied by the plugin itself through
+`Plugin::configure`, never interpreted by this schema) are all it accepts;
+anything else still fails `#[serde(deny_unknown_fields)]`, unchanged. See
+[`authoring.md`](authoring.md)'s "Configuration" section for the mechanism
+itself and [`trim.md`](trim.md) for the one shipped consumer
+(`conway.trim`'s `keep_turns`) — most ids below still have no settings of
+their own, because no OTHER first-party plugin has adopted this mechanism
+for its own constants yet, not because the mechanism itself remains
+closed. Per-agent plugin configuration is a DIFFERENT, separate mechanism
+answering a different question (`conway_core::ports::PluginConfig`,
+narrowed down a subagent tree via `Plugin::narrowable_keys`, `conway.fs`'s
+`root` key its one production consumer today) — how a CHILD agent's config
+may narrow relative to its parent's, reachable only from embedding code,
 deliberately, for this first slice — `[S1.5]`, cited at
 `crates/conway-tools/src/subagent/tools.rs` and across
-`crates/conway/src/subagent_spec.rs`. **That first slice was ruled over on
-2026-08-26** (`docs/vision/DESIGN-plugin-dependencies.md` §6 and §9, board
-item `01M0WWM0ZB6BR45XJ8HMTJWZ0Z`): per-plugin configuration is to open as a
-`[plugins.config.<id>]` settings surface driven by a schema each plugin
-declares. **The paragraph above still describes the tree as it is today** —
-no code has changed yet, `deny_unknown_fields` still refuses the key, and
-the implementing work is not written at the time of this sentence. What has
-changed is that the absence is now a scheduled change rather than an open
-question, so do not read it as settled policy. `first_party_plugins::bundle()`'s own
-module doc makes the matching claim from the install side: it is "a worked
-example, not a commitment to any of its members individually" — the list
-below decides which plugins ship, not what an operator may tune about any
-one of them from outside code.
+`crates/conway/src/subagent_spec.rs`. `first_party_plugins::bundle()`'s own
+module doc still states the true thing about the BUNDLE side of this: it
+is "a worked example, not a commitment to any of its members
+individually" — the list below decides which plugins ship, which remains a
+separate question from what an operator may configure inside one they
+chose to install.
 
-Twelve capabilities beyond the mechanism itself now ship, each installable
-with a one-line `settings.json` edit and no rebuild:
+Fifteen capabilities beyond the mechanism itself now ship, each installable
+with a one-line `settings.json` edit and no rebuild.
 
 - [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
   write to (`remember`/`forget`/`list_memories`), injected into context by a
@@ -146,15 +153,13 @@ with a one-line `settings.json` edit and no rebuild:
   names for agents: `/conway.names.rename`/`.unname`/`.list` over a store
   shared with the TUI's own `/agents` panel, so a rename is visible
   immediately, with no reload.
-- `conway.trim` — a `Curator` that omits tool call/result round-trips older
-  than 8 turns, keeping context small as a session grows long. Fully wired
-  into the shipped binary, same footing as the four above with dedicated
-  pages — no dedicated page in this set yet; see `conway-plugin-trim`'s own
-  crate-level doc for the full design. The 8-turn window is an instance of
-  the rule stated above, not an exception argued separately: no
-  `settings.json` field reaches it, and that crate's own doc adds the one
-  fact specific to this constant — it is a curation heuristic an operator
-  has no feedback loop to tune, not a budget.
+- [`trim.md`](trim.md) — `conway.trim`, a `Curator` that omits tool
+  call/result round-trips older than `keep_turns` turns (default 8),
+  keeping context small as a session grows long. `keep_turns` is
+  operator-configurable via `[plugins.config.conway.trim]` (board item
+  `01M1YVM9CHFCJ6112XDYHCFS84`) — the first, and as of this writing only,
+  first-party plugin to adopt the `[plugins.config.<id>]` mechanism
+  described above for its own settings.
 - `conway.history` — `/conway.history.rewind <seq>`/`.mask`/`.checkout`:
   forks the calling session at a sequence number, masks a record out of
   future context, or checks out a prior session as the active one. No
@@ -189,6 +194,26 @@ with a one-line `settings.json` edit and no rebuild:
   than merely being unable to check the command at all. Reads and network
   are not confined — writes only. Requires `--root`; a call with none
   configured refuses outright rather than running unconfined.
+- [`checkpoint.md`](checkpoint.md) — `conway.checkpoint`, snapshots a
+  file's bytes around every `write`/`edit` tool call, and
+  `/conway.checkpoint.list`/`.diff`/`.rollback` to preview and undo them.
+  Preserves an operator's own hand edit by default (a rollback that would
+  overwrite one reports a conflict instead); does not capture a change made
+  through `bash`. In the default opinion set.
+- [`web.md`](web.md) — `conway.web`, a `web_fetch` tool (GET an http(s) URL,
+  reduced to readable text, bounded and SSRF-guarded), plus an optional
+  `web_search` tool that registers only when an operator configures a
+  search provider. NOT in the default opinion set — this plugin gives the
+  model outbound network reach, a materially different trust posture from
+  every other id above; read `web.md` before installing it.
+- [`toolindex.md`](toolindex.md) — `conway.toolindex`, deferred tool
+  schemas: narrows every non-built-in tool's announced JSON schema down to
+  a one-line index entry, plus a `describe_tool` tool that fetches the
+  full schema on demand and keeps that tool fully announced for the rest
+  of the session. NOT in the default opinion set — it changes model-facing
+  tool-calling behavior for every non-built-in tool (a deferred tool's
+  first call may cost one extra `describe_tool` round trip), a tradeoff
+  the default opinion set's own ruling never evaluated.
 
 ## A status-line command — first-party, but not a `[plugins].install` id either
 
@@ -221,7 +246,7 @@ directory the operator already has on disk (no downloading) and translates
 what it can. **Only its MCP server declarations are wired to actually
 run** — everything else it finds (`commands/*.md`, `skills/`, `agents/*.md`,
 most hook events) is named in an operator-visible report, never silently
-imported. Deliberately excluded from the "twelve shipped first-party plugins"
+imported. Deliberately excluded from the "fifteen shipped first-party plugins"
 count above and from the MCP section immediately above this one: it
 attaches through its own `[plugins].claude_compat[]` config surface,
 resolved by `crates/conway-cli/src/claude_compat_plugins.rs`, a fourth
@@ -239,7 +264,7 @@ describes, pointing at where it landed. Not a fourth import mechanism: an
 installed marketplace plugin is, on disk and in `settings.json`,
 indistinguishable from a directory the operator cloned or typed the path to
 by hand — same entry shape, same read-at-runtime translation, same trust
-footing. Deliberately excluded from the "twelve shipped first-party plugins"
+footing. Deliberately excluded from the "fifteen shipped first-party plugins"
 count and from both sections immediately above: it writes its own
 `[plugins].claude_compat[]` entry through `crates/conway-cli/src/tui/app/
 marketplace.rs`, not through `first_party_plugins::bundle()`,

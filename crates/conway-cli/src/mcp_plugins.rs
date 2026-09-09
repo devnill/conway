@@ -91,6 +91,10 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
             // been, so an operator who tuned it sees no change in what it
             // governs.
             startup_timeout_ms: conway_plugin_mcp::DEFAULT_STARTUP_TIMEOUT_MS,
+            // The FIRST ordinary round trip after the handshake gets its own
+            // budget too, operator-tunable like `timeout_ms` -- board item
+            // `01M1YQ3MJQSCQTMVAZ3GCSTB8P`.
+            first_call_timeout_ms: entry.first_call_timeout_ms,
             env: entry.env,
         };
         let plugin = McpPlugin::discover(spec)

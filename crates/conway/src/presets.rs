@@ -4,7 +4,7 @@
 //! here is privileged over one an embedder supplies via
 //! `ConwayBuilder::with_plugin` -- the one extension mechanism.
 
-use crate::config::schema::{PermissionsConfig, PermissionsConfigMode};
+use crate::gates::{GateConfig, GateMode};
 
 /// The full built-in plugin CANDIDATE set (`conway-tools`' `fs`, `shell`,
 /// `subagent`, and `report` plugins), unchanged.
@@ -47,32 +47,33 @@ pub fn builtin_plugin_ids() -> Vec<String> {
         .collect()
 }
 
-/// The recommended `[permissions]` config for one-shot (`-p`) invocations:
-/// allow-list mode with an empty allow list, i.e. every tool call is denied
-/// with feedback unless the embedder populates `allowed_tools` itself.
+/// The recommended fallback-gate [`GateConfig`] for one-shot (`-p`)
+/// invocations: allow-list mode with an empty allow list, i.e. every tool
+/// call is denied with feedback unless the embedder populates
+/// `allowed_tools` itself.
 ///
 /// Allow-list mode is used (rather than `deny`) because it is the only mode
 /// that never blocks on a prompt: one-shot mode has no interactive channel
 /// to prompt through, and `AllowListGate` never returns `AllowAlways`, so
 /// this preset is safe to use unattended.
 ///
-/// **Builds successfully.** This exact combination (`mode = "allowlist"`,
-/// empty `allowed_tools`) was once rejected unconditionally by
-/// `config::merge::validate`'s check 3, which made this preset dead on
-/// arrival for every caller (board item 01M01EM4QSB204FZSANJB3XH78). Check 3
-/// is now scoped to configs a human could have hand-typed into a settings
-/// file (`config::load`/`load_ignoring_user_config`'s own call site) -- see that
-/// check's own comment in `crate::config::merge` for the full reasoning --
-/// and no longer runs on `ConwayBuilder::build`'s re-validation step, so a
-/// config carrying this preset unmodified now builds. Proven, not just
-/// asserted: `tests/preset_one_shot_permissions_build.rs` builds a `Conway`
-/// from this exact value and drives a turn through it.
-pub fn default_permissions_for_one_shot() -> PermissionsConfig {
+/// **Builds successfully.** An empty allow-list used to be rejected
+/// unconditionally by `config::merge::validate`'s now-removed check 3
+/// (board item 01M01EM4QSB204FZSANJB3XH78) -- that check applied to the
+/// `settings.json`-parsed `permissions.mode`/`allowed_tools` keys this
+/// preset's return type no longer even shares a home with (board item
+/// 01M1YVP3FDPHY4WZ72SXMWAN2D removed both keys from `PermissionsConfig`
+/// entirely; `GateConfig` is an ordinary, non-serde Rust struct no
+/// validator ever inspects). Proven, not just asserted:
+/// `tests/preset_one_shot_permissions_build.rs` builds a `Conway` from
+/// this exact value (via `ConwayBuilder::with_gate_config`) and drives a
+/// turn through it.
+pub fn default_permissions_for_one_shot() -> GateConfig {
     // full literal: this preset's whole point is pinning every field of the
     // shipped one-shot combination, deliberately, not inheriting whatever
-    // `PermissionsConfig::default()` happens to be today.
-    PermissionsConfig {
-        mode: PermissionsConfigMode::Allowlist,
+    // `GateConfig::default()` happens to be today.
+    GateConfig {
+        mode: GateMode::Allowlist,
         allowed_tools: Vec::new(),
         denied_tools: Vec::new(),
     }

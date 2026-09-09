@@ -910,6 +910,28 @@ pub enum AgentMessage {
         from: AgentId,
         result: AgentResult,
     },
+    /// A child crossed `runway::BUDGET_WARN_FRACTION` (80%) of one of its
+    /// OWN budget dimensions (`max_steps`/`max_tool_calls`/`max_tokens`/
+    /// `deadline`) -- board item A5.6. Sent by `AgentLoop::run_inner`
+    /// (`conway-runtime`), alongside the SAME model-facing
+    /// `LogRecord::SystemNote { reason: "runway", .. }` it already appends
+    /// to its OWN log, whenever `self.parent_mailbox` is `Some` -- i.e. this
+    /// is the child->parent counterpart of the model-facing notice, not a
+    /// second computation of the threshold (`conway_runtime::runway`'s own
+    /// module doc: "one implementation, reused"). `text` is a fully
+    /// rendered, human/model-readable sentence naming the crossed dimension
+    /// and this child's own id -- never a bare limit key -- so a parent that
+    /// never installed any special handling for this variant still gets a
+    /// legible note once `mailbox::classify` persists it (mirrors
+    /// `AgentMessage::Steer`/`Result`'s existing "renders into a
+    /// `Role::System` segment on the parent's very next turn" path). Unlike
+    /// `Result`, this is NOT terminal -- the child keeps running, and MAY
+    /// cross more dimensions (or none) before it eventually does send a
+    /// `Result`.
+    BudgetNotice {
+        from: AgentId,
+        text: String,
+    },
 }
 
 /// The event-stream-facing projection of [`AgentMessage`] (`Event::MessageSent`).
@@ -920,6 +942,8 @@ pub enum MessageKind {
     Steer,
     Cancel,
     Result,
+    /// See [`AgentMessage::BudgetNotice`].
+    BudgetNotice,
 }
 
 impl From<&AgentMessage> for MessageKind {
@@ -928,6 +952,7 @@ impl From<&AgentMessage> for MessageKind {
             AgentMessage::Steer { .. } => MessageKind::Steer,
             AgentMessage::Cancel { .. } => MessageKind::Cancel,
             AgentMessage::Result { .. } => MessageKind::Result,
+            AgentMessage::BudgetNotice { .. } => MessageKind::BudgetNotice,
         }
     }
 }
@@ -1375,6 +1400,11 @@ mod tests {
             at_parent_seq: LogSeq::ZERO,
         };
         assert_eq!(MessageKind::from(&msg), MessageKind::Steer);
+        let msg = AgentMessage::BudgetNotice {
+            from: AgentId::new(),
+            text: "nearing a limit".into(),
+        };
+        assert_eq!(MessageKind::from(&msg), MessageKind::BudgetNotice);
     }
 
     #[test]

@@ -16,7 +16,9 @@ use conway_core::permission_pattern::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
+use chrono::Utc;
 use conway_core::agent::{
     PermissionDecision, PermissionDecisionKind, PermissionRequest, PermissionScope,
 };
@@ -27,8 +29,9 @@ use conway_core::event::Event;
 use conway_core::hook::{
     HookEvent, HookInvocation, HookOnFailure, HookOrigin, HookPermissionVerdict,
 };
-use conway_core::ids::{AgentId, SessionId, ToolName};
-use conway_core::ports::{HookRunner, PathArgs, PermissionGate, RenderKind};
+use conway_core::ids::{AgentId, LogSeq, SessionId, ToolName};
+use conway_core::log::{LogRecord, PermissionDecisionRecordKind, PermissionDecisionSource};
+use conway_core::ports::{HookRunner, PathArgs, PermissionGate, RenderKind, SessionStore};
 
 use crate::events::EventBus;
 
@@ -803,6 +806,21 @@ pub struct PermissionBroker {
     /// either alone is inert by construction (see
     /// [`Self::pre_tool_use_hook_denial`]).
     pre_tool_use_hooks: RwLock<Vec<PreToolUseHookSpec>>,
+    /// Where `record_decision` persists a `permission_decision`
+    /// record for every call [`Self::decide`] resolves. `None` (the
+    /// default -- every pre-existing `PermissionBroker::new` call site,
+    /// production and test alike, keeps compiling and behaving exactly as
+    /// before) makes `record_decision`'s persistence half a no-op:
+    /// the live `Event::PermissionDecision` this broker also emits is
+    /// unaffected either way, so a broker with no store attached still
+    /// reports every decision on the event bus, it simply has nowhere
+    /// durable to write it. Mirrors [`Self::set_hook_runner`]'s own
+    /// post-construction-setter shape, for the same reason: growing
+    /// `PermissionBroker::new`'s own signature would ripple into every one
+    /// of its many existing call sites (`conway-runtime`'s own tests,
+    /// `Runtime::new`, `conway`'s seam tests) for a dependency most of them
+    /// have no reason to supply.
+    store: RwLock<Option<Arc<dyn SessionStore>>>,
 }
 
 /// WHY a [`HookStepOutcome::Denied`] denies -- an explicit hook verdict, or
@@ -878,7 +896,21 @@ impl PermissionBroker {
             prompt_patterns: RwLock::new(Vec::new()),
             hook_runner: RwLock::new(None),
             pre_tool_use_hooks: RwLock::new(Vec::new()),
+            store: RwLock::new(None),
         }
+    }
+
+    /// Injects the [`SessionStore`] `record_decision` persists a
+    /// `permission_decision` record to, for every call [`Self::decide`]
+    /// resolves from this point on -- see `store`'s own doc for why
+    /// this is a post-construction setter rather than a `PermissionBroker::
+    /// new` parameter. Not called at all (the default) leaves every
+    /// existing `decide()` behavior byte-for-byte unchanged: no record is
+    /// persisted, and the DECISION itself -- what `decide()` returns -- is
+    /// never affected either way, only whether a durable trace of it
+    /// exists.
+    pub fn set_store(&self, store: Arc<dyn SessionStore>) {
+        *self.store.write().expect("permission store lock poisoned") = Some(store);
     }
 
     /// Injects (or clears, via `None`) the `pre_tool_use` hook dispatcher
@@ -1846,6 +1878,20 @@ impl PermissionBroker {
                         decision: PermissionDecisionKind::Denied,
                     },
                 );
+                // No `Rule` object built this denial (`check_root` is a
+                // structural containment check, not a `deny`-pattern
+                // match) -- `source: Rule` still names it correctly as
+                // "resolved without reaching the operator", `decision:
+                // Deny` (bare, no `id`) is the one case that can name.
+                self.record_decision(
+                    ctx,
+                    call,
+                    PermissionDecisionRecordKind::Deny,
+                    PermissionDecisionSource::Rule,
+                    None,
+                    Some(reason.clone()),
+                )
+                .await;
                 return PermissionOutcome::Deny {
                     rendered_error: reason,
                 };
@@ -1872,13 +1918,23 @@ impl PermissionBroker {
                     decision: PermissionDecisionKind::Denied,
                 },
             );
-            return PermissionOutcome::Deny {
-                rendered_error: format!(
-                    "`{}` is denied by a `deny` rule (`{}`)",
-                    call.tool.as_str(),
-                    rule.describe()
-                ),
-            };
+            let rendered_error = format!(
+                "`{}` is denied by a `deny` rule (`{}`)",
+                call.tool.as_str(),
+                rule.describe()
+            );
+            self.record_decision(
+                ctx,
+                call,
+                PermissionDecisionRecordKind::Rule {
+                    id: rule.describe(),
+                },
+                PermissionDecisionSource::Rule,
+                None,
+                Some(rendered_error.clone()),
+            )
+            .await;
+            return PermissionOutcome::Deny { rendered_error };
         }
 
         // the `pre_tool_use` hook
@@ -1923,6 +1979,15 @@ impl PermissionBroker {
                         decision: PermissionDecisionKind::Denied,
                     },
                 );
+                self.record_decision(
+                    ctx,
+                    call,
+                    PermissionDecisionRecordKind::HookDenied,
+                    PermissionDecisionSource::Hook,
+                    None,
+                    Some(rendered_error.clone()),
+                )
+                .await;
                 return PermissionOutcome::Deny { rendered_error };
             }
         }
@@ -1943,17 +2008,25 @@ impl PermissionBroker {
                     decision: PermissionDecisionKind::Denied,
                 },
             );
-            return PermissionOutcome::Deny {
-                // Min-4: the gap between the two sentences is `{:>22}` on an
-                // empty string (22 spaces, byte-identical to the literal run
-                // it replaces) -- the source holds no fragile 22-space run.
-                rendered_error: format!(
-                    "plan mode: `{}` is a {:?} tool, which plan mode does not permit.{:>22}Switch modes in /settings to run it.",
-                    call.tool.as_str(),
-                    call.category,
-                    ""
-                ),
-            };
+            // Min-4: the gap between the two sentences is `{:>22}` on an
+            // empty string (22 spaces, byte-identical to the literal run
+            // it replaces) -- the source holds no fragile 22-space run.
+            let rendered_error = format!(
+                "plan mode: `{}` is a {:?} tool, which plan mode does not permit.{:>22}Switch modes in /settings to run it.",
+                call.tool.as_str(),
+                call.category,
+                ""
+            );
+            self.record_decision(
+                ctx,
+                call,
+                PermissionDecisionRecordKind::PlanDenied,
+                PermissionDecisionSource::Mode,
+                None,
+                Some(rendered_error.clone()),
+            )
+            .await;
+            return PermissionOutcome::Deny { rendered_error };
         }
 
         // the PROMPT step.
@@ -2022,6 +2095,21 @@ impl PermissionBroker {
                         decision: PermissionDecisionKind::Cached,
                     },
                 );
+                // A REUSE of an earlier live `AllowAlways` grant -- the
+                // `decision` label matches the operator's own live
+                // `AllowAlways` answer below exactly (both authorize the
+                // SAME class of call the SAME way); `source: Rule`, not
+                // `Operator`, is what tells the two apart: this occurrence
+                // never reached the gate.
+                self.record_decision(
+                    ctx,
+                    call,
+                    PermissionDecisionRecordKind::AllowAlways,
+                    PermissionDecisionSource::Rule,
+                    None,
+                    None,
+                )
+                .await;
                 return PermissionOutcome::Allow;
             }
 
@@ -2039,6 +2127,15 @@ impl PermissionBroker {
                         decision: PermissionDecisionKind::Cached,
                     },
                 );
+                self.record_decision(
+                    ctx,
+                    call,
+                    PermissionDecisionRecordKind::Pattern,
+                    PermissionDecisionSource::Rule,
+                    None,
+                    None,
+                )
+                .await;
                 return PermissionOutcome::Allow;
             }
 
@@ -2050,6 +2147,15 @@ impl PermissionBroker {
                         decision: PermissionDecisionKind::Cached,
                     },
                 );
+                self.record_decision(
+                    ctx,
+                    call,
+                    PermissionDecisionRecordKind::Auto,
+                    PermissionDecisionSource::Mode,
+                    None,
+                    None,
+                )
+                .await;
                 return PermissionOutcome::Allow;
             }
         }
@@ -2069,7 +2175,18 @@ impl PermissionBroker {
             // propose (`suggested_rule`).
             render_kind: call.render_kind,
         };
+        // The ONLY branch where a prompt was actually shown -- `started`/
+        // `elapsed` bracket exactly the `gate.check` call itself (no cache,
+        // pattern, or mode lookup measured in this window), so `waited_ms`
+        // is the operator's real wait, never a fixture's fabricated zero: a
+        // gate double that answers synchronously (as most of this file's
+        // own test doubles do) reports a real, if small, elapsed duration
+        // here -- it is only ever `None`, never `Some(0)` masquerading as
+        // "no wait happened", for every OTHER branch of this method, which
+        // never reaches this call at all.
+        let started = Instant::now();
         let decision = self.gate.check(request).await;
+        let waited_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         if let PermissionDecision::AllowAlways { scope } = &decision {
             self.remember(key, *scope, ctx.agent_id);
@@ -2083,6 +2200,36 @@ impl PermissionBroker {
                 decision: kind,
             },
         );
+
+        let (record_kind, feedback) = match &decision {
+            PermissionDecision::AllowOnce => (PermissionDecisionRecordKind::Allow, None),
+            PermissionDecision::AllowAlways { .. } => {
+                (PermissionDecisionRecordKind::AllowAlways, None)
+            }
+            PermissionDecision::Deny { reason } => {
+                (PermissionDecisionRecordKind::Deny, Some(reason.clone()))
+            }
+            PermissionDecision::DenyWithFeedback { message } => (
+                PermissionDecisionRecordKind::DenyWithFeedback,
+                Some(message.clone()),
+            ),
+            // `PermissionDecision` is `#[non_exhaustive]`: fail closed on
+            // any future variant here too, mirroring `PermissionOutcome::
+            // from`'s own fallback immediately below.
+            _ => (
+                PermissionDecisionRecordKind::Deny,
+                Some("permission gate returned an unrecognized decision".into()),
+            ),
+        };
+        self.record_decision(
+            ctx,
+            call,
+            record_kind,
+            PermissionDecisionSource::Operator,
+            Some(waited_ms),
+            feedback,
+        )
+        .await;
 
         PermissionOutcome::from(decision)
     }
@@ -2108,6 +2255,93 @@ impl PermissionBroker {
 
     fn emit(&self, ctx: &PermissionCtx, event: Event) {
         self.bus.emit(ctx.session, ctx.agent_id, event);
+    }
+
+    /// The ONE place `Self::decide` reports a call's resolution beyond the
+    /// pre-existing `Event::PermissionResolved` -- called from every one of
+    /// `decide`'s return points (root containment, a matched `deny` rule, a
+    /// denying hook, plan mode's own refusal, a cached `AllowAlways` grant,
+    /// a matching `allow` pattern, `AutoAllow` mode, and the operator's own
+    /// live `gate.check` answer), never duplicated inline at any of them.
+    /// See [`conway_core::log::LogRecord::PermissionDecisionRecord`]'s own
+    /// doc for why a second write site (e.g. the tool runner reacting to
+    /// `PermissionOutcome` after the fact) was rejected -- it cannot see
+    /// WHY a call was resolved the way it was, only whether it was allowed.
+    ///
+    /// Always emits the live `Event::PermissionDecision` (cheap,
+    /// broadcast-only, mirrors the pre-existing `Event::PermissionResolved`
+    /// this method's every caller already emits alongside it). Persistence
+    /// is best-effort and strictly secondary: a `SessionStore::append`
+    /// failure is logged (`tracing::error!`) and otherwise swallowed --
+    /// `decide`'s signature returns a bare `PermissionOutcome`, not a
+    /// `Result`, so there is no channel to propagate a persistence failure
+    /// through even if this method wanted to, and letting a full disk or a
+    /// transient store error turn an ALREADY-DECIDED permission outcome
+    /// into a second, unrelated kind of failure would violate this item's
+    /// own "no change to any decision's OUTCOME" constraint in the most
+    /// direct way possible: by aborting a call the operator (or a rule, or
+    /// a hook, or the current mode) already authorized. Losing the durable
+    /// record on a store failure is a real, disclosed observability gap,
+    /// not a silently-accepted one -- see the `tracing::error!` call below.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_decision(
+        &self,
+        ctx: &PermissionCtx,
+        call: &AuthorizedCall,
+        decision: PermissionDecisionRecordKind,
+        source: PermissionDecisionSource,
+        waited_ms: Option<u64>,
+        feedback: Option<String>,
+    ) {
+        self.emit(
+            ctx,
+            Event::PermissionDecision {
+                call_id: call.call_id.clone(),
+                tool: call.tool.clone(),
+                decision: decision.clone(),
+                source,
+                waited_ms,
+                feedback: feedback.clone(),
+            },
+        );
+
+        let store = self
+            .store
+            .read()
+            .expect("permission store lock poisoned")
+            .clone();
+        let Some(store) = store else {
+            return;
+        };
+        // `seq` is a placeholder the store overwrites with its own
+        // under-lock read of the session's true head -- the exact contract
+        // `conway_runtime::agent_loop::AgentLoop::persist`'s own doc states
+        // for the identical `LogSeq::ZERO`-then-`append` pattern; this
+        // method is not that session's sole writer (an `AgentLoop` turn can
+        // append `tool_result`/`Assistant` records concurrently with a
+        // prompt this same call is waiting on), so, unlike `persist`, this
+        // method does not bother reading `head` first only to have `append`
+        // discard it -- the placeholder is discarded identically either way.
+        let record = LogRecord::PermissionDecisionRecord {
+            seq: LogSeq::ZERO,
+            ts: Utc::now(),
+            call_id: call.call_id.clone(),
+            tool: call.tool.clone(),
+            decision,
+            source,
+            waited_ms,
+            feedback,
+        };
+        if let Err(err) = store.append(&ctx.session, record).await {
+            tracing::error!(
+                call_id = %call.call_id,
+                session = %ctx.session,
+                error = %err,
+                "failed to persist permission_decision record; the transcript will not show \
+                 this decision, though the decision itself (already returned to the caller) \
+                 is unaffected"
+            );
+        }
     }
 }
 
@@ -2135,7 +2369,10 @@ mod tests {
     use conway_core::agent::PermissionRequest;
     use conway_core::error::HookFailure;
     use conway_core::hook::{ContextDelta, HookAnswer};
+    use conway_core::ids::SeqRange;
+    use conway_core::log::SessionMeta;
     use conway_core::permission_pattern::{PatternOrigin, PatternRule, Select};
+    use conway_testkit::FakeStore;
 
     use super::*;
 
@@ -3546,5 +3783,264 @@ mod tests {
             broker.active_structured_prompt_rules().is_empty(),
             "the rejected prompt rule must not have been installed"
         );
+    }
+
+    /// `01M1YS2ACS0TKJYKF8TBPESTTC`'s own `permission_decision` record --
+    /// this module's own test doubles/helper for the tests immediately
+    /// below.
+    mod permission_decision_record {
+        use super::*;
+
+        /// A gate that waits a real, small, non-zero amount of WALL-CLOCK
+        /// time before answering with each of a fixed sequence of
+        /// decisions, in order.
+        ///
+        /// **Why this exists instead of reusing `RecordingGate`/
+        /// `AllowAlwaysGate` (both answer instantly).** `Self::decide`
+        /// measures `waited_ms` with `std::time::Instant`, a real clock --
+        /// an instantly-answering double cannot tell a genuine multi-
+        /// millisecond wait apart from a stubbed implementation that just
+        /// hardcodes `Some(0)`; only a gate that ACTUALLY takes wall-clock
+        /// time to answer can make that distinction observable, which is
+        /// exactly what the tests below assert on (`waited_ms > 0`, not
+        /// merely `waited_ms.is_some()`).
+        struct SlowScriptedGate {
+            answers: Mutex<std::collections::VecDeque<PermissionDecision>>,
+        }
+
+        impl SlowScriptedGate {
+            fn new(answers: Vec<PermissionDecision>) -> Arc<Self> {
+                Arc::new(Self {
+                    answers: Mutex::new(answers.into_iter().collect()),
+                })
+            }
+        }
+
+        #[async_trait]
+        impl PermissionGate for SlowScriptedGate {
+            async fn check(&self, _req: PermissionRequest) -> PermissionDecision {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                self.answers
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("SlowScriptedGate ran out of scripted answers")
+            }
+        }
+
+        /// Creates a session in `store` with the minimal `SessionMeta`
+        /// every non-header `LogRecord`-appending test in this crate needs
+        /// -- mirrors `agent_loop.rs`'s own inline test module's identical
+        /// `seeded_session` helper (this crate's OTHER `SessionStore`-
+        /// backed test suite), byte-for-byte, since a `FakeStore` refuses
+        /// `append` with `StoreError::NotFound` until a session exists.
+        async fn seeded_session(store: &dyn SessionStore, agent: AgentId) -> SessionId {
+            let session = SessionId::new();
+            store
+                .create(SessionMeta {
+                    id: session,
+                    agent_id: agent,
+                    origin: None,
+                    agent_def: None,
+                    role: None,
+                    created: Utc::now(),
+                    cwd: PathBuf::from("/tmp"),
+                    labels: vec![],
+                    ephemeral: false,
+                    ask_origin: None,
+                    root: None,
+                    plugin_config: conway_core::ports::PluginConfig::default(),
+                })
+                .await
+                .expect("fresh session id never collides");
+            session
+        }
+
+        /// **Acceptance 1: "a session with two prompts yields two
+        /// `permission_decision` records with wait times."** Drives a
+        /// prompted `AllowOnce` and a prompted `DenyWithFeedback` through
+        /// the SAME broker/session -- the two decision KINDS the item's own
+        /// acceptance criteria names explicitly -- then reads the session
+        /// back through the ordinary `SessionStore::read` seam (the same
+        /// one `conway sessions show`/`Conway::transcript` ultimately use)
+        /// and asserts on both persisted records' CONTENT, not merely their
+        /// existence: `call_id`/`tool`/`decision`/`source` match what was
+        /// asked, `waited_ms` is `Some` and strictly greater than zero for
+        /// BOTH (the fixture-trap guard -- see `SlowScriptedGate`'s own
+        /// doc), and `feedback` is `None` for the allow and carries the
+        /// operator's exact typed message for the deny.
+        #[tokio::test]
+        async fn decide_persists_two_permission_decision_records_for_two_prompts() {
+            let bus = EventBus::new(64);
+            let gate = SlowScriptedGate::new(vec![
+                PermissionDecision::AllowOnce,
+                PermissionDecision::DenyWithFeedback {
+                    message: "not right now".into(),
+                },
+            ]);
+            let broker = PermissionBroker::new(gate, bus);
+            let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+            let agent = AgentId::new();
+            let session = seeded_session(store.as_ref(), agent).await;
+            broker.set_store(store.clone());
+            let ctx = test_ctx(agent, session);
+
+            let allow_outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+            assert_eq!(allow_outcome, PermissionOutcome::Allow);
+
+            let deny_outcome = broker
+                .decide(&ctx, &bash_call("c2", "curl evil.example"))
+                .await;
+            assert_eq!(
+                deny_outcome,
+                PermissionOutcome::Deny {
+                    rendered_error: "not right now".into(),
+                }
+            );
+
+            let records = store.read(&ctx.session, SeqRange::full()).await.unwrap();
+            let permission_records: Vec<&LogRecord> = records
+                .iter()
+                .filter(|r| r.kind_str() == "permission_decision")
+                .collect();
+            assert_eq!(
+                permission_records.len(),
+                2,
+                "two prompted calls must yield exactly two persisted permission_decision \
+                 records, one per call: {records:#?}"
+            );
+
+            match permission_records[0] {
+                LogRecord::PermissionDecisionRecord {
+                    call_id,
+                    tool,
+                    decision,
+                    source,
+                    waited_ms,
+                    feedback,
+                    ..
+                } => {
+                    assert_eq!(call_id, "c1");
+                    assert_eq!(tool.as_str(), "bash");
+                    assert_eq!(*decision, PermissionDecisionRecordKind::Allow);
+                    assert_eq!(*source, PermissionDecisionSource::Operator);
+                    assert!(
+                        waited_ms.is_some_and(|ms| ms > 0),
+                        "a prompted allow must record a real, non-zero wait, got {waited_ms:?}"
+                    );
+                    assert_eq!(*feedback, None);
+                }
+                other => panic!("expected a PermissionDecisionRecord for c1, got {other:?}"),
+            }
+
+            match permission_records[1] {
+                LogRecord::PermissionDecisionRecord {
+                    call_id,
+                    tool,
+                    decision,
+                    source,
+                    waited_ms,
+                    feedback,
+                    ..
+                } => {
+                    assert_eq!(call_id, "c2");
+                    assert_eq!(tool.as_str(), "bash");
+                    assert_eq!(*decision, PermissionDecisionRecordKind::DenyWithFeedback);
+                    assert_eq!(*source, PermissionDecisionSource::Operator);
+                    assert!(
+                        waited_ms.is_some_and(|ms| ms > 0),
+                        "a prompted deny-with-feedback must record a real, non-zero wait, got \
+                         {waited_ms:?}"
+                    );
+                    assert_eq!(feedback.as_deref(), Some("not right now"));
+                }
+                other => panic!("expected a PermissionDecisionRecord for c2, got {other:?}"),
+            }
+        }
+
+        /// A no-prompt path (a rule-decided `deny`) must NOT report a wait
+        /// -- `waited_ms` is `None`, never `Some(0)`, since `decide` never
+        /// reached `gate.check` at all for this call. Also pins that a
+        /// `deny` rule's own record names the rule (`decision: Rule { id }`,
+        /// `source: Rule`), the shape `PermissionDecisionRecordKind::Rule`
+        /// exists for.
+        #[tokio::test]
+        async fn decide_records_a_rule_denial_with_no_wait_and_the_rule_id() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+            let agent = AgentId::new();
+            let session = seeded_session(store.as_ref(), agent).await;
+            broker.set_store(store.clone());
+            let ctx = test_ctx(agent, session);
+
+            broker.remember_deny_rule(
+                Rule {
+                    select: Select::Tools(vec!["bash".to_string()]),
+                    when: When::Always,
+                    then: Then::Deny,
+                },
+                PatternOrigin::Interactive,
+                Path::new("/"),
+            );
+
+            let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+            assert!(matches!(outcome, PermissionOutcome::Deny { .. }));
+            assert_eq!(
+                gate.call_count(),
+                0,
+                "a rule denial must never reach the gate"
+            );
+
+            let records = store.read(&ctx.session, SeqRange::full()).await.unwrap();
+            let permission_records: Vec<&LogRecord> = records
+                .iter()
+                .filter(|r| r.kind_str() == "permission_decision")
+                .collect();
+            assert_eq!(permission_records.len(), 1, "{records:#?}");
+            match permission_records[0] {
+                LogRecord::PermissionDecisionRecord {
+                    decision,
+                    source,
+                    waited_ms,
+                    feedback,
+                    ..
+                } => {
+                    assert_eq!(
+                        *decision,
+                        PermissionDecisionRecordKind::Rule {
+                            id: "any `bash` call".into(),
+                        }
+                    );
+                    assert_eq!(*source, PermissionDecisionSource::Rule);
+                    assert_eq!(
+                        *waited_ms, None,
+                        "a rule-decided denial never reached the gate, so it must record no wait \
+                         at all -- never a fabricated `Some(0)`"
+                    );
+                    assert!(feedback.as_deref().is_some_and(|f| f.contains("deny")));
+                }
+                other => panic!("expected a PermissionDecisionRecord, got {other:?}"),
+            }
+        }
+
+        /// Without `set_store`, `decide()` behaves byte-for-byte as it did
+        /// before this record existed: the persistence half of
+        /// `record_decision` is a no-op, and -- the load-bearing half of
+        /// this test -- the DECISION ITSELF is completely unaffected (same
+        /// outcome, same event), pinning this item's own "no change to any
+        /// decision's outcome" constraint mechanically rather than just by
+        /// inspection.
+        #[tokio::test]
+        async fn decide_without_a_store_attached_is_unaffected() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let ctx = test_ctx(AgentId::new(), SessionId::new());
+
+            let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(gate.call_count(), 1);
+        }
     }
 }

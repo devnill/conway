@@ -57,22 +57,24 @@ things in the originating board item's own settings table turned out to
 be stale once checked against the real file:
 
 1. **`effortLevel: "high"` is present in the real file and was not in the
-   spec's declined list at all.** It's bucketed below (declined — conway
-   has no reasoning-effort/thinking-budget key at the `settings.json`
-   level; see the table).
+   spec's declined list at all.** It's bucketed below (maps, indirectly —
+   conway has no single `effortLevel` key, but `roles.<alias>.params` is
+   now a real per-role landing spot for the setting it names; see the
+   table).
 2. **`permissions.allow` does not map to `permissions.allowed_tools`.**
-   The spec's table said it did. It doesn't, for anyone actually running
-   the `conway` binary: `settings.json`'s `permissions.mode`/
-   `allowed_tools`/`denied_tools` are consulted only by
-   `gates::from_config`, the fallback `ConwayBuilder::build()` uses when
-   *no* gate has been supplied — and both the TUI and `-p` one-shot mode
-   **always** supply their own gate
-   (`docs/permissions.md`'s "Permission modes" section says this
-   explicitly). The field parses, sits in the file, and does nothing for
-   an ordinary `conway` user. The actual target for a durable Claude-Code-
-   style allow rule is a **`permissions.json`** file (project- or
-   global-scoped) — a sibling of `settings.json`, not a key inside it. The
-   worked example below uses the correct target throughout.
+   The spec's table said it did. It never did, for anyone actually running
+   the `conway` binary, and board item `01M1YVP3FDPHY4WZ72SXMWAN2D`
+   removed the key entirely (along with `permissions.mode`/
+   `permissions.denied_tools`, its siblings): all three were consulted
+   only by `gates::from_config`, the fallback `ConwayBuilder::build()`
+   uses when *no* gate has been supplied — and both the TUI and `-p`
+   one-shot mode **always** supply their own gate. The field used to
+   parse, sit in the file, and do nothing for an ordinary `conway` user; a
+   settings file naming it now gets a refusal pointing at the real target
+   instead. That real target for a durable Claude-Code-style allow rule
+   is a **`permissions.json`** file (project- or global-scoped) — a
+   sibling of `settings.json`, not a key inside it. The worked example
+   below uses the correct target throughout.
 
 Everything else in the spec's table checked out.
 
@@ -85,10 +87,11 @@ Everything else in the spec's table checked out.
 | `enabledPlugins` (6) | Maps, per-entry (uneven) | `[plugins].claude_compat[]` for a directory-sourced one; `/plugin install <marketplace-repo-url> <plugin-name>` now installs the two GitHub-marketplace-sourced ones for real (board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`, 2026-08-29); no equivalent for the Claude-Code-official one. See "Plugins and marketplaces" below — this is the entry the spec's table most oversimplified. |
 | `extraKnownMarketplaces` (3) | Maps, imperfectly | conway has no persistent "known marketplaces" registry at all — `/plugin install <url> <plugin-id>` names a manifest URL directly, every time (`docs/plugins/marketplace.md`, "Smallest honest v1: a URL argument, not a browsable catalogue"). A named, reusable marketplace alias is a Claude Code concept with no conway counterpart; see below. |
 | `statusLine.command` | Plugin | Board item `01M0X500861X9035QJEA82F94K` — "A command-driven status line as a plugin." Conway's own `StatusLineConfig` is `{ fields: Vec<String> }` over a closed ten-variant vocabulary; a shell-command status line is opinionated output-formatting logic that belongs outside the core. |
-| `permissions.defaultMode` ("auto") | Plugin | Board item `01M0X4YDNVP7TZ0PVSRJ0388SS` — "Plugin-declared permission modes." Conway ships exactly three modes (`Prompt`/`Plan`/`AutoAllow`, cycled with `/settings`); a fourth, "prompt me only in edge cases," is the item that would add a mode beyond those three, and it's explicitly a plugin's job, not the core's. |
+| `permissions.defaultMode` | Maps | `permissions.default_mode` in `settings.json` (`"prompt"` \| `"plan"` \| `"auto_allow"`, board item `01M1YVP3FDPHY4WZ72SXMWAN2D`) — the mode a NEW session starts in; `/settings`/`Shift-Tab` still cycle the running session's current mode, unaffected. Claude Code's own `"auto"` value has no match among conway's three (see the `01M0X4YDNVP7TZ0PVSRJ0388SS` entry, below, for that specific gap) — this row is about the mapping MECHANISM (a settings key selecting the session's starting mode), which now exists, not about every one of Claude Code's mode NAMES having a conway equivalent. |
+| `permissions.defaultMode = "auto"` specifically | Plugin | Board item `01M0X4YDNVP7TZ0PVSRJ0388SS` — "Plugin-declared permission modes." Conway ships exactly three modes (`Prompt`/`Plan`/`AutoAllow`, cycled with `/settings`); a fourth, "prompt me only in edge cases," is the item that would add a mode beyond those three, and it's explicitly a plugin's job, not the core's. |
 | `env` | **Declined (settled)** | See "Already ruled," above. |
 | `hooks.SessionEnd` | **Declined (settled)** | See "Already ruled," above. |
-| `effortLevel` | Declined | No reasoning-effort or thinking-budget key exists in `settings.json` at any level. `RoleEntry`/routing carries a `params: SamplingParams` sub-table (`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, `extra`), but `ConwayConfig::routing()` never populates it from anything in `settings.json` — the documented schema doesn't reach it (`crates/conway/src/config/schema.rs`'s own module doc says exactly this). Nothing to map to; this key evaporates on migration. |
+| `effortLevel` | Maps, indirectly | No literal `effortLevel` key exists in `settings.json` — Claude Code's single global toggle has no single-key conway equivalent. As of this item, `roles.<alias>.params` (`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, `extra`) IS threaded all the way to the backend adapter by `ConwayConfig::routing()` (`crates/conway/src/config/schema.rs`'s `RoleEntry::params`). Define a role per effort level — e.g. a `thinking` role with `params.extra.reasoning_budget_tokens` set (Anthropic) or `params.extra.reasoning_effort` set (an OpenAI-compatible dialect that sends it) — and switch with `/role`. See `docs/routing.md`'s "Sampling and reasoning params" section for the worked recipe. |
 | `tui` | Declined | conway has one TUI, not a `fullscreen`/other mode toggle. |
 | `voice` / `voiceEnabled` | Declined | No voice input/output surface exists. |
 | `verbose` | Declined | No global verbosity flag; conway's transcript detail is not gated by a single switch this shape. |
@@ -429,9 +432,12 @@ This is most of the point of this page, not a footnote:
   own plugin item, not built yet — until it lands, conway's status line
   is the fixed ten-field vocabulary described in `interactive.md`, not
   arbitrary shell output.
-- **A fourth permission mode.** `permissions.defaultMode` beyond conway's
-  three (`Prompt`/`Plan`/`AutoAllow`) is filed as its own plugin item, not
-  built yet.
+- **A fourth permission mode.** `permissions.defaultMode = "auto"`
+  specifically -- a mode beyond conway's three (`Prompt`/`Plan`/
+  `AutoAllow`) -- is filed as its own plugin item, not built yet. The
+  MECHANISM `defaultMode` names (a settings key selecting a new session's
+  starting mode) does now exist: `permissions.default_mode` in
+  `settings.json`, see the bucket table above.
 - **Global env injection.** Settled declined — see "Already ruled." If
   you relied on `env` to set something every session needs, that has to
   move to wherever you launch `conway` from (your shell profile, a
@@ -440,9 +446,18 @@ This is most of the point of this page, not a footnote:
   `SessionEnd`-driven integration (the operator's real file runs a
   knowledge-graph ingest script on session end), there is no conway hook
   event to attach it to, and none is coming.
-- **Reasoning-effort control from `settings.json`.** `effortLevel` has no
-  landing spot at all — not maps, not plugin, just absent from the config
-  surface at this layer.
+- **A single, global `effortLevel` toggle.** The literal key has no
+  landing spot in `settings.json` — but the *capability* it names now
+  maps, as of this item: `roles.<alias>.params` carries a real per-role
+  sampling/reasoning knob (`extra.reasoning_budget_tokens` on Anthropic,
+  `extra.reasoning_effort` on an OpenAI-compatible dialect that sends it),
+  switched with `/role` — see the bucket table above and
+  [`routing.md`'s "Sampling and reasoning params"
+  section](routing.md#sampling-and-reasoning-params). What's genuinely
+  lost is the SHAPE, not the capability: Claude Code's toggle changes
+  nothing but effort, while conway's role also picks the model/chain —
+  there is no way to keep today's model and turn only its effort up or
+  down without naming a second role for it.
 - **TUI presentation preferences, notifications, and voice** (`tui`,
   `verbose`, `teammateMode`, `voice`/`voiceEnabled`,
   `inputNeededNotifEnabled`, `agentPushNotifEnabled`,

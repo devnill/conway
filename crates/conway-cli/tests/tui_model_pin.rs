@@ -8,23 +8,39 @@
 //!
 //! This suite drives the TUI's OWN construction path directly --
 //! [`conway_cli::tui::app::App::session_spec`], the exact associated
-//! function `App::new` calls to build the `SessionSpec` it passes to
-//! `Conway::new_session` -- rather than `oneshot::resolve_session` (which
-//! is private to `oneshot.rs`, and is a different code path besides).
-//! `model_flag_pins_the_session_spec` below was confirmed to fail
-//! before this item's fix: `App::new`'s inline `SessionSpec { .. }`
-//! construction never set `model` at all, so `spec.model` was always
-//! `None` regardless of `--model`.
+//! function `App::new`'s flag-free path calls to build the fresh-session
+//! `SessionSpec` it passes to `Conway::new_session` -- rather than
+//! `oneshot::resolve_session` (which is private to `oneshot.rs`, and is a
+//! different code path besides). `model_flag_pins_the_session_spec` below
+//! was confirmed to fail before this item's fix: `App::new`'s inline
+//! `SessionSpec { .. }` construction never set `model` at all, so
+//! `spec.model` was always `None` regardless of `--model`.
 //!
-//! `App::new` itself is not driven here (only `App::session_spec`): it also
-//! needs a live `Conway` and, for the positive/negative `--model` cases,
-//! that adds real routing/config setup with nothing left to prove --
-//! `App::session_spec` is the exact code in question, and is unit-testable
-//! without any of that. The `--session`/`--resume`/`--fork-from` rejection
-//! tests do go through the full `App::new` (see
-//! `session_flags_are_rejected_by_app_new_not_silently_ignored` below), to
-//! prove the rejection actually reaches a caller starting the TUI for real,
-//! not just the extracted helper.
+//! **Board item `01M1YS4FMJH004D1Y619MTBY7A` superseded this suite's own
+//! former claim that `--resume`/`--fork-from` are a decided TUI non-goal.**
+//! They are now real, wired continuity flags at TUI startup (alongside a
+//! new `--continue`) -- see `tui::app::startup::App::resolve_handle`, the
+//! function that superseded `session_spec`'s old blanket refusal of all
+//! three. `--session` alone did NOT graduate and stays refused (see its
+//! own doc in `cli.rs`); `session_spec` itself keeps guarding exactly that
+//! one flag, which is why `--session`'s own rejection is still tested here
+//! synchronously, with no live `Conway`. The former `--resume`/
+//! `--fork-from` rejection tests are replaced by their opposite: proof
+//! that `App::new` genuinely ATTEMPTS them now (an unknown target still
+//! errors, since the fixture below never creates a real session for
+//! `--resume 01ARZ...` to find -- but it errors via `Conway::resume_with`'s
+//! own "no such session" now, not via a blanket startup refusal). The
+//! SUCCESS half of `--resume` (a real session, backfilled) is proven in
+//! `conway_cli::tui::app::startup`'s own `#[cfg(test)]` suite
+//! (`resolve_handle_resume_backfills_history_into_the_transcript`), which
+//! -- unlike this file -- can reach `App`'s private fields and this
+//! crate's own `fixtures::echo_conway_and_store` to build a real,
+//! pre-populated session to resume.
+//!
+//! `App::new` itself is driven here too now (see the previous paragraph),
+//! needing a live `Conway` -- `conway::test_support::build_conway_with_
+//! echo_backend` over a fresh `FakeStore`, the same shape this file's
+//! sibling suites already use.
 
 mod common;
 
@@ -48,6 +64,7 @@ fn minimal_cli() -> Cli {
         allowed_tools: Vec::new(),
         deny_tools: Vec::new(),
         permission_mode: OneShotPermissionMode::Allowlist,
+        default_permission_mode: None,
         role_override: None,
         model: None,
         agent: None,
@@ -60,6 +77,7 @@ fn minimal_cli() -> Cli {
         session: None,
         resume: None,
         fork_from: None,
+        continue_session: false,
         config: None,
         cwd: None,
         root: None,
@@ -142,59 +160,74 @@ async fn malformed_model_fails_identically_in_both_modes() {
     );
 }
 
-/// `--session`/`--resume`/`--fork-from` are a decided non-goal for the TUI
-/// (see `App::session_spec`'s own doc comment for the reasoning): rather
-/// than silently accept and ignore them (this item's whole point), the TUI
-/// refuses to start with a usage error naming the alternative. Driven
-/// through the extracted helper for all three flags...
-fn assert_flag_is_rejected(label: &str, cli: &Cli) {
-    let err = match App::session_spec(cli) {
-        Ok(_) => panic!("{label} must be refused by the TUI, not silently ignored"),
+/// `--session` alone did NOT graduate alongside `--resume`/`--fork-from`/
+/// `--continue` (board item `01M1YS4FMJH004D1Y619MTBY7A`) -- see
+/// `App::session_spec`'s own doc comment for why: the TUI has no "create
+/// with this exact id" use case a script has. `App::session_spec` keeps
+/// guarding exactly this one flag, so this stays a synchronous,
+/// no-live-`Conway` test.
+#[test]
+fn session_flag_alone_is_still_rejected_by_session_spec() {
+    let mut cli = minimal_cli();
+    cli.session = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string());
+
+    let err = match App::session_spec(&cli) {
+        Ok(_) => panic!("--session must still be refused, not silently ignored"),
         Err(e) => e,
     };
     assert_eq!(
         ExitCode::from_error(&err),
         ExitCode::Usage,
-        "{label}: rejection must classify as a usage error (exit 2)"
+        "--session: rejection must classify as a usage error (exit 2)"
     );
     let text = err.to_string();
     assert!(
-        text.contains("--session") && text.contains("--resume") && text.contains("--fork-from"),
-        "{label}: the refusal must name all three continuity flags, got: {text:?}"
-    );
-    assert!(
-        text.contains("/resume"),
-        "{label}: the refusal must point at the in-TUI alternative, got: {text:?}"
+        text.contains("--session"),
+        "the refusal must name the flag it refused, got: {text:?}"
     );
 }
 
-#[test]
-fn session_continuity_flags_are_rejected_not_silently_ignored() {
-    let mut cli = minimal_cli();
-    cli.session = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string());
-    assert_flag_is_rejected("--session", &cli);
-
-    let mut cli = minimal_cli();
-    cli.resume = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string());
-    assert_flag_is_rejected("--resume", &cli);
-
-    let mut cli = minimal_cli();
-    cli.fork_from = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string());
-    assert_flag_is_rejected("--fork-from", &cli);
-}
-
-/// ...and again through the full `App::new` -- not just the extracted
-/// helper -- so the rejection is proven to reach the real path a caller
-/// starting the TUI actually takes.
+/// **Superseded pairing (board item `01M1YS4FMJH004D1Y619MTBY7A`):** this
+/// suite used to assert `--resume`/`--fork-from` were flatly refused at TUI
+/// startup, the same as `--session` just above. They are not any more --
+/// `App::resolve_handle` (`tui::app::startup`) now genuinely ATTEMPTS
+/// them. This fixture's `FakeStore` starts empty, so a hand-typed ULID
+/// that names no real session still ends in `Err` -- but now via
+/// `Conway::resume_with`'s own "no such session" (wrapped as a usage
+/// error, matching `oneshot::resolve_session`'s identical convention for
+/// the identical failure), not via a blanket "not supported" refusal. The
+/// two are told apart below by the error TEXT, not merely the exit code:
+/// the old refusal always contained the literal string `"not supported"`;
+/// this one never does.
+///
+/// The SUCCESS half -- a real, pre-existing session, backfilled into the
+/// transcript -- is proven in `conway_cli::tui::app::startup`'s own
+/// `#[cfg(test)]` suite (`resolve_handle_resume_backfills_history_into_
+/// the_transcript`), which can reach `App`'s private fields and this
+/// crate's own `fixtures::echo_conway_and_store`; this integration suite
+/// cannot reach either.
 #[tokio::test]
-async fn session_flags_are_rejected_by_app_new_not_silently_ignored() {
+async fn resume_with_an_unknown_id_still_errors_but_not_as_unsupported() {
     let conway = build_conway_with_echo_backend(base_config(), Arc::new(FakeStore::new()));
     let mut cli = minimal_cli();
     cli.resume = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string());
 
     let err = match App::new(&cli, &conway, &[]).await {
-        Ok(_) => panic!("App::new must refuse --resume, not start an interactive session anyway"),
+        Ok(_) => {
+            panic!("an empty FakeStore has no session named 01ARZ3NDEKTSV4RRFFQ69G5FAV to resume")
+        }
         Err(e) => e,
     };
-    assert_eq!(ExitCode::from_error(&err), ExitCode::Usage);
+    assert_eq!(
+        ExitCode::from_error(&err),
+        ExitCode::Usage,
+        "an unresolvable --resume target is still a usage error, matching one-shot's own \
+         `resolve_session` convention"
+    );
+    let text = err.to_string();
+    assert!(
+        !text.contains("not supported"),
+        "must fail because the session is unknown, not because --resume is unsupported: \
+         {text:?}"
+    );
 }

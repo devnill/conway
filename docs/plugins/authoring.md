@@ -737,6 +737,26 @@ closed in `crates/conway/src/lib.rs` rather than left as a gap a
 facade-only plugin author would hit only by trying. No dedicated hooks.md
 point exists for this seam (see `Plugin::narrowable_keys`'s own doc).
 
+### `configure()` — an operator's own `[plugins.config.<id>]` value
+
+Applies your plugin's own slice of an operator-authored `[plugins.config.<id>]`
+table (`crate::config::schema::PluginsConfig::config` in the `conway` facade,
+`conway_core::ports::Plugin::configure` on this trait) — see the
+"Configuration" section above for the full contract and the shipped example.
+Called ONCE, by whatever binary/embedder constructs your plugin, before it is
+wrapped in the `Arc<dyn Plugin>` every other seam on this trait receives —
+`&mut self`, not `&self`, is what makes that ordering possible.
+`first_party_plugins::apply_plugin_config` (`crates/conway-cli/src/
+first_party_plugins.rs`) is `conway-cli`'s own call site. The default is a
+no-op that accepts nothing and rejects nothing, the SAME zero-cost-default
+precedent every other method on this trait establishes — every existing
+`Plugin` implementor keeps compiling unmodified, and a plugin that never
+overrides this method has, correctly, no operator-tunable settings at all.
+`conway-plugin-trim`'s `TrimPlugin::configure` (`keep_turns`) is the one
+shipped implementor. No cross-plugin composition question arises: each
+plugin only ever sees its own slice of the table, keyed by its own manifest
+id, never another plugin's.
+
 ### `context_hooks()` — a plugin's own context curator, wired without a separate builder call
 
 Declares zero or more `ContextHook`s a plugin installs itself, so a
@@ -1076,29 +1096,68 @@ session split `DESIGN-surface-coherence.md`'s corrected rule 1 states for
 conway's own `/settings` menu.** If a value is global and persists across
 restarts (a retention window, an API endpoint your plugin calls), it is
 *persistent configuration* and belongs wherever conway's own persistent
-configuration of that shape lives — today that means a config-file key; the
-ruling anticipates a `/settings` row once the mechanism below exists. If a
+configuration of that shape lives — today that means a config-file key. If a
 value is scoped to *this session's* current use — which of several modes
 your plugin is running in right now, for this conversation only — it stays
 reachable the way conway's own session-scoped state does: a command, not a
 buried settings toggle.
 
-**This is a rule stated ahead of its own mechanism, and that is disclosed
-rather than hidden.** Per-plugin configuration was ruled open
-(`DESIGN-plugin-dependencies.md` §6, "SETTLED 2026-08-26 — the first slice
-is over"): `[plugins.config.<id>]` is intended to become a real settings
-surface, with a plugin declaring its config schema once and that
-declaration rendering three ways (a TUI editor, an embedder's JSON, a
-one-shot run's declared defaults). As of this writing, no
-`Plugin`-trait method for declaring that schema exists in
-`crates/conway-core/src/ports/plugin.rs`, and `ConwayConfig` has no
-`[plugins.config.<id>]` key wired up to reject or accept one. The
-persistent-versus-session *rule* is settled; the *mechanism* that lets a
-plugin author act on it is not built. Do not invent a bespoke top-level
-config section for your plugin's persistent settings in the meantime —
-that is precisely the "stays closed" shape `DESIGN-plugin-dependencies.md`
-§6 rejected, and it will not be forward-compatible with the declared-schema
-surface once it lands.
+**The mechanism for the persistent half is built (board item
+`01M1YVM9CHFCJ6112XDYHCFS84`): `[plugins.config.<id>]`, an operator-authored,
+free-form JSON table keyed by your plugin's own manifest id, validated and
+applied by your plugin itself.** `PluginsConfig::config`
+(`crates/conway/src/config/schema.rs`) carries the wire shape and does
+nothing else with it — no schema this crate enumerates, no per-plugin
+validation of its own, the same "the facade carries the shape, the plugin
+owns the meaning" split every other extension point in this trait keeps.
+Your plugin implements one method:
+
+```rust
+fn configure(&mut self, value: &serde_json::Value) -> Result<(), PluginConfigureError> {
+    let object = value.as_object().ok_or_else(|| PluginConfigureError::NotAnObject {
+        actual: "not an object".to_string(),
+    })?;
+    for (key, raw) in object {
+        match key.as_str() {
+            "keep_turns" => { /* validate raw, apply it */ }
+            other => return Err(PluginConfigureError::UnknownKey { key: other.to_string() }),
+        }
+    }
+    Ok(())
+}
+```
+
+Whatever binary or embedder installs your plugin calls this ONCE, before
+wrapping it in the `Arc<dyn Plugin>` every other seam on this trait
+receives — `&mut self`, not `&self`, is what makes that ordering possible.
+`conway-cli`'s own call site is `first_party_plugins::apply_plugin_config`
+(`crates/conway-cli/src/first_party_plugins.rs`): it walks every candidate
+your plugin's own `bundle` entry constructed and, for each one an
+operator's `plugins.config` table names, calls `configure` before
+`ConwayBuilder::install_selected` filters down to what was actually asked
+for — a malformed value fails the build whether or not the plugin ends up
+selected, the same fail-closed posture every other "selected but broken"
+resolver in that file already takes.
+
+**Refuse an unknown key by name, always.** A key your plugin does not
+recognize — a typo, a renamed field, a key pasted in from a different
+plugin's table — must return `PluginConfigureError::UnknownKey`, never be
+silently dropped. This is the SAME rule `#[serde(deny_unknown_fields)]`
+already enforces for conway's own settings tree, applied here to a
+vocabulary only your plugin knows. `conway_plugin_trim::TrimPlugin::configure`
+is the shipped worked example (`docs/plugins/trim.md`, its own crate-level
+doc): it accepts exactly one key, `keep_turns` (a JSON integer `>= 1`), and
+refuses every other key by name.
+
+**What this does NOT give you yet.** This is a validate-and-apply seam, not
+a schema-declaration one — there is no method for a plugin to describe its
+own keys' shapes machine-readably, so there is no generated TUI editor and
+no generated JSON-schema export. File-only configuration (an operator edits
+`settings.json` directly) is the whole of what is built today; that is an
+acceptable, disclosed first slice, not an oversight to route around with a
+bespoke top-level config section of your own — a section outside
+`[plugins.config.<id>]` would not compose with whatever schema-declaration
+surface lands on top of this one later.
 
 ### The compat exception
 

@@ -13,6 +13,7 @@
 use conway::{AgentId, PermissionDecision, PermissionScope};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::keybindings::Context;
 use super::state::{AppState, AskFate, IntentChoice, Mode, TrustDecision, UiFormDecision};
 
 /// What a keypress means for the app loop to carry out.
@@ -34,6 +35,19 @@ pub enum Action {
     CtrlC,
     /// `Ctrl-D` on an empty input line: exit 0.
     Quit,
+    /// `prompt.open_editor` (default `Ctrl-G`, board item
+    /// `01M1YVJ4RA5V7FF95MFRQMTQW3`): edit the current `AppState::input` in
+    /// `$VISUAL`/`$EDITOR` (falling back to `vi`). Carries no payload --
+    /// unlike every other line-editing action in this enum, this one needs
+    /// a live terminal (suspend raw mode/the alternate screen, run a child
+    /// process, resume, force a full repaint) that only the app loop
+    /// (`app/run.rs`, via `app::editor::edit_prompt_externally`) has access
+    /// to; this module stays pure with respect to I/O, exactly as its own
+    /// module doc promises, so it only signals the intent. See that
+    /// function's own doc for every failure path (non-zero exit, missing
+    /// temp file, empty result, editor not found): all of them leave
+    /// `state.input` UNCHANGED and show a notice, never a silent clear.
+    OpenExternalEditor,
     ScrollUp,
     ScrollDown,
     /// V3: a ONE-LINE transcript scroll, distinct from the page-sized
@@ -223,6 +237,29 @@ pub enum Action {
     /// `view/settings.rs`'s own doc, "Defaults: role settable, model
     /// derived" -- this is a SIBLING leaf, not that row turned settable.
     PromoteSessionModelToDefault,
+    /// The native `/model` picker's own "make default" key (`d`, bare) --
+    /// `handle_ui_form_key` fires this ONLY while [`AppState::
+    /// model_picker_active`] is set (a REAL model-called `ask_question`
+    /// never sets that flag, so this key stays inert -- swallowed, same as
+    /// every other unbound key -- on that surface, mirroring how
+    /// `AppState::model_picker_active` already tells `Enter`'s own dispatch
+    /// apart in `run.rs`'s `Action::UiFormDecision` arm). Carries the
+    /// HIGHLIGHTED option's own text verbatim (`ask.request.options
+    /// [selected]`, the same string `Enter`'s `Answer` path would send back
+    /// -- already a valid `"backend/model"` pair by construction, per
+    /// `commands::open_model_picker`'s own doc). Mirrors
+    /// [`Action::PromoteSessionModelToDefault`] immediately above in every
+    /// respect but WHERE the model comes from: that leaf reads
+    /// `AppState::focused_model` (the session's own live model); this reads
+    /// the picker's own highlighted row instead, through the SAME
+    /// `App::apply_make_model_default` writer (`app/defaults.rs`), which
+    /// itself reuses the identical `set_role_chain` reorder both leaves
+    /// share -- one source of truth for "rewrite the default role's chain
+    /// head," never a second rewriter. Unlike `Enter`/`Esc`, this does NOT
+    /// resolve/close the picker -- no `UiFormDecision` is involved at all --
+    /// so the operator can keep browsing (or still press `Enter` afterward
+    /// to also switch this session to it).
+    MakeModelDefault(String),
 }
 
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
@@ -344,20 +381,34 @@ fn handle_settings_key(state: &mut AppState, key: KeyEvent) -> Action {
             _ => {}
         }
     }
-    match key.code {
-        KeyCode::Esc => state.close_settings(),
-        KeyCode::Up => settings_move_selection(state, -1),
-        KeyCode::Down => settings_move_selection(state, 1),
-        // V2b: Enter may now yield an action (permission mode / revoke),
-        // which the app loop applies against the broker.
-        KeyCode::Enter => {
-            if let Some(action) = activate_settings_selection(state) {
-                return action;
-            }
+    if state.keybindings.matches(Context::Settings, "close", key) {
+        state.close_settings();
+    } else if state.keybindings.matches(Context::Settings, "move_up", key) {
+        settings_move_selection(state, -1);
+    } else if state
+        .keybindings
+        .matches(Context::Settings, "move_down", key)
+    {
+        settings_move_selection(state, 1);
+    } else if state
+        .keybindings
+        .matches(Context::Settings, "activate", key)
+    {
+        // V2b: `activate` may now yield an action (permission mode /
+        // revoke), which the app loop applies against the broker.
+        if let Some(action) = activate_settings_selection(state) {
+            return action;
         }
-        KeyCode::Left => step_settings_numeric(state, -1),
-        KeyCode::Right => step_settings_numeric(state, 1),
-        _ => {}
+    } else if state
+        .keybindings
+        .matches(Context::Settings, "step_left", key)
+    {
+        step_settings_numeric(state, -1);
+    } else if state
+        .keybindings
+        .matches(Context::Settings, "step_right", key)
+    {
+        step_settings_numeric(state, 1);
     }
     Action::None
 }
@@ -803,6 +854,21 @@ fn handle_ui_form_key(state: &mut AppState, key: KeyEvent) -> Action {
         }
         KeyCode::Enter => Action::UiFormDecision(UiFormDecision::Answer),
         KeyCode::Esc => Action::UiFormDecision(UiFormDecision::Cancel),
+        // The `/model` picker's own "make default" key -- see
+        // `Action::MakeModelDefault`'s own doc. Guarded on `AppState::
+        // model_picker_active` so a REAL model-called `ask_question`
+        // (which never sets that flag) still swallows a bare `d` exactly
+        // as it always has, falling through to the wildcard arm below.
+        KeyCode::Char('d') if state.model_picker_active => {
+            let Mode::UiForm(form) = &state.mode else {
+                // Unreachable in practice (`handle_key`'s own `mode` match
+                // only ever routes here while `mode` IS `Mode::UiForm`),
+                // but never a panic on an inconsistency between the two
+                // flags: swallow, same as any other stray key.
+                return Action::None;
+            };
+            Action::MakeModelDefault(form.ask.request.options[form.selected].clone())
+        }
         _ => Action::None,
     }
 }
@@ -1061,95 +1127,116 @@ fn adjust_modal_scroll(state: &mut AppState, direction: i8) {
 fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
     // Bug fix: a long command's argument
     // used to clip the decision keys off-screen with no way to see the
-    // rest of it. `PageUp`/`PageDown` page the overlay's own command
-    // body while the decision keys keep working exactly as below --
-    // mutated directly here (like `handle_normal_key`'s plain-editing
-    // keys) rather than via a new `Action` variant, since nothing here
-    // needs a live facade call. These come before the modifier guard:
-    // a chorded PageUp/PageDown is still a scroll, not a decision.
-    match key.code {
-        KeyCode::PageDown => {
-            adjust_modal_scroll(state, 1);
-            return Action::None;
-        }
-        KeyCode::PageUp => {
-            adjust_modal_scroll(state, -1);
-            return Action::None;
-        }
-        _ => {}
+    // rest of it. `permission_prompt.scroll_up`/`scroll_down` (default
+    // `PageUp`/`PageDown`) page the overlay's own command body -- mutated
+    // directly here (like `handle_normal_key`'s plain-editing keys) rather
+    // than via a new `Action` variant, since nothing here needs a live
+    // facade call. Checked before the bare-keypress guard below: a scroll
+    // is not a decision, so it should not be gated behind "no modifier held"
+    // the way the decision keys are.
+    if state
+        .keybindings
+        .matches(Context::Permission, "scroll_down", key)
+    {
+        adjust_modal_scroll(state, 1);
+        return Action::None;
+    }
+    if state
+        .keybindings
+        .matches(Context::Permission, "scroll_up", key)
+    {
+        adjust_modal_scroll(state, -1);
+        return Action::None;
     }
     // The decision keys fire only on a BARE keypress -- a modifier held
     // (Ctrl-A, Ctrl-S, Alt-P, ...) is NOT a decision. Without this guard
-    // the match below inspected `key.code` alone, so Ctrl-A leaked through
+    // the checks below inspected `key.code` alone, so Ctrl-A leaked through
     // as `AllowAlways` and Ctrl-S silently cycled the grant scope (same
     // shape as B5's M2 fix in `handle_intent_confirm_key`; the scope line
     // on screen makes a mis-grant visible, but a decision that isn't the
-    // operator's own keystroke is a defect regardless).
+    // operator's own keystroke is a defect regardless). A rebind to a
+    // chorded key (say `Ctrl-Y` for `allow_once`) still works: the keymap's
+    // own `KeyChord` already requires that EXACT modifier set, so a bare
+    // `y` no longer matches it and this guard only ever swallows an
+    // UNBOUND chord landing here, never a deliberately rebound one.
     if !key.modifiers.is_empty() {
         return Action::None;
     }
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            Action::PermissionDecision(PermissionDecision::AllowOnce)
-        }
-        KeyCode::Char('a') | KeyCode::Char('A') => {
-            Action::PermissionDecision(PermissionDecision::AllowAlways {
-                // The scope the prompt's `s` key cycled to -- `Session`
-                // unless the operator deliberately narrowed it.
-                scope: state.permission_grant_scope,
-            })
-        }
-        // The remembered-grant scope key: cycles Session -> this agent ->
-        // this agent's subtree, applying to BOTH remembered-grant keys
-        // (`a` and `p`). The overlay states the current scope in words
-        // next to the grant keys, and the choice resets to `Session` for
-        // every new prompt (`AppState::offer_prompt`/
-        // `promote_next_surface`), so a narrowing is always a deliberate,
-        // per-prompt act -- never a sticky hidden mode.
-        KeyCode::Char('s') | KeyCode::Char('S') => {
-            state.cycle_permission_grant_scope();
-            Action::None
-        }
-        // V2b: `p` opens the structured-argument field editor -- the
-        // operator pins per-field to narrow (a pinned field must match
-        // exactly; an unpinned one is wildcard), then `Enter` grants a
-        // `When::ArgsMatch` rule covering FUTURE calls and resolves THIS
-        // call as `AllowOnce`. Today's all-wildcard default preserves the
-        // old `[p]`-then-grant = `tool:*` semantics; the operator narrows
-        // from there. Offered only for `RenderKind::Structured` tools (where
-        // `suggested_rule` returns `Some`): a shell command gets no offer
-        // and this key does nothing, rather than granting a text prefix the
-        // gate refuses to honor (board 01KZDDPC5MMD49F6JPV9CW4TVM) or
-        // pretending a JSON dump is a prefix.
-        KeyCode::Char('p') | KeyCode::Char('P') => match state.offered_permission_rule() {
-            Some(_) => {
-                state.offer_editing_pattern();
-                Action::None
-            }
-            None => Action::None,
-        },
-        KeyCode::Char('n') | KeyCode::Char('N') => {
-            Action::PermissionDecision(PermissionDecision::Deny {
-                reason: "user denied".to_string(),
-            })
-        }
-        // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: `Esc` no longer decides
-        // immediately -- it OPENS the feedback text entry
-        // (`Mode::EditingDenyFeedback`, `AppState::offer_deny_feedback`) so
-        // the operator can actually type something before the call is
-        // denied. `Esc` used to send
-        // `PermissionDecision::DenyWithFeedback` with a single hardcoded
-        // message and no way to say anything of its own -- the overlay's own
-        // footer read "[Esc] deny with feedback", a control that claimed to
-        // collect feedback but never asked for it. See
-        // `DenyFeedbackState`'s own doc for the full story and the channel
-        // this now actually uses.
-        KeyCode::Esc => {
-            state.offer_deny_feedback();
-            Action::None
-        }
-        _ => Action::None,
+
+    if state
+        .keybindings
+        .matches(Context::Permission, "allow_once", key)
+    {
+        return Action::PermissionDecision(PermissionDecision::AllowOnce);
     }
+    if state
+        .keybindings
+        .matches(Context::Permission, "allow_always", key)
+    {
+        return Action::PermissionDecision(PermissionDecision::AllowAlways {
+            // The scope the prompt's `cycle_grant_scope` key cycled to --
+            // `Session` unless the operator deliberately narrowed it.
+            scope: state.permission_grant_scope,
+        });
+    }
+    // The remembered-grant scope key: cycles Session -> this agent ->
+    // this agent's subtree, applying to BOTH remembered-grant keys
+    // (`allow_always` and `edit_pattern`). The overlay states the current
+    // scope in words next to the grant keys, and the choice resets to
+    // `Session` for every new prompt (`AppState::offer_prompt`/
+    // `promote_next_surface`), so a narrowing is always a deliberate,
+    // per-prompt act -- never a sticky hidden mode.
+    if state
+        .keybindings
+        .matches(Context::Permission, "cycle_grant_scope", key)
+    {
+        state.cycle_permission_grant_scope();
+        return Action::None;
+    }
+    // V2b: `edit_pattern` opens the structured-argument field editor -- the
+    // operator pins per-field to narrow (a pinned field must match
+    // exactly; an unpinned one is wildcard), then `Enter` grants a
+    // `When::ArgsMatch` rule covering FUTURE calls and resolves THIS
+    // call as `AllowOnce`. Today's all-wildcard default preserves the
+    // old `[p]`-then-grant = `tool:*` semantics; the operator narrows
+    // from there. Offered only for `RenderKind::Structured` tools (where
+    // `suggested_rule` returns `Some`): a shell command gets no offer
+    // and this key does nothing, rather than granting a text prefix the
+    // gate refuses to honor (board 01KZDDPC5MMD49F6JPV9CW4TVM) or
+    // pretending a JSON dump is a prefix.
+    if state
+        .keybindings
+        .matches(Context::Permission, "edit_pattern", key)
+    {
+        if state.offered_permission_rule().is_some() {
+            state.offer_editing_pattern();
+        }
+        return Action::None;
+    }
+    if state.keybindings.matches(Context::Permission, "deny", key) {
+        return Action::PermissionDecision(PermissionDecision::Deny {
+            reason: "user denied".to_string(),
+        });
+    }
+    // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: `deny_with_feedback` (default
+    // `Esc`) does not decide immediately -- it OPENS the feedback text entry
+    // (`Mode::EditingDenyFeedback`, `AppState::offer_deny_feedback`) so
+    // the operator can actually type something before the call is
+    // denied. `Esc` used to send
+    // `PermissionDecision::DenyWithFeedback` with a single hardcoded
+    // message and no way to say anything of its own -- the overlay's own
+    // footer read "[Esc] deny with feedback", a control that claimed to
+    // collect feedback but never asked for it. See
+    // `DenyFeedbackState`'s own doc for the full story and the channel
+    // this now actually uses.
+    if state
+        .keybindings
+        .matches(Context::Permission, "deny_with_feedback", key)
+    {
+        state.offer_deny_feedback();
+        return Action::None;
+    }
+    Action::None
 }
 
 /// The "deny with feedback" text entry's key handling (board item
@@ -1224,52 +1311,21 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             KeyCode::Char('d') | KeyCode::Char('D') if state.input.is_empty() => {
                 return Action::Quit
             }
-            KeyCode::Char('w') | KeyCode::Char('W') => {
-                delete_word_before_cursor(state);
-                state.sync_palette_stem();
-                return Action::None;
-            }
-            // V3: history recall lives on `Ctrl-P`/`Ctrl-N` (the readline
-            // pairing) because bare `Up`/`Down` had to go back to scrolling
-            // -- a terminal's alternate-scroll mode turns wheel events into
-            // cursor keys, so bare arrows are not exclusively a keyboard
-            // signal. See the `KeyCode::Up` arm for the full reasoning.
-            //
-            // These are unconditional: unlike the bare arrows, a control
-            // chord is unambiguously a keystroke, so there is no surface to
-            // yield priority to and no multi-line interior to navigate
-            // first.
-            KeyCode::Char('p') | KeyCode::Char('P') => {
-                state.history_recall_prev();
-                state.sync_palette_stem();
-                return Action::None;
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') => {
-                state.history_recall_next();
-                state.sync_palette_stem();
-                return Action::None;
-            }
-            // T5: Ctrl-E expands/collapses ALL tool entries in the
-            // transcript at once (MVP -- no per-entry selection). A control
-            // key, not a bare `e` (D-keys: a bare `e` must stay ordinary
-            // text input for the always-on input box). Pure state mutation
-            // -- `AppState::toggle_all_tool_entries_expanded` flips
-            // `expanded` on every `Entry::Tool` and leaves `scroll`/
-            // `follow_tail` untouched (the next render's clamp re-clamps
-            // without snapping the viewport). No `Action` variant needed,
-            // mirroring the `v` visibility-filter key's direct-mutation
-            // pattern. Note: this RECLAIMS Ctrl-E from the T3 hint's
-            // advertised-but-never-wired "Ctrl-E submit" -- unmodified
-            // Enter was and remains the actual submit key; T8 adds
-            // Alt-Enter/Shift-Enter for inserting a literal newline
-            // instead, which is a distinct binding, not a move of submit
-            // itself. The hint segment is updated in `view/status.rs`.
-            KeyCode::Char('e') | KeyCode::Char('E') => {
-                state.toggle_all_tool_entries_expanded();
-                return Action::None;
-            }
             _ => {}
         }
+    }
+
+    // Board item `01M1YVJ4RA5V7FF95MFRQMTQW3`: every REBINDABLE action this
+    // function used to hardcode (`Ctrl-W`/`Ctrl-P`/`Ctrl-N`/`Ctrl-G`, the
+    // palette/agent-panel arrows, `Ctrl-E`, `Shift-Tab`, the panel's `v`)
+    // now resolves through [`resolve_keymap_action`] FIRST, so a rebound
+    // key takes over from whichever physical key used to own the action --
+    // see that function's own doc for the exact priority order it
+    // preserves. `None` falls through unconsumed to the fixed
+    // text-editing/scroll chain below, exactly as if the key had never
+    // matched anything.
+    if let Some(action) = resolve_keymap_action(state, key) {
+        return action;
     }
 
     match key.code {
@@ -1363,10 +1419,16 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         // on-demand surfaces, in priority order. The slash-command palette
         // takes priority when it is showing (the user is composing a
         // command); otherwise the arrows scroll the agent panel when it is
-        // open; otherwise -- T8 -- a multi-line draft's own interior lines
+        // open -- BOTH now resolved above, by [`resolve_keymap_action`],
+        // before this match is ever reached (see that function's own doc);
+        // otherwise -- T8 -- a multi-line draft's own interior lines
         // take the key (so a multi-line draft stays navigable
         // line-by-line); otherwise -- V3 -- bare Up/Down scroll the
-        // transcript one line.
+        // transcript one line. This arm is what remains once neither
+        // rebindable surface claims the key: the fixed
+        // multi-line-navigation/scroll fallback, not itself part of the
+        // rebindable vocabulary (`docs/interactive.md`'s own "Fixed, not
+        // remappable" section).
         //
         // V3 moved history recall OFF bare Up/Down (it had been there
         // before) and
@@ -1385,29 +1447,15 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         //). Given that the two cannot
         // be separated, the binding goes to the interaction that is both
         // more frequent and more surprising when broken: scrolling.
-        //
-        // Because the palette and agent-panel checks run FIRST and return
-        // before reaching the scroll fallback, neither surface loses its
-        // arrows -- by construction, not a separate flag.
         KeyCode::Up => {
-            if palette_navigate(state, -1) {
-                Action::None
-            } else if state.agent_view_open {
-                state.agent_scroll(-1);
-                Action::None
-            } else if move_cursor_line(state, -1) {
+            if move_cursor_line(state, -1) {
                 Action::None
             } else {
                 Action::ScrollLineUp
             }
         }
         KeyCode::Down => {
-            if palette_navigate(state, 1) {
-                Action::None
-            } else if state.agent_view_open {
-                state.agent_scroll(1);
-                Action::None
-            } else if move_cursor_line(state, 1) {
+            if move_cursor_line(state, 1) {
                 Action::None
             } else {
                 Action::ScrollLineDown
@@ -1442,62 +1490,18 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             }
             Action::None
         }
-        KeyCode::PageUp => Action::ScrollUp,
-        KeyCode::PageDown => Action::ScrollDown,
-        // Board item `01M0WX62C2VGJTXSR7XJBGMM9J`: Shift+Tab cycles the
-        // permission mode (Prompt -> Plan -> AutoAllow).
-        // `Action::CyclePermissionMode` (see its own doc) used to be
-        // reachable ONLY
-        // from a `/settings` menu row -- this is the keyboard shortcut for
-        // it.
-        //
-        // Bound HERE, in `handle_normal_key`, deliberately -- not as a
-        // global chord ahead of the `Mode` match in `handle_key`. Cycling to
-        // `AutoAllow` while `Mode::AwaitingPermission`/`AskModal`/
-        // `IntentConfirm`/`TrustPreview`/`EditingPattern` is showing would
-        // change the meaning of the decision the operator is mid-way through
-        // making, and every one of those modes' own key handlers already
-        // swallows chorded keys on purpose (each has its own "a modifier
-        // held ... is NOT a decision" guard, mirroring
-        // `handle_permission_key`'s) -- this binding does not carve an
-        // exception into any of them, it simply never reaches them: none of
-        // their `match key.code` arms name `BackTab`/`Tab`, so a Shift+Tab
-        // that lands there falls through to their own `_ => Action::None`.
-        // The `/settings`/`/plugin`/`/help` overlay guards ahead of the
-        // `Mode` match in `handle_key` gate this the same way -- they
-        // intercept the key before `handle_normal_key` is ever called, and
-        // none of THEIR handlers recognize the chord either.
-        //
-        // Matches BOTH encodings a terminal might send for the same physical
-        // chord: `KeyCode::BackTab` (what crossterm decodes it to on most
-        // terminals) and bare `KeyCode::Tab` carrying the `SHIFT` modifier
-        // (what some terminals send instead, never both at once in
-        // practice). Bare `Tab` -- no `SHIFT` -- is unaffected: this module
-        // has never bound it in `Mode::Normal` (it falls through to the
-        // catch-all `Action::None` below exactly as it did before this
-        // item), so there is nothing here for it to collide with.
-        //
-        // Returns the SAME `Action::CyclePermissionMode` the settings row
-        // already returns (`activate_settings_selection`'s own doc) -- the
-        // app loop (`app/run.rs`) is the only place that writes
-        // `Conway::set_permission_mode` (the broker, the authority) and
-        // `AppState::permission_mode` (the display mirror) together; this
-        // handler does neither, so the two can never be written from two
-        // different places and drift apart.
-        KeyCode::BackTab => Action::CyclePermissionMode,
-        KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => Action::CyclePermissionMode,
-        // Item A2: `v` cycles the /agents panel's draw-time visibility
-        // filter (ActiveOnly -> All -> FinishedOnly -> ActiveOnly). Bound
-        // only while the panel is open AND the input line is empty -- with
-        // any text typed, `v` stays ordinary text input (the same gating
-        // Enter's focus-row binding above uses), so the filter key can
-        // never eat a character of a prompt being composed. No other key
-        // in this branch uses `v`: Enter/Up/Down/Esc/PageUp/PageDown are
-        // the panel's existing bindings and `Char(c)` was plain text input.
-        KeyCode::Char('v') if state.agent_view_open && state.input.is_empty() => {
-            state.cycle_agent_visibility();
-            Action::None
-        }
+        // `PageUp`/`PageDown` (`transcript.scroll_page_up`/
+        // `scroll_page_down`), `Shift-Tab`/`BackTab`
+        // (`transcript.cycle_permission_mode`, board item
+        // `01M0WX62C2VGJTXSR7XJBGMM9J`), and the panel's own `v`
+        // (`agents_panel.cycle_visibility`, item A2) are now resolved above
+        // by [`resolve_keymap_action`], before this match is ever reached --
+        // see that function's own doc. An UNBOUND `PageUp`/`Shift-Tab`/`v`
+        // (rebound away, or the panel closed for `v`'s own gate) falls all
+        // the way through to this match with no arm here either, landing on
+        // the catch-all below -- `Action::None` for a named key, or plain
+        // text insertion for `v` itself, exactly like any other
+        // unrecognized keystroke.
         KeyCode::Char(c) => {
             let idx = byte_index(&state.input, state.cursor);
             state.input.insert(idx, c);
@@ -1507,6 +1511,162 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         }
         _ => Action::None,
     }
+}
+
+/// Resolves `key` against the rebindable keymap (board item
+/// `01M1YVJ4RA5V7FF95MFRQMTQW3`) for whichever of the `prompt`/
+/// `transcript`/`palette`/`agents_panel` contexts currently applies --
+/// checked by [`handle_normal_key`] BEFORE its own fixed priority chain, so
+/// a rebound key takes over from whichever physical key used to own the
+/// action. `None` means "no rebindable action claimed this key," letting
+/// the caller fall through to the fixed text-editing/scroll chain
+/// unconsumed -- the exact same fallback that ran when the action was still
+/// hardcoded to its default key.
+///
+/// Mirrors the EXACT priority order the fixed chain used to hardcode:
+/// `palette` first (composing a `/` command wins), then `agents_panel`
+/// while the panel is open, then the plain `prompt`/`transcript` actions --
+/// see each check's own placement below for why.
+fn resolve_keymap_action(state: &mut AppState, key: KeyEvent) -> Option<Action> {
+    // Palette navigation takes priority over the agent panel and the plain
+    // prompt/transcript actions -- mirrors the pre-keymap `KeyCode::Up`/
+    // `KeyCode::Down` arms' own ordering exactly. `palette_navigate` itself
+    // is a no-op (returns `false`) when the palette has no candidates, so
+    // this is safe to call unconditionally whenever the bound key is
+    // pressed, exactly as the old hardcoded call was.
+    if state
+        .keybindings
+        .matches(Context::Palette, "navigate_up", key)
+        && palette_navigate(state, -1)
+    {
+        return Some(Action::None);
+    }
+    if state
+        .keybindings
+        .matches(Context::Palette, "navigate_down", key)
+        && palette_navigate(state, 1)
+    {
+        return Some(Action::None);
+    }
+
+    if state.agent_view_open {
+        if state
+            .keybindings
+            .matches(Context::AgentsPanel, "scroll_up", key)
+        {
+            state.agent_scroll(-1);
+            return Some(Action::None);
+        }
+        if state
+            .keybindings
+            .matches(Context::AgentsPanel, "scroll_down", key)
+        {
+            state.agent_scroll(1);
+            return Some(Action::None);
+        }
+        // Item A2: `cycle_visibility` (default `v`) cycles the /agents
+        // panel's draw-time visibility filter (ActiveOnly -> All ->
+        // FinishedOnly -> ActiveOnly). Bound only while the panel is open
+        // AND the input line is empty -- with any text typed, the key stays
+        // ordinary text input (the same gating `Enter`'s focus-row binding
+        // in `handle_normal_key` uses), so the filter action can never eat
+        // a character of a prompt being composed.
+        if state.input.is_empty()
+            && state
+                .keybindings
+                .matches(Context::AgentsPanel, "cycle_visibility", key)
+        {
+            state.cycle_agent_visibility();
+            return Some(Action::None);
+        }
+    }
+
+    if state
+        .keybindings
+        .matches(Context::Prompt, "open_editor", key)
+    {
+        return Some(Action::OpenExternalEditor);
+    }
+    if state
+        .keybindings
+        .matches(Context::Prompt, "delete_word_back", key)
+    {
+        delete_word_before_cursor(state);
+        state.sync_palette_stem();
+        return Some(Action::None);
+    }
+    // V3: history recall lives on `Ctrl-P`/`Ctrl-N` by default (the
+    // readline pairing) because bare `Up`/`Down` had to go back to
+    // scrolling -- a terminal's alternate-scroll mode turns wheel events
+    // into cursor keys, so bare arrows are not exclusively a keyboard
+    // signal. See `handle_normal_key`'s own `KeyCode::Up` doc for the full
+    // reasoning.
+    if state
+        .keybindings
+        .matches(Context::Prompt, "history_prev", key)
+    {
+        state.history_recall_prev();
+        state.sync_palette_stem();
+        return Some(Action::None);
+    }
+    if state
+        .keybindings
+        .matches(Context::Prompt, "history_next", key)
+    {
+        state.history_recall_next();
+        state.sync_palette_stem();
+        return Some(Action::None);
+    }
+
+    // T5: `toggle_tool_output` (default `Ctrl-E`) expands/collapses ALL
+    // tool entries in the transcript at once (MVP -- no per-entry
+    // selection). Pure state mutation --
+    // `AppState::toggle_all_tool_entries_expanded` flips `expanded` on
+    // every `Entry::Tool` and leaves `scroll`/`follow_tail` untouched (the
+    // next render's clamp re-clamps without snapping the viewport).
+    if state
+        .keybindings
+        .matches(Context::Transcript, "toggle_tool_output", key)
+    {
+        state.toggle_all_tool_entries_expanded();
+        return Some(Action::None);
+    }
+    if state
+        .keybindings
+        .matches(Context::Transcript, "scroll_page_up", key)
+    {
+        return Some(Action::ScrollUp);
+    }
+    if state
+        .keybindings
+        .matches(Context::Transcript, "scroll_page_down", key)
+    {
+        return Some(Action::ScrollDown);
+    }
+    // Board item `01M0WX62C2VGJTXSR7XJBGMM9J`: `cycle_permission_mode`
+    // (default `Shift-Tab`) cycles the permission mode (Prompt -> Plan ->
+    // AutoAllow) -- the same `Action::CyclePermissionMode` a `/settings`
+    // menu row returns (`activate_settings_selection`'s own doc); the app
+    // loop (`app/run.rs`) is the only place that writes
+    // `Conway::set_permission_mode` (the broker, the authority) and
+    // `AppState::permission_mode` (the display mirror) together, so the two
+    // can never be written from two different places and drift apart.
+    //
+    // Bound HERE, in the `transcript` context, deliberately -- never
+    // reached while `Mode::AwaitingPermission`/`AskModal`/`IntentConfirm`/
+    // `TrustPreview`/`EditingPattern`/the `/settings`/`/plugin`/`/help`
+    // overlays are showing: `handle_key`'s own `Mode` match, and the
+    // overlay guards ahead of it, intercept every key before
+    // `handle_normal_key` (and so this function) is ever called for any of
+    // them.
+    if state
+        .keybindings
+        .matches(Context::Transcript, "cycle_permission_mode", key)
+    {
+        return Some(Action::CyclePermissionMode);
+    }
+
+    None
 }
 
 /// Moves the slash-command palette selection by `delta` and autofills
@@ -1659,6 +1819,11 @@ mod tests {
     use ratatui::layout::Rect;
 
     use super::*;
+    // The module alias is a TEST-ONLY need: only these tests name
+    // `keybindings::Keymap`/`LoadError` directly, while the non-test code
+    // path uses just `Context`. Importing it at file scope made it an
+    // unused import in an ordinary `cargo build`.
+    use crate::tui::keybindings;
     use crate::tui::state::AppState;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -2456,6 +2621,142 @@ mod tests {
             Entry::Tool { expanded, .. } => assert!(!*expanded, "bare `e` must not toggle"),
             other => panic!("expected Tool, got {other:?}"),
         }
+    }
+
+    // ---- board item `01M1YVJ4RA5V7FF95MFRQMTQW3`: Ctrl-G opens the
+    // external editor, and the rebindable keymap dispatches through
+    // `handle_key` for real, not just at the `Keymap::matches` unit level
+    // (`keybindings.rs`'s own tests cover that level) ----
+
+    #[test]
+    fn ctrl_g_signals_open_external_editor_by_default() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('g'))),
+            Action::OpenExternalEditor
+        );
+    }
+
+    /// A bare `g` (no modifier) must remain ordinary text input -- mirrors
+    /// [`bare_e_types_into_the_input_box_not_toggles`]'s own reasoning for
+    /// the identical shape.
+    #[test]
+    fn bare_g_types_into_the_input_box_not_open_editor() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('g'))),
+            Action::None
+        );
+        assert_eq!(state.input, "g");
+    }
+
+    fn write_temp_keymap(contents: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "conway-input-keymap-test-{}-{}.json",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, contents).expect("write must succeed against a writable temp path");
+        path
+    }
+
+    /// Acceptance check (a), driven through the REAL `handle_key`
+    /// dispatcher (not just `Keymap::matches` in isolation, which
+    /// `keybindings.rs`'s own tests already cover): rebinding
+    /// `transcript.toggle_tool_output` off `Ctrl-E` onto `Ctrl-O` makes
+    /// `Ctrl-O` toggle every tool entry's `expanded` flag.
+    #[test]
+    fn rebound_ctrl_o_toggles_tool_output_through_handle_key() {
+        let path = write_temp_keymap(r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#);
+        let mut state = AppState::new(AgentId::new());
+        state.keybindings = keybindings::Keymap::load(&path).expect("a valid rebind must load");
+        state.transcript.push(Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "a\nb\nc".to_string(),
+            args: String::new(),
+            progress: String::new(),
+            expanded: false,
+            ts: None,
+        });
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('o')));
+
+        match &state.transcript[0] {
+            Entry::Tool { expanded, .. } => {
+                assert!(*expanded, "rebound Ctrl-O must toggle tool output on")
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Acceptance check (a)'s OTHER half, through `handle_key`: the SAME
+    /// rebind must make `Ctrl-E` STOP toggling tool output. Since
+    /// `toggle_tool_output` is the only thing that ever consumed `Ctrl-E`
+    /// in `Mode::Normal`, an unbound `Ctrl-E` falls all the way through to
+    /// the plain `Char(c)` insert arm (which does not check modifiers,
+    /// mirroring every other bare-`Char` arm in this module) -- so a wrong
+    /// implementation that only ADDS `Ctrl-O` alongside the old default
+    /// (rather than REPLACING it) is caught here by `state.input` staying
+    /// EMPTY instead of gaining an inserted `"e"`, even though the
+    /// returned `Action::None` looks identical either way.
+    #[test]
+    fn rebinding_off_ctrl_e_makes_ctrl_e_fall_through_to_plain_text_input() {
+        let path = write_temp_keymap(r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#);
+        let mut state = AppState::new(AgentId::new());
+        state.keybindings = keybindings::Keymap::load(&path).expect("a valid rebind must load");
+        state.transcript.push(Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "a\nb\nc".to_string(),
+            args: String::new(),
+            progress: String::new(),
+            expanded: false,
+            ts: None,
+        });
+
+        let action = handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+
+        assert_eq!(
+            action,
+            Action::None,
+            "plain-text insertion also reports Action::None -- see this test's own doc for \
+             why the REAL assertion is on state, not the action"
+        );
+        assert_eq!(
+            state.input, "e",
+            "Ctrl-E must no longer be recognized as toggle_tool_output once rebound off -- it \
+             falls through to the ordinary Char('e') insert arm"
+        );
+        match &state.transcript[0] {
+            Entry::Tool { expanded, .. } => {
+                assert!(
+                    !*expanded,
+                    "a rebound-off Ctrl-E must not toggle tool output"
+                )
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A load error must refuse the WHOLE file, not just skip the bad
+    /// entry -- `handle_key` then keeps running on plain defaults (the
+    /// caller's job is to surface [`keybindings::LoadError`] to the
+    /// operator; this module only proves the bad file never silently wins).
+    #[test]
+    fn a_malformed_keymap_file_never_loads_leaving_defaults_in_place() {
+        let path = write_temp_keymap(r#"{"transcript": {"not_a_real_action": ["Ctrl-Z"]}}"#);
+
+        let result = keybindings::Keymap::load(&path);
+
+        assert!(result.is_err(), "a malformed entry must fail Keymap::load");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A minimal `bash` `AwaitingPermission` fixture, mirroring every other
@@ -4443,6 +4744,75 @@ mod tests {
         assert_eq!(
             from_shift_tab, from_settings_row,
             "both doors onto the cycle must return the identical Action"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // The `/model` picker's "make default" key (`Action::MakeModelDefault`).
+    // -----------------------------------------------------------------
+
+    fn model_picker_state(options: &[&str], selected: usize) -> AppState {
+        let mut state = AppState::new(AgentId::new());
+        let (ask, _reply_rx) =
+            crate::tui::form::PendingFormAsk::new_for_test(conway_plugin_ui::AskSelectRequest {
+                prompt: "select a model".to_string(),
+                options: options.iter().map(|s| s.to_string()).collect(),
+            });
+        state.mode = Mode::UiForm(crate::tui::state::UiFormState { ask, selected });
+        state.model_picker_active = true;
+        state
+    }
+
+    /// The designated key (`d`, bare), pressed while the picker IS the
+    /// model picker (`model_picker_active`), returns `MakeModelDefault`
+    /// carrying the HIGHLIGHTED option's own text verbatim -- asserted on
+    /// the returned `Action`'s payload, not merely that "some action"
+    /// fired.
+    #[test]
+    fn make_default_key_returns_the_highlighted_model_when_the_picker_is_the_model_picker() {
+        let mut state = model_picker_state(&["anthropic/claude-haiku", "kimi/k3"], 1);
+
+        let action = handle_key(&mut state, key(KeyCode::Char('d')));
+
+        assert_eq!(action, Action::MakeModelDefault("kimi/k3".to_string()));
+    }
+
+    /// PAIRING 1: the IDENTICAL key, on the IDENTICAL `Mode::UiForm`
+    /// surface, but `model_picker_active` is `false` (a REAL model-called
+    /// `ask_question`, never the picker) -- swallowed, exactly like any
+    /// other unbound key on that surface. A wrong implementation that fired
+    /// `MakeModelDefault` regardless of context would answer/mutate a
+    /// genuine model-raised question's own row text and fail this
+    /// assertion.
+    #[test]
+    fn make_default_key_is_swallowed_when_not_the_model_picker() {
+        let mut state = model_picker_state(&["yes", "no"], 0);
+        state.model_picker_active = false;
+
+        let action = handle_key(&mut state, key(KeyCode::Char('d')));
+
+        assert_eq!(
+            action,
+            Action::None,
+            "a real ask_question's own modal must not be disturbed by this key"
+        );
+    }
+
+    /// PAIRING 2: an UNRELATED key (`x`), pressed WHILE the picker IS the
+    /// model picker, never returns `MakeModelDefault` -- proving only the
+    /// designated key can trigger the write, not "any key while the picker
+    /// is open." Combined with the first test above, this shows the
+    /// designated key AND the model-picker context are both independently
+    /// required.
+    #[test]
+    fn an_unrelated_key_in_the_model_picker_does_not_make_default() {
+        let mut state = model_picker_state(&["anthropic/claude-haiku", "kimi/k3"], 1);
+
+        let action = handle_key(&mut state, key(KeyCode::Char('x')));
+
+        assert!(
+            !matches!(action, Action::MakeModelDefault(_)),
+            "only the designated key may fire MakeModelDefault, got {action:?}"
         );
     }
 }

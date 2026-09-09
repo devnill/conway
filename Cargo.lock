@@ -548,6 +548,7 @@ dependencies = [
  "conway",
  "conway-core",
  "conway-plugin-backends",
+ "conway-plugin-checkpoint",
  "conway-plugin-claude",
  "conway-plugin-confine",
  "conway-plugin-discover",
@@ -564,8 +565,10 @@ dependencies = [
  "conway-plugin-statusline",
  "conway-plugin-stepguard",
  "conway-plugin-subprocess",
+ "conway-plugin-toolindex",
  "conway-plugin-trim",
  "conway-plugin-ui",
+ "conway-plugin-web",
  "conway-testkit",
  "crossterm",
  "futures",
@@ -632,6 +635,19 @@ dependencies = [
  "tracing",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "conway-plugin-checkpoint"
+version = "0.10.0"
+dependencies = [
+ "blake3",
+ "chrono",
+ "conway",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -869,6 +885,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "conway-plugin-toolindex"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "conway",
+ "conway-core",
+ "conway-testkit",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "conway-plugin-trim"
 version = "0.10.0"
 dependencies = [
@@ -892,6 +922,23 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "conway-plugin-web"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "conway",
+ "conway-testkit",
+ "futures",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "wiremock",
 ]
 
 [[package]]

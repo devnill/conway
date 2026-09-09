@@ -265,30 +265,51 @@ names the identical gap), so a config key would be a schema change
 contending with other work, for text that has no reason to be a TOML value
 in the first place.
 
-**Location, and why it is one file at each of two scopes, not a search
-path.** `<project>/.conway/instructions.md`, matching the direct-`cwd`-join
-convention `.conway/agents/`/`.conway/skills/` already use (never walked up
-an ancestor chain, unlike Pi's own multi-directory merge — conway's project
-file convention never walks upward for `.conway/*`, so a search path would
-be new shape for this file alone). And, additionally, the SAME directory
-`conway::config::discovery::user_config_path` resolves `settings.json`
-into, filename swapped, at zero cost in new dependencies or schema — that
+**Location, and why the project scope is a short, bounded walk, not an
+open-ended search path.** At project scope, this plugin walks up from `cwd`
+through each ancestor directory — nearest first — taking the first
+`.conway/instructions.md` it finds, and stops climbing at the enclosing git
+repository root (the nearest ancestor, including `cwd` itself, that
+contains a `.git` entry) rather than continuing to the filesystem root.
+Someone who launches conway from a subdirectory of an already-configured
+repository — `docs/`, a package inside a monorepo — now sees the same
+project instructions a launch from the repository root would have. When
+`cwd` is not inside a git repository at all, the walk is `cwd` alone: the
+direct `.conway/agents/`/`.conway/skills/`-style `cwd`-join this plugin
+itself used before, and still the only behavior those two other
+conventions have. If that walk finds no `.conway/instructions.md`
+anywhere, it tries the identical directory list again for `AGENTS.md` —
+the standing-instructions filename several other harnesses already
+converge on — before giving up; `.conway/instructions.md` wins whenever
+both exist anywhere on the walk, even one nearer to `cwd` than a farther
+`.conway/instructions.md` that wins, since conway's own file is the more
+specific declaration. `CLAUDE.md` is deliberately not read: ruled out as
+single-vendor, unlike `AGENTS.md`'s multi-harness convergence. No
+`@import` directive and no per-directory rule file either — an operator
+who wants to say two different things still says them in one file.
+
+Global scope is unaffected by any of the above: it is still exactly one
+file, the SAME directory `conway::config::discovery::user_config_path`
+resolves `settings.json` into, filename swapped, at zero cost in new
+dependencies or schema — that
 is `<home>/.conway/instructions.md` when `CONWAY_CONFIG_DIR` is unset, and
 `<CONWAY_CONFIG_DIR>/instructions.md` when it is set (board item
 `01M0W5Q569F0T97HSEP6F0MPCR`, closing an isolation gap identical in shape
 to the one board item `01M0VV6CVSZM4XH8J4G6EBV5E3` closed for
 `settings.json` itself: an operator or embedder relocating conway's
 user-config layer relocates this file with it too, not only
-`settings.json`). Both files are read when
+`settings.json`). Both scopes are read when
 present, and **both are additive — neither one's presence disables the
 other**, unlike `settings.json`'s project-overrides-user merge: an operator
 who has authored both a house-wide preference and a per-project convention
 gets both, as two separately named fragments (`conway.idiom.operator.
 project`, `conway.idiom.operator.global`) so `/context` shows each one's
-own token cost rather than one opaque combined number. (When a project
-genuinely lives at the operator's own home directory, the two paths name
-the same file; the global fragment collapses away rather than injecting
-the same text twice.)
+own token cost rather than one opaque combined number — the project
+fragment carries that name whether its text came from `.conway/
+instructions.md` or the `AGENTS.md` fallback; only the provenance path
+underneath it differs. (When a project genuinely lives at the operator's
+own home directory, the two paths name the same file; the global fragment
+collapses away rather than injecting the same text twice.)
 
 **Missing is silent; unreadable is not.** No file at either scope,
 or a file that is empty/whitespace-only, contributes nothing and is not an
@@ -316,8 +337,9 @@ the assembled segment's provenance:
   `Provenance::PluginInstruction { plugin_id: "conway.idiom", name }` —
   this crate wrote every word of it.
 - An operator's own project/global text is stamped `Provenance::Operator
-  { name, path }` instead, naming the exact file (`.conway/instructions.md`
-  or `<home>/.conway/instructions.md`) the words came from.
+  { name, path }` instead, naming the exact file (a project's
+  `.conway/instructions.md`, its `AGENTS.md` fallback, or
+  `<home>/.conway/instructions.md` at global scope) the words came from.
 
 Before this item, every fragment this plugin contributed — the shipped
 paragraph and an operator's own text alike — was stamped
@@ -361,7 +383,8 @@ each segment's own provenance label, and the two now read apart: the two
 shipped fragments render as `plugin:conway.idiom/conway.idiom.environment`
 and `plugin:conway.idiom/conway.idiom.base`, while your own project/global
 text renders as
-`operator:instructions.md` — the file's own basename, not "a skill" and not
-merely "`conway.idiom`". Nothing here is attributed to a skill anymore;
+`operator:instructions.md` (or `operator:AGENTS.md` when the project
+fragment came from the fallback) — the file's own basename, not "a skill"
+and not merely "`conway.idiom`". Nothing here is attributed to a skill anymore;
 a directory-authored `.conway/skills` body keeps its own, separate
 `skill:<name>` label, unaffected.

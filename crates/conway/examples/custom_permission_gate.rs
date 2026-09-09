@@ -3,8 +3,9 @@
 //! it wants to decide "may this tool call proceed?" with its own policy
 //! (a UI dialog, an allow-list keyed off something conway's own three
 //! built-in gates don't know about, an audit log), rather than one of the
-//! `permissions.mode` presets [`conway::ConwayBuilder::discover`] can select
-//! for you.
+//! [`conway::gates::GateMode`] presets `ConwayBuilder::with_gate_config`
+//! can select for you (`settings.json` plays no role in gate selection at
+//! all -- see that type's own module doc).
 //!
 //! ```console
 //! cargo run -p conway --example custom_permission_gate

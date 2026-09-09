@@ -66,8 +66,25 @@
 //! implements the "SIGINT outranks a status the runtime produced *because
 //! of* the interrupt" precedence rule, and `oneshot::run` is the one place
 //! that knows both facts at once.
+//!
+//! **SIGTERM/SIGHUP precedence (143/129, board item A5.3):** the identical
+//! shape, generalized. `signal::TerminationWatch` is `oneshot::run`'s own
+//! record of which (if either) of those two signals this run observed;
+//! [`ExitCode::from_result_with_signal`] is `from_result_with_sigint`'s
+//! sibling, taking an `Option<signal::TermSignal>` in place of a bare
+//! `bool` (SIGTERM/SIGHUP need to report DIFFERENT codes depending on
+//! which one fired, where SIGINT only ever needed one). A signal-terminated
+//! run's `AgentResult` is `Cancelled { reason: "signal: SIGTERM" }` (or
+//! `"signal: SIGHUP"`) -- the SAME `ResultStatus::Cancelled` variant SIGINT
+//! produces, so the two precedence rules would otherwise collide if a run
+//! somehow observed both; `oneshot::run` picks whichever `select!` branch
+//! actually fired first and only ever calls one of the two `from_result_
+//! with_*` functions per run, so that collision is structurally avoided
+//! rather than arbitrated here.
 
 use conway::{AgentResult, FacadeError, ResultStatus};
+
+use crate::signal::TermSignal;
 
 /// The CLI's process exit status vocabulary. Discriminants are the
 /// contract: `code()` casts `self` directly to `i32`, so these values are
@@ -82,6 +99,18 @@ pub enum ExitCode {
     NoHealthyBackend = 4,
     BudgetExceeded = 5,
     Interrupted = 130,
+    /// Board item A5.3: a one-shot run terminated by `SIGHUP` -- `128 +
+    /// 1` (POSIX's own "terminated by signal N" convention, the same one
+    /// `Interrupted` (128 + SIGINT's 2) already follows). See
+    /// [`Self::from_result_with_signal`].
+    TerminatedBySighup = 129,
+    /// Board item A5.3: a one-shot run terminated by `SIGTERM` -- `128 +
+    /// 15`. This is the exit code the 2026-09-07 incident's own diagnosis
+    /// (`docs/agents.md`) traces back to: a backgrounded `conway -p` child
+    /// killed by `conway-tools`' `bash` tool's own `kill_group` (A5.5)
+    /// sends exactly this signal to the whole process group. See
+    /// [`Self::from_result_with_signal`].
+    TerminatedBySigterm = 143,
 }
 
 impl ExitCode {
@@ -122,6 +151,24 @@ impl ExitCode {
             ExitCode::Interrupted
         } else {
             Self::from_result(r)
+        }
+    }
+
+    /// [`Self::from_result`], with one override: a `Cancelled` status
+    /// combined with `signal_seen == Some(sig)` reports `sig`'s own
+    /// documented exit code (129 for SIGHUP, 143 for SIGTERM) rather than
+    /// the default `AgentFailed` (1) -- `from_result_with_sigint`'s
+    /// identical precedence rule, generalized to `signal::TermSignal`
+    /// (board item A5.3; see this module's doc comment). The caller
+    /// (`oneshot::run`) is the one place that knows both facts at once,
+    /// exactly as it already is for `from_result_with_sigint`.
+    pub fn from_result_with_signal(r: &AgentResult, signal_seen: Option<TermSignal>) -> ExitCode {
+        match signal_seen {
+            Some(sig) if matches!(r.status, ResultStatus::Cancelled { .. }) => match sig {
+                TermSignal::Term => ExitCode::TerminatedBySigterm,
+                TermSignal::Hup => ExitCode::TerminatedBySighup,
+            },
+            _ => Self::from_result(r),
         }
     }
 
@@ -357,5 +404,52 @@ mod tests {
         assert_eq!(ExitCode::NoHealthyBackend.code(), 4);
         assert_eq!(ExitCode::BudgetExceeded.code(), 5);
         assert_eq!(ExitCode::Interrupted.code(), 130);
+        assert_eq!(ExitCode::TerminatedBySighup.code(), 129);
+        assert_eq!(ExitCode::TerminatedBySigterm.code(), 143);
+    }
+
+    /// Board item A5.3, `from_result_with_signal`'s SIGTERM precedence
+    /// half: `from_result_with_sigint`'s existing `cancelled_with_sigint_
+    /// is_130` mirrored for the sibling function and code.
+    #[test]
+    fn cancelled_with_sigterm_is_143() {
+        let r = result(ResultStatus::Cancelled {
+            reason: "signal: SIGTERM".into(),
+        });
+        assert_eq!(
+            ExitCode::from_result_with_signal(&r, Some(TermSignal::Term)).code(),
+            143
+        );
+    }
+
+    #[test]
+    fn cancelled_with_sighup_is_129() {
+        let r = result(ResultStatus::Cancelled {
+            reason: "signal: SIGHUP".into(),
+        });
+        assert_eq!(
+            ExitCode::from_result_with_signal(&r, Some(TermSignal::Hup)).code(),
+            129
+        );
+    }
+
+    #[test]
+    fn cancelled_with_no_signal_observed_is_one() {
+        let r = result(ResultStatus::Cancelled {
+            reason: "some other reason".into(),
+        });
+        assert_eq!(ExitCode::from_result_with_signal(&r, None).code(), 1);
+    }
+
+    /// A `Completed` (or any non-`Cancelled`) status is unaffected by
+    /// `signal_seen` -- mirrors `from_result_with_sigint`'s identical
+    /// precedence scoping (only `Cancelled` is ever overridden).
+    #[test]
+    fn completed_with_a_signal_observed_is_still_zero() {
+        let r = result(ResultStatus::Completed);
+        assert_eq!(
+            ExitCode::from_result_with_signal(&r, Some(TermSignal::Term)).code(),
+            0
+        );
     }
 }

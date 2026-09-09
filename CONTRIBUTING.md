@@ -34,6 +34,15 @@ tool, a CLI flag, or a facade method, lands with its `docs/` entry and its
 *does*, not around workspace crates: someone looking for "how do I configure
 permissions" should not have to know which crate implements it.
 
+A writer does not edit `CHANGELOG.md` directly: it creates one
+`.changelog.d/<slug>.md` fragment naming its target subsection(s) (see
+`.changelog.d/README.md` for the format), and `scripts/collect-changelog.py`
+folds every pending fragment into `## [Unreleased]` at a wave's gate. This
+exists because every entry otherwise lands at the top of the same three
+lines, and six to eight concurrent writers in isolated worktrees turned that
+into a hand-merged conflict on every batch; a fragment named after its own
+work item can never collide with another writer's.
+
 Design material — rationale, rejected alternatives, why a thing is shaped the
 way it is — does not satisfy that gate and is not what `docs/` is for. It goes
 where the thing it explains is: a doc comment beside the code, `docs/plugins/`

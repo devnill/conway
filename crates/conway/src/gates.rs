@@ -3,10 +3,23 @@
 //! Three gates cover the full space named in architecture §4.3:
 //! [`AllowListGate`] (stateless allow/deny by tool name and argument glob),
 //! [`DenyAllGate`] (always deny), and [`PromptingGate`] (delegate to an
-//! embedder-supplied handler). [`from_config`] selects one from
-//! [`crate::config::schema::PermissionsConfig`].
+//! embedder-supplied handler). [`from_config`] selects one from a
+//! [`GateConfig`] the caller supplies directly.
 //!
-//! All three are `Send + Sync + 'static` and hold no mutable state.
+//! **Not read from `settings.json`.** Board item 01M1YVP3FDPHY4WZ72SXMWAN2D
+//! removed the three wire keys [`GateConfig`] used to mirror
+//! (`permissions.mode`/`allowed_tools`/`denied_tools`, formerly fields of
+//! `crate::config::schema::PermissionsConfig`): they parsed successfully
+//! and selected a gate nothing ever consulted, because `conway-cli`'s
+//! `main.rs` supplies its own gate on every dispatch target (TUI, one-shot,
+//! and every subcommand), before `ConwayBuilder::build`'s step-9 fallback
+//! (this module's sole in-tree call site) is ever reached. [`GateConfig`]
+//! is now an ordinary, non-serde Rust struct: an embedder who still wants
+//! this fallback gate constructs one directly and hands it to
+//! [`crate::ConwayBuilder::with_gate_config`] rather than encoding it in a
+//! config file no real invocation of the binary ever read.
+//!
+//! All three gates are `Send + Sync + 'static` and hold no mutable state.
 
 use std::sync::Arc;
 
@@ -16,7 +29,6 @@ use conway_core::permission_pattern::contains_shell_metacharacters;
 use conway_core::ports::{PermissionGate, RenderKind};
 use globset::{Glob, GlobMatcher};
 
-use crate::config::schema::{PermissionsConfig, PermissionsConfigMode};
 use crate::error::{FacadeError, Result};
 
 /// A boxed, `'static`, `Send` future — the return type a [`PromptingGate`]
@@ -327,26 +339,56 @@ impl PermissionGate for PromptingGate {
     }
 }
 
+/// Which built-in gate [`from_config`] builds, plus the allow/deny lists
+/// [`GateMode::Allowlist`] needs. An embedder's own explicit selection --
+/// see this module's doc for why this is no longer parsed from
+/// `settings.json`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GateConfig {
+    pub mode: GateMode,
+    pub allowed_tools: Vec<String>,
+    pub denied_tools: Vec<String>,
+}
+
+/// [`GateConfig::mode`]'s three values. Distinct from two other,
+/// unrelated types that used to share a name with this one's predecessor
+/// (`PermissionsConfigMode`): `conway_cli::cli::OneShotPermissionMode`
+/// (one-shot mode's own, narrower `--permission-mode` flag,
+/// `Allowlist`/`Deny` only -- the `conway` binary's `-p` and TUI paths
+/// always supply their own gate and never construct a `GateConfig` at
+/// all) and `conway_core::permission_mode::PermissionMode` (the TUI's
+/// operator-facing runtime mode, `Prompt`/`Plan`/`AutoAllow`, re-exported
+/// at this crate's root as `conway::PermissionMode`, and what
+/// `PermissionsConfig::default_mode` now carries instead of this type).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GateMode {
+    #[default]
+    Prompt,
+    Allowlist,
+    Deny,
+}
+
 /// Builds the gate named by `config.mode`.
 ///
-/// `mode = "prompt"` requires `prompt_handler` — there is no built-in
+/// `mode = Prompt` requires `prompt_handler` — there is no built-in
 /// default interactive handler (that would require a UI dependency this
 /// crate does not have), so its absence is a configuration error rather
 /// than a silent fallback to allow or deny.
 pub fn from_config(
-    config: &PermissionsConfig,
+    config: &GateConfig,
     prompt_handler: Option<PromptHandler>,
 ) -> Result<Arc<dyn PermissionGate>> {
     match config.mode {
-        PermissionsConfigMode::Allowlist => Ok(Arc::new(AllowListGate::new(
+        GateMode::Allowlist => Ok(Arc::new(AllowListGate::new(
             config.allowed_tools.clone(),
             config.denied_tools.clone(),
         ))),
-        PermissionsConfigMode::Deny => Ok(Arc::new(DenyAllGate)),
-        PermissionsConfigMode::Prompt => {
+        GateMode::Deny => Ok(Arc::new(DenyAllGate)),
+        GateMode::Prompt => {
             let handler = prompt_handler.ok_or_else(|| FacadeError::Config {
                 path: None,
-                message: "permissions.mode = \"prompt\" requires a prompt handler to be supplied"
+                message: "GateConfig { mode: Prompt, .. } requires a prompt handler to be \
+                          supplied"
                     .to_string(),
             })?;
             Ok(Arc::new(PromptingGate::new(handler)))

@@ -214,6 +214,26 @@ Plugin commands are namespaced by their plugin's id, which is why it is
 `/conway.history.rewind` rather than `/rewind`. That is what makes it impossible
 for a plugin to shadow a built-in command.
 
+That rewinds the CONVERSATION. If the model also edited the wrong file, or
+took a right edit too far, install the checkpoint plugin too:
+
+```json
+{ "plugins": { "install": ["conway.checkpoint", "conway.history"] } }
+```
+
+`/conway.checkpoint.diff 42` shows what a rollback to sequence 42 would
+change, as a unified diff, before you run it. `/conway.checkpoint.rollback
+42` restores every file touched at or after that point — but it will not
+clobber a change you made by hand since conway's own last write to that
+file; it reports that as a conflict instead, and leaves the file alone
+unless you pass `--all`. A rollback snapshots the file's current state
+first, so it is itself undoable, and shows up in `/conway.checkpoint.list`
+like any other entry. Add `--rewind` to a rollback to fork the conversation
+at the same sequence in the same step (`/conway.checkpoint.rollback 42
+--rewind`), instead of running the two commands separately. One thing it
+does not see: a change made through `bash` rather than the `write`/`edit`
+tools — see `docs/plugins/checkpoint.md` for why.
+
 ---
 
 ## Tips that are not on the screen

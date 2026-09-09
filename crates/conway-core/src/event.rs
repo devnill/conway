@@ -198,6 +198,34 @@ pub enum Event {
         limit: String,
         steps_this_turn: u32,
     },
+    /// Board item A5.6: `agent_id` crossed `conway_runtime::runway::
+    /// BUDGET_WARN_FRACTION` (80%) of one of its own budget dimensions
+    /// (`max_steps`/`max_tool_calls`/`max_tokens`/`deadline`). Emitted
+    /// live, once per newly-crossed dimension, from the SAME site
+    /// `LogRecord::SystemNote { reason: "runway", .. }` is already
+    /// persisted -- this is the "somebody watching the live stream instead
+    /// of the log" counterpart, not a second computation (`conway_runtime::
+    /// runway`'s own doc: one threshold implementation, reused). Unlike
+    /// `Event::TurnAborted`, this is never itself terminal and never ends
+    /// anything -- `AgentLoop::check_budget` is untouched by this event's
+    /// existence. `agent_id` is carried explicitly (not left to the
+    /// envelope alone) so a consumer filtering by agent -- notably
+    /// `conway-cli`'s `/agents` panel, which tracks a whole tree from ONE
+    /// subscription and needs to mark the crossing CHILD's own row, not
+    /// necessarily the row currently in view -- never has to reach into the
+    /// envelope for it, mirroring `Event::TurnAborted`/`Event::
+    /// StreamRestarted`'s own precedent. `limit` is the bare `"<key>=<n>"`
+    /// that crossed (e.g. `"max_steps=5"`), matching `Event::TurnAborted::
+    /// limit`'s own bare-key convention -- never a full sentence, which
+    /// `text` (below) already carries for a renderer that wants the whole
+    /// message. `text` is the exact model-facing sentence the companion
+    /// `SystemNote` also carries, so a consumer needs no second formatting
+    /// pass to show the operator what the model itself was told.
+    BudgetWarning {
+        agent_id: AgentId,
+        limit: String,
+        text: String,
+    },
 
     ToolCallProposed {
         call_id: String,
@@ -211,6 +239,31 @@ pub enum Event {
     PermissionResolved {
         call_id: String,
         decision: PermissionDecisionKind,
+    },
+    /// The FULL detail behind one `conway_runtime::permission::
+    /// PermissionBroker::decide` resolution -- emitted alongside
+    /// [`Event::PermissionResolved`] above (never in place of it:
+    /// `PermissionResolved`'s own shape is untouched, so no existing
+    /// consumer that pattern-matches it needs to change), for EVERY call
+    /// the broker resolves, not just the ones that reach the operator's
+    /// gate. `source` says HOW this occurrence was resolved
+    /// (`operator` reached the gate just now; `rule`/`hook`/`mode` did not)
+    /// -- see [`crate::log::PermissionDecisionSource`]'s own doc.
+    ///
+    /// The live counterpart of [`crate::log::LogRecord::
+    /// PermissionDecisionRecord`] (the durable, persisted twin
+    /// `PermissionBroker::decide` also writes, when a `SessionStore` is
+    /// attached) -- this is what lets `--output-format jsonl` (a generic,
+    /// unconditional envelope passthrough; `conway-cli`'s `JsonlRenderer`)
+    /// show a denied call's reason, since `PermissionResolved` alone never
+    /// carried one.
+    PermissionDecision {
+        call_id: String,
+        tool: ToolName,
+        decision: crate::log::PermissionDecisionRecordKind,
+        source: crate::log::PermissionDecisionSource,
+        waited_ms: Option<u64>,
+        feedback: Option<String>,
     },
     ToolCallStarted {
         call_id: String,
@@ -388,6 +441,16 @@ mod tests {
                 "turn_aborted",
             ),
             (
+                Event::BudgetWarning {
+                    agent_id: AgentId::new(),
+                    limit: "max_steps=5".into(),
+                    text: "runway: 4 of 5 max_steps used this session (max_steps=5). Wrap up \
+                           or report now."
+                        .into(),
+                },
+                "budget_warning",
+            ),
+            (
                 Event::ToolCallProposed {
                     call_id: "tc_1".into(),
                     tool: ToolName::new("read"),
@@ -408,6 +471,17 @@ mod tests {
                     decision: PermissionDecisionKind::AllowOnce,
                 },
                 "permission_resolved",
+            ),
+            (
+                Event::PermissionDecision {
+                    call_id: "tc_1".into(),
+                    tool: ToolName::new("bash"),
+                    decision: crate::log::PermissionDecisionRecordKind::DenyWithFeedback,
+                    source: crate::log::PermissionDecisionSource::Operator,
+                    waited_ms: Some(4200),
+                    feedback: Some("too risky right now".into()),
+                },
+                "permission_decision",
             ),
             (
                 Event::ToolCallStarted {
@@ -491,8 +565,10 @@ mod tests {
         //
         // This assertion exists precisely so nobody adds or removes a variant
         // without saying so here (see this file's module doc). `TurnAborted`
-        // (board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`) is the 25th.
-        assert_eq!(variants.len(), 25);
+        // (board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`) is the 25th; `BudgetWarning`
+        // (board item A5.6) is the 26th; `PermissionDecision` (board item
+        // `01M1YS2ACS0TKJYKF8TBPESTTC`) is the 27th.
+        assert_eq!(variants.len(), 27);
         for (event, expected_tag) in variants {
             let value = serde_json::to_value(&event).unwrap();
             assert_eq!(value["event"], expected_tag, "tag for {event:?}");

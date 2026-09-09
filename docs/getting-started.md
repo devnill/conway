@@ -215,6 +215,35 @@ named profile in `.conway/profiles.toml` and reference its id as the
 `dialect`; see [`providers.md`](providers.md#declarative-provider-profiles)
 for the full profile schema.
 
+### Small local models: the runway warning at setup time
+
+Guided setup's own opinion set (see "Installing a first-party plugin"
+below) has a fixed cost, before you type a word: the tool schemas it
+registers, the instruction fragments it injects, and a representative
+allowance for the first slash command you run. On a small local model's
+context window, that fixed cost can already be most of what's available.
+The moment guided setup learns a model's context window — by discovery, by
+your own typed answer, or from a provider's own verified baseline — it
+compares that fixed cost against it, and warns when the install alone
+would already spend more than half the window:
+
+```
+conway's default install alone would use an estimated 24.0k of 32.7k
+tokens (73%) of local/qwen3:4b's context window before you type a word --
+there will not be much room left for a real turn. Two ways out: point
+conway at a model with a larger context window (add one now, or later via
+`/settings` -> providers); or narrow the tool set for this role (`conway
+plugin remove <id>`, or edit plugins.install in settings.json).
+```
+
+conway never picks either way out for you — it only names them. Point it
+at a bigger-window model if you have one (or add one during setup), or
+trim `plugins.install` down to only what this role actually needs. The
+same two numbers, per candidate model, are also available on demand:
+`conway routes explain <role>` shows a role's fixed install cost against
+each configured candidate's own window, not only the one setup just
+resolved.
+
 ## `--cwd` and `--root`
 
 These two flags are easy to conflate, and mixing them up is the mistake
@@ -357,7 +386,13 @@ environment block (cwd, OS, the session's start date, git branch) and a
 short conway-idioms instruction fragment — fork vs. spawn, how an agent
 ends, the tool set being configuration-dependent — genuinely first in the
 session's context; the closest thing this binary ships to a system
-prompt. `conway.stepguard` notices when an agent calls the same tool with
+prompt. It also reads any project instructions your repository already
+has — the nearest `.conway/instructions.md` found by walking up from your
+current directory to the repository's git root, or, if you have not
+written one, the nearest `AGENTS.md` found the same way — so launching
+from a subdirectory, or arriving with an `AGENTS.md` another harness
+already reads, does not mean conway sees nothing. `conway.stepguard`
+notices when an agent calls the same tool with
 the same arguments three times and writes a note saying so. `conway.skills`
 narrows full skill bodies (`.conway/skills`) to a one-line index until the
 model asks to read one. `conway.memory` gives the model three tools to
