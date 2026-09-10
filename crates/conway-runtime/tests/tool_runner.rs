@@ -598,6 +598,7 @@ fn event_tag(event: &Event) -> &'static str {
         Event::ToolCallProposed { .. } => "tool_call_proposed",
         Event::PermissionRequested { .. } => "permission_requested",
         Event::PermissionResolved { .. } => "permission_resolved",
+        Event::PermissionDecision { .. } => "permission_decision",
         Event::ToolCallStarted { .. } => "tool_call_started",
         Event::ToolProgress { .. } => "tool_progress",
         Event::ToolCallFinished { .. } => "tool_call_finished",
@@ -632,6 +633,10 @@ async fn per_call_event_order_is_proposed_permission_started_finished() {
             "tool_call_proposed",
             "permission_requested",
             "permission_resolved",
+            // `PermissionBroker::decide` emits `PermissionResolved`,
+            // then `record_decision` emits this durable twin -- the
+            // ordering this assertion exists to pin.
+            "permission_decision",
             "tool_call_started",
             "tool_call_finished",
         ]
