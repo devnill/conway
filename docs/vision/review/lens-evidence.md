@@ -69,8 +69,10 @@ the same way.
 ### 2.4 A limitation reported after the success
 
 Find things that work end to end and are not usable: a feature whose enabling
-path is unwired, a store that forgets on restart, a capability whose default
-configuration disables it.
+path is unwired, a store that forgets on restart, a capability that cannot
+actually be switched on. A plugin that is off by default is not this — that is
+`INTENT.md` §7b's *available, not enabled* working as intended. One whose
+enabling path does not work, or that keeps costing when disabled, is.
 
 For each, check how it is currently *described* — in `CHANGELOG.md`, in the
 board's completion notes, in the docs. **If the caveat comes after the success,

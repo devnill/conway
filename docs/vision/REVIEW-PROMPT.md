@@ -36,6 +36,7 @@ rewrite is worse than a missing one.
 | [`review/lens-sustainability.md`](review/lens-sustainability.md) | **one reviewer per territory** — cost of change, DRY, consolidation |
 | [`review/lens-evidence.md`](review/lens-evidence.md) | one reviewer — failing premises, one-directional proofs |
 | [`review/lens-operator.md`](review/lens-operator.md) | one reviewer — the CLI and the daily-driver bar |
+| [`review/lens-caller.md`](review/lens-caller.md) | one reviewer — scripts, pipelines and hosts: ceremony, cost, configure-down |
 
 ---
 
@@ -72,9 +73,26 @@ ls crates/conway-core/src/ports/
 git status --short && git log --oneline -10
 ```
 
+Then measure **weight** the way `INTENT.md` §7a defines it — what reaches the
+context window and what a person has to keep up with — against an isolated
+`$HOME` (or the documented config-dir override) so nothing touches the real
+`~/.conway`:
+
+```sh
+conway plugin list          # the enabled set, and what is bundled but off
+conway tools list           # the surface a default session carries
+conway -p "reply with exactly the word pong and nothing else" --output-format json
+#   → keep .usage.input_tokens: the price of a first turn. 15,856 on 2026-09-07.
+```
+
+If no provider is reachable from the lead's environment, say so in every
+brief and leave the token line to the caller reviewer, who will get one.
+
 The `src=` figures still contain inline `#[cfg(test)]` modules. Say so when you
 pass the table on — the true production figure is lower, and a reviewer who
-treats these as production lines will overstate the tree.
+treats these as production lines will overstate the tree. None of the line
+figures is *weight* — `CONDUCT.md` §2 says what weight is, and the table above
+is where it is measured.
 
 Then read [`docs/vision/review/CONDUCT.md`](review/CONDUCT.md) yourself. You are
 bound by it too, and §6 tells you where the board is.
@@ -84,8 +102,8 @@ bound by it too, and §6 tells you where the board is.
 | Round | Reviewers | Which |
 | --- | --- | --- |
 | **Minimum** — after a small landing | 3 | adherence, evidence, sustainability ×1 (whole tree) |
-| **Normal** — the default | 6 | adherence, surfaces, operator, evidence, sustainability ×2 |
-| **Full audit** — quarterly, or when the tree feels slow | 9 | the four singles, plus sustainability ×5, one per territory |
+| **Normal** — the default | 7 | adherence, surfaces, operator, caller, evidence, sustainability ×2 |
+| **Full audit** — quarterly, or when the tree feels slow | 10 | the five singles, plus sustainability ×5, one per territory |
 
 **Never more than twelve.** Past that the reviewers stop finding new things and
 start finding each other's things, and you pay for the merge.
@@ -101,7 +119,7 @@ one and is told not to read outside it:
 | **plugins** | `crates/conway-plugin-*`, `conway-thirdparty-backend` |
 | **harness** | `conway-testkit`, `conway-tools`, and all `tests/` directories workspace-wide |
 
-At 6 reviewers, use **core+runtime** and **cli+plugins+harness**.
+At 7 reviewers, use **core+runtime** and **cli+plugins+harness**.
 
 ### Step 3 — dispatch
 
@@ -113,6 +131,9 @@ Send them **all at once, in parallel**. Each brief contains, and contains only:
 4. **The measurement table** from Step 1.
 5. **The budget**: the tool-call range and word limit their lens states.
 6. **The output format**: `CONDUCT.md` §4.
+7. **For the operator reviewer only:** whether the operator is available to
+   drive the TUI by hand this run (`lens-operator.md` §3). Say yes or no; do
+   not leave it implied.
 
 Do not add guidance of your own. If a reviewer needs something the lens does not
 say, that is a defect in the lens — note it for §4 rather than patching it in the
@@ -126,6 +147,13 @@ back. Do this yourself while the reviewers work; it needs MCP and it needs the
 whole picture.
 
 **Do NOT read `.ideate/work-items/*.yaml` as the board** — see `CONDUCT.md` §6.
+
+**Relay the TUI script.** When the operator reviewer returns with a
+`## Manual TUI script` section, hand that section to the operator verbatim —
+nothing added, nothing summarised — and wait. Pass the operator's one-line-per-
+step observations back to the same reviewer (continue it; do not start a fresh
+one) so it can fold them into its findings and finalise. Do not synthesise the
+operator territory until that final return is in hand.
 
 ### Step 5 — synthesise
 
@@ -144,6 +172,15 @@ Merge the returns. Three rules:
   of Diplomat, UniFFI or cbindgen existed anywhere in the tree while a 397-line
   survey of exactly those three sat in `docs/vision/`, ten days old and linked
   from nothing. A board item was filed to write it again.
+- **A finding leads with what the operator sees, and that decides its rank.**
+  `INTENT.md` §8.7's test, carried by `CONDUCT.md` §4's *Operator sees* line.
+  A finding whose sentence can be written outranks one whose cannot, whatever
+  section either cites. A returned finding that opens by litigating whether
+  the fix fits conway's stance is reordered before it goes in the report.
+- **A finding that pits usability against the agnostic core is two findings.**
+  The capability is needed (§8.7) and the composition surface could not carry
+  it from outside the core (§8.5). File both; never file "withhold it because
+  it is an opinion". `CONDUCT.md` §1 says which crates §8.2 reaches.
 - **Collect every reviewer's `Not checked` section.** Its union is this review's
   coverage gap, and it goes in `STATE-OF-THE-UNION.md` explicitly. A review that
   silently bounds its own coverage reads as complete when it is not.
@@ -168,6 +205,10 @@ decisions. In priority order:
 - Carry a **sustainability section**. Where is this tree getting more expensive
   to change, and what would make it cheaper? This is the operator's standing
   question and it gets its own heading whether or not the round found much.
+- State the **weight**, in one short table: first-turn `usage.input_tokens`
+  and tool count for bare, default, and default-plus-one-plugin, against the
+  previous run's figures. `INTENT.md` §7a's bet is that this number can be made
+  small without losing function; the review is where that bet is scored.
 - No weeds. If something needs the weeds, it belongs in a board item.
 
 **B. `docs/vision/PLAN.md`** — the plan of attack:
@@ -264,3 +305,5 @@ tree is slow to change for them too.
 | 2026-08-24 | **First run of the restructured review (6 reviewers, Normal round).** One lens amendment from it: `lens-operator.md` §3 now says what to do without a pty — exercise the headless surface, never report source-reading as driving, declare "TUI not driven" first in Not checked, and escalate to a process defect after two pty-less runs in a row. The round itself worked: the shared measurement was not re-derived by any reviewer, territories produced zero duplicate findings, and the one live-run reviewer produced the round's most valuable findings — evidence that lens's "spend the upper half running things" is the right instruction. One budget observation: the evidence reviewer spent ~75 tool calls against its stated 30–45 and returned findings the others could not have; the budget may be tight for a whole-tree hunt lens, or the instruction to stop needs more force. Left as an observation, not amended. |
 | 2026-08-24 | **`INTENT.md` gains §8.10 — the cost of changing something is part of whether it is good.** §8 had nine points on what "good" means and none was about duplication, consolidation, or cost of change; §8.6 came closest and is scoped to invariants at seams. The sustainability lens had no section to score against, which by §8.1 made it a defect in the spec rather than a gap in the code. §8.10 states the test (*when this decision changes, how many places must change with it, and would forgetting one be a bug?*) and carries the three guardrails that keep a duplication hunt from producing net-negative refactors — repetition that protects §8.2's agnostic core is correct, an abstraction with a hypothetical second consumer is indirection under §8.5, and a consolidation must name a change that becomes easy. The citation range in §8's header moved to §8.1–§8.10. |
 | 2026-08-25 | **A claim of absence must cite its command.** Step 5's evidence rule demanded `path:line`, which a claim that something does not exist structurally cannot supply — so "no mention of X anywhere in the tree (verified by search this run)" satisfied the rule while carrying nothing re-runnable. It was false: `docs/vision/BINDINGS.md`, a 397-line Diplomat/UniFFI/cbindgen survey, had been on `main` for ten days, linked from no page and therefore invisible to a reviewer navigating the documentation graph. The false claim spawned a board item that re-derived the survey at the cost of a full research cycle. Two fixes landed: absence claims now cite the command and its result, and `scripts/check-orphan-docs.py` (added 2026-08-24) makes an unindexed page fail CI, so the blind spot that produced it cannot recur silently. |
+| 2026-09-09 | **The review now weighs function against agnosticism the way `INTENT.md` does, and measures weight where the person feels it.** The operator observed that the rule to be unopinionated, while central, was being applied uniformly across the tree and outweighing the need for a functional tool — a pattern the same day's steering entry GP-00 records from two shipped failures. Five changes. **(1)** `INTENT.md` §8.2 is scoped explicitly to the harness crates, states that a usability-versus-agnosticism conflict is two findings (§8.7 and §8.5) rather than a choice, and §8.7 gains a triage test: the operator's sentence first, the stance chooses the remedy under it. §7a now defines *heavy* — what reaches context and what a person must keep up with, never binary size or line count. **(2)** `CONDUCT.md` carries the harness/CLI/plugins layering so a whole-tree reviewer no longer reports a licensed CLI opinion as a §8.2 violation; each finding opens with an *Operator sees* line that decides its rank; and a fifth failure mode names the philosophy applied against the product. **(3)** `lens-surfaces.md` §2.3 stops treating a compiled-in plugin as suspect — bundle liberally, enable nothing is the ruling — and asks instead whether disabling it actually sheds its cost. `lens-evidence.md` §2.4 no longer counts a disabled-by-default plugin as a buried limitation. **(4)** A new `lens-caller.md` drives the second half of `INTENT.md` §1 — scripts, pipelines, hosts — for ceremony, cost, and whether conway can be configured down by config alone rather than only by the Rust example the ledger cites. Normal rounds are now 7, full audits 10. **(5)** Step 1 measures weight once for everyone (`plugin list`, `tools list`, first-turn `usage.input_tokens`), and `STATE-OF-THE-UNION.md` carries a weight table against the previous run. |
+| 2026-09-09 | **The TUI is driven by the operator, from a script the reviewer writes.** Three consecutive runs had declared "TUI not driven — no pty" because the lens demanded a pty and never said how a subagent could be given one; it cannot. `lens-operator.md` §3 now has the mechanism: the reviewer returns a `## Manual TUI script` of at most twelve one-line *type → expect* steps against a config dir it prepared, the operator runs them and answers one line per step, and the lead relays both ways and continues the same reviewer so it can fold the observations into its findings before finalising. The brief states whether the operator is available; the no-pty declaration remains for when they are not. |

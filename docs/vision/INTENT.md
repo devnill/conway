@@ -349,6 +349,19 @@ is not a contradiction, because the resolution is that every capability it has c
 be turned on and off. It is an assembly of plugins, not a monolith with a plugin
 socket.
 
+**Heavy is measured where the person feels it, not where the linker does.** A
+harness is heavy when it commits things to the context window that the work did
+not ask for, and when it asks a person to keep up with more surface than the
+work needs. Binary size and dependency count are not the measure; a plugin that
+is bundled but not enabled weighs nothing. This is the bet underneath the whole
+design: the incumbent is expensive largely because it is indiscriminate about
+what reaches context, and being strategic about what is committed is where
+conway can be both cheaper in tokens and more efficient at orchestrating work.
+So the lightness test is run by turning things off. A capability that is
+disabled must stop costing — context, tool schemas, prompt text, commands,
+startup — and one that keeps costing after it is switched off is the defect,
+not its existence.
+
 This settles the question of what should be installed by default by moving it.
 There are two different things and they are easily conflated:
 
@@ -520,6 +533,25 @@ means point 3 of this list.
    what they mean* is policy. *Assembling a context from a stated selection* is
    mechanism. *Deciding what belongs in that selection* is policy, and it is the
    single most important instance of this whole rule.
+
+   This test governs **the harness** — what an embedder links: `conway-core`,
+   `conway-session`, `conway-runtime`, and the `conway` facade. It says nothing
+   about what the shipped binary or a plugin may hold. `conway-cli` is an
+   application built from the harness, and an application with no opinions
+   about its own surface is unfinished, not pure; the plugin tier exists to hold
+   judgments. So "this encodes a judgment" is a finding against the core and a
+   description of the CLI. The question to ask of an opinion in the binary is
+   the one §7a asks — is it visible and removable — never whether it exists.
+
+   When usability and agnosticism appear to conflict — something the daily
+   driver needs that seems to require a judgment in the core — they do not
+   actually conflict, and the reading that says they do has gone wrong
+   somewhere earlier. The feature ships, in the binary or the plugin tier,
+   regardless. The conflict is a separate finding against the composition
+   surface under §8.5: the seams were not good enough to carry the case from
+   outside the core. Fix that, rather than choosing between a tool that works
+   and a core that stays agnostic. The design exists so that nobody has to
+   choose.
 3. **Nothing happens to your context that you did not ask for.** No silent
    compaction, no silent trimming, no silent model substitution. A loud, typed
    refusal beats a clever recovery.
@@ -589,6 +621,16 @@ means point 3 of this list.
    unpleasant, the philosophy is wrong. The operational form of this rule is §7a:
    conway's own CLI must be good enough to replace the harness currently in daily
    use, and until it is, everything on this page is untested.
+
+   The test, for triage: **state the failure as the person doing the work would
+   experience it, in one sentence, before any argument about the fix.** "The
+   planning tool cannot complete a task." If that sentence can be written, the
+   finding is significant on those grounds alone, and the philosophy chooses
+   among remedies underneath it — it does not decide whether the problem
+   counts. If the sentence cannot be written, the philosophical argument is the
+   whole content and belongs first. A defect that stops real work is not made
+   smaller by every mechanism having behaved exactly as designed; that is the
+   shape of failure this rule exists to name.
 8. **A design document says what a feature will need. That is a prediction, not a
    requirement.** Building to it is right; treating it as a constraint the feature
    must satisfy is not. When holding on to a premise starts requiring a series of

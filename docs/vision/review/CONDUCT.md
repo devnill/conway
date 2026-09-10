@@ -28,6 +28,25 @@ and a disagreement between two of them is resolved by whichever is higher.
 tree carry a **"Where the tree is today"** note. Anything without such a note is
 asserted to be true right now, and if it is not, that is a finding.
 
+### Which layer you are looking at
+
+**"Unopinionated" is a property of the harness, not of the tree.** `INTENT.md`
+§8.2 governs the harness — what an embedder links: `conway-core`,
+`conway-session`, `conway-runtime`, `conway`. `conway-cli` is an application
+built from it and is opinionated on purpose (`INTENT.md` §7a,
+`docs/vision/DESIGN-surface-coherence.md` §1); the plugin tier exists to hold
+judgments. Before you write "this encodes a judgment, so it belongs in a
+plugin" as a finding, say which crate holds it. In the harness, it is a §8.2
+finding. In `conway-cli` or a plugin it is not a finding at all — the question
+there is §7a's: is the opinion visible, and does switching it off actually
+remove it.
+
+**A finding that trades the tool's usefulness against the core's agnosticism
+is mis-scoped, not hard.** Split it: the capability is needed (§8.7), and the
+composition surface could not carry it from outside the core (§8.5). Report
+both. Never recommend withholding or removing something the daily driver needs
+on the grounds that it is an opinion.
+
 **Read only what your lens needs.** You are one of several reviewers running in
 parallel. The lens tells you your territory; do not read outside it to
 double-check someone else's. Redundant reading is the single largest cost in
@@ -74,6 +93,13 @@ predicted a different shape.** This is `INTENT.md` §8.8 stated as conduct.
   figure is roughly 3× the production figure and will mislead you. The lead
   agent has already measured this and passed you the table — **use it, do not
   re-derive it.**
+- **Line count is not weight.** `INTENT.md` §7a measures heaviness where the
+  person feels it: what reaches the context window, and how much surface they
+  have to keep up with. A bundled plugin that is not enabled weighs nothing,
+  and a large plugin tier is the design working. The tree's weight is
+  `usage.input_tokens` on a bare one-shot run and the length of
+  `conway tools list` and `conway plugin list` against a default config — never
+  `wc -l`, and never binary size.
 
 ---
 
@@ -113,6 +139,8 @@ Say what is GOOD as plainly as what is broken.
 For each, in descending order of how much it would change the plan:
 
 ### F<n>. <one-line claim>
+- **Operator sees:** one sentence — the failure as the person doing the work
+  experiences it, or "nothing; philosophy finding"
 - **Evidence:** path:line, path:line — what you actually checked
 - **Extent:** how big, measured not guessed
 - **Against:** which INTENT.md § this violates, or "none — see Intent gaps"
@@ -127,13 +155,21 @@ Questions your territory raised that INTENT.md does not answer. One line each.
 What your territory contains that you did not get to, and why.
 ```
 
+**Operator sees comes first and decides the rank.** `INTENT.md` §8.7's test:
+if the sentence can be written, the finding is significant on those grounds
+alone and the philosophy chooses the remedy underneath it. A finding with an
+operator-visible consequence ranks above one without, whatever section either
+cites. Do not open a finding by litigating whether the fix fits conway's
+stance; that paragraph goes after the sentence, or the finding is the stance
+paragraph and says so.
+
 The **Not checked** section is mandatory and is not a confession. A review that
 silently bounds its own coverage reads as "covered everything" when it did not —
 which is §5's fourth failure mode wearing a different hat.
 
 ---
 
-## 5. Four failure modes this review exists to catch
+## 5. Five failure modes this review exists to catch
 
 Each produced a real, shipped defect in this repository. They are listed as
 things to LOOK FOR in the tree, **and** as things to avoid while reviewing.
@@ -160,6 +196,23 @@ restart — **say the limitation FIRST**. Both occurred here, and in both cases 
 accurate-but-late framing left a reader believing something was finished when it
 was not. A review that buries the caveat has misled its reader even if every
 sentence is true.
+
+**5. The philosophy applied against the product.** A defect stops real work,
+and the analysis opens by asking whether the fix fits conway's stance. Both
+shipped instances are from September 2026. A backend emitted a tool argument
+as a JSON-encoded string, the malformed call was treated as fatal with no
+failover, and the operator's own planning tool could not complete a task — the
+board item filed against it opened with a section on whether coercing the
+argument was compatible with "a loud, typed refusal beats a clever recovery".
+Days later a model's context window was assumed at a 32.7k dialect floor
+against a real 1M; runway hit 59% after one tool call, a child's summary was
+refused by a length bound, all work was lost, and every mechanism had behaved
+exactly as designed. `INTENT.md` §8.7 gives the order: the operator's sentence
+first, the stance chooses the remedy under it. As a reviewer, the same error
+looks like recommending that something be withheld or removed because it is an
+opinion, without saying which layer holds it — see §1. This mode is a rule for
+the lead and every reviewer rather than a hunt; `lens-evidence.md` does not own
+it.
 
 ---
 

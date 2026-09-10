@@ -34,11 +34,17 @@ sites**, not just constants. A named event nothing fires is a documented
 capability that does not exist.
 
 **2.3 The plugin tier.** What is in `crates/conway-plugin-*`, what
-`PHILOSOPHY.md` §5 promises, and the difference. Then the harder question:
-`INTENT.md` §2 says features that fade should be **uninstallable**, which means
-they have to have been installed in the first place. For each first-party
-plugin — is it genuinely installed, or is it compiled in and merely named as a
-plugin?
+`PHILOSOPHY.md` §5 promises, and the difference. Then the question that
+actually measures weight. **Bundle liberally, enable nothing** is the ruling
+(`docs/vision/DESIGN-plugin-dependencies.md` §0), so a plugin linked into the
+binary is the intended shape, not a suspect. For each first-party plugin: is
+it *off* by default, and when it is off does it cost nothing — no entries in
+`conway tools list`, no prompt text, no schema tokens in `usage.input_tokens`,
+no commands, no startup work? Measure with the plugin off and on, against an
+isolated `$HOME`. A plugin that keeps costing after it is switched off is the
+finding (`INTENT.md` §7a). A plugin that is compiled in and switchable is not.
+`INTENT.md` §2's "uninstallable" is satisfied by a toggle that actually sheds
+the capability.
 
 **2.4 The embedding surface.** `INTENT.md` §7c gives non-Rust hosts the right to
 embed conway. Walk the path a host would actually take and say where it stops.
