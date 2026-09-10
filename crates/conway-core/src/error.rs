@@ -60,6 +60,34 @@ pub enum BackendError {
     },
     #[error("tool call parse failure: {detail}")]
     ToolParse { detail: String },
+    /// A tool call's arguments failed schema validation, and the narrow
+    /// coercion `SchemaValidator::validate` attempts first (that type's own
+    /// doc, `conway-plugin-backends`) also failed -- board item
+    /// `01M23SDCE6T85Z48CRQ8NBY6PV` step 2. Carries enough structure for a
+    /// caller (`AttemptEngine`) to hand the model a corrective `ToolResult`
+    /// naming what was wrong, rather than resending an identical request
+    /// and hoping: `arguments` is the value as the model actually sent it
+    /// (so a synthetic `ContentBlock::ToolUse` can represent the call the
+    /// correction responds to) and `argument_path` is the RFC 6901 JSON
+    /// Pointer schema validation rejected (e.g. `/budget`). Distinct from
+    /// the more general [`Self::ToolParse`] (used for "unknown tool"/
+    /// "unterminated JSON"/"conflicting tool name", none of which have a
+    /// valid `(tool, arguments)` pair to build a correction from, and so
+    /// keep `ToolParse`'s existing bounded, non-streaming retry unchanged).
+    #[error("tool `{tool}`: arguments failed schema validation at `{argument_path}`: {detail}")]
+    ToolArgumentsInvalid {
+        tool: ToolName,
+        call_id: String,
+        /// Boxed to keep this variant (and, through it, `RuntimeError`/
+        /// `ConwayError`/`FacadeError`) under `clippy::result_large_err`'s
+        /// threshold -- `serde_json::Value` alone is the largest field
+        /// here by a wide margin, mirroring `RuntimeError::
+        /// PullInIncomplete::cause`'s own reasoning for boxing its own
+        /// widest field.
+        arguments: Box<serde_json::Value>,
+        argument_path: String,
+        detail: String,
+    },
     #[error("request cancelled")]
     Cancelled,
 }
@@ -87,8 +115,10 @@ impl BackendError {
     /// Whether this error is a signal about endpoint health.
     ///
     /// `Auth`, `BadRequest`, `ContextOverflow`, `ContextTooLarge`,
-    /// `ToolParse`, and `Cancelled` are request problems, not
-    /// endpoint-health signals (§8).
+    /// `ToolParse`, `ToolArgumentsInvalid`, and `Cancelled` are request
+    /// problems, not endpoint-health signals (§8) -- a different MODEL is
+    /// unlikely to help with a malformed tool call any more than the same
+    /// one retrying would.
     pub fn is_health_signal(&self) -> bool {
         matches!(
             self,
@@ -612,6 +642,33 @@ pub enum RuntimeError {
         /// the indirection is paid only on the path that already failed.
         #[source]
         cause: Box<StoreError>,
+    },
+    /// Every candidate in a fallback chain was exhausted, and the LAST
+    /// one's own failure was a malformed tool call
+    /// (`BackendError::ToolParse`/`ToolArgumentsInvalid`) that coercion and
+    /// the bounded model-facing retry (`AttemptEngine::execute`, board item
+    /// `01M23SDCE6T85Z48CRQ8NBY6PV`) both failed to fix. Deliberately its
+    /// own top-level variant, not nested under [`Self::Routing`] or
+    /// [`Self::Backend`]: both of those wrappers' `Display` unconditionally
+    /// prepends "routing error:"/"backend error:", and this failure is
+    /// neither -- a candidate DID answer, with a malformed call, not
+    /// silence, so "no candidate" (`RoutingError::NoCandidate`'s own
+    /// wording) would misattribute the cause exactly as this item's own
+    /// evidence complained about. `considered` carries every OTHER
+    /// candidate this chain tried first, in the SAME shape
+    /// `RoutingError::NoCandidate::considered` uses (via the same
+    /// `render_considered` helper), so a mixed-cause chain (an earlier
+    /// candidate rate-limited, the last one malformed) still names every
+    /// candidate it tried, not only the one that ultimately failed on its
+    /// tool call.
+    #[error(
+        "tool call rejected for role {role}: {detail}{}",
+        render_considered(considered)
+    )]
+    ToolCallRejected {
+        role: RoleAlias,
+        detail: String,
+        considered: Vec<(ModelRef, String)>,
     },
 }
 

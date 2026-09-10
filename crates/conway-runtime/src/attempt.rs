@@ -36,7 +36,15 @@
 //! switch is behaviourally identical to the old per-attempt rebuild --
 //! `toolparse_triggers_one_retry_then_advances_chain` (`attempt_fallback.rs`)
 //! pins byte-identical retry requests. Cache-hint semantics are therefore
-//! unchanged: per-candidate, computed once, never per-attempt.
+//! unchanged: per-candidate, computed once, never per-attempt. **One
+//! deliberate exception (board item `01M23SDCE6T85Z48CRQ8NBY6PV` step 2):**
+//! a `BackendError::ToolArgumentsInvalid` retry rebuilds `gen_req` around
+//! `route_segments` plus a corrective segment pair
+//! (`corrective_retry_segments`) naming what was wrong, so the model
+//! actually sees the correction rather than an identical resend -- see
+//! that function's own doc. The bare `ToolParse` retry (no valid
+//! `(tool, arguments)` pair to correct) is unaffected and still resends
+//! the cached `gen_req` unchanged.
 //!
 //! T-1 error-shape reconciliation (a decision
 //! closing an earlier gap): the router (conway-routing
@@ -84,19 +92,21 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use conway_core::capabilities::{Capabilities, ContextTokensSource, ToolCallSupport};
-use conway_core::content::{ContentBlock, ToolSpec};
+use conway_core::content::{ContentBlock, Role, ToolSpec};
 use conway_core::error::{BackendError, RoutingError, RuntimeError};
 use conway_core::event::Event;
 use conway_core::failure::{classify, observation_for, FailureClass};
 use conway_core::ids::{
-    AgentId, BackendId, EndpointId, ModelId, ModelRef, PrefixKey, RoleAlias, SessionId,
+    AgentId, BackendId, EndpointId, ModelId, ModelRef, PrefixKey, RoleAlias, SessionId, ToolName,
 };
 use conway_core::ports::{Backend, GenerateRequest, GenerateResponse, HealthRegistry, StreamChunk};
+use conway_core::provenance::Provenance;
 use conway_core::retry::{max_jitter, MAX_RETRIES};
 use conway_core::routing::{AttemptFailure, BreakerState, Observation, Route, RoutingReason};
 use conway_core::segment::{CacheTtl, PromptSegment};
 use futures::StreamExt;
 use rand::RngExt;
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::context::builder::{attach_cache_hints, breakpoint_indices};
@@ -281,6 +291,64 @@ fn attach_route_cache_hints(
     attach_cache_hints(segments, &caps.cache, ttl, a_index, b_index, &key);
 }
 
+/// Board item `01M23SDCE6T85Z48CRQ8NBY6PV` step 2: builds the "assistant
+/// tried this malformed call, here is what was wrong" segment pair a
+/// `BackendError::ToolArgumentsInvalid` retry appends before resending --
+/// the model-facing correction coercion could not produce on its own.
+/// Mirrors the SAME wire shape a real dispatched-and-failed tool call
+/// already produces (`agent_loop.rs`'s own `ContentBlock::ToolUse`/
+/// `ToolResultBlock` construction for a persisted turn; `context::builder`'s
+/// `tool_result_block`), so every backend dialect renders it exactly like
+/// an ordinary tool error -- the model has already learned to read that
+/// shape from ordinary tool dispatch failures. The message names the exact
+/// argument path and what was wrong (`detail`, `SchemaValidator::
+/// validate`'s own rendering) -- "a bare 'invalid arguments' gives it
+/// nothing to act on" is the constraint this satisfies.
+///
+/// **Ephemeral, not persisted.** These two segments live only inside the
+/// ONE `GenerateRequest` this retry sends (`execute`'s caller rebuilds it
+/// fresh around the return of this function, never reusing the cached
+/// `gen_req`) -- nothing here reaches the session log. The turn's real,
+/// eventually-successful assistant/tool-result pair is what `agent_loop.rs`
+/// persists once `execute` returns `Ok`; a retry this function's own
+/// caller gives up on (attempts exhausted) never touches the log either,
+/// exactly like the pre-existing blind `ToolParse` retry it sits beside.
+fn corrective_retry_segments(
+    tool: &ToolName,
+    call_id: &str,
+    arguments: &Value,
+    argument_path: &str,
+    detail: &str,
+) -> [PromptSegment; 2] {
+    let assistant = PromptSegment::new(
+        Role::Assistant,
+        vec![ContentBlock::ToolUse {
+            call_id: call_id.to_string(),
+            name: tool.clone(),
+            arguments: arguments.clone(),
+        }],
+        Provenance::Assistant,
+    );
+    let message = format!(
+        "tool `{tool}`: arguments failed schema validation at `{argument_path}`: {detail}. \
+         Retry this exact call with the value at `{argument_path}` corrected to match the \
+         declared schema."
+    );
+    let result = PromptSegment::new(
+        Role::ToolResult,
+        vec![ContentBlock::ToolResultBlock {
+            call_id: call_id.to_string(),
+            blocks: vec![ContentBlock::Text { text: message }],
+            is_error: true,
+        }],
+        Provenance::ToolResult {
+            call_id: call_id.to_string(),
+            tool: tool.clone(),
+        },
+    );
+    [assistant, result]
+}
+
 /// Turns an ordered candidate list plus assembled segments into one
 /// `GenerateResponse`. Backends are injected; the engine never constructs
 /// one.
@@ -321,6 +389,23 @@ impl AttemptEngine {
         let has_tools = !req.tools.is_empty();
         let mut attempt: u8 = 0;
         let mut considered: Vec<(ModelRef, String)> = Vec::new();
+        // Board item `01M23SDCE6T85Z48CRQ8NBY6PV`: the most recent failure
+        // pushed onto `considered` below (from EITHER site that pushes to
+        // it -- always overwritten, never merely set-once), kept alongside
+        // it so that IF the chain is ultimately exhausted AND that LAST
+        // failure was a `BackendError::ToolParse` (every coercion attempt
+        // and the bounded model-facing retry both already failed -- see
+        // this fn's `is_tool_parse` handling below), the terminal error can
+        // name the TOOL and ARGUMENT the model got wrong instead of
+        // collapsing into `RoutingError::NoCandidate`'s "no candidate"
+        // wording -- which is actively misleading here: a candidate DID
+        // answer, with a malformed tool call, not silence. A chain that
+        // fails ToolParse on one candidate and something else on a LATER
+        // one is unaffected: only the LAST recorded failure is ever
+        // consulted, so a genuinely mixed-cause exhaustion that does not
+        // itself END on a ToolParse keeps today's `NoCandidate` aggregate
+        // byte-for-byte.
+        let mut last_terminal_err: Option<BackendError> = None;
         let mut skipped: Vec<(ModelRef, RoutingReason)> = Vec::new();
         // Board item A1d ("say why a turn fell back"): the SAME admission
         // refusals `skipped` above already records, reshaped as
@@ -368,8 +453,15 @@ impl AttemptEngine {
             // note"): every field is independent of `Strategy`, so the same
             // `gen_req` -- cloned, never rebuilt -- serves every attempt this
             // route makes, including the ToolParse-retry's Stream -> Generate
-            // switch below.
-            let gen_req = self.build_request(
+            // switch below. `mut`: a `ToolArgumentsInvalid` retry (board item
+            // `01M23SDCE6T85Z48CRQ8NBY6PV` step 2) is the ONE exception --
+            // it rebuilds `gen_req` around `route_segments` PLUS the
+            // corrective segments `corrective_retry_segments` produces,
+            // for that one retry only. The bare `ToolParse` retry (unknown
+            // tool/unterminated JSON/conflicting name -- no valid
+            // `(tool, arguments)` pair to correct) still resends this same,
+            // never-rebuilt `gen_req` exactly as before.
+            let mut gen_req = self.build_request(
                 &route_segments,
                 req.tools,
                 req.prefix_key.clone(),
@@ -404,6 +496,13 @@ impl AttemptEngine {
 
             let endpoint = endpoint_of(&route.backend);
             let mut strategy = strategy_for(&caps, has_tools);
+            // Bounds BOTH the bare `ToolParse` blind retry AND the
+            // `ToolArgumentsInvalid` corrective retry to exactly one
+            // attempt each candidate ("one is likely enough; two at most",
+            // board item `01M23SDCE6T85Z48CRQ8NBY6PV`'s own decision) --
+            // shared, not per-class, since a candidate only ever hits ONE
+            // of the two causes per turn in practice and the bound is the
+            // same either way.
             let mut toolparse_retried = false;
             // Same-candidate stream retry (see this fn's module doc): how
             // many of the (up to `MAX_RETRIES`) mid-stream retries THIS
@@ -473,18 +572,57 @@ impl AttemptEngine {
                     Err(err) => match classify(&err) {
                         FailureClass::Fatal => {
                             let is_tool_parse = matches!(err, BackendError::ToolParse { .. });
-                            if is_tool_parse && strategy == Strategy::Stream && !toolparse_retried {
-                                // Exactly one non-streaming retry against the
-                                // identical request on the same route.
+                            let is_tool_args_invalid =
+                                matches!(err, BackendError::ToolArgumentsInvalid { .. });
+                            if (is_tool_parse || is_tool_args_invalid)
+                                && strategy == Strategy::Stream
+                                && !toolparse_retried
+                            {
+                                // Exactly one non-streaming retry on the same
+                                // route. `ToolParse` resends the identical
+                                // `gen_req` (nothing to correct with); a
+                                // `ToolArgumentsInvalid` rebuilds it with the
+                                // corrective segments appended below (board
+                                // item `01M23SDCE6T85Z48CRQ8NBY6PV` step 2)
+                                // -- the model-facing hand-back the spec asks
+                                // for, not a blind resend.
                                 toolparse_retried = true;
                                 strategy = Strategy::Generate;
+                                if let BackendError::ToolArgumentsInvalid {
+                                    tool,
+                                    call_id,
+                                    arguments,
+                                    argument_path,
+                                    detail,
+                                } = &err
+                                {
+                                    let mut retry_segments = route_segments.clone();
+                                    retry_segments.extend(corrective_retry_segments(
+                                        tool,
+                                        call_id,
+                                        arguments,
+                                        argument_path,
+                                        detail,
+                                    ));
+                                    gen_req = self.build_request(
+                                        &retry_segments,
+                                        req.tools,
+                                        req.prefix_key.clone(),
+                                        req.max_tokens_override,
+                                        req.headroom,
+                                        &route,
+                                        model_ref.model.clone(),
+                                    );
+                                }
                                 continue;
                             }
-                            if is_tool_parse {
-                                // A second ToolParse (or a ToolParse from a
-                                // request that was already non-streaming):
-                                // advance the chain, no health record (T-2).
+                            if is_tool_parse || is_tool_args_invalid {
+                                // A second failure of either kind (or one
+                                // from a request that was already
+                                // non-streaming): advance the chain, no
+                                // health record (T-2).
                                 considered.push((model_ref.clone(), err.to_string()));
+                                last_terminal_err = Some(err);
                                 break;
                             }
                             // Auth, Cancelled, and any future unrecognized
@@ -597,6 +735,15 @@ impl AttemptEngine {
                                 &err,
                             );
                             considered.push((model_ref.clone(), err.to_string()));
+                            // Overwrites any earlier `ToolParse` this same
+                            // chain may have recorded on a PRIOR candidate:
+                            // `last_terminal_err` names the failure that
+                            // caused exhaustion, and this class is never
+                            // `ToolParse` (see this fn's `is_tool_parse`
+                            // branch above), so a chain that failed
+                            // ToolParse then something else must not report
+                            // the stale ToolParse at the end.
+                            last_terminal_err = Some(err);
                             break;
                         }
                     },
@@ -659,6 +806,31 @@ impl AttemptEngine {
                 max_context_tokens,
                 shortfall_tokens,
             }));
+        }
+
+        // Board item `01M23SDCE6T85Z48CRQ8NBY6PV`: when the failure that
+        // exhausted the chain was a malformed tool call (`ToolParse`/
+        // `ToolArgumentsInvalid` -- coercion and the bounded model-facing
+        // retry both already failed to produce a valid call), surface a
+        // typed `RuntimeError::ToolCallRejected` naming the tool and
+        // argument (that variant's own `Display`, sourced from `err`'s
+        // rendering) rather than the generic `NoCandidate` aggregate --
+        // `NoCandidate`'s "no candidate"/`RuntimeError::Routing`'s "routing
+        // error:" wrapper are both actively wrong here: a candidate DID
+        // answer, with a malformed call, not silence. `considered` is
+        // carried through UNCHANGED (every candidate this chain tried,
+        // including the one that ultimately failed on its tool call), so a
+        // mixed-cause chain (an earlier candidate rate-limited, the last
+        // one malformed) still names every candidate, not only the last.
+        if let Some(
+            err @ (BackendError::ToolParse { .. } | BackendError::ToolArgumentsInvalid { .. }),
+        ) = last_terminal_err
+        {
+            return Err(RuntimeError::ToolCallRejected {
+                role: req.role,
+                detail: err.to_string(),
+                considered,
+            });
         }
 
         Err(RuntimeError::Routing(RoutingError::NoCandidate {
@@ -767,6 +939,28 @@ impl AttemptEngine {
                             self.bus.emit(session, agent, Event::ThinkingDelta { text });
                         }
                         Some(Ok(StreamChunk::Done(response))) => return Ok(response),
+                        // Board item `01M23SDCE6T85Z48CRQ8NBY6PV`: makes a
+                        // coercion firing durable and visible in a default
+                        // run (the operator's own ruling: "a coercion
+                        // nobody can count is the one this decision would
+                        // have rejected") -- mirrors `Event::
+                        // StreamRestarted`/`Event::ModelDecision` exactly.
+                        Some(Ok(StreamChunk::ToolArgumentCoerced {
+                            tool,
+                            call_id,
+                            argument_path,
+                        })) => {
+                            failure.stream_opened = true;
+                            self.bus.emit(
+                                session,
+                                agent,
+                                Event::ToolArgumentCoerced {
+                                    tool,
+                                    call_id,
+                                    argument_path,
+                                },
+                            );
+                        }
                         // `ToolCallDelta` and any future non-exhaustive
                         // variant carry nothing this engine's stream
                         // contract needs to forward, but reading one

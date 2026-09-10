@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::capabilities::{Capabilities, ContextTokensSource, ProbeReport};
 use crate::content::{ContentBlock, SamplingParams, StopReason, ToolCall, ToolSpec, Usage};
 use crate::error::{BackendError, ConwayError};
-use crate::ids::{BackendId, ModelId, PrefixKey};
+use crate::ids::{BackendId, ModelId, PrefixKey, ToolName};
 use crate::routing::ModelOverrides;
 use crate::segment::PromptSegment;
 
@@ -761,7 +761,28 @@ pub struct GenerateResponse {
 pub enum StreamChunk {
     TextDelta(String),
     ThinkingDelta(String),
-    ToolCallDelta { index: u32, raw: String },
+    ToolCallDelta {
+        index: u32,
+        raw: String,
+    },
+    /// A stringified tool-call argument was coerced to its parsed JSON
+    /// value (board item `01M23SDCE6T85Z48CRQ8NBY6PV`; see
+    /// `conway_plugin_backends::tool_calls::validate`'s own doc for the
+    /// narrow rule this fires under). Emitted once per firing, before the
+    /// `Done` chunk that carries the already-coerced `ToolCall`, so a
+    /// consumer sees this as real content arriving (mirrors every other
+    /// non-`TextDelta`/`ThinkingDelta` chunk in that respect) and can
+    /// record it durably -- `AttemptEngine::run_stream` (`conway-runtime`)
+    /// is the one production reader, turning it into `Event::
+    /// ToolArgumentCoerced`. **Streaming-path only**: the non-streaming
+    /// `generate()` path has no analogous channel (`GenerateResponse` does
+    /// not carry this) and falls back to a `tracing::info!` only -- a
+    /// disclosed, not-yet-closed gap; see that call sites' own comments.
+    ToolArgumentCoerced {
+        tool: ToolName,
+        call_id: String,
+        argument_path: String,
+    },
     Done(GenerateResponse),
 }
 

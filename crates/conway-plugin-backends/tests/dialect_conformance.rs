@@ -163,7 +163,7 @@ fn vllm_hermes_inline_text_tool_call_is_suppressed_and_produces_one_validated_ca
 
     // Even though the caller's own `finish_reason` mapping said `EndTurn`,
     // the accumulator flags the override; a real caller would apply it.
-    let calls = accumulator.finish(StopReason::EndTurn).unwrap();
+    let calls = accumulator.finish(StopReason::EndTurn).unwrap().calls;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, ToolName::new("read"));
     assert_eq!(calls[0].arguments, json!({"path": "a.txt"}));
@@ -178,7 +178,7 @@ fn vllm_hermes_with_structured_tool_calls_matches_openai_on_the_same_fixture() {
     for line in &lines {
         openai_acc.push_delta(line).unwrap();
     }
-    let openai_calls = openai_acc.finish(StopReason::ToolUse).unwrap();
+    let openai_calls = openai_acc.finish(StopReason::ToolUse).unwrap().calls;
 
     let mut vllm_acc = ToolCallAccumulator::new(ToolCallStyle::HermesTextFallback, &specs);
     for line in &lines {
@@ -186,7 +186,7 @@ fn vllm_hermes_with_structured_tool_calls_matches_openai_on_the_same_fixture() {
     }
     // Structured deltas were fed: the Hermes fallback must not have fired.
     assert_eq!(vllm_acc.stop_override(), None);
-    let vllm_calls = vllm_acc.finish(StopReason::ToolUse).unwrap();
+    let vllm_calls = vllm_acc.finish(StopReason::ToolUse).unwrap().calls;
 
     assert_eq!(openai_calls.len(), 1);
     assert_eq!(openai_calls, vllm_calls);
@@ -216,7 +216,7 @@ fn codex_7517_lm_studio_repeated_full_chunks_produce_one_call() {
     for _ in 0..3 {
         accumulator.push_delta(delta).unwrap();
     }
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 1, "expected exactly one call, got {calls:?}");
     assert_eq!(calls[0].call_id, "call_1");
     assert_eq!(calls[0].arguments, json!({"path": "a.txt"}));
@@ -229,7 +229,7 @@ fn codex_7517_lm_studio_shares_the_ollama_fixture_regression() {
     for line in fixture_lines("codex_7517_repeated_id_and_name.txt") {
         accumulator.push_delta(&line).unwrap();
     }
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 1, "expected exactly one call, got {calls:?}");
     assert_eq!(calls[0].call_id, "call_1");
     assert_eq!(calls[0].arguments, json!({"path": "a.txt"}));

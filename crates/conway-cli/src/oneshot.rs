@@ -1163,7 +1163,14 @@ fn resolve_budget(cli: &Cli, conway: &Conway) -> Option<Budget> {
 /// candidate to the non-streaming `generate()` path -- which, against a
 /// mock (or any real server that answers a non-streaming request with a
 /// streamed body regardless of what was asked for), fails a SECOND time and
-/// the whole routing chain aborts with `NoCandidate`. Before this fix, a
+/// the whole turn ends in a typed `RuntimeError::ToolCallRejected` naming
+/// the tool and the unknown-tool detail (board item
+/// `01M23SDCE6T85Z48CRQ8NBY6PV`; a SINGLE-candidate chain's own ToolParse
+/// exhaustion is surfaced directly, with every candidate it tried, rather
+/// than collapsed into `RoutingError::NoCandidate`'s misleading "no
+/// candidate" wording -- see `conway-runtime/src/attempt.rs`'s own
+/// `last_terminal_err` handling). Either way this is a run-ending failure
+/// for THIS turn, not a graceful `PermissionOutcome::Deny`. Before this fix, a
 /// denied call was always a graceful, in-turn
 /// `PermissionOutcome::Deny`/`DeniedWithFeedback` -- because the tool
 /// stayed ANNOUNCED (and thus known to the schema validator) even when it

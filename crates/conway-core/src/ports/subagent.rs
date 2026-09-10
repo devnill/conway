@@ -404,7 +404,16 @@ fn translate(err: RuntimeError) -> SubagentError {
         // failure, not a mistake in its own supplied arguments -- and the
         // rendered `Display` carries the merged/of counts through verbatim
         // if a future path ever does surface it here.
-        | RuntimeError::PullInIncomplete { .. } => {
+        | RuntimeError::PullInIncomplete { .. }
+        // `ToolCallRejected` (board item `01M23SDCE6T85Z48CRQ8NBY6PV`) is
+        // likewise not reachable through this port: it is `AttemptEngine::
+        // execute`'s own terminal error for a malformed tool call that
+        // survived coercion and the bounded model-facing retry, raised
+        // while generating the OWNING agent's own turn -- not something any
+        // of this trait's five methods (`start`/`steer`/`await_result`/
+        // `cancel`/`ask`) themselves return. `Host` for the same reason as
+        // the two above.
+        | RuntimeError::ToolCallRejected { .. } => {
             SubagentError::Host { detail: rendered }
         }
     }

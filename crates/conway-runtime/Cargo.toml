@@ -53,5 +53,16 @@ conway-testkit = { path = "../conway-testkit" }
 # well as through this crate's own `context::report` wrapper, to prove both
 # paths agree. Board item 01KZVYVTVWRH20R6VJ6G3SWTJ6, "Stage 1a".
 conway-session = { path = "../conway-session" }
+# Test-only edge, not an architectural one (see the `conway-session` entry
+# just above for the T4 caveat this shares). Board item
+# `01M23SDCE6T85Z48CRQ8NBY6PV`: `tests/toolparse_recovery.rs` drives the
+# REAL wire-level `ToolCallAccumulator`/`SchemaValidator` (this crate's
+# `AttemptEngine` never re-implements schema validation or coercion of its
+# own -- see that test file's own module doc) and the REAL `conway_spawn`
+# tool (`conway-tools`) end to end, so a scripted "model" that stringifies a
+# nested-object argument is a genuine reproduction of the evidenced bug, not
+# a stand-in that merely asserts the shape the fix is expected to have.
+conway-plugin-backends = { path = "../conway-plugin-backends" }
+conway-tools = { path = "../conway-tools" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }

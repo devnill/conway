@@ -80,7 +80,7 @@ impl FailureClass {
 /// Classifies a `BackendError` per the T-2 table:
 /// `Transport | ServerError | RateLimit` -> `FailoverRetryable`;
 /// `ContextOverflow | ContextTooLarge | BadRequest` -> `RequestIncompatible`;
-/// `Auth | Cancelled | ToolParse` -> `Fatal`.
+/// `Auth | Cancelled | ToolParse | ToolArgumentsInvalid` -> `Fatal`.
 pub fn classify(err: &BackendError) -> FailureClass {
     match err {
         BackendError::Transport { .. }
@@ -97,13 +97,22 @@ pub fn classify(err: &BackendError) -> FailureClass {
         | BackendError::ContextTooLarge { .. }
         | BackendError::BadRequest { .. } => FailureClass::RequestIncompatible,
 
-        BackendError::Auth { .. } | BackendError::Cancelled | BackendError::ToolParse { .. } => {
-            FailureClass::Fatal
-        } // No wildcard arm, deliberately: `classify` now lives in the same
-          // crate as `BackendError`, so `#[non_exhaustive]` does not force one
-          // here, and omitting it means a future variant added without a
-          // corresponding arm above is a compile error rather than a silent
-          // `Fatal` (see the module doc).
+        // `ToolArgumentsInvalid` is `ToolParse`'s structured twin (board
+        // item `01M23SDCE6T85Z48CRQ8NBY6PV`): a malformed tool call is not
+        // an endpoint-health problem and a DIFFERENT model is unlikely to
+        // help any more than the same one retrying would -- `AttemptEngine`
+        // handles both identically here (advance-the-chain-only, no
+        // failover), and gives `ToolArgumentsInvalid` specifically its own
+        // bounded, model-facing corrective retry before that.
+        BackendError::Auth { .. }
+        | BackendError::Cancelled
+        | BackendError::ToolParse { .. }
+        | BackendError::ToolArgumentsInvalid { .. } => FailureClass::Fatal,
+        // No wildcard arm, deliberately: `classify` now lives in the same
+        // crate as `BackendError`, so `#[non_exhaustive]` does not force one
+        // here, and omitting it means a future variant added without a
+        // corresponding arm above is a compile error rather than a silent
+        // `Fatal` (see the module doc).
     }
 }
 

@@ -487,11 +487,24 @@ pub(crate) fn to_generate_response(
         };
         accumulator.push_complete(tool_call.id, tool_call.function.name, arguments)?;
     }
-    let tool_calls = accumulator.finish(stop)?;
+    let outcome = accumulator.finish(stop)?;
+    // Non-streaming path: `GenerateResponse` carries no channel for a
+    // coercion record (unlike the streaming path's `StreamChunk::
+    // ToolArgumentCoerced` -- that type's own doc), so this is `tracing`
+    // only, a disclosed gap (board item `01M23SDCE6T85Z48CRQ8NBY6PV`).
+    for coercion in &outcome.coercions {
+        tracing::info!(
+            tool = %coercion.tool,
+            call_id = %coercion.call_id,
+            argument_path = %coercion.argument_path,
+            "coerced a stringified tool argument to its parsed JSON value \
+             (non-streaming generate(): not yet surfaced as a durable Event)"
+        );
+    }
 
     Ok(GenerateResponse {
         content,
-        tool_calls,
+        tool_calls: outcome.calls,
         stop,
         usage: map_usage(response.usage),
     })

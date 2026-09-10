@@ -261,6 +261,54 @@ cancel_with` is the embedder-facing counterpart; `SessionHandle::cancel`
 keeps calling it with `CancelMode::Immediate`, unchanged from before this
 distinction existed.
 
+### When a model's tool call is malformed (board item `01M23SDCE6T85Z48CRQ8NBY6PV`)
+
+A model's tool call has to arrive as real, schema-valid JSON before it can
+run — a common way a model gets that wrong is wrapping a nested-object
+argument in quotes, e.g. sending `conway_spawn`'s `budget` as the STRING
+`"{\"max_steps\": 5}"` instead of the object `{"max_steps": 5}` itself.
+Three things happen, in this order, and only the third one is loud:
+
+1. **An unambiguously stringified OBJECT (or `null`) argument is coerced,
+   silently to the model but never silently to you.** If the offending
+   value is a string, that string parses as JSON, the PARSED value's own
+   shape is an object or `null`, and the parsed value THEN validates
+   against the exact schema that rejected the string, conway uses the
+   parsed value and the call proceeds as if the model had sent it correctly
+   the first time — no round trip, no tokens spent. This can never change
+   what the model meant: a value that validates against the tool's own
+   declared schema is, by construction, a value the tool already promised
+   to accept. Every firing is logged and — on a streaming backend —
+   recorded as a durable event on the session's own event stream, naming
+   the tool and the argument's JSON Pointer path (e.g. `/budget`), so it is
+   countable rather than invisible in an ordinary run, not only under
+   `--verbose`/`RUST_LOG`. **Deliberately narrower than "parses, then
+   validates":** a bare stringified NUMBER, BOOLEAN, or ARRAY is never
+   coerced even when it, too, would parse and then validate — a stringified
+   scalar is at least as likely to be a genuine, intentional string value in
+   some other schema shape, so accepting it by construction would be
+   guessing, not normalizing a known wire-format artifact. Any of these,
+   or a string that does not parse as JSON at all, falls through to the
+   next step like any other malformed call.
+2. **Anything coercion can't fix is handed back to the model as a tool
+   error**, naming the tool, the argument's JSON Pointer path, and what was
+   wrong with it — literally appended to the retried request as the model
+   would see an ordinary failed tool call's result, not a blind resend of
+   the identical request. The model gets one corrected retry before the
+   chain gives up on this candidate.
+3. **Only once that retry is also exhausted does conway refuse loudly.**
+   The error names the tool and the argument that was wrong; it is never
+   reported as "no candidate" or a routing failure — a candidate DID
+   answer, with a malformed call, not silence, and the earlier phrasing
+   (`fatal error: ... routing error: no candidate for role default (1
+   considered)`) was actively misleading about that.
+
+None of this widens what a tool call can mean: coercion only ever accepts a
+value the schema already declared valid and only ever for the object/`null`
+shapes named above, and a malformation coercion can't resolve is always
+visible — either to the model, as a correctable error, or to you, as a
+named refusal.
+
 ### What a parent sees when a child dies (board item A5.3)
 
 conway's stated guarantee is that whatever happens to a child — a crash, a

@@ -84,7 +84,7 @@ fn openai_basic_two_chunk_delta_accumulates_to_one_call() {
         &mut accumulator,
         &fixture_lines("openai_basic_two_chunks.txt"),
     );
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].call_id, "call_1");
     assert_eq!(calls[0].name, ToolName::new("read"));
@@ -99,7 +99,7 @@ fn interleaved_indices_produce_two_calls_in_ascending_index_order_with_separated
         &mut accumulator,
         &fixture_lines("openai_interleaved_indices.txt"),
     );
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].call_id, "call_a");
     assert_eq!(calls[0].name, ToolName::new("read"));
@@ -120,7 +120,7 @@ fn codex_7517_repeated_id_and_name_produces_one_call_not_n() {
         &mut accumulator,
         &fixture_lines("codex_7517_repeated_id_and_name.txt"),
     );
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 1, "expected exactly one call, got {calls:?}");
     assert_eq!(calls[0].call_id, "call_1");
     assert_eq!(calls[0].arguments, serde_json::json!({"path": "a.txt"}));
@@ -134,7 +134,7 @@ fn ollama_12557_object_then_empty_string_arguments_produces_one_valid_call() {
         &mut accumulator,
         &fixture_lines("ollama_12557_object_then_empty_string.txt"),
     );
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 1, "expected exactly one call, got {calls:?}");
     assert_eq!(calls[0].arguments, serde_json::json!({"path": "a.txt"}));
 }
@@ -170,14 +170,14 @@ fn finish_with_schema_invalid_arguments_names_the_failing_schema_path() {
     );
     let err = accumulator.finish(StopReason::ToolUse).unwrap_err();
     match err {
-        conway_core::error::BackendError::ToolParse { detail } => {
-            assert!(detail.contains("read"), "{detail}");
+        conway_core::error::BackendError::ToolArgumentsInvalid { tool, detail, .. } => {
+            assert_eq!(tool, ToolName::new("read"));
             assert!(
                 detail.contains("required") || detail.contains('/'),
                 "expected a schema-path-bearing message, got: {detail}"
             );
         }
-        other => panic!("expected ToolParse, got {other:?}"),
+        other => panic!("expected ToolArgumentsInvalid, got {other:?}"),
     }
 }
 
@@ -198,7 +198,7 @@ fn finish_with_unknown_tool_name_contains_unknown_tool() {
 #[test]
 fn finish_end_turn_with_zero_calls_is_ok_empty() {
     let accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &[]);
-    let calls = accumulator.finish(StopReason::EndTurn).unwrap();
+    let calls = accumulator.finish(StopReason::EndTurn).unwrap().calls;
     assert!(calls.is_empty());
 }
 
@@ -211,7 +211,7 @@ fn empty_string_or_empty_object_arguments_for_no_required_schema_yields_empty_ob
         &mut accumulator,
         &fixture_lines("empty_string_arguments.txt"),
     );
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].arguments, serde_json::json!({}));
 
@@ -220,7 +220,7 @@ fn empty_string_or_empty_object_arguments_for_no_required_schema_yields_empty_ob
         &mut accumulator,
         &fixture_lines("empty_object_arguments.txt"),
     );
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].arguments, serde_json::json!({}));
 }
@@ -236,7 +236,7 @@ fn push_complete_shares_the_same_finish_validation_path() {
             serde_json::json!({"path": "b.txt"}),
         )
         .unwrap();
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].call_id, "call_9");
     assert_eq!(calls[0].arguments, serde_json::json!({"path": "b.txt"}));
@@ -249,7 +249,7 @@ fn synthesizes_call_id_when_absent_at_finish() {
     accumulator
         .push_delta(r#"{"index":0,"function":{"name":"ping","arguments":"{}"}}"#)
         .unwrap();
-    let calls = accumulator.finish(StopReason::ToolUse).unwrap();
+    let calls = accumulator.finish(StopReason::ToolUse).unwrap().calls;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].call_id, "call_0");
 }

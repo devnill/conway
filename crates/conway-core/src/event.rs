@@ -132,6 +132,29 @@ pub enum Event {
         reason: RoutingReason,
         attempt: u8,
     },
+    /// A stringified tool-call argument was coerced to its parsed JSON
+    /// value -- board item `01M23SDCE6T85Z48CRQ8NBY6PV` step 1
+    /// (`conway_plugin_backends::tool_calls::validate::SchemaValidator::
+    /// validate`'s own doc has the narrow rule this fires under: the value
+    /// is a string, that string parses as JSON, and the parsed value THEN
+    /// validates against the exact schema branch that rejected the
+    /// string). The operator's own ruling requires every firing to be
+    /// "recorded... countable... a coercion nobody can count is the one
+    /// this decision would have rejected" -- this event is what makes that
+    /// durable and visible in a default run, mirroring
+    /// [`Event::StreamRestarted`] (a recovery a subscriber would otherwise
+    /// never know about) and [`Event::ModelDecision`] (the same shape for
+    /// routing) exactly. `tool`/`call_id` name the call the argument
+    /// belonged to; `argument_path` is the RFC 6901 JSON Pointer that was
+    /// rejected before coercion (e.g. `/budget`). **Streaming-backend
+    /// paths only** today: `StreamChunk::ToolArgumentCoerced`'s own doc
+    /// discloses the non-streaming `generate()` gap this does not yet
+    /// close.
+    ToolArgumentCoerced {
+        tool: ToolName,
+        call_id: String,
+        argument_path: String,
+    },
     TextDelta {
         text: String,
     },

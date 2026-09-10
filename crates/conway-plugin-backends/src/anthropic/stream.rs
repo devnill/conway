@@ -250,7 +250,23 @@ async fn drive(
     }
 
     match accumulator.finish(stop) {
-        Ok(tool_calls) => {
+        Ok(outcome) => {
+            // Board item `01M23SDCE6T85Z48CRQ8NBY6PV`: surface each
+            // coercion durably BEFORE the terminal `Done` chunk, so a
+            // subscriber sees it as real content arriving, exactly like
+            // `Event::StreamRestarted`'s own precedent.
+            for coercion in &outcome.coercions {
+                if tx
+                    .send(Ok(StreamChunk::ToolArgumentCoerced {
+                        tool: coercion.tool.clone(),
+                        call_id: coercion.call_id.clone(),
+                        argument_path: coercion.argument_path.clone(),
+                    }))
+                    .is_err()
+                {
+                    return;
+                }
+            }
             let mut content = Vec::new();
             if !thinking_buffer.is_empty() {
                 content.push(ContentBlock::Thinking {
@@ -267,7 +283,7 @@ async fn drive(
             }
             let _ = tx.send(Ok(StreamChunk::Done(GenerateResponse {
                 content,
-                tool_calls,
+                tool_calls: outcome.calls,
                 stop,
                 usage,
             })));

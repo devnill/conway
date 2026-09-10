@@ -104,7 +104,32 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use hermes::HermesTextScanner;
-use validate::SchemaValidator;
+use validate::{SchemaValidator, Validated};
+
+/// [`ToolCallAccumulator::finish`]'s success shape: the validated (and
+/// possibly coerced) calls, plus every coercion that fired producing them
+/// -- board item `01M23SDCE6T85Z48CRQ8NBY6PV`. `coercions` is empty in the
+/// overwhelmingly common case (nothing to record); each caller (a
+/// dialect's own `generate()`/`stream()` implementation) is responsible for
+/// surfacing a non-empty list to whatever durable channel it has --
+/// `StreamChunk::ToolArgumentCoerced` on the streaming path, `tracing::
+/// info!` only on the non-streaming path (a disclosed gap; see that call
+/// sites' own comments).
+#[derive(Debug)]
+pub struct FinishOutcome {
+    pub calls: Vec<ToolCall>,
+    pub coercions: Vec<ToolArgumentCoercion>,
+}
+
+/// One `SchemaValidator::validate` coercion firing, named by the tool and
+/// call it belonged to and the RFC 6901 JSON Pointer path that was
+/// rejected before coercion (e.g. `/budget`).
+#[derive(Debug, Clone)]
+pub struct ToolArgumentCoercion {
+    pub tool: ToolName,
+    pub call_id: String,
+    pub argument_path: String,
+}
 
 /// Which streamed tool-call parsing strategy a provider needs — the
 /// declarative-provider-profiles replacement for the old
@@ -323,9 +348,10 @@ impl ToolCallAccumulator {
     /// `stop` gates nothing here: some servers report a stop reason other
     /// than `ToolUse` (e.g. `stop`/`length`) alongside genuine tool calls,
     /// so accumulated slots are always validated and returned regardless of
-    /// `stop`'s value. Zero accumulated slots always yields `Ok(vec![])`,
-    /// independent of `stop`.
-    pub fn finish(self, stop: StopReason) -> Result<Vec<ToolCall>, BackendError> {
+    /// `stop`'s value. Zero accumulated slots always yields
+    /// `Ok(FinishOutcome { calls: vec![], coercions: vec![] })`, independent
+    /// of `stop`.
+    pub fn finish(self, stop: StopReason) -> Result<FinishOutcome, BackendError> {
         let _ = stop;
         if let Some(scanner) = self.hermes {
             if !self.structured_seen {
@@ -341,6 +367,7 @@ impl ToolCallAccumulator {
         let validator = self.validator?;
         let specs = self.specs;
         let mut calls = Vec::with_capacity(self.slots.len());
+        let mut coercions = Vec::new();
         for (index, slot) in self.slots.into_iter() {
             let name = slot.name.ok_or_else(|| BackendError::ToolParse {
                 detail: format!("tool call at index {index} never received a name"),
@@ -351,6 +378,13 @@ impl ToolCallAccumulator {
                     detail: format!("unknown tool `{name}` at index {index}"),
                 });
             }
+            // Computed BEFORE validation (not just before pushing the
+            // final `ToolCall`, as before this item): both `SchemaValidator::
+            // validate`'s `ToolArgumentsInvalid` error and this fn's own
+            // `ToolArgumentCoercion` record need a `call_id` to attach a
+            // corrective `ToolResult`/log entry to, and neither exists at
+            // the OLD computation point (after validation succeeded).
+            let call_id = slot.id.unwrap_or_else(|| format!("call_{index}"));
             let arguments = if let Some(value) = slot.args_value {
                 value
             } else if slot.args.trim().is_empty() {
@@ -365,15 +399,27 @@ impl ToolCallAccumulator {
                     }
                 })?
             };
-            validator.validate(&tool_name, &arguments)?;
-            let call_id = slot.id.unwrap_or_else(|| format!("call_{index}"));
+            let arguments = match validator.validate(&tool_name, &call_id, arguments)? {
+                Validated::AsIs(value) => value,
+                Validated::Coerced {
+                    value,
+                    argument_path,
+                } => {
+                    coercions.push(ToolArgumentCoercion {
+                        tool: tool_name.clone(),
+                        call_id: call_id.clone(),
+                        argument_path,
+                    });
+                    value
+                }
+            };
             calls.push(ToolCall {
                 call_id,
                 name: tool_name,
                 arguments,
             });
         }
-        Ok(calls)
+        Ok(FinishOutcome { calls, coercions })
     }
 
     /// Whether no slot has been opened yet.

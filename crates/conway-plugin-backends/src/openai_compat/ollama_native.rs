@@ -251,11 +251,24 @@ pub(crate) fn to_generate_response_native(
             tool_call.function.arguments,
         )?;
     }
-    let tool_calls = accumulator.finish(stop)?;
+    let outcome = accumulator.finish(stop)?;
+    // Non-streaming path: `GenerateResponse` carries no channel for a
+    // coercion record (unlike the streaming path's `StreamChunk::
+    // ToolArgumentCoerced` -- that type's own doc), so this is `tracing`
+    // only, a disclosed gap (board item `01M23SDCE6T85Z48CRQ8NBY6PV`).
+    for coercion in &outcome.coercions {
+        tracing::info!(
+            tool = %coercion.tool,
+            call_id = %coercion.call_id,
+            argument_path = %coercion.argument_path,
+            "coerced a stringified tool argument to its parsed JSON value \
+             (non-streaming generate(): not yet surfaced as a durable Event)"
+        );
+    }
 
     Ok(GenerateResponse {
         content,
-        tool_calls,
+        tool_calls: outcome.calls,
         stop,
         usage: Usage {
             input_tokens: response.prompt_eval_count,
@@ -383,7 +396,23 @@ async fn drive_native(
         map_native_finish_reason(state.done_reason.as_deref())
     };
     match state.accumulator.finish(stop) {
-        Ok(tool_calls) => {
+        Ok(outcome) => {
+            // Board item `01M23SDCE6T85Z48CRQ8NBY6PV`: surface each
+            // coercion durably BEFORE the terminal `Done` chunk, so a
+            // subscriber sees it as real content arriving, exactly like
+            // `Event::StreamRestarted`'s own precedent.
+            for coercion in &outcome.coercions {
+                if tx
+                    .send(Ok(StreamChunk::ToolArgumentCoerced {
+                        tool: coercion.tool.clone(),
+                        call_id: coercion.call_id.clone(),
+                        argument_path: coercion.argument_path.clone(),
+                    }))
+                    .is_err()
+                {
+                    return;
+                }
+            }
             let mut content = Vec::new();
             if !state.text_buffer.is_empty() {
                 content.push(ContentBlock::Text {
@@ -392,7 +421,7 @@ async fn drive_native(
             }
             let _ = tx.send(Ok(StreamChunk::Done(GenerateResponse {
                 content,
-                tool_calls,
+                tool_calls: outcome.calls,
                 stop,
                 usage: state.usage,
             })));
