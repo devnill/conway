@@ -57,6 +57,19 @@
 //! [`attempt_engine_reports_tool_call_rejected_directly`], pins the same
 //! typed-error construction at `AttemptEngine`'s own level, independent of
 //! everything `AgentLoop` layers on top.
+//!
+//! **Board item `01M23JSD6DRAR8FMDJAZYBXQMB`** ("a completed `report` must
+//! not be destroyed for being too long") extends this same file rather than
+//! duplicating its harness (P-14): it reuses `AccumulatingBackend`/
+//! `ScriptedAttempt` unchanged, now scripting the REAL `report` `ToolSpec`
+//! (`report_tool_spec`) instead of `conway_spawn`. Its own four tests:
+//! [`attempt_engine_truncates_and_delivers_report_summary_when_retry_also_fails`]
+//! and [`report_missing_required_field_is_reported_as_schema_failure_not_no_candidate`]
+//! (both `AttemptEngine`-direct, mirroring test 5 above), plus, at the
+//! SESSION level,
+//! [`full_pipeline::report_summary_exceeding_bound_is_truncated_and_marked_after_retry_fails`]
+//! and its required pair
+//! [`full_pipeline::report_summary_within_bound_is_delivered_verbatim_and_unmarked`].
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -65,9 +78,11 @@ use async_trait::async_trait;
 use conway_core::capabilities::{
     CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
-use conway_core::content::{ContentBlock, Role, SamplingParams, StopReason, ToolSpec, Usage};
+use conway_core::content::{
+    ContentBlock, PermissionClass, Role, SamplingParams, StopReason, ToolCategory, ToolSpec, Usage,
+};
 use conway_core::error::{BackendError, RuntimeError};
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
+use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk, Tool,
 };
@@ -80,6 +95,7 @@ use conway_plugin_backends::tool_calls::{
 use conway_runtime::attempt::{AttemptEngine, AttemptRequest};
 use conway_runtime::events::EventBus;
 use conway_testkit::FakeHealth;
+use conway_tools::report::ReportTool;
 use conway_tools::subagent::tools::SpawnTool;
 use futures::stream::{self, StreamExt};
 use serde_json::{json, Value};
@@ -287,6 +303,40 @@ fn caps() -> Capabilities {
 
 fn spawn_tool_spec() -> ToolSpec {
     SpawnTool::new().spec()
+}
+
+/// The REAL `report` `ToolSpec` -- schemars-generated, `summary`'s
+/// `maxLength: 2000` included -- so `SchemaValidator` rejects an oversized
+/// summary on the exact schema THE EVIDENCE's own follow-up bug (board item
+/// `01M23JSD6DRAR8FMDJAZYBXQMB`) tripped on, not a hand-rolled substitute.
+fn report_tool_spec() -> ToolSpec {
+    ReportTool::new().spec()
+}
+
+/// A tool ALSO named `report`, but not the built-in `ReportTool` -- a
+/// third-party plugin registering its own `report` with a much smaller
+/// `summary` bound (`PluginRegistry::from_plugins` rejects only DUPLICATE
+/// tool names, never duplicate schemas, so this is legitimate, not a test
+/// artifact). Used to drive `try_truncate_report_summary`'s own "the
+/// bound is too small to hold even the marker" guard: `max_len` is small
+/// enough that `truncated_summary_marker`'s own text alone would already
+/// exceed it.
+fn report_tool_spec_with_summary_max_len(max_len: u64) -> ToolSpec {
+    ToolSpec {
+        name: ToolName::new("report"),
+        description: "test-only report tool with a tiny summary bound".into(),
+        schema: serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "summary": { "type": "string", "maxLength": max_len }
+            },
+            "required": ["summary"],
+            "additionalProperties": false
+        }))
+        .expect("valid RootSchema JSON"),
+        category: ToolCategory::Think,
+        permission: PermissionClass::Safe,
+    }
 }
 
 fn a_segment() -> PromptSegment {
@@ -590,6 +640,163 @@ async fn mixed_cause_chain_names_every_candidate_not_only_the_last() {
 }
 
 // ---------------------------------------------------------------------
+// Board item `01M23JSD6DRAR8FMDJAZYBXQMB` ("a completed report must not be
+// destroyed for being too long"). THE EVIDENCE: a child agent's `report`
+// call carried a genuinely good, complete distillate whose `summary`
+// exceeded the tool's own 2000-character `maxLength`; the call was
+// rejected, the corrective retry ALSO produced an oversized summary, and
+// the whole run was lost. `01M23SDCE6T85Z48CRQ8NBY6PV`'s coercion and
+// corrective retry (above) already give the model its one chance to fix
+// this; this item's own addition is what happens when that chance is
+// spent: `report`'s `summary` -- and ONLY that field, on ONLY that tool --
+// is truncated to the schema's own bound and delivered, marked, rather
+// than failing the turn. `01M23SDCE6T85Z48CRQ8NBY6PV`'s own honest
+// classification (never "no candidate"/"routing" for a schema failure) is
+// NOT rebuilt here -- `report_missing_required_field_is_reported_as_
+// schema_failure_not_no_candidate` below just re-pins it against `report`
+// itself, since that classification is exactly what a `report` failure
+// the truncation fallback declines to touch (e.g. a MISSING `summary`,
+// nothing to shorten) must still receive.
+// ---------------------------------------------------------------------
+
+/// Direct `AttemptEngine`-level pin (mirrors `attempt_engine_reports_
+/// tool_call_rejected_directly`'s own "independent of everything AgentLoop
+/// layers on top" framing): an oversized `summary` that survives the
+/// bounded retry still comes back as a real, dispatchable `ToolCall` for
+/// `report`, with the summary shortened to fit the SAME `maxLength` it was
+/// rejected against and marked as shortened.
+#[tokio::test]
+async fn attempt_engine_truncates_and_delivers_report_summary_when_retry_also_fails() {
+    let oversized = "s".repeat(2500);
+    let bad_call =
+        || ScriptedAttempt::ToolCalls(vec![("report", json!({"summary": oversized.clone()}))]);
+    let backend = Arc::new(AccumulatingBackend::new(
+        "b",
+        caps(),
+        vec![bad_call(), bad_call()],
+    ));
+    let eng = engine(backend);
+    let segments = vec![a_segment()];
+    let tools = vec![report_tool_spec()];
+    let routes = vec![single_route("b", "m1")];
+    let req = base_request(routes, &segments, &tools);
+
+    let outcome = eng
+        .execute(req)
+        .await
+        .expect("truncate-and-deliver must succeed rather than fail the whole turn");
+
+    assert_eq!(outcome.response.tool_calls.len(), 1);
+    let call = &outcome.response.tool_calls[0];
+    assert_eq!(call.name.as_str(), "report");
+    let summary = call.arguments["summary"]
+        .as_str()
+        .expect("summary must still be a string");
+    assert!(
+        summary.chars().count() <= 2000,
+        "the delivered summary must satisfy the SAME maxLength it was rejected against, got {} \
+         chars",
+        summary.chars().count()
+    );
+    assert!(
+        summary.to_lowercase().contains("truncated"),
+        "a shortened summary must say so: {summary:?}"
+    );
+    assert_ne!(
+        summary, &oversized,
+        "the delivered summary must not be the untouched original"
+    );
+}
+
+/// Board item `01M23JSD6DRAR8FMDJAZYBXQMB` acceptance 3, re-pinned against
+/// `report` itself (`01M23SDCE6T85Z48CRQ8NBY6PV`'s own coverage used
+/// `conway_spawn`): a `report` call missing its REQUIRED `summary` field
+/// entirely fails schema validation at the object's own root (nothing at
+/// any path is an oversized string), which the truncate-and-deliver
+/// fallback above correctly declines to touch -- so this must still end in
+/// a typed `RuntimeError::ToolCallRejected` naming the tool, never the
+/// misleading `RoutingError::NoCandidate` "no candidate"/"routing" wording.
+#[tokio::test]
+async fn report_missing_required_field_is_reported_as_schema_failure_not_no_candidate() {
+    let bad_call = || ScriptedAttempt::ToolCalls(vec![("report", json!({}))]);
+    let backend = Arc::new(AccumulatingBackend::new(
+        "b",
+        caps(),
+        vec![bad_call(), bad_call()],
+    ));
+    let eng = engine(backend);
+    let segments = vec![a_segment()];
+    let tools = vec![report_tool_spec()];
+    let routes = vec![single_route("b", "m1")];
+    let req = base_request(routes, &segments, &tools);
+
+    let err = eng
+        .execute(req)
+        .await
+        .expect_err("a missing required field must not be truncated away");
+
+    let RuntimeError::ToolCallRejected { detail, .. } = &err else {
+        panic!("expected a typed RuntimeError::ToolCallRejected, got {err:?}");
+    };
+    assert!(detail.contains("report"), "{detail}");
+    assert!(detail.contains("summary"), "{detail}");
+    let rendered = err.to_string();
+    assert!(
+        !rendered.to_lowercase().contains("no candidate"),
+        "must not say \"no candidate\" when a candidate answered: {rendered}"
+    );
+    assert!(
+        !rendered.to_lowercase().contains("routing"),
+        "must not be reported as a routing failure: {rendered}"
+    );
+}
+
+/// Review finding on board item `01M23JSD6DRAR8FMDJAZYBXQMB`:
+/// `try_truncate_report_summary` must never deliver a value that still
+/// violates the schema it claims to satisfy. `max_len` is read dynamically
+/// from whatever `ToolSpec` named `report` is actually in `tools`
+/// (`report_summary_max_len`) -- the BUILT-IN `report` hardcodes
+/// `maxLength: 2000` against `truncated_summary_marker`'s own roughly
+/// 200-character text, but nothing stops a third-party plugin from
+/// registering its own tool also named `report` (`PluginRegistry::
+/// from_plugins` rejects only duplicate tool NAMES, never duplicate
+/// schemas) with a much smaller `summary` bound -- one too small to even
+/// hold the marker. That case must fall through to the ordinary,
+/// always-safe `ToolCallRejected` refusal, never deliver the marker alone
+/// as a "successful" `summary` that is itself longer than the bound it was
+/// supposedly shortened to fit.
+#[tokio::test]
+async fn report_summary_bound_too_small_for_marker_is_rejected_not_delivered_invalid() {
+    let oversized = "s".repeat(100);
+    let bad_call =
+        || ScriptedAttempt::ToolCalls(vec![("report", json!({"summary": oversized.clone()}))]);
+    let backend = Arc::new(AccumulatingBackend::new(
+        "b",
+        caps(),
+        vec![bad_call(), bad_call()],
+    ));
+    let eng = engine(backend);
+    let segments = vec![a_segment()];
+    // A `report` bound (50 chars) far smaller than the marker text itself
+    // (`truncated_summary_marker` alone runs well over 100 chars) --
+    // deliberately not the built-in `report_tool_spec()`.
+    let tools = vec![report_tool_spec_with_summary_max_len(50)];
+    let routes = vec![single_route("b", "m1")];
+    let req = base_request(routes, &segments, &tools);
+
+    let err = eng.execute(req).await.expect_err(
+        "a bound too small to hold even the truncation marker must be refused, never delivered \
+         as an invalid \"success\"",
+    );
+
+    let RuntimeError::ToolCallRejected { detail, .. } = &err else {
+        panic!("expected a typed RuntimeError::ToolCallRejected, got {err:?}");
+    };
+    assert!(detail.contains("report"), "{detail}");
+    assert!(detail.contains("summary"), "{detail}");
+}
+
+// ---------------------------------------------------------------------
 // Test 1: coercion fires on the very first attempt, every time (no retry
 // needed at all -- proving it is not luck on a later attempt); the turn
 // completes, a child is genuinely spawned end to end through a real
@@ -609,6 +816,7 @@ mod full_pipeline {
     use conway_testkit::{
         FakeGate, FakeHealth, FakePathStore, FakeRouter, FakeSessionDiscoveryHost, FakeStore,
     };
+    use conway_tools::report::ReportPlugin;
     use conway_tools::subagent::SubagentPlugin;
     use futures::StreamExt as _;
 
@@ -878,6 +1086,178 @@ mod full_pipeline {
         assert!(
             !fatal_error_text.to_lowercase().contains("routing"),
             "{fatal_error_text}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Board item `01M23JSD6DRAR8FMDJAZYBXQMB` acceptance 1 and 2, at the
+    // SESSION level (P-15) -- a required pair: the first proves an
+    // oversized summary still comes back usable; the second (paired,
+    // required by this item's own spec) proves a summary already under the
+    // bound is untouched, so the first test cannot be satisfied by an
+    // implementation that truncates or marks EVERY report regardless of
+    // length.
+    // -------------------------------------------------------------------
+
+    /// An oversized `summary` that survives the bounded retry
+    /// (`01M23SDCE6T85Z48CRQ8NBY6PV`) still produces a genuinely usable,
+    /// `Completed` terminal result -- the truncate-and-deliver fallback
+    /// this item adds, exercised end to end through a real `Runtime` and
+    /// the REAL `ReportTool` (not merely `AttemptEngine::execute`'s bare
+    /// `Ok`, which `attempt_engine_truncates_and_delivers_report_summary_
+    /// when_retry_also_fails` above already pins as a narrower
+    /// supplementary check).
+    #[tokio::test]
+    async fn report_summary_exceeding_bound_is_truncated_and_marked_after_retry_fails() {
+        let oversized = "x".repeat(2500);
+        let bad_call = || {
+            ScriptedAttempt::ToolCalls(vec![("report", json!({ "summary": oversized.clone() }))])
+        };
+        let backend = Arc::new(AccumulatingBackend::new(
+            "b",
+            caps(),
+            vec![
+                bad_call(),
+                bad_call(),
+                // The root's own next turn, once the (truncated,
+                // delivered) report's own tool result comes back -- an
+                // ordinary agent stops calling tools once it has reported.
+                ScriptedAttempt::Text("done"),
+            ],
+        ));
+        let model = ModelRef {
+            backend: backend.id(),
+            model: ModelId::new("m1"),
+        };
+        let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
+        let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+        backends.insert(backend.id(), backend);
+
+        let runtime = Runtime::new(RuntimeDeps {
+            store: Arc::new(FakeStore::new()),
+            path_store: Arc::new(FakePathStore::new()),
+            router,
+            health: Arc::new(FakeHealth::new()),
+            backends,
+            plugins: vec![Arc::new(ReportPlugin::new())],
+            gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+            agent_defs: HashMap::new(),
+            instructions: Vec::new(),
+            skills: Default::default(),
+            event_bus: EventBus::with_default_capacity(),
+            headroom: Arc::new(conway_core::capabilities::HeadroomPolicy::default()),
+            tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
+            session_discovery: Arc::new(FakeSessionDiscoveryHost::new()),
+            capabilities: Arc::new(CapabilityRegistry::default()),
+        });
+
+        let mut stream = runtime.subscribe();
+        let root = runtime
+            .start_root(root_spec("summarize the board"))
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let envelope = stream.next().await.expect("event stream ended early");
+                if envelope.agent != root {
+                    continue;
+                }
+                if let Event::AgentFinished { result, .. } = envelope.event {
+                    return result;
+                }
+            }
+        })
+        .await
+        .expect("root must finish");
+
+        assert_eq!(
+            result.status,
+            ResultStatus::Completed,
+            "an oversized report summary must still hand back a usable result, not fail the \
+             turn: {result:?}"
+        );
+        assert!(
+            result.summary.chars().count() <= 2000,
+            "the delivered summary must satisfy report's own maxLength, got {} chars",
+            result.summary.chars().count()
+        );
+        assert!(
+            result.summary.to_lowercase().contains("truncated"),
+            "a shortened summary must say so: {:?}",
+            result.summary
+        );
+        assert_ne!(result.summary, oversized);
+    }
+
+    /// Paired with the test above (required by this item's own spec): a
+    /// summary well under the bound is delivered COMPLETELY UNCHANGED and
+    /// UNMARKED. Without this pair, the test above alone could not
+    /// distinguish "truncates only when needed" from "always truncates and
+    /// marks" -- a fixture at the field's own default value would prove
+    /// nothing (P-15), so this uses a real, distinct summary string.
+    #[tokio::test]
+    async fn report_summary_within_bound_is_delivered_verbatim_and_unmarked() {
+        let summary = "the board holds roughly 200 items, grouped by status: open, claimable, \
+                        blocked, and done";
+        let backend = Arc::new(AccumulatingBackend::new(
+            "b",
+            caps(),
+            vec![
+                ScriptedAttempt::ToolCalls(vec![("report", json!({ "summary": summary }))]),
+                ScriptedAttempt::Text("done"),
+            ],
+        ));
+        let model = ModelRef {
+            backend: backend.id(),
+            model: ModelId::new("m1"),
+        };
+        let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
+        let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+        backends.insert(backend.id(), backend);
+
+        let runtime = Runtime::new(RuntimeDeps {
+            store: Arc::new(FakeStore::new()),
+            path_store: Arc::new(FakePathStore::new()),
+            router,
+            health: Arc::new(FakeHealth::new()),
+            backends,
+            plugins: vec![Arc::new(ReportPlugin::new())],
+            gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+            agent_defs: HashMap::new(),
+            instructions: Vec::new(),
+            skills: Default::default(),
+            event_bus: EventBus::with_default_capacity(),
+            headroom: Arc::new(conway_core::capabilities::HeadroomPolicy::default()),
+            tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
+            session_discovery: Arc::new(FakeSessionDiscoveryHost::new()),
+            capabilities: Arc::new(CapabilityRegistry::default()),
+        });
+
+        let mut stream = runtime.subscribe();
+        let root = runtime
+            .start_root(root_spec("summarize the board"))
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let envelope = stream.next().await.expect("event stream ended early");
+                if envelope.agent != root {
+                    continue;
+                }
+                if let Event::AgentFinished { result, .. } = envelope.event {
+                    return result;
+                }
+            }
+        })
+        .await
+        .expect("root must finish");
+
+        assert_eq!(result.status, ResultStatus::Completed);
+        assert_eq!(
+            result.summary, summary,
+            "a summary under the bound must be delivered VERBATIM, not truncated or marked"
         );
     }
 }

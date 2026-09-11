@@ -92,7 +92,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use conway_core::capabilities::{Capabilities, ContextTokensSource, ToolCallSupport};
-use conway_core::content::{ContentBlock, Role, ToolSpec};
+use conway_core::content::{ContentBlock, Role, StopReason, ToolCall, ToolSpec, Usage};
 use conway_core::error::{BackendError, RoutingError, RuntimeError};
 use conway_core::event::Event;
 use conway_core::failure::{classify, observation_for, FailureClass};
@@ -349,6 +349,150 @@ fn corrective_retry_segments(
     [assistant, result]
 }
 
+/// `report`'s own tool name -- matched literally, never by depending on
+/// `conway-tools`, mirroring `crate::result::REPORT_TOOL_NAME`'s own
+/// precedent for this exact boundary (that module's own doc: `report_tool
+/// .rs`'s architecture note says `conway-tools` must never become a
+/// dependency of `conway-runtime`, so the ONLY way this crate can
+/// recognize the tool is by the name every dialect actually calls it).
+const REPORT_TOOL_NAME: &str = "report";
+
+/// The one JSON Pointer instance path `SchemaValidator::validate`
+/// (`conway-plugin-backends`) ever names for `report`'s `summary` field:
+/// the value that fails is the string itself, directly under the
+/// object root, so its own `instance_path()` is exactly `/summary` --
+/// never nested further (unlike, say, `conway_spawn`'s `/budget`, itself
+/// an object one level down).
+const REPORT_SUMMARY_PATH: &str = "/summary";
+
+/// Reads `report`'s own declared `maxLength` for `summary` directly out of
+/// `tools`' compiled `ToolSpec.schema` -- the SAME schemars-generated
+/// document `SchemaValidator` already rejected the call against -- rather
+/// than restating `conway-tools::report::report_tool::MAX_SUMMARY_CHARS`
+/// as a second literal this crate could drift from (P-14: one declaration
+/// of the bound). `None` if `report` is not registered at all (a chain
+/// with no report tool declared) or its schema carries no numeric
+/// `maxLength` at that path -- either way there is nothing safe to
+/// truncate against, so the caller falls through to the ordinary
+/// `ToolCallRejected` failure.
+fn report_summary_max_len(tools: &[ToolSpec]) -> Option<usize> {
+    let spec = tools.iter().find(|t| t.name.as_str() == REPORT_TOOL_NAME)?;
+    let schema = serde_json::to_value(&spec.schema).ok()?;
+    let max = schema.pointer("/properties/summary/maxLength")?.as_u64()?;
+    usize::try_from(max).ok()
+}
+
+/// Appends a marker to the truncated summary that is visible to BOTH the
+/// operator (rendered wherever a summary is shown -- the TUI, one-shot
+/// output, the library's own `AgentResult`) and the parent MODEL (this
+/// exact text is what `child_result_text` -- `context::builder` -- later
+/// replays into the parent's own context, board item
+/// `01M23JSD6DRAR8FMDJAZYBXQMB`'s "visible to the parent model as well as
+/// the operator" requirement). Never silent (P-9): the marker names both
+/// the original length and the bound that was exceeded, so nobody -- human
+/// or model -- mistakes the shortened text for the verbatim summary the
+/// child actually wrote.
+fn truncated_summary_marker(original_chars: usize, max_len: usize) -> String {
+    format!(
+        " [summary truncated: the original was {original_chars} characters, exceeding the \
+         {max_len}-character limit, and a corrective retry did not produce a shorter one -- \
+         this is a shortened version of what the agent reported]"
+    )
+}
+
+/// Board item `01M23JSD6DRAR8FMDJAZYBXQMB` step 1's "one bounded retry,
+/// then truncate to the bound and deliver it, marked as truncated"
+/// fallback -- reached only once BOTH `SchemaValidator::validate`'s narrow
+/// coercion (`conway-plugin-backends`) AND `execute`'s own corrective
+/// retry above have already failed to produce a valid call.
+///
+/// Scoped to EXACTLY `report`'s own `summary` field, deliberately narrower
+/// than "any oversized string argument on any tool": `report` is
+/// `PermissionClass::Safe`/`ToolCategory::Think` with no side effects of
+/// its own (`conway-tools/src/report/report_tool.rs`'s own doc), so
+/// substituting a shortened value for what the model asked to declare can
+/// never change what the run actually DID -- only what it SAYS about what
+/// it did, which the marker above makes unmistakable. The identical move
+/// for, say, a `bash` command or a `write` path would be unsafe: a
+/// truncated shell command or file path is not obviously still the same
+/// (or even a valid) operation, so this fallback must never generalize to
+/// "any tool, any string field" (P-10: untrusted model input gets a typed
+/// response, never a guess at what the model "really meant" to do).
+///
+/// Returns `None` (never truncates -- the caller then falls through to the
+/// ordinary, always-safe `ToolCallRejected` failure) unless ALL of: the
+/// rejected tool is `report`; the rejected instance path is exactly
+/// `/summary`; `report`'s own schema declares a numeric `maxLength` for it;
+/// the value actually AT that path in `arguments` is a string longer than
+/// that bound; AND the marker `truncated_summary_marker` would append is
+/// itself no longer than that bound. That last guard is load-bearing, not
+/// defensive filler: `max_len` is read dynamically, per call, from whatever
+/// `ToolSpec` in `tools` is named `report` (`report_summary_max_len`) --
+/// the built-in tool hardcodes 2000 against a roughly-200-character marker,
+/// but nothing stops a THIRD-PARTY plugin from registering its own tool
+/// also named `report` with a much smaller `summary` bound (`conway`'s
+/// `PluginRegistry::from_plugins` rejects only duplicate tool names, never
+/// duplicate SCHEMAS). Without the guard, `keep = max_len.saturating_sub
+/// (marker_chars)` saturates to zero and this function would return
+/// `Some(marker alone)` -- a value `marker_chars` long, i.e. LONGER than
+/// `max_len`, which is exactly the schema violation this whole fallback
+/// exists to avoid delivering. Refusing here is correct, not merely safe:
+/// if the bound cannot even hold the sentence saying the summary was
+/// shortened, there is no useful truncated result to hand back, and the
+/// ordinary refusal at least names the tool and argument honestly. A
+/// `required`/missing-field/wrong-type failure at a DIFFERENT path (or on a
+/// different tool entirely) is not this function's concern either, for the
+/// same reason.
+fn try_truncate_report_summary(
+    tools: &[ToolSpec],
+    tool: &ToolName,
+    argument_path: &str,
+    arguments: &Value,
+) -> Option<Value> {
+    if tool.as_str() != REPORT_TOOL_NAME || argument_path != REPORT_SUMMARY_PATH {
+        return None;
+    }
+    let max_len = report_summary_max_len(tools)?;
+    let summary = arguments.pointer(REPORT_SUMMARY_PATH)?.as_str()?;
+    let original_chars = summary.chars().count();
+    if original_chars <= max_len {
+        // Some OTHER schema failure produced this exact path/tool
+        // combination (unreachable today -- `maxLength` is the only
+        // constraint `summary` carries -- but a future schema change
+        // could add one): there is nothing this function knows how to
+        // safely shorten, so it defers rather than guessing.
+        return None;
+    }
+    let marker = truncated_summary_marker(original_chars, max_len);
+    let marker_chars = marker.chars().count();
+    if marker_chars >= max_len {
+        // The bound is too small to hold even the "this was shortened"
+        // sentence -- e.g. a non-built-in `report`-named tool with a tiny
+        // `summary` bound (this function's own doc). Delivering the marker
+        // alone would itself be longer than `max_len`, violating the very
+        // schema this fallback exists to satisfy, so defer to the ordinary
+        // `ToolCallRejected` refusal instead of guessing at a shorter
+        // marker that might mislead as much as it informs.
+        return None;
+    }
+    let keep = max_len - marker_chars;
+    // Truncates on a CHAR boundary (`.chars()`, never a raw byte index --
+    // the multi-byte panic this repo already hit once, `crates/
+    // conway-cli/src/tui/view/transcript.rs`'s own `truncate_chars_with_
+    // ellipsis` doc). `maxLength` here is enforced by this workspace's
+    // vendored `jsonschema` 0.48.2 via `bytecount::num_chars`, which counts
+    // Unicode SCALAR VALUES (`.chars().count()`) -- the exact unit this
+    // truncates to. Given the `marker_chars >= max_len` guard above already
+    // returned, `keep + marker_chars == max_len` exactly, so the patched
+    // value is guaranteed to satisfy the same compiled schema
+    // `SchemaValidator` rejected it against.
+    let mut truncated: String = summary.chars().take(keep).collect();
+    truncated.push_str(&marker);
+    let mut patched = arguments.clone();
+    *patched.pointer_mut(REPORT_SUMMARY_PATH)? = Value::String(truncated);
+    Some(patched)
+}
+
 /// Turns an ordered candidate list plus assembled segments into one
 /// `GenerateResponse`. Backends are injected; the engine never constructs
 /// one.
@@ -406,6 +550,16 @@ impl AttemptEngine {
         // itself END on a ToolParse keeps today's `NoCandidate` aggregate
         // byte-for-byte.
         let mut last_terminal_err: Option<BackendError> = None;
+        // The candidate route that produced `last_terminal_err`, kept in
+        // lock-step with it (set at the SAME site, never independently) so
+        // that IF the exhausted chain's own truncate-and-deliver fallback
+        // (`try_truncate_report_summary`, board item
+        // `01M23JSD6DRAR8FMDJAZYBXQMB`) fires below, the synthetic
+        // `AttemptOutcome` it returns can still name a real, resolvable
+        // route/backend -- `route` itself is a `for` loop variable and goes
+        // out of scope once the chain is exhausted, so this is the only way
+        // to recover it there.
+        let mut last_terminal_route: Option<Route> = None;
         let mut skipped: Vec<(ModelRef, RoutingReason)> = Vec::new();
         // Board item A1d ("say why a turn fell back"): the SAME admission
         // refusals `skipped` above already records, reshaped as
@@ -623,6 +777,7 @@ impl AttemptEngine {
                                 // health record (T-2).
                                 considered.push((model_ref.clone(), err.to_string()));
                                 last_terminal_err = Some(err);
+                                last_terminal_route = Some(route.clone());
                                 break;
                             }
                             // Auth, Cancelled, and any future unrecognized
@@ -808,6 +963,49 @@ impl AttemptEngine {
             }));
         }
 
+        // Board item `01M23JSD6DRAR8FMDJAZYBXQMB` step 1: before collapsing
+        // an exhausted `ToolArgumentsInvalid` chain into the terminal
+        // `ToolCallRejected` failure below, give `report`'s own `summary`
+        // field its one truncate-and-deliver fallback -- see
+        // `try_truncate_report_summary`'s own doc for exactly how narrow
+        // this is. `last_terminal_route` is always `Some` whenever
+        // `last_terminal_err` is `Some(ToolArgumentsInvalid { .. })` (the
+        // two are set together, at the one site above), so the `let-else`
+        // pattern below never actually falls through on a live path -- it
+        // exists only so a future refactor that broke that invariant fails
+        // a match instead of panicking on an `.unwrap()`.
+        if let Some(BackendError::ToolArgumentsInvalid {
+            tool,
+            call_id,
+            arguments,
+            argument_path,
+            ..
+        }) = &last_terminal_err
+        {
+            if let Some(patched) =
+                try_truncate_report_summary(req.tools, tool, argument_path, arguments)
+            {
+                if let Some(route) = last_terminal_route.clone() {
+                    tracing::warn!(
+                        tool = %tool,
+                        argument_path = %argument_path,
+                        call_id = %call_id,
+                        "report summary exceeded its bound after a corrective retry; \
+                         truncating and delivering it rather than failing the turn"
+                    );
+                    return Ok(self.deliver_truncated_report(
+                        route,
+                        call_id.clone(),
+                        tool.clone(),
+                        patched,
+                        attempt,
+                        skipped.clone(),
+                        skip_failures.clone(),
+                    ));
+                }
+            }
+        }
+
         // Board item `01M23SDCE6T85Z48CRQ8NBY6PV`: when the failure that
         // exhausted the chain was a malformed tool call (`ToolParse`/
         // `ToolArgumentsInvalid` -- coercion and the bounded model-facing
@@ -837,6 +1035,59 @@ impl AttemptEngine {
             role: req.role,
             considered,
         }))
+    }
+
+    /// Builds the synthetic success `try_truncate_report_summary`'s caller
+    /// returns once it fires: a `GenerateResponse` carrying exactly one
+    /// `ToolCall` for `report`, arguments already patched to the
+    /// truncated, marked summary -- shaped byte-for-byte like a REAL
+    /// tool-calling turn (`content: vec![]`, `tool_calls: vec![...]`,
+    /// `stop: StopReason::ToolUse`; mirrors `AccumulatingBackend::
+    /// next_response`'s own `ScriptedAttempt::ToolCalls` construction in
+    /// `conway-runtime/tests/toolparse_recovery.rs`) so every downstream
+    /// consumer -- `AgentLoop`'s dispatch, the persisted `Assistant`
+    /// record, and every one of the TUI/one-shot/library facades built on
+    /// top of it (C-03/GP-05/P-8) -- treats it exactly like an ordinary
+    /// successful turn, with no new code path any of them needs to learn
+    /// about. No backend was actually called for this "attempt" (`attempts`
+    /// is passed through unchanged: however many REAL calls already
+    /// happened), so no health `Observation` is recorded either (T-2: this
+    /// is a request problem already resolved locally, never an
+    /// endpoint-health signal) and `latency` is `Duration::ZERO`.
+    #[allow(clippy::too_many_arguments)]
+    fn deliver_truncated_report(
+        &self,
+        route: Route,
+        call_id: String,
+        tool: ToolName,
+        arguments: Value,
+        attempts: u8,
+        skipped: Vec<(ModelRef, RoutingReason)>,
+        skip_failures: Vec<AttemptFailure>,
+    ) -> AttemptOutcome {
+        let backend = self.backend_for(&route.backend);
+        let caps = backend.capabilities(&route.model);
+        let max_context_tokens = window_of(&caps);
+        let max_context_tokens_source = backend.context_window_source(&route.model);
+        let response = GenerateResponse {
+            content: vec![],
+            tool_calls: vec![ToolCall {
+                call_id,
+                name: tool,
+                arguments,
+            }],
+            stop: StopReason::ToolUse,
+            usage: Usage::default(),
+        };
+        AttemptOutcome {
+            response,
+            route: with_admission_failures(route, &skip_failures),
+            attempts,
+            latency: Duration::ZERO,
+            skipped,
+            max_context_tokens,
+            max_context_tokens_source,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

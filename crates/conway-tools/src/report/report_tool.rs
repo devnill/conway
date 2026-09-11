@@ -6,6 +6,22 @@
 //! and lifts the envelope's payload into the agent's terminal result. That
 //! lift is deliberately kept out of this crate (architecture boundary:
 //! conway-tools must not depend on conway-runtime or conway-session).
+//!
+//! **`summary`'s bound is enforced twice, at two different layers, on
+//! purpose (board item `01M23JSD6DRAR8FMDJAZYBXQMB`).** `ReportArgs`'s
+//! `#[schemars(length(max = 2000))]` makes `MAX_SUMMARY_CHARS` a real
+//! `maxLength` in this tool's own JSON Schema, so a real model-issued call
+//! is validated -- and, if oversized, given a corrective retry, then
+//! truncated and delivered rather than lost -- entirely at the wire layer
+//! (`conway-plugin-backends`' `SchemaValidator`, `conway-runtime`'s
+//! `AttemptEngine::deliver_truncated_report`) BEFORE it ever reaches
+//! `ReportTool::invoke` below. That fn's own `chars().count() >
+//! MAX_SUMMARY_CHARS` check is therefore effectively unreachable from a
+//! real backend-issued call today, but stays as defense in depth for any
+//! OTHER caller that constructs a `ToolCall` directly and invokes this tool
+//! without going through that wire-level validation first (this crate's own
+//! tests do exactly that) -- conway-tools must not assume every caller is
+//! `conway-runtime`'s `AttemptEngine`.
 
 use std::path::PathBuf;
 

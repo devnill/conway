@@ -296,18 +296,49 @@ Three things happen, in this order, and only the third one is loud:
    would see an ordinary failed tool call's result, not a blind resend of
    the identical request. The model gets one corrected retry before the
    chain gives up on this candidate.
-3. **Only once that retry is also exhausted does conway refuse loudly.**
-   The error names the tool and the argument that was wrong; it is never
-   reported as "no candidate" or a routing failure — a candidate DID
-   answer, with a malformed call, not silence, and the earlier phrasing
-   (`fatal error: ... routing error: no candidate for role default (1
-   considered)`) was actively misleading about that.
+3. **Only once that retry is also exhausted does conway refuse loudly** —
+   with ONE exception (below): the error names the tool and the argument
+   that was wrong; it is never reported as "no candidate" or a routing
+   failure — a candidate DID answer, with a malformed call, not silence, and
+   the earlier phrasing (`fatal error: ... routing error: no candidate for
+   role default (1 considered)`) was actively misleading about that.
 
 None of this widens what a tool call can mean: coercion only ever accepts a
 value the schema already declared valid and only ever for the object/`null`
 shapes named above, and a malformation coercion can't resolve is always
 visible — either to the model, as a correctable error, or to you, as a
 named refusal.
+
+#### The one exception: `report`'s own `summary` (board item `01M23JSD6DRAR8FMDJAZYBXQMB`)
+
+`report`'s `summary` has a bounded length (2,000 characters) precisely so an
+agent cannot blow out its parent's context with an unbounded distillate —
+but destroying a genuinely complete piece of work because it ran a little
+long is a worse failure than the bound was ever meant to cause. If an
+oversized `summary` survives step 2's corrective retry (the model tried
+again and was still too long, or could not shorten it in time), conway does
+**not** fall through to step 3's loud refusal for this one field. Instead it
+truncates `summary` itself, to the exact character bound the schema
+declares, and delivers the call as if it had succeeded — with the truncated
+text itself carrying a marker naming the original length and the bound that
+was exceeded, e.g. `[summary truncated: the original was 2,431 characters,
+exceeding the 2,000-character limit, ...]`. That marker is not cosmetic: it
+lands in the terminal `AgentResult.summary` a parent's own context is built
+from, so both you and the parent MODEL can see that what you are reading is
+shortened, never mistaking it for the verbatim original. A summary already
+within the bound is never touched or marked — only one that needed the
+fallback is.
+
+This is deliberately the ONLY field, on the ONLY tool, this recovery path
+ever does this for. `report` is a `Think`-category tool with no side effects
+of its own — substituting a shortened value for what the model asked to
+declare can only change what the run SAYS about what it did, never what it
+DID. The identical move for, say, a `bash` command or a `write` path would
+be unsafe (a truncated shell command or file path is not obviously still the
+same, or even a valid, operation), so this exception does not generalize:
+every other tool, and every other `report` argument (a missing required
+field, a malformed `structured` value, and so on), still reaches step 3's
+ordinary named refusal.
 
 ### What a parent sees when a child dies (board item A5.3)
 
