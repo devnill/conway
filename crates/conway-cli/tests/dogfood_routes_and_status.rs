@@ -434,11 +434,18 @@ async fn status_line_command_stuck_past_its_timeout_never_blocks_the_prompt() {
     let cmd = common::pty_command(&[], &fixture);
     let mut session = PtySession::spawn(cmd, 160, 45);
     let landed = session.wait_for(LANDED, Duration::from_secs(15));
+    // 20s, not the 3s this originally used. This bounds how long we wait
+    // before declaring the prompt dead; it does NOT race a competing writer,
+    // because nothing overwrites the echoed probe text once it lands. So a
+    // generous deadline cannot change the answer, only how patiently we wait
+    // for it -- unlike a timeout that arbitrates between two events, where a
+    // bigger number moves the failure threshold without removing the race.
+    // Measured 2026-09-16: 3s failed 1 run in 20 on a cold binary.
     session.send("dogfood-input-liveness-probe");
     session.wait_for_since(
         "dogfood-input-liveness-probe",
         landed,
-        Duration::from_secs(3),
+        Duration::from_secs(20),
     );
 }
 
