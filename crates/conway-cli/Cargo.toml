@@ -359,3 +359,8 @@ nix = { workspace = true, features = ["signal", "fs"] }
 # HTTP responses -- the shipped binary itself never touches raw sockets
 # (reqwest/hyper-util own that at runtime), so these stay test-only.
 tokio = { workspace = true, features = ["net", "io-util"] }
+# Board item 01M2M6NR49FYQSRS00B95PTAZT: `tests/common/pty.rs`'s compiled-
+# binary TUI harness -- see the workspace `Cargo.toml`'s own line for the
+# `portable-pty`-over-`expectrl` justification. The ONE new dependency this
+# item adds; every other dev-dependency in this file already existed.
+portable-pty = { workspace = true }

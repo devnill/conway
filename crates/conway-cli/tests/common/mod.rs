@@ -5,6 +5,14 @@
 //! binary against it.
 
 pub mod mock_backend;
+// Board item `01M2M6NR49FYQSRS00B95PTAZT`: the compiled-binary TUI test
+// harness (spawn `conway` attached to a real pty, send keys, wait for a
+// pattern with a timeout, capture the rendered screen) -- see that
+// module's own doc for the full reasoning. A sibling of
+// [`mock_backend`]: nothing in [`PtySession`](pty::PtySession) itself
+// knows what a `Fixture`/`command` is, so [`pty_command`] below is the one
+// seam that connects the two.
+pub mod pty;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -192,6 +200,33 @@ pub fn command(args: &[&str], fixture: &Fixture) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
+    cmd
+}
+
+/// [`command`]'s own env/cwd choices, rebuilt as a [`pty::CommandBuilder`]
+/// instead of a `std::process::Command` -- for a test that needs the
+/// subprocess to see a REAL pty on stdin/stdout/stderr (`pty::PtySession`),
+/// which piping through [`command`]'s own `Stdio` can never give it (that
+/// module's own top doc explains why this is load-bearing, not cosmetic).
+/// Deliberately NOT a thin wrapper around [`command`] itself -- the two
+/// builder types share no common trait this crate could dispatch through,
+/// so this restates [`command`]'s env/`--config` choices directly rather
+/// than trying to force one implementation through both. A caller that
+/// wants the interactive local-probe branch to find something (rather than
+/// [`command`]'s own default "nothing listens here") overrides
+/// `CONWAY_LOCAL_PROBE_BASE_URL` again afterward, the same way a caller of
+/// [`command`] would.
+#[allow(dead_code)]
+pub fn pty_command(args: &[&str], fixture: &Fixture) -> pty::CommandBuilder {
+    let mut cmd = pty::CommandBuilder::new(assert_cmd::cargo::cargo_bin("conway"));
+    cmd.cwd(fixture.dir.path());
+    cmd.env("CONWAY_CONFIG_DIR", fixture.dir.path());
+    cmd.env("CONWAY_LOCAL_PROBE_BASE_URL", "http://127.0.0.1:1/v1");
+    cmd.arg("--config");
+    cmd.arg(&fixture.config_path);
+    for arg in args {
+        cmd.arg(arg);
+    }
     cmd
 }
 
