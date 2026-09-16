@@ -241,6 +241,24 @@ named profile in `.conway/profiles.toml` and reference its id as the
 `dialect`; see [`providers.md`](providers.md#declarative-provider-profiles)
 for the full profile schema.
 
+### Guided setup confirms the context window it resolves
+
+Adding a model — in guided setup, or later via `/settings` → providers —
+never leaves conway's own guess about that model's context window
+unstated. Every add confirms what it resolved before that number governs:
+a live probe against the provider, the dialect's own already-verified
+baseline (Anthropic, OpenAI), or, when neither says anything, an explicit
+prompt naming the exact 32,768-token floor conway would otherwise silently
+assume and saying plainly that it is a guess, not a measurement. Pressing
+Enter accepts a real, resolved default (a probe or a verified baseline)
+without writing anything — the value stays live, so a later, better probe
+can still improve it; typing a different number always saves it, and that
+saved number always wins from then on, even over a later probe that
+disagrees. See [`providers.md`'s "Establishing the window at
+setup"](providers.md#establishing-the-window-at-setup) for the full
+accept-versus-override rule and how to change an already-configured
+model's window later.
+
 ### Small local models: the runway warning at setup time
 
 Guided setup's own opinion set (see "Installing a first-party plugin"
@@ -249,9 +267,9 @@ registers, the instruction fragments it injects, and a representative
 allowance for the first slash command you run. On a small local model's
 context window, that fixed cost can already be most of what's available.
 The moment guided setup learns a model's context window — by discovery, by
-your own typed answer, or from a provider's own verified baseline — it
-compares that fixed cost against it, and warns when the install alone
-would already spend more than half the window:
+your own typed or accepted answer, or from a provider's own verified
+baseline — it compares that fixed cost against it, and warns when the
+install alone would already spend more than half the window:
 
 ```
 conway's default install alone would use an estimated 24.0k of 32.7k
