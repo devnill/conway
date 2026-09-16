@@ -176,6 +176,50 @@ impl App {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
+        // Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: bare `/role`'s own
+        // listing -- UNLIKE `known_role_names` just above, this keeps the
+        // baked-in `"default"` floor rather than filtering it out (see
+        // `AppState::role_listing`'s own doc for why: an environment-only
+        // configuration can never author a real role at all -- `conway::
+        // config::merge::env_to_value`'s own doc -- so the floor is the
+        // only role such a launch ever has, and bare `/role` must still be
+        // able to list it, labelled built-in, rather than report nothing
+        // configured). Built from the SAME `roles` this function already
+        // loaded -- no second `[roles]` read.
+        let mut role_listing: Vec<crate::tui::state::RoleListingEntry> = roles
+            .iter()
+            .map(|(name, entry)| crate::tui::state::RoleListingEntry {
+                name: name.clone(),
+                chain: entry.chain.clone(),
+                builtin: is_baked_in_role_floor(name, entry),
+            })
+            .collect();
+        role_listing.sort_by(|a, b| a.name.cmp(&b.name));
+        self.state.role_listing = role_listing;
+        // Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: every `backends.<id>`
+        // key the current merged config declares, file OR environment
+        // layer alike -- what tells bare `/model` "zero backends
+        // configured" (the only case that earns its "no models are
+        // configured" notice) apart from "backends exist, but nothing
+        // names a model on them yet" (a different message). A separate
+        // `merged_document` read from the two above (`load_default_role_
+        // lax`/`load_roles_lax` each already read it once for their own
+        // narrower slice; `ConwayConfig`'s own `backends` field is not
+        // exposed by either lax reader) -- a best-effort read: a failure
+        // here leaves `configured_backend_ids` at whatever it held before,
+        // the same "stale but honest" policy this whole method's own doc
+        // already establishes for its other three fields.
+        if let Ok(merged) = merged_document(&LoadOptions {
+            env: env.clone(),
+            cwd: cwd.to_path_buf(),
+            ..Default::default()
+        }) {
+            self.state.configured_backend_ids = merged
+                .get("backends")
+                .and_then(serde_json::Value::as_object)
+                .map(|backends| backends.keys().cloned().collect())
+                .unwrap_or_default();
+        }
     }
 
     /// `Enter` on the "defaults" section's `default role` leaf

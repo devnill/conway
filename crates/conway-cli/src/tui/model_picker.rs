@@ -8,17 +8,33 @@
 //!
 //! [`candidate_models`] unions every `"backend/model"` pair an
 //! operator-configured role's own `chain` lists (`AppState::
-//! configured_models`, already computed by `App::refresh_default_entries`)
-//! with every model recorded in the local model-metadata file
-//! (`AppState::model_max_context`'s own keys -- `.conway/models.json`,
-//! already loaded once by `ConwayBuilder::build` and carried on `AppState`,
-//! so this reads no file itself). It does **not** additionally enumerate
-//! "whatever each configured backend declares" on top of those two:
-//! `conway-plugin-backends` carries no static per-backend model catalogue
-//! today (only runtime capability *resolution* for a model already named
-//! some other way), and reaching for one would mean either a live provider
-//! roster fetch (explicitly out of scope here) or a new catalogue this
-//! change does not add.
+//! configured_models`, already computed by `App::refresh_default_entries`),
+//! every model recorded in the local model-metadata file (`AppState::
+//! model_max_context`'s own keys -- `.conway/models.json`, already loaded
+//! once by `ConwayBuilder::build` and carried on `AppState`, so this reads
+//! no file itself), and -- board item `01M24ZJ9ABPP0DGVAA2PS3XVDD` -- the
+//! session's own `--model` pin (`AppState::model_pin`), when one was given.
+//! The pin matters because a role chain cannot be built from the
+//! environment at all (`conway::config::merge::env_to_value`'s own doc):
+//! a launch with backends declared only through `CONWAY_BACKENDS__*` has an
+//! empty `configured_models` by construction, and without the pin as a
+//! third source the picker would have nothing to offer even though the
+//! session is genuinely routing every turn to a real model.
+//!
+//! It does **not** additionally enumerate "whatever each configured
+//! backend declares" on top of those three: `conway-plugin-backends`
+//! carries no static per-backend model catalogue today (only runtime
+//! capability *resolution* for a model already named some other way), and
+//! reaching for one would mean either a live provider roster fetch
+//! (explicitly out of scope here) or a new catalogue this change does not
+//! add. A backend present in `AppState::configured_backend_ids` that no
+//! candidate here names (no chain, no pin) is instead surfaced as a
+//! `commands::execute`-pushed [`crate::tui::state::Entry::Notice`], one
+//! layer up -- see [`backends_without_a_named_model`]'s own doc -- rather
+//! than as an unparseable row in this list: every option this module
+//! returns is round-trip-safe as a raw `ModelRef` string
+//! (`open_model_picker`'s own doc, in `commands.rs`), and a bare backend id
+//! is not one.
 //!
 //! # Why this module has no `AppState`-mutating function at all
 //!
@@ -40,18 +56,54 @@ use std::collections::BTreeSet;
 
 /// Every model `/model` bare's picker should offer: the union of
 /// `chain_models` (every `"backend/model"` pair an operator-configured
-/// role's own `chain` names) and `metadata_models` (every key the local
-/// model-metadata file records) -- sorted and deduped, a `BTreeSet` giving
-/// both for free, the identical trick `AppState::configured_models`'s own
-/// construction already uses. See this module's own doc for the third
+/// role's own `chain` names), `metadata_models` (every key the local
+/// model-metadata file records), and -- board item
+/// `01M24ZJ9ABPP0DGVAA2PS3XVDD` -- `pin` (`AppState::model_pin`'s own
+/// `"backend/model"` string, when the session was launched with `--model`)
+/// -- sorted and deduped, a `BTreeSet` giving both the union and the
+/// dedup for free, the identical trick `AppState::configured_models`'s own
+/// construction already uses. See this module's own doc for the fourth
 /// source this deliberately does not cover.
 pub fn candidate_models(
     chain_models: &[String],
     metadata_models: impl Iterator<Item = String>,
+    pin: Option<&str>,
 ) -> Vec<String> {
     let mut set: BTreeSet<String> = chain_models.iter().cloned().collect();
     set.extend(metadata_models);
+    if let Some(pin) = pin {
+        set.insert(pin.to_string());
+    }
     set.into_iter().collect()
+}
+
+/// Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: every id in `backend_ids` that
+/// no entry in `candidates` names -- i.e. no `"backend/model"` pair in
+/// `candidates` has that id as its prefix before the first `/`. This is
+/// what lets `commands::execute`'s `Model { model: None }` arm say, per
+/// backend, "reachable but nothing routes to it yet" instead of silently
+/// omitting it from an otherwise non-empty listing -- see this module's
+/// own top doc for why such a backend cannot simply become a fourth row in
+/// [`candidate_models`]'s own output (it names no specific model, so it is
+/// not a round-trip-safe `ModelRef` string). Preserves `backend_ids`' own
+/// order; an empty `candidates` list (nothing configured at all) makes
+/// every backend id qualify, which is the correct degenerate case --
+/// `commands::execute` only calls this once `candidates` is already known
+/// to be non-empty, so that case in practice never reaches here, but the
+/// function itself makes no such assumption.
+pub fn backends_without_a_named_model(
+    backend_ids: &[String],
+    candidates: &[String],
+) -> Vec<String> {
+    backend_ids
+        .iter()
+        .filter(|id| {
+            !candidates
+                .iter()
+                .any(|c| c.split('/').next() == Some(id.as_str()))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Case-insensitive substring filter over an already-built candidate list
@@ -93,7 +145,7 @@ mod tests {
             "local/qwen3.8:27b-mlx".to_string(),
         ];
 
-        let got = candidate_models(&chain, metadata.into_iter());
+        let got = candidate_models(&chain, metadata.into_iter(), None);
 
         assert_eq!(
             got,
@@ -113,7 +165,7 @@ mod tests {
             "anthropic/claude-haiku".to_string(),
         ];
 
-        let got = candidate_models(&chain, std::iter::empty());
+        let got = candidate_models(&chain, std::iter::empty(), None);
 
         assert_eq!(
             got,
@@ -126,7 +178,52 @@ mod tests {
 
     #[test]
     fn candidate_models_with_neither_source_is_empty() {
-        assert!(candidate_models(&[], std::iter::empty()).is_empty());
+        assert!(candidate_models(&[], std::iter::empty(), None).is_empty());
+    }
+
+    /// **VERIFICATION ANCHOR** (board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`,
+    /// test (a)): a `--model` pin is unioned in as a third source, even
+    /// with no chain and no metadata at all -- the exact shape a launch
+    /// with backends declared only through `CONWAY_BACKENDS__*` has (no
+    /// role chain can be built from the environment, so `chain_models` is
+    /// necessarily empty).
+    #[test]
+    fn candidate_models_includes_the_pin_even_with_no_other_source() {
+        let got = candidate_models(&[], std::iter::empty(), Some("ollama_cloud/glm-5.2"));
+
+        assert_eq!(got, vec!["ollama_cloud/glm-5.2".to_string()]);
+    }
+
+    /// The pin is deduped against the chain, not appended a second time.
+    #[test]
+    fn candidate_models_dedupes_a_pin_already_in_the_chain() {
+        let chain = vec!["anthropic/claude-haiku".to_string()];
+
+        let got = candidate_models(&chain, std::iter::empty(), Some("anthropic/claude-haiku"));
+
+        assert_eq!(got, vec!["anthropic/claude-haiku".to_string()]);
+    }
+
+    #[test]
+    fn backends_without_a_named_model_finds_the_unrouted_backend() {
+        let backend_ids = vec!["ollama_cloud".to_string(), "anthropic".to_string()];
+        let candidates = vec!["anthropic/claude-haiku".to_string()];
+
+        let got = backends_without_a_named_model(&backend_ids, &candidates);
+
+        assert_eq!(
+            got,
+            vec!["ollama_cloud".to_string()],
+            "anthropic is named by a candidate; ollama_cloud is not"
+        );
+    }
+
+    #[test]
+    fn backends_without_a_named_model_is_empty_when_every_backend_is_named() {
+        let backend_ids = vec!["ollama_cloud".to_string()];
+        let candidates = vec!["ollama_cloud/glm-5.2".to_string()];
+
+        assert!(backends_without_a_named_model(&backend_ids, &candidates).is_empty());
     }
 
     #[test]
