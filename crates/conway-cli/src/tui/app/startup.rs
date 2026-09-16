@@ -617,10 +617,9 @@ impl App {
             state.model_pin.as_deref(),
             cli.role_override.as_deref(),
         ) {
-            state.transcript.push(crate::tui::state::Entry::Error {
-                text,
-                fatal: false,
-            });
+            state
+                .transcript
+                .push(crate::tui::state::Entry::Error { text, fatal: false });
         }
         // Board item 01M1YVP3FDPHY4WZ72SXMWAN2D: the mode THIS session
         // STARTS in -- see `resolve_default_mode`'s own doc for the

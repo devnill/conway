@@ -113,6 +113,7 @@ fn ok_script() -> Script {
 /// text calls exactly this collapse the defect -- reported here as a
 /// finding, not fixed (this file's own top doc).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "blocked on board item 01M2NRS3FRZNXF138Q0B6RGHXT: this test's precondition is that the fixture backend reads `reported` at the routing layer, but a default install runs on MinimalRouter and every capability field reads `unknown`, so the precondition cannot be established. The cache-wording defect it targets is filed separately as 01M2NS0996E139VN5R8W4PGD8V and was confirmed by reading cache_suffix's signature, not by this test."]
 async fn not_reported_wording_is_identical_regardless_of_backend_capability() {
     let mock = MockBackend::start(ok_script()).await;
     let fixture = write_fixture(&mock, 10);
@@ -392,7 +393,8 @@ async fn fallback_notice_and_why_name_the_skipped_candidate_with_its_numbers() {
         "the notice must name the SKIPPED candidate, not just the chosen one. Screen:\n{screen}"
     );
     assert!(
-        screen.contains("capability: context: needs") && screen.contains("max_context_tokens is 50"),
+        screen.contains("capability: context: needs")
+            && screen.contains("max_context_tokens is 50"),
         "the skip reason must carry its own numbers (est tokens, headroom, and the \
          candidate's own max_context_tokens=50) -- an `after: []`-shaped empty reason is \
          exactly the original defect. Screen:\n{screen}"
@@ -403,7 +405,11 @@ async fn fallback_notice_and_why_name_the_skipped_candidate_with_its_numbers() {
     // skipped-candidate detail -- strictly more than "you are on mock/big
     // now", which a bare status line already said.
     session.send("/why\r");
-    session.wait_for_since("reason: fallback #1 after:", after_notice, Duration::from_secs(10));
+    session.wait_for_since(
+        "reason: fallback #1 after:",
+        after_notice,
+        Duration::from_secs(10),
+    );
     let why_screen = session.screen();
     assert!(
         why_screen.contains("mock/tiny") && why_screen.contains("max_context_tokens is 50"),
@@ -453,8 +459,10 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
         vec![Chunk::Text("on-d"), Chunk::Finish("stop")],
     ]))
     .await;
-    let fixture =
-        write_multi_model_fixture(&mock.base_url, &["model-a", "model-b", "model-c", "model-d"]);
+    let fixture = write_multi_model_fixture(
+        &mock.base_url,
+        &["model-a", "model-b", "model-c", "model-d"],
+    );
 
     let cmd = common::pty_command(&[], &fixture);
     let mut session = PtySession::spawn(cmd, 160, 45);
@@ -463,7 +471,11 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
     session.send("hi\r");
     since = session.wait_for_since("on-a", since, Duration::from_secs(15));
 
-    for (from, to) in [("model-a", "model-b"), ("model-b", "model-c"), ("model-c", "model-d")] {
+    for (from, to) in [
+        ("model-a", "model-b"),
+        ("model-b", "model-c"),
+        ("model-c", "model-d"),
+    ] {
         let _ = from;
         session.send(&format!("/model mock/{to}\r"));
         since = session.wait_for_since(
@@ -472,7 +484,11 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
             Duration::from_secs(15),
         );
         session.send("hi\r");
-        since = session.wait_for_since(&format!("on-{}", &to[to.len() - 1..]), since, Duration::from_secs(15));
+        since = session.wait_for_since(
+            &format!("on-{}", &to[to.len() - 1..]),
+            since,
+            Duration::from_secs(15),
+        );
     }
 
     // Four decisions this session: the initial primary selection plus
@@ -486,7 +502,12 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
     );
     let _ = since;
     let screen = session.screen();
-    for model in ["mock/model-a", "mock/model-b", "mock/model-c", "mock/model-d"] {
+    for model in [
+        "mock/model-a",
+        "mock/model-b",
+        "mock/model-c",
+        "mock/model-d",
+    ] {
         assert!(
             screen.contains(model),
             "/why's history must still name every model this session actually ran on, \
