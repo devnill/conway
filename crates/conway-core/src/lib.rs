@@ -5,15 +5,17 @@
 //! Every public type is `Serialize + Deserialize`. Implementations of the
 //! port traits live in dedicated crates.
 //!
-//! **FORWARD DECLARATION — this crate does NOT yet perform no I/O.** One
-//! module breaks it: [`containment`] calls `std::fs::canonicalize` at
+//! **FORWARD DECLARATION — this crate performs no I/O, with one exception.**
+//! One module breaks it: [`containment`] calls `std::fs::canonicalize` at
 //! `CanonicalRoot::new` and again in its walk-up loop. That is the whole of
 //! the exception today, pinned by the `t2_core_io_is_confined_to_the_one_
-//! known_file` guard in `crates/conway/tests/architecture_invariants.rs`, so
-//! a second offender fails CI.
-//! ("Retire the harness-level confinement root once conway.fs enforces its
-//! own", under Stage 1.5) closes it by moving confinement out of this crate,
-//! and **must delete this label when it lands.**
+//! known_file` guard in `crates/conway/tests/architecture_invariants.rs`,
+//! which scans this crate's whole `std::fs`/`tokio::fs`/`File`/`OpenOptions`
+//! surface — not one function name — so a second offender fails CI.
+//!
+//! The Stage 1.5 work to retire the harness-level confinement root, once
+//! `conway.fs` enforces its own, closes this by moving confinement out of
+//! this crate, and **must delete this label when it lands.**
 
 pub mod agent;
 pub mod canon;
