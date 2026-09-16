@@ -91,7 +91,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::{Args, Subcommand};
-use conway::plugin::{CommandCtx, CommandOutcome, MemoryStore};
+use conway::plugin::{CommandCtx, CommandOutcome, EventDecl, MemoryStore};
 use conway::{Conway, ForkSpec, SessionSpec};
 
 use crate::diag;
@@ -414,6 +414,39 @@ fn browser_entries(
         .collect()
 }
 
+/// Every compiled-in candidate's own declared hook events (`Plugin::
+/// events`), keyed by manifest id -- board item `01M250HW1186RKZRNS3DQAMFYW`.
+///
+/// Deliberately a SEPARATE scan from [`browser_entries`] rather than a new
+/// field threaded onto [`PluginBrowserEntry`]: that type lives in
+/// `tui::state`, shared with the TUI's own `/plugin` browser, whose
+/// construction site (`tui::app::startup`) this item does not touch: a
+/// second, narrower read of the same `all_bundle_plugins` candidate list
+/// costs one extra struct-construction pass (no I/O of its own -- see that
+/// function's own doc, "a read-only capability scan"), not a second
+/// source of truth -- `Plugin::events` is still the one place an event
+/// declaration lives.
+///
+/// Bare names, not the `plugin_id.bare_name` form `conway_runtime::
+/// hook_dispatch::declared_plugin_events` namespaces to for `[hooks].
+/// rules[].event` -- each row here is already grouped under its own
+/// plugin's id (`print_row`'s `[x] <id> -- ...` line), so re-stating that
+/// id on every event line under it would be noise, not information; an
+/// operator who wants the fully-qualified form for a `[hooks].rules[]`
+/// entry gets it by prefixing `<id>.` themselves, the same rule
+/// `declared_plugin_events`'s own doc states.
+fn plugin_events_by_id(
+    conway: &Conway,
+    memory_store: Arc<dyn MemoryStore>,
+    env: &HashMap<String, String>,
+) -> HashMap<String, Vec<EventDecl>> {
+    let cwd = conway.config().cwd.clone();
+    first_party_plugins::all_bundle_plugins(&cwd, memory_store, env)
+        .iter()
+        .map(|p| (p.manifest().id, p.events()))
+        .collect()
+}
+
 /// The same "unknown id" phrasing `ConwayBuilder::install_selected`'s own
 /// `plugins.install names unknown id ...` config error uses (this item's
 /// own binding note: "the same known-id listing the config error already
@@ -428,7 +461,14 @@ fn unknown_id_message(id: &str, entries: &[PluginBrowserEntry]) -> String {
     )
 }
 
-fn print_row(row: &crate::plugin_rows::PluginRow, verbose: bool) {
+/// `events` is this plugin's own declared hook events (board item
+/// `01M250HW1186RKZRNS3DQAMFYW`) -- printed as its own labelled section,
+/// same indent as `you get`/`you lose`/`costs` above it, but only when
+/// non-empty: a plugin declaring none (most of them, today) gets no
+/// `events` line at all, matching `you_get`/`you_lose`/`costs`'s own
+/// "empty means nothing to report" convention (`PluginDescription`'s own
+/// field docs) rather than printing a stray empty header for every row.
+fn print_row(row: &crate::plugin_rows::PluginRow, verbose: bool, events: &[EventDecl]) {
     let box_glyph = if row.active { "x" } else { " " };
     println!("[{box_glyph}] {} -- {}", row.id, row.contributes);
     if verbose {
@@ -446,6 +486,12 @@ fn print_row(row: &crate::plugin_rows::PluginRow, verbose: bool) {
                 crate::plugin_rows::non_empty_or(&description.costs, "none")
             );
         }
+        if !events.is_empty() {
+            println!("    events");
+            for event in events {
+                println!("      {} -- {}", event.name, event.summary);
+            }
+        }
     }
 }
 
@@ -456,7 +502,9 @@ fn list(
     only_id: Option<&str>,
     verbose: bool,
 ) -> conway::Result<ExitCode> {
-    let entries = browser_entries(conway, memory_store, env);
+    let entries = browser_entries(conway, memory_store.clone(), env);
+    let events = plugin_events_by_id(conway, memory_store, env);
+    let events_for = |id: &str| events.get(id).map(Vec::as_slice).unwrap_or(&[]);
 
     if let Some(id) = only_id {
         let Some(entry) = entries.iter().find(|e| e.id == id) else {
@@ -469,12 +517,13 @@ fn list(
         // the printed row is byte-for-byte what the TUI's detail panel
         // would show for this same id.
         let rows = crate::plugin_rows::rows_from_plugin_browser(std::slice::from_ref(entry));
-        print_row(&rows[0], true);
+        print_row(&rows[0], true, events_for(id));
         return Ok(ExitCode::Completed);
     }
 
     for row in crate::plugin_rows::rows_from_plugin_browser(&entries) {
-        print_row(&row, verbose);
+        let row_events = events_for(&row.id);
+        print_row(&row, verbose, row_events);
     }
     Ok(ExitCode::Completed)
 }
