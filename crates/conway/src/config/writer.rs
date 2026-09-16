@@ -246,27 +246,20 @@ pub fn plugin_install_key_present(path: &Path) -> Result<bool> {
     if serde_json::from_str::<serde_json::Value>(&text).is_err() {
         return Ok(false);
     }
-    let bytes = text.as_bytes();
-    let root_open = skip_ws(bytes, 0);
-    if bytes.get(root_open) != Some(&b'{') {
-        return Ok(false);
-    }
-    let Ok((root_members, _)) = scan_object_members(&text, root_open) else {
-        return Ok(false);
-    };
-    // LAST match, mirroring `patch_install_array`'s own "duplicate key,
-    // last wins" reasoning -- an earlier `"plugins"` block that a later one
-    // shadows is not the block `serde_json`/`config::load` actually see.
-    let Some(plugins_member) = root_members.iter().rev().find(|m| m.key == "plugins") else {
-        return Ok(false);
-    };
-    if bytes.get(plugins_member.value_start) != Some(&b'{') {
-        return Ok(false);
-    }
-    let Ok((plugins_members, _)) = scan_object_members(&text, plugins_member.value_start) else {
-        return Ok(false);
-    };
-    Ok(plugins_members.iter().rev().any(|m| m.key == "install"))
+    // `find_or_create_path` already resolves a duplicate `"plugins"` key
+    // last-wins, mirroring `serde_json`/`config::load`'s own reading of
+    // this same file -- see that function's own doc. Any `Err` (a
+    // `"plugins"` member present but not an object, or the document's own
+    // top level not an object) answers `Ok(false)` here rather than
+    // propagating, matching this function's own doc above: by the time
+    // this is called the same file has already parsed successfully via
+    // `config::load`, so either case means the file changed out from under
+    // the process between those two reads, not a race this read-only
+    // helper needs to fail a build over.
+    Ok(matches!(
+        find_or_create_path(&text, &["plugins", "install"]),
+        Ok(PathSplice::Found { .. })
+    ))
 }
 
 /// Create `path`'s parent directories if needed, then write `contents`
@@ -474,12 +467,14 @@ fn array_object_id<'a>(text: &'a str, elem: &Elem<'a>) -> Option<&'a str> {
 }
 
 /// The `plugins.claude_compat` sibling of [`patch_install_array`] -- same
-/// locate-`plugins`/locate-array/insert-or-remove shape, over an
+/// locate-or-create-`plugins.claude_compat`/insert-or-remove shape, over an
 /// already-validated-as-JSON `text`, differing only in which array key it
 /// targets (`"claude_compat"`, not `"install"`) and in matching an element
 /// by its `id` MEMBER rather than by the element's own raw string value
 /// (`plugins.claude_compat` holds objects, `plugins.install` holds bare
-/// strings).
+/// strings). The locate-or-create walk itself is [`find_or_create_path`]'s
+/// own job now; this function supplies only the path and the array-of-
+/// objects value shape.
 fn patch_claude_compat_array(
     text: &str,
     plugin_id: &str,
@@ -487,86 +482,59 @@ fn patch_claude_compat_array(
     present: bool,
 ) -> std::result::Result<Option<String>, String> {
     let bytes = text.as_bytes();
-    let root_open = skip_ws(bytes, 0);
-    if bytes.get(root_open) != Some(&b'{') {
-        return Err("the top-level JSON value must be an object".to_string());
-    }
-    let (root_members, root_close) = scan_object_members(text, root_open)?;
-
-    // LAST match, not first -- see `patch_install_array`'s own doc for why
-    // (duplicate top-level keys resolve last-wins under `serde_json`, the
-    // real loader).
-    let Some(plugins_member) = root_members.iter().rev().find(|m| m.key == "plugins") else {
-        if !present {
-            return Ok(None);
-        }
-        let value = format!(
-            "{{\"claude_compat\": [{}]}}",
-            claude_compat_object_literal(plugin_id, dir)
-        );
-        return Ok(Some(insert_member(
-            text,
-            root_open,
-            &root_members,
-            root_close,
-            "plugins",
-            &value,
-        )));
-    };
-
-    if bytes.get(plugins_member.value_start) != Some(&b'{') {
-        return Err("\"plugins\" must be a JSON object".to_string());
-    }
-    let (plugins_members, plugins_close) = scan_object_members(text, plugins_member.value_start)?;
-
-    let Some(cc_member) = plugins_members
-        .iter()
-        .rev()
-        .find(|m| m.key == "claude_compat")
-    else {
-        if !present {
-            return Ok(None);
-        }
-        let value = format!("[{}]", claude_compat_object_literal(plugin_id, dir));
-        return Ok(Some(insert_member(
-            text,
-            plugins_member.value_start,
-            &plugins_members,
-            plugins_close,
-            "claude_compat",
-            &value,
-        )));
-    };
-
-    if bytes.get(cc_member.value_start) != Some(&b'[') {
-        return Err("\"plugins.claude_compat\" must be a JSON array".to_string());
-    }
-    let (elements, array_close) = scan_array_elements(text, cc_member.value_start)?;
-
-    let found_index = elements
-        .iter()
-        .position(|e| array_object_id(text, e) == Some(plugin_id));
-
-    match (present, found_index) {
-        (true, Some(_)) => Ok(None),
-        (false, None) => Ok(None),
-        (true, None) => {
-            let raw_value = claude_compat_object_literal(plugin_id, dir);
-            Ok(Some(insert_array_element(
+    match find_or_create_path(text, &["plugins", "claude_compat"])? {
+        PathSplice::Missing {
+            parent_open,
+            parent_members,
+            parent_close,
+            missing,
+        } => {
+            if !present {
+                return Ok(None);
+            }
+            let leaf = format!("[{}]", claude_compat_object_literal(plugin_id, dir));
+            let value = nest_missing_path(&missing[1..], &leaf);
+            Ok(Some(insert_member(
                 text,
-                cc_member.value_start,
-                &elements,
-                array_close,
-                &raw_value,
+                parent_open,
+                &parent_members,
+                parent_close,
+                &missing[0],
+                &value,
             )))
         }
-        (false, Some(idx)) => Ok(Some(remove_array_element(
-            text,
-            cc_member.value_start,
-            array_close,
-            &elements,
-            idx,
-        ))),
+        PathSplice::Found { member, .. } => {
+            if bytes.get(member.value_start) != Some(&b'[') {
+                return Err("\"plugins.claude_compat\" must be a JSON array".to_string());
+            }
+            let (elements, array_close) = scan_array_elements(text, member.value_start)?;
+
+            let found_index = elements
+                .iter()
+                .position(|e| array_object_id(text, e) == Some(plugin_id));
+
+            match (present, found_index) {
+                (true, Some(_)) => Ok(None),
+                (false, None) => Ok(None),
+                (true, None) => {
+                    let raw_value = claude_compat_object_literal(plugin_id, dir);
+                    Ok(Some(insert_array_element(
+                        text,
+                        member.value_start,
+                        &elements,
+                        array_close,
+                        &raw_value,
+                    )))
+                }
+                (false, Some(idx)) => Ok(Some(remove_array_element(
+                    text,
+                    member.value_start,
+                    array_close,
+                    &elements,
+                    idx,
+                ))),
+            }
+        }
     }
 }
 
@@ -575,91 +543,68 @@ fn patch_claude_compat_array(
 /// the goal state already holds, `Err(message)` when `text`'s shape at the
 /// one path this function cares about (`plugins`/`plugins.install`) is not
 /// what it must be to edit safely (e.g. `"plugins"` present but not an
-/// object) -- named, never guessed past.
+/// object) -- named, never guessed past. The locate-or-create walk is
+/// [`find_or_create_path`]'s own job; this function supplies only the path
+/// and the array-of-strings value shape.
 fn patch_install_array(
     text: &str,
     plugin_id: &str,
     installed: bool,
 ) -> std::result::Result<Option<String>, String> {
     let bytes = text.as_bytes();
-    let root_open = skip_ws(bytes, 0);
-    if bytes.get(root_open) != Some(&b'{') {
-        return Err("the top-level JSON value must be an object".to_string());
-    }
-    let (root_members, root_close) = scan_object_members(text, root_open)?;
-
-    // LAST match, not first. JSON permits duplicate object keys and
-    // `serde_json` resolves them last-wins, so the last `"plugins"` block is
-    // the one that actually governs the loaded config. Editing the first
-    // would splice a block the loader discards: the write succeeds, the file
-    // changes, and the effective configuration does not -- a silent no-op
-    // that reports success, which is the failure mode this module exists to
-    // avoid. Verified against `serde_json` directly rather than assumed.
-    let Some(plugins_member) = root_members.iter().rev().find(|m| m.key == "plugins") else {
-        if !installed {
-            return Ok(None);
-        }
-        let value = format!("{{\"install\": [{}]}}", json_string_literal(plugin_id));
-        return Ok(Some(insert_member(
-            text,
-            root_open,
-            &root_members,
-            root_close,
-            "plugins",
-            &value,
-        )));
-    };
-
-    if bytes.get(plugins_member.value_start) != Some(&b'{') {
-        return Err("\"plugins\" must be a JSON object".to_string());
-    }
-    let (plugins_members, plugins_close) = scan_object_members(text, plugins_member.value_start)?;
-
-    // LAST match again, for the same last-wins reason as `"plugins"` above.
-    let Some(install_member) = plugins_members.iter().rev().find(|m| m.key == "install") else {
-        if !installed {
-            return Ok(None);
-        }
-        let value = format!("[{}]", json_string_literal(plugin_id));
-        return Ok(Some(insert_member(
-            text,
-            plugins_member.value_start,
-            &plugins_members,
-            plugins_close,
-            "install",
-            &value,
-        )));
-    };
-
-    if bytes.get(install_member.value_start) != Some(&b'[') {
-        return Err("\"plugins.install\" must be a JSON array".to_string());
-    }
-    let (elements, array_close) = scan_array_elements(text, install_member.value_start)?;
-
-    let found_index = elements
-        .iter()
-        .position(|e| e.raw_string == Some(plugin_id));
-
-    match (installed, found_index) {
-        (true, Some(_)) => Ok(None),
-        (false, None) => Ok(None),
-        (true, None) => {
-            let raw_value = json_string_literal(plugin_id);
-            Ok(Some(insert_array_element(
+    match find_or_create_path(text, &["plugins", "install"])? {
+        PathSplice::Missing {
+            parent_open,
+            parent_members,
+            parent_close,
+            missing,
+        } => {
+            if !installed {
+                return Ok(None);
+            }
+            let leaf = format!("[{}]", json_string_literal(plugin_id));
+            let value = nest_missing_path(&missing[1..], &leaf);
+            Ok(Some(insert_member(
                 text,
-                install_member.value_start,
-                &elements,
-                array_close,
-                &raw_value,
+                parent_open,
+                &parent_members,
+                parent_close,
+                &missing[0],
+                &value,
             )))
         }
-        (false, Some(idx)) => Ok(Some(remove_array_element(
-            text,
-            install_member.value_start,
-            array_close,
-            &elements,
-            idx,
-        ))),
+        PathSplice::Found { member, .. } => {
+            if bytes.get(member.value_start) != Some(&b'[') {
+                return Err("\"plugins.install\" must be a JSON array".to_string());
+            }
+            let (elements, array_close) = scan_array_elements(text, member.value_start)?;
+
+            let found_index = elements
+                .iter()
+                .position(|e| e.raw_string == Some(plugin_id));
+
+            match (installed, found_index) {
+                (true, Some(_)) => Ok(None),
+                (false, None) => Ok(None),
+                (true, None) => {
+                    let raw_value = json_string_literal(plugin_id);
+                    Ok(Some(insert_array_element(
+                        text,
+                        member.value_start,
+                        &elements,
+                        array_close,
+                        &raw_value,
+                    )))
+                }
+                (false, Some(idx)) => Ok(Some(remove_array_element(
+                    text,
+                    member.value_start,
+                    array_close,
+                    &elements,
+                    idx,
+                ))),
+            }
+        }
     }
 }
 
@@ -679,6 +624,7 @@ fn json_string_literal(s: &str) -> String {
 /// subsequent whitespace or comma) exists solely for
 /// [`remove_object_member`] -- every other user of this struct only ever
 /// needed `value_start`.
+#[derive(Clone, Copy)]
 struct Member<'a> {
     key: &'a str,
     key_start: usize,
@@ -1027,7 +973,10 @@ fn remove_array_element(
 /// raw-vs-raw comparison [`patch_install_array`]'s own doc already argues is
 /// safe for every id this module receives (no first-party id ever contains
 /// a character that needs escaping, so raw and decoded comparison always
-/// agree).
+/// agree). This is also [`find_or_create_path`]'s own per-segment
+/// comparison -- one rule for a fixed ASCII literal (`"plugins"`) and a
+/// caller-supplied dynamic key (a backend id, a role name) alike, rather
+/// than a literal-vs-dynamic split this module never actually needed.
 fn member_key_matches(member: &Member<'_>, key: &str) -> bool {
     let escaped = json_string_literal(key);
     // `escaped` is `"..."` (leading and trailing quote included); `key`'s
@@ -1084,6 +1033,165 @@ fn remove_object_member(
             &text[..members[idx - 1].value_end],
             &text[members[idx].value_end..]
         )
+    }
+}
+
+/// [`find_or_create_path`]'s own result type.
+enum PathSplice<'t> {
+    /// Every segment of the requested path resolved to an existing object
+    /// member, in order. `member` is the FINAL segment's own member -- its
+    /// `value_start..value_end` span is the value currently at this path,
+    /// ready to be inspected (parsed as an array, compared as a scalar,
+    /// ...) or replaced wholesale by the caller. `parent_open`/
+    /// `parent_members`/`parent_close` describe the object `member` is a
+    /// direct member of (one level up), and `index` is `member`'s own
+    /// position within `parent_members` -- exactly what
+    /// [`remove_object_member`] needs to remove it, without re-scanning.
+    Found {
+        member: Member<'t>,
+        parent_open: usize,
+        parent_members: Vec<Member<'t>>,
+        parent_close: usize,
+        index: usize,
+    },
+    /// Every segment up to (but not including) `missing[0]` resolved to an
+    /// existing object; `missing[0]` is the first segment absent from
+    /// `parent_members`, and `missing[1..]` (if any) does not exist EITHER,
+    /// because the object it would live in does not exist yet.
+    /// `parent_open`/`parent_members`/`parent_close` describe the deepest
+    /// object that DOES already exist -- inserting `missing[0]` there (via
+    /// [`insert_member`]), with every remaining segment nested inside that
+    /// single member's own value (see [`nest_missing_path`]), creates the
+    /// whole requested path in one splice.
+    Missing {
+        parent_open: usize,
+        parent_members: Vec<Member<'t>>,
+        parent_close: usize,
+        missing: Vec<String>,
+    },
+}
+
+/// **The single primitive every `patch_*` function below now shares**
+/// (board item `01M250DEEWA6FJZE11PKCAYNDC`, consolidating what had been
+/// ten separate copies of the same "duplicate key, last wins" scan): an
+/// arbitrary caller-supplied DOTTED key path (e.g. `&["plugins",
+/// "install"]`, `&["backends", id]`, `&["roles", role, "chain"]`) walked
+/// downward from the document root, one object member per segment,
+/// resolving a DUPLICATE key at any level to the LAST occurrence --
+/// mirroring `serde_json`'s (the real loader's) own last-wins resolution.
+/// Editing an earlier, shadowed block changes bytes the loader never reads,
+/// so the write would report success and change nothing -- a defect this
+/// tree has already shipped once (see this module's own top doc).
+///
+/// Every segment is compared via [`member_key_matches`] -- the same
+/// escaped-vs-raw comparison already safe for a fixed ASCII literal
+/// (`"plugins"`, `"install"`, ...) and for an operator-supplied value used
+/// as a key (a backend id, a role name): one comparison rule for every
+/// caller.
+///
+/// `Ok(PathSplice::Found { .. })` when every segment resolved to an
+/// existing member; `Ok(PathSplice::Missing { .. })` when the walk ran out
+/// of existing members partway through (or found nothing at the very first
+/// segment) -- `Missing.missing` is the exact unresolved SUFFIX of `path`,
+/// so a caller can insert every remaining level in one [`insert_member`]
+/// call via [`nest_missing_path`], never a partial splice into an object
+/// that does not exist yet. `Err(message)` when a NON-FINAL segment's own
+/// existing value is not a JSON object (so the walk cannot descend into it)
+/// or the document's own top-level value is not an object -- the same two
+/// shapes of error every `patch_*` function refused before this
+/// consolidation, worded identically (`path[..=depth].join(".")`
+/// reproduces each function's own former per-level message, e.g.
+/// `"roles.<role>" must be a JSON object`).
+///
+/// Never checks the FINAL segment's own value shape (array vs. object vs.
+/// scalar) -- that is caller-specific (an array to scan, a scalar to
+/// compare-and-replace, ...) and stays each `patch_*` function's own job,
+/// exactly as [`insert_member`]/[`remove_object_member`] stay theirs. This
+/// function's own scope ends at "found the member" or "here is where to
+/// insert it".
+fn find_or_create_path<'t>(
+    text: &'t str,
+    path: &[&str],
+) -> std::result::Result<PathSplice<'t>, String> {
+    if path.is_empty() {
+        return Err("find_or_create_path requires a non-empty path".to_string());
+    }
+    let bytes = text.as_bytes();
+    let root_open = skip_ws(bytes, 0);
+    if bytes.get(root_open) != Some(&b'{') {
+        return Err("the top-level JSON value must be an object".to_string());
+    }
+    let (mut members, mut close) = scan_object_members(text, root_open)?;
+    let mut open = root_open;
+
+    for (depth, segment) in path.iter().enumerate() {
+        // LAST match, not first -- see this function's own doc for why.
+        match members
+            .iter()
+            .rev()
+            .find(|m| member_key_matches(m, segment))
+        {
+            None => {
+                let missing = path[depth..].iter().map(|s| s.to_string()).collect();
+                return Ok(PathSplice::Missing {
+                    parent_open: open,
+                    parent_members: members,
+                    parent_close: close,
+                    missing,
+                });
+            }
+            Some(found) => {
+                let member = *found;
+                if depth + 1 == path.len() {
+                    let index = members
+                        .iter()
+                        .rposition(|m| member_key_matches(m, segment))
+                        .expect("just located this member above");
+                    return Ok(PathSplice::Found {
+                        member,
+                        parent_open: open,
+                        parent_members: members,
+                        parent_close: close,
+                        index,
+                    });
+                }
+                if bytes.get(member.value_start) != Some(&b'{') {
+                    let so_far = path[..=depth].join(".");
+                    return Err(format!("\"{so_far}\" must be a JSON object"));
+                }
+                let (next_members, next_close) = scan_object_members(text, member.value_start)?;
+                open = member.value_start;
+                close = next_close;
+                members = next_members;
+            }
+        }
+    }
+    unreachable!("path is non-empty, so the loop above always returns")
+}
+
+/// Builds the JSON object text needed to insert every remaining path
+/// segment in `remaining` (innermost-first: `remaining[0]` wraps directly
+/// around `leaf_raw_value`, `remaining[1]` wraps `remaining[0]`'s own
+/// object, and so on) as a single nested value -- the other half of
+/// [`PathSplice::Missing`]'s own contract: a caller inserts `missing[0]` as
+/// a real object member via [`insert_member`], with
+/// `nest_missing_path(&missing[1..], leaf_raw_value)` as that member's own
+/// value, so every level still missing below it is created in that same
+/// splice rather than needing one insert per level.
+///
+/// `remaining` is empty exactly when the caller's own leaf value belongs
+/// directly at `missing[0]` (a one-level-missing path, e.g. `plugins`
+/// already exists and only `install` is absent) -- in that case this
+/// simply returns `leaf_raw_value` unwrapped, so `insert_member` splices it
+/// in directly with no extra nesting.
+fn nest_missing_path(remaining: &[String], leaf_raw_value: &str) -> String {
+    match remaining.split_first() {
+        None => leaf_raw_value.to_string(),
+        Some((key, rest)) => format!(
+            "{{{}: {}}}",
+            json_string_literal(key),
+            nest_missing_path(rest, leaf_raw_value)
+        ),
     }
 }
 
@@ -1234,74 +1342,59 @@ fn fresh_backend_document(id: &str, entry_json: &str) -> String {
 }
 
 /// The `backends`-object sibling of [`patch_install_array`]/
-/// [`patch_claude_compat_array`] -- same locate-the-top-level-key,
-/// insert-or-remove shape, over an already-validated-as-JSON `text` and an
-/// already-validated-as-a-JSON-object `entry_json`, differing in the one
-/// way `backends` itself differs: it is a **map**, so the id is a member
-/// KEY at this level, never an array element or a nested `"id"` field.
+/// [`patch_claude_compat_array`] -- same locate-or-create shape, over an
+/// already-validated-as-JSON `text` and an already-validated-as-a-JSON-
+/// object `entry_json`, differing in the one way `backends` itself
+/// differs: it is a **map**, so the id is a member KEY at this level,
+/// never an array element or a nested `"id"` field -- which is exactly
+/// [`find_or_create_path`]'s own generality: `&["backends", id]` is a
+/// two-segment path like any other, the second segment simply being a
+/// caller-supplied value instead of a fixed literal.
 fn patch_backends_object(
     text: &str,
     id: &str,
     entry_json: &str,
     present: bool,
 ) -> std::result::Result<Option<String>, String> {
-    let bytes = text.as_bytes();
-    let root_open = skip_ws(bytes, 0);
-    if bytes.get(root_open) != Some(&b'{') {
-        return Err("the top-level JSON value must be an object".to_string());
-    }
-    let (root_members, root_close) = scan_object_members(text, root_open)?;
-
-    // LAST match, not first -- same last-wins reasoning as
-    // `patch_install_array`'s own doc: a duplicate top-level `"backends"`
-    // key resolves last-wins under `serde_json`, the real loader, so
-    // editing an earlier one would change bytes the loader never reads.
-    let Some(backends_member) = root_members.iter().rev().find(|m| m.key == "backends") else {
-        if !present {
-            return Ok(None);
+    match find_or_create_path(text, &["backends", id])? {
+        PathSplice::Missing {
+            parent_open,
+            parent_members,
+            parent_close,
+            missing,
+        } => {
+            if !present {
+                return Ok(None);
+            }
+            let value = nest_missing_path(&missing[1..], entry_json);
+            Ok(Some(insert_member(
+                text,
+                parent_open,
+                &parent_members,
+                parent_close,
+                &missing[0],
+                &value,
+            )))
         }
-        let value = format!("{{{}: {}}}", json_string_literal(id), entry_json);
-        return Ok(Some(insert_member(
-            text,
-            root_open,
-            &root_members,
-            root_close,
-            "backends",
-            &value,
-        )));
-    };
-
-    if bytes.get(backends_member.value_start) != Some(&b'{') {
-        return Err("\"backends\" must be a JSON object".to_string());
-    }
-    let (backend_members, backends_close) = scan_object_members(text, backends_member.value_start)?;
-
-    // `rposition`, not `position`: the LAST member with this key is the one
-    // `serde_json` actually resolves an operator-duplicated provider id to,
-    // for the same last-wins reason as the top-level `"backends"` key
-    // above.
-    let found_index = backend_members
-        .iter()
-        .rposition(|m| member_key_matches(m, id));
-
-    match (present, found_index) {
-        (true, Some(_)) => Ok(None),
-        (false, None) => Ok(None),
-        (true, None) => Ok(Some(insert_member(
-            text,
-            backends_member.value_start,
-            &backend_members,
-            backends_close,
-            id,
-            entry_json,
-        ))),
-        (false, Some(idx)) => Ok(Some(remove_object_member(
-            text,
-            backends_member.value_start,
-            backends_close,
-            &backend_members,
-            idx,
-        ))),
+        PathSplice::Found {
+            parent_open,
+            parent_members,
+            parent_close,
+            index,
+            ..
+        } => {
+            if present {
+                Ok(None)
+            } else {
+                Ok(Some(remove_object_member(
+                    text,
+                    parent_open,
+                    parent_close,
+                    &parent_members,
+                    index,
+                )))
+            }
+        }
     }
 }
 
@@ -1381,37 +1474,27 @@ pub fn set_default_role(path: &Path, role: &str) -> Result<bool> {
 /// Never inserts one -- see [`set_default_role`]'s own doc for why a
 /// missing key is refused rather than invented.
 fn patch_default_role(text: &str, role: &str) -> std::result::Result<Option<String>, String> {
-    let bytes = text.as_bytes();
-    let root_open = skip_ws(bytes, 0);
-    if bytes.get(root_open) != Some(&b'{') {
-        return Err("the top-level JSON value must be an object".to_string());
-    }
-    let (root_members, _root_close) = scan_object_members(text, root_open)?;
-
-    // LAST match, not first -- same last-wins reasoning as
-    // `patch_install_array`'s own doc: a duplicate top-level
-    // `"default_role"` key resolves last-wins under `serde_json`, the real
-    // loader, so editing an earlier one would change bytes the loader
-    // never reads.
-    let Some(member) = root_members.iter().rev().find(|m| m.key == "default_role") else {
-        return Err(
+    match find_or_create_path(text, &["default_role"])? {
+        PathSplice::Missing { .. } => Err(
             "\"default_role\" is missing from the document; this writer never invents one \
              -- see its own doc"
                 .to_string(),
-        );
-    };
-
-    let current_raw = &text[member.value_start..member.value_end];
-    let new_raw = json_string_literal(role);
-    if current_raw == new_raw {
-        return Ok(None);
+        ),
+        PathSplice::Found { member, .. } => {
+            let current_raw = &text[member.value_start..member.value_end];
+            let new_raw = json_string_literal(role);
+            if current_raw == new_raw {
+                Ok(None)
+            } else {
+                Ok(Some(format!(
+                    "{}{}{}",
+                    &text[..member.value_start],
+                    new_raw,
+                    &text[member.value_end..]
+                )))
+            }
+        }
     }
-    Ok(Some(format!(
-        "{}{}{}",
-        &text[..member.value_start],
-        new_raw,
-        &text[member.value_end..]
-    )))
 }
 
 /// Sets the top-level `default_role` scalar, INVENTING the key when it is
@@ -1478,17 +1561,24 @@ fn patch_or_insert_default_role(
     text: &str,
     role: &str,
 ) -> std::result::Result<Option<String>, String> {
-    let bytes = text.as_bytes();
-    let root_open = skip_ws(bytes, 0);
-    if bytes.get(root_open) != Some(&b'{') {
-        return Err("the top-level JSON value must be an object".to_string());
-    }
-    let (root_members, root_close) = scan_object_members(text, root_open)?;
-
-    // LAST match, not first -- same last-wins reasoning as
-    // `patch_default_role`'s own doc.
-    match root_members.iter().rev().find(|m| m.key == "default_role") {
-        Some(member) => {
+    match find_or_create_path(text, &["default_role"])? {
+        PathSplice::Missing {
+            parent_open,
+            parent_members,
+            parent_close,
+            missing,
+        } => {
+            let value = nest_missing_path(&missing[1..], &json_string_literal(role));
+            Ok(Some(insert_member(
+                text,
+                parent_open,
+                &parent_members,
+                parent_close,
+                &missing[0],
+                &value,
+            )))
+        }
+        PathSplice::Found { member, .. } => {
             let current_raw = &text[member.value_start..member.value_end];
             let new_raw = json_string_literal(role);
             if current_raw == new_raw {
@@ -1502,14 +1592,6 @@ fn patch_or_insert_default_role(
                 )))
             }
         }
-        None => Ok(Some(insert_member(
-            text,
-            root_open,
-            &root_members,
-            root_close,
-            "default_role",
-            &json_string_literal(role),
-        ))),
     }
 }
 
@@ -1581,63 +1663,32 @@ pub fn set_role_chain(path: &Path, role: &str, chain: &[String]) -> Result<bool>
 /// wrapper over: locates (inserting if absent) `roles`, then `roles.<role>`,
 /// then `roles.<role>.chain`, replacing only `chain`'s own value span in
 /// the innermost case, exactly like [`patch_default_role`]'s single-level
-/// version of the same idea.
+/// version of the same idea. The three-level walk itself is
+/// [`find_or_create_path`]'s own job now; this function supplies only the
+/// path and the scalar-replace value shape.
 fn patch_role_chain(
     text: &str,
     role: &str,
     chain_json: &str,
 ) -> std::result::Result<Option<String>, String> {
-    let bytes = text.as_bytes();
-    let root_open = skip_ws(bytes, 0);
-    if bytes.get(root_open) != Some(&b'{') {
-        return Err("the top-level JSON value must be an object".to_string());
-    }
-    let (root_members, root_close) = scan_object_members(text, root_open)?;
-
-    let Some(roles_member) = root_members.iter().rev().find(|m| m.key == "roles") else {
-        let value = format!(
-            "{{{}: {{\"chain\": {}}}}}",
-            json_string_literal(role),
-            chain_json
-        );
-        return Ok(Some(insert_member(
-            text,
-            root_open,
-            &root_members,
-            root_close,
-            "roles",
-            &value,
-        )));
-    };
-
-    if bytes.get(roles_member.value_start) != Some(&b'{') {
-        return Err("\"roles\" must be a JSON object".to_string());
-    }
-    let (role_members, roles_close) = scan_object_members(text, roles_member.value_start)?;
-
-    let Some(role_member) = role_members
-        .iter()
-        .rev()
-        .find(|m| member_key_matches(m, role))
-    else {
-        let value = format!("{{\"chain\": {chain_json}}}");
-        return Ok(Some(insert_member(
-            text,
-            roles_member.value_start,
-            &role_members,
-            roles_close,
-            role,
-            &value,
-        )));
-    };
-
-    if bytes.get(role_member.value_start) != Some(&b'{') {
-        return Err(format!("\"roles.{role}\" must be a JSON object"));
-    }
-    let (chain_members, role_close) = scan_object_members(text, role_member.value_start)?;
-
-    match chain_members.iter().rev().find(|m| m.key == "chain") {
-        Some(member) => {
+    match find_or_create_path(text, &["roles", role, "chain"])? {
+        PathSplice::Missing {
+            parent_open,
+            parent_members,
+            parent_close,
+            missing,
+        } => {
+            let value = nest_missing_path(&missing[1..], chain_json);
+            Ok(Some(insert_member(
+                text,
+                parent_open,
+                &parent_members,
+                parent_close,
+                &missing[0],
+                &value,
+            )))
+        }
+        PathSplice::Found { member, .. } => {
             let current_raw = &text[member.value_start..member.value_end];
             if current_raw == chain_json {
                 Ok(None)
@@ -1650,14 +1701,6 @@ fn patch_role_chain(
                 )))
             }
         }
-        None => Ok(Some(insert_member(
-            text,
-            role_member.value_start,
-            &chain_members,
-            role_close,
-            "chain",
-            chain_json,
-        ))),
     }
 }
 
@@ -1734,41 +1777,31 @@ pub fn set_builtin_plugins(path: &Path, plugins: &[String]) -> Result<bool> {
 /// wrapper over: locates (inserting if absent) `tools`, then
 /// `tools.builtin_plugins`, replacing only the array's own value span in the
 /// innermost case -- exactly [`patch_role_chain`]'s own shape with the
-/// deepest (`chain`) level removed.
+/// deepest (`chain`) level removed. The two-level walk is
+/// [`find_or_create_path`]'s own job now; this function supplies only the
+/// path and the wholesale-array-replace value shape.
 fn patch_builtin_plugins(
     text: &str,
     plugins_json: &str,
 ) -> std::result::Result<Option<String>, String> {
-    let bytes = text.as_bytes();
-    let root_open = skip_ws(bytes, 0);
-    if bytes.get(root_open) != Some(&b'{') {
-        return Err("the top-level JSON value must be an object".to_string());
-    }
-    let (root_members, root_close) = scan_object_members(text, root_open)?;
-
-    let Some(tools_member) = root_members.iter().rev().find(|m| m.key == "tools") else {
-        let value = format!("{{\"builtin_plugins\": {plugins_json}}}");
-        return Ok(Some(insert_member(
-            text,
-            root_open,
-            &root_members,
-            root_close,
-            "tools",
-            &value,
-        )));
-    };
-
-    if bytes.get(tools_member.value_start) != Some(&b'{') {
-        return Err("\"tools\" must be a JSON object".to_string());
-    }
-    let (tools_members, tools_close) = scan_object_members(text, tools_member.value_start)?;
-
-    match tools_members
-        .iter()
-        .rev()
-        .find(|m| m.key == "builtin_plugins")
-    {
-        Some(member) => {
+    match find_or_create_path(text, &["tools", "builtin_plugins"])? {
+        PathSplice::Missing {
+            parent_open,
+            parent_members,
+            parent_close,
+            missing,
+        } => {
+            let value = nest_missing_path(&missing[1..], plugins_json);
+            Ok(Some(insert_member(
+                text,
+                parent_open,
+                &parent_members,
+                parent_close,
+                &missing[0],
+                &value,
+            )))
+        }
+        PathSplice::Found { member, .. } => {
             let current_raw = &text[member.value_start..member.value_end];
             if current_raw == plugins_json {
                 Ok(None)
@@ -1781,14 +1814,6 @@ fn patch_builtin_plugins(
                 )))
             }
         }
-        None => Ok(Some(insert_member(
-            text,
-            tools_member.value_start,
-            &tools_members,
-            tools_close,
-            "builtin_plugins",
-            plugins_json,
-        ))),
     }
 }
 
@@ -3676,5 +3701,113 @@ mod tests {
         assert!(new_text
             .contains("\"anthropic\": { \"kind\": \"anthropic\", \"api_key\": \"sk-unused\" }"));
         assert!(new_text.contains("\"_comment_plugins\": \"toggle plugins here\""));
+    }
+
+    // ---- `find_or_create_path`: the seam every `patch_*` function above
+    // now shares (board item `01M250DEEWA6FJZE11PKCAYNDC`) -- exercised
+    // directly, at every path shape a real caller uses, rather than only
+    // indirectly through each `patch_*` function's own suite above.
+
+    /// A document with a duplicated key AT EVERY DEPTH `find_or_create_path`
+    /// is asked to resolve -- a bare top-level scalar, a two-level array
+    /// path, a two-level map-by-id path, and a three-level nested-scalar
+    /// path -- asserting each one resolves to the LAST block, mirroring
+    /// `serde_json`/`config::load`'s own last-wins resolution of the same
+    /// duplicate keys. This is Acceptance 4's own proof, run once per
+    /// supported path shape rather than once per `patch_*` function.
+    #[test]
+    fn resolves_a_duplicate_key_to_the_last_block_at_every_supported_path_depth() {
+        // Depth 1, scalar: two `default_role` members.
+        let text = r#"{"default_role": "dead", "default_role": "live"}"#;
+        match find_or_create_path(text, &["default_role"]).expect("path resolves") {
+            PathSplice::Found { member, .. } => {
+                assert_eq!(&text[member.value_start..member.value_end], "\"live\"");
+            }
+            PathSplice::Missing { .. } => panic!("default_role is present"),
+        }
+
+        // Depth 2, array-of-strings: two `plugins` blocks -- the LAST
+        // block's own `install` array is the one that must be found.
+        let text = r#"{"plugins": {"install": ["dead"]}, "plugins": {"install": ["live"]}}"#;
+        match find_or_create_path(text, &["plugins", "install"]).expect("path resolves") {
+            PathSplice::Found { member, .. } => {
+                assert_eq!(&text[member.value_start..member.value_end], r#"["live"]"#);
+            }
+            PathSplice::Missing { .. } => panic!("plugins.install is present"),
+        }
+
+        // Depth 2, array-of-objects: same shape, `claude_compat`.
+        let text =
+            r#"{"plugins": {"claude_compat": ["dead"]}, "plugins": {"claude_compat": ["live"]}}"#;
+        match find_or_create_path(text, &["plugins", "claude_compat"]).expect("path resolves") {
+            PathSplice::Found { member, .. } => {
+                assert_eq!(&text[member.value_start..member.value_end], r#"["live"]"#);
+            }
+            PathSplice::Missing { .. } => panic!("plugins.claude_compat is present"),
+        }
+
+        // Depth 2, map-by-id: two top-level `backends` objects, and within
+        // the surviving one, a duplicated provider id.
+        let text = concat!(
+            r#"{"backends": {"anthropic": "dead-block"}, "#,
+            r#""backends": {"anthropic": "dead-dup", "anthropic": "live"}}"#
+        );
+        match find_or_create_path(text, &["backends", "anthropic"]).expect("path resolves") {
+            PathSplice::Found { member, .. } => {
+                assert_eq!(&text[member.value_start..member.value_end], "\"live\"");
+            }
+            PathSplice::Missing { .. } => panic!("backends.anthropic is present"),
+        }
+
+        // Depth 3, nested scalar: `roles.<role>.chain`, duplicated at every
+        // level.
+        let text = concat!(
+            r#"{"roles": {"coder": {"chain": "dead"}}, "#,
+            r#""roles": {"coder": {"chain": "dead-dup"}, "coder": {"chain": "live"}}}"#
+        );
+        match find_or_create_path(text, &["roles", "coder", "chain"]).expect("path resolves") {
+            PathSplice::Found { member, .. } => {
+                assert_eq!(&text[member.value_start..member.value_end], "\"live\"");
+            }
+            PathSplice::Missing { .. } => panic!("roles.coder.chain is present"),
+        }
+
+        // Depth 2, wholesale-array: `tools.builtin_plugins`.
+        let text =
+            r#"{"tools": {"builtin_plugins": ["dead"]}, "tools": {"builtin_plugins": ["live"]}}"#;
+        match find_or_create_path(text, &["tools", "builtin_plugins"]).expect("path resolves") {
+            PathSplice::Found { member, .. } => {
+                assert_eq!(&text[member.value_start..member.value_end], r#"["live"]"#);
+            }
+            PathSplice::Missing { .. } => panic!("tools.builtin_plugins is present"),
+        }
+    }
+
+    /// `roles` exists, the role does not -- `missing` must be exactly the
+    /// unresolved SUFFIX (`["coder", "chain"]`), not just the next segment,
+    /// so a caller can nest every remaining level into one `insert_member`
+    /// call via `nest_missing_path`.
+    #[test]
+    fn reports_the_deepest_existing_ancestor_and_the_full_missing_suffix() {
+        let text = r#"{"roles": {}}"#;
+        match find_or_create_path(text, &["roles", "coder", "chain"]).expect("path resolves") {
+            PathSplice::Missing { missing, .. } => {
+                assert_eq!(missing, vec!["coder".to_string(), "chain".to_string()]);
+            }
+            PathSplice::Found { .. } => panic!("roles.coder.chain must be absent"),
+        }
+    }
+
+    #[test]
+    fn nest_missing_path_wraps_every_remaining_segment_around_the_leaf_value() {
+        assert_eq!(nest_missing_path(&[], "42"), "42");
+        assert_eq!(
+            nest_missing_path(&["chain".to_string()], "[]"),
+            r#"{"chain": []}"#
+        );
+        assert_eq!(
+            nest_missing_path(&["coder".to_string(), "chain".to_string()], "[]"),
+            r#"{"coder": {"chain": []}}"#
+        );
     }
 }
