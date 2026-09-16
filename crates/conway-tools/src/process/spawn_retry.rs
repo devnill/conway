@@ -143,9 +143,59 @@ mod tests {
     /// exist), so the returned `Ok` is a genuine `tokio::process::Child`
     /// the assertion can inspect -- the test asserts on the actual returned
     /// value, not a stand-in.
+    ///
+    /// **The self-replication hazard this guards against (board item
+    /// `01M2MVFM7GD0XYJ7G7DN08A46P`).** `current_exe()` IS this crate's own
+    /// unit-test binary (`target/debug/deps/conway_tools-<hash>` -- the one
+    /// Cargo builds for the lib's `#[cfg(test)]` modules, distinct from the
+    /// per-file integration binaries named after their `tests/*.rs` file).
+    /// Spawning it with NO arguments re-invokes the default test harness,
+    /// which runs every `#[test]` in this binary -- including this very
+    /// test, which spawns ANOTHER unfiltered copy, which spawns another...
+    /// a self-replicating process chain with no termination condition, each
+    /// generation reparented to PID 1 once its immediate parent exits. That
+    /// is exactly what was observed live: a rotating set of
+    /// `conway_tools-<hash>` processes, PIDs changing between consecutive
+    /// `ps` calls, one's PPID pointing at another `conway_tools` process,
+    /// present even after a clean `exit 0` workspace run. [`ARGV_NO_MATCH`]
+    /// below is the fix: the re-exec'd harness is given a filter substring
+    /// that matches no test name in this binary, so it reports "0 tests"
+    /// and exits within milliseconds instead of recursing -- a real
+    /// termination condition rather than none. [`KillOnDrop`] is the second,
+    /// independent layer: even a near-instant child is a live process for a
+    /// few milliseconds, and dropping a `tokio::process::Child` (like
+    /// `std::process::Child`) never signals it -- only an explicit kill
+    /// does. Mirrors this repo's own precedent for the identical shape:
+    /// `crates/conway-cli/tests/common/pty.rs`'s `impl Drop for
+    /// PtySession`, which kills its child on drop specifically so a panic
+    /// between spawn and test-end still cannot leak it.
     struct FakeSpawn {
         calls: AtomicU8,
         fail_n: u8,
+    }
+
+    /// A filter argument guaranteed to match no `#[test]` name in this
+    /// binary, so a `current_exe()` re-exec started with it as its sole
+    /// argv runs the standard cargo-test harness CLI, matches zero tests,
+    /// and exits immediately -- rather than defaulting to "run everything"
+    /// the way a bare, argument-less re-exec of the harness would. See
+    /// [`FakeSpawn`]'s own doc for why an argument-less re-exec is the bug.
+    const ARGV_NO_MATCH: &str = "__spawn_retry_fixture_guard_no_such_test__";
+
+    /// Kills the spawned re-exec'd test binary on drop. `Drop::drop` cannot
+    /// `.await`, so this uses `start_kill` (fire-and-forget SIGKILL) rather
+    /// than the async `kill` -- sufficient here because the child is either
+    /// already exited (the common case, given [`ARGV_NO_MATCH`]) or about
+    /// to be, and this test binary's own process exiting shortly after
+    /// reaps whatever is left. Runs on a panic too: this workspace's test
+    /// profile is `panic = unwind` (see the `pty.rs` precedent this
+    /// mirrors), so `Drop` still fires during an unwind.
+    struct KillOnDrop(Child);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.start_kill();
+        }
     }
 
     impl FakeSpawn {
@@ -170,8 +220,10 @@ mod tests {
             // A real child so the returned Ok is a genuine Child value.
             // `current_exe()` is guaranteed to exist (it IS the running
             // test binary), unlike `/bin/true` which may not be present
-            // on every host or sandbox the test suite runs in.
+            // on every host or sandbox the test suite runs in. `ARGV_NO_MATCH`
+            // is load-bearing, not decorative -- see `FakeSpawn`'s own doc.
             tokio::process::Command::new(std::env::current_exe().unwrap())
+                .arg(ARGV_NO_MATCH)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -196,7 +248,12 @@ mod tests {
             "should succeed after retries: {:?}",
             result.err()
         );
-        let _child = result.unwrap();
+        // `KillOnDrop`, not a bare binding: this is a real re-exec'd child
+        // process (see `FakeSpawn`'s own doc), and dropping a
+        // `tokio::process::Child` never signals it. The guard fires on the
+        // ordinary path below AND on a panic from the `assert_eq!` that
+        // follows, which a plain cleanup call placed after it would miss.
+        let _child = KillOnDrop(result.unwrap());
         // 3 failures + 1 success = 4 calls total.
         assert_eq!(
             fake.call_count(),
