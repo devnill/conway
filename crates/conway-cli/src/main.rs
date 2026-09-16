@@ -180,6 +180,30 @@ async fn main() -> std::process::ExitCode {
         for warning in conway.warnings() {
             diag::warn(&warning.message);
         }
+        // Board item `01M2N2GJ9K7QEABGZD7R9GVT3Y`: rule B ("confirm/inform
+        // before an assumed floor governs a real turn"), widened past
+        // guided setup's own confirm surface to the ONE point every
+        // dispatch target reaches regardless of how its model got
+        // configured -- a hand-edited `settings.json` entry, a chain edit
+        // naming a second model on an already-configured provider, `--model`
+        // naming something unconfigured. Gated on `command_needs_provider`
+        // for the identical reason guided setup itself is, immediately
+        // above (`build_conway`'s own `fleet_usability.should_offer_
+        // guided_setup()` branch): `sessions`/`routes`/`tools list`/`plugin
+        // install`/`remove` never attempt a turn, so checking what a turn
+        // would run against for them would be noise, not a warning --
+        // see `crate::first_run::resolve_first_turn_floor_notice`'s own doc
+        // for why this is the SAME choke point `conway.warnings()` just
+        // used, never a second, per-command call site.
+        if command_needs_provider(&cli.command) {
+            if let Some(text) = first_run::resolve_first_turn_floor_notice(
+                &conway,
+                cli.model.as_deref(),
+                cli.role_override.as_deref(),
+            ) {
+                diag::warn(&text);
+            }
+        }
     }
 
     let result = dispatch(

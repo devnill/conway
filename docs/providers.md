@@ -1068,7 +1068,59 @@ fills in a window for a pre-existing config; setup only makes `Unverified`
 rarer going forward, by asking once, at the moment a provider is
 configured, and probing (`probe_on_startup`, or a live setup-time
 discovery attempt) narrows the remaining gap further without ever
-inventing a number a server did not actually report.
+inventing a number a server did not actually report. **A model that
+reaches a real turn WITHOUT ever passing through this ADD flow at all**
+(the paragraph above's own "declined at setup" case, plus every other way
+a model enters a resolved config — see the next section) is covered
+separately, by a check that runs at the moment of the turn itself rather
+than at add time.
+
+### Surfacing an assumed floor outside the add flow
+
+**Board item `01M2N2GJ9K7QEABGZD7R9GVT3Y`: the ADD flow above only ever
+confirms a model conway itself offered — guided setup's own short menu, or
+`/settings` → providers → add.** A model that reaches a resolved config any
+OTHER way never touches either entrance at all: a `.conway/settings.json`
+`backends`/`roles` entry typed by hand, a role-chain edit naming a second
+model on an already-configured provider, `--model <backend>/<model>` naming
+something unconfigured. Guided setup's own [`HOSTED_CHOICES`] shortlist
+pins Ollama Cloud to exactly one model (`glm-5.2`, chosen for the wire
+quirks it has actually been debugged against — see that list's own
+doc) — a session run against `ollama_cloud/glm-5.3` (the literal incident
+that motivated the item directly above) never reaches the ADD flow's own
+confirm step no matter how it was configured, since nothing about the ADD
+flow's own scope covers a model it did not itself offer.
+
+Rather than chase every entry point separately — the same shape the
+predecessor item's own history warns against, having corrected itself once
+already for exactly this pattern — conway checks once, at the one point
+every entry path shares: immediately before a session's first real turn.
+If that turn's resolved model has no `models.json` entry, no live
+probe, and no verified dialect baseline (`ContextTokensSource::Unverified`
+— the identical admission-safety clamp `tracing::debug!` already logged,
+above), conway now also prints an operator-facing notice naming the exact
+pair, the exact floor number about to govern, and the remedy
+(`.conway/models.json`), before that floor can cost a real run — on
+`stderr` for a non-interactive run (one-shot `-p`, alongside `Conway::
+warnings()`), and as a standing transcript entry for the interactive TUI.
+
+This is the SAME `ContextTokensSource::Unverified` state, read through the
+SAME two facts guided setup's own confirm step already reads (a
+`models.json` entry, and whether the dialect's own baseline is a sourced
+fact) — plus, when a caller has opted into `conway-plugin-routing`'s
+capability-filtered router (`"conway.routing"` in `[plugins].install` — NOT
+one of guided setup's own default-installed ids), the router's own already-
+resolved `ContextTokensSource` for that exact pair, which is authoritative
+whenever it is available. No new resolver, no model-name-based inference of
+what the window "probably" is (a guess dressed as knowledge is worse than
+an honest floor), and — per this whole feature's own standing rule — no
+re-asking once a `models.json` entry already exists for the pair, and
+nothing that blocks a non-interactive run.
+
+`HOSTED_CHOICES` staying at one model per hosted provider is unaffected by
+this item — a curation decision (see that constant's own doc for the
+"admissibility rule" it is judged against), not a routing gap, and not
+touched here.
 
 ### Requesting the window: `num_ctx`
 

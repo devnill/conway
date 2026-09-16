@@ -259,6 +259,21 @@ setup"](providers.md#establishing-the-window-at-setup) for the full
 accept-versus-override rule and how to change an already-configured
 model's window later.
 
+### A model configured outside the add flow still gets a warning
+
+Not every model reaches conway through guided setup or `/settings` →
+providers → add: a hand-edited `settings.json`, a role-chain edit naming a
+second model on a provider you already configured, and `--model
+<backend>/<model>` naming something new can all skip the add flow's own
+confirm step entirely. conway checks once more, right before a session's
+first real turn: if that turn's model has no confirmed window at all, you
+get the same honest floor-number-and-remedy notice the add flow prints,
+before the guess can cost you a run — not a re-ask on every launch, and
+never once a `models.json` entry already exists for that model. See
+[`providers.md`'s "Surfacing an assumed floor outside the add
+flow"](providers.md#surfacing-an-assumed-floor-outside-the-add-flow) for
+the full rule.
+
 ### Small local models: the runway warning at setup time
 
 Guided setup's own opinion set (see "Installing a first-party plugin"

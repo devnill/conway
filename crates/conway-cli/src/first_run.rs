@@ -1535,6 +1535,162 @@ fn assumed_floor_honesty_note(kind: &str, dialect: Option<&str>) -> Option<Strin
     ))
 }
 
+// ---------------------------------------------------------------------
+// Board item `01M2N2GJ9K7QEABGZD7R9GVT3Y`: rule B, widened past the ADD
+// FLOW (everything above this point in the file) to the FIRST-REAL-TURN
+// moment -- the one point common to every way a model can reach a resolved
+// config, not only the two this crate already confirms at (guided setup's
+// [`HOSTED_CHOICES`] shortlist, and `/settings` -> providers -> add).
+//
+// **THE ENUMERATION** (this item's own required deliverable -- see this
+// function pair's callers for the full write-up): a hand-edited
+// `settings.json` `backends`/`roles` entry, a role-chain edit naming a
+// second model on an already-configured provider, and `--model
+// <backend>/<model>` naming something unconfigured ALL share one property
+// -- none of them ever call `handle_context_window_at_setup` (that
+// function is reached only from `run_backend_setup`/
+// `retry_credential_and_finish`, both guided-setup-only call sites). Every
+// one of those paths DOES, however, eventually reach a real turn -- and
+// [`resolve_first_turn_floor_notice`] is the one check every dispatch
+// target (TUI, one-shot `-p`) runs immediately before that can happen.
+//
+// **Not a second resolver.** [`first_turn_floor_notice`] asks the exact
+// same two questions [`resolve_context_window_for_setup`] already asks
+// ("does this pair have a models.json entry", via
+// [`context_window_is_verified`]/[`dialect_floor_window`]) -- reused, not
+// restated -- plus one it did not need at setup time: whether the
+// router's own `CapabilityIndex` (`Conway::capability_index`,
+// `ExplainEntry::context_window_source`) already has a resolved
+// `ContextTokensSource` for this exact pair, which -- when a caller opted
+// into `conway-plugin-routing`'s capability-filtered `DeclarativeRouter`
+// (`ROUTER_ID` in `[plugins].install`; ABSENT from guided setup's own
+// [`crate::first_party_plugins::DEFAULT_OPINION_SET`]) -- is the
+// authoritative answer and must win outright, `Unverified` included: this
+// item adds no THIRD source of truth on top of `ContextTokensSource`,
+// only a THIRD, no-models.json-entry-required caller of the same two
+// facts guided setup's own confirm step already reads.
+// ---------------------------------------------------------------------
+
+/// Pure: `None` unless the pair this session's first turn is about to run
+/// against is genuinely about to run on [`conway::ContextTokensSource::
+/// Unverified`]'s own floor -- an unsourced, internal admission-safety
+/// clamp, never a fact about this model's real window (see that variant's
+/// own doc). Never fires for `Override`/`Metadata`/`Probed`/
+/// `DialectDefaultFloor`/`anthropic`: an explicit `models.json` entry (an
+/// operator's own typed answer, whether from this file's own
+/// `confirm_and_persist_context_window`, `tui::app::provider_manage`, or a
+/// bare text editor), a live startup probe, or a verified dialect default
+/// all mean conway already has -- or the operator already gave -- a real,
+/// sourced number, which is exactly the case the parent item's own "no
+/// re-asking about a window already confirmed" ruling protects, unchanged
+/// here.
+///
+/// `already_has_metadata_entry`/`indexed_source` are pre-resolved by the
+/// caller ([`resolve_first_turn_floor_notice`], below) rather than looked
+/// up here, so a test can drive every branch directly without building a
+/// live [`conway::Conway`] -- this module's own testability split (top
+/// doc), extended to this pair of functions.
+///
+/// `indexed_source`, when `Some`, is authoritative and decided FIRST: the
+/// router's own `CapabilityIndex` is the one place `Override`/`Metadata`/
+/// `Probed`/`DialectDefaultFloor` can be told apart from `Unverified` for
+/// a pair that IS in `models.json` and IS capability-filtered
+/// (`conway-plugin-routing`'s `DeclarativeRouter`). `None` (the far more
+/// common case -- see this item's own doc addendum on `ROUTER_ID` being
+/// absent from `DEFAULT_OPINION_SET`) means either `MinimalRouter` is in
+/// effect (no capability index reached at all -- `conway_core::routing::
+/// MinimalRouter`'s own doc, "this type indexes no capabilities") or this
+/// exact pair was never indexed (no `models.json` entry): this function
+/// then falls back to the SAME `already_has_metadata_entry`/
+/// `context_window_is_verified` check `resolve_context_window_for_setup`
+/// already makes, which answers correctly in both of those `None` cases
+/// without ever needing to reach a live `Backend`.
+pub(crate) fn first_turn_floor_notice(
+    already_has_metadata_entry: bool,
+    indexed_source: Option<conway::ContextTokensSource>,
+    key: &str,
+    kind: &str,
+    dialect: Option<&str>,
+) -> Option<String> {
+    let is_unverified = match indexed_source {
+        Some(conway::ContextTokensSource::Unverified) => true,
+        Some(_) => return None,
+        None => !already_has_metadata_entry && !context_window_is_verified(kind, dialect),
+    };
+    if !is_unverified {
+        return None;
+    }
+    let floor = dialect_floor_window(kind, dialect)?;
+    Some(format!(
+        "conway has no confirmed context window for {key} -- this session's first turn is \
+         about to run against a {floor}-token limit, sourced as \
+         {CONTEXT_WINDOW_PROVENANCE_ASSUMED}. That number is an unsourced guess, not a \
+         measurement, and this model's real window may be very different. Set one in \
+         models.json (see docs/providers.md) before it costs a run."
+    ))
+}
+
+/// The imperative half: resolves whichever `(backend, model)` this
+/// session's first real turn would actually route to RIGHT NOW -- an
+/// explicit `--model` pin (`model_pin`, the raw CLI string) when one was
+/// passed, otherwise whatever `role_override` (`--role-override`) or,
+/// absent that, `conway.config().default_role` resolves to -- and hands it
+/// to [`first_turn_floor_notice`].
+///
+/// A malformed `--model` yields `None` here (`.ok()?`): its own usage-error
+/// path runs later, in `oneshot::resolve_session`/`tui::app::App::
+/// session_spec` (both already call [`crate::model_pin::parse_model_pin`]
+/// against the SAME string) -- duplicating that diagnosis here would be a
+/// second, drifting copy of it (P-14). An unpinned request with no
+/// SELECTED routing candidate at all ALSO yields `None`: an empty or
+/// fully-capability-skipped chain surfaces its own loud
+/// `RoutingError::NoCandidate` the moment a turn is actually attempted --
+/// this item closes a SILENT ADMISSION on an assumed floor, not a silent
+/// REFUSAL, which was already loud before this item existed.
+///
+/// Reads `Conway::capability_index()`/`Conway::model_metadata()`/
+/// `Conway::config()` only -- no network call, no new resolver: the
+/// router's own `ExplainEntry::context_window_source` (via
+/// `Conway::explain_routing`) IS `CapabilityIndex::context_window_source`,
+/// re-read here rather than a second lookup racing it.
+///
+/// **Called from exactly two places, both already the SAME "every dispatch
+/// target reaches this" choke point `Conway::warnings()` itself uses**:
+/// `main.rs`'s own non-interactive branch (mirroring its `conway.
+/// warnings()` loop, gated the same way on `command_needs_provider`) and
+/// `tui::app::startup::App::new` (mirroring ITS OWN `conway.warnings()`
+/// loop into the transcript) -- never a third, ad hoc call site.
+pub fn resolve_first_turn_floor_notice(
+    conway: &conway::Conway,
+    model_pin: Option<&str>,
+    role_override: Option<&str>,
+) -> Option<String> {
+    let model_ref: conway::ModelRef = match model_pin {
+        Some(raw) => raw.parse().ok()?,
+        None => {
+            let role = role_override
+                .map(|r| conway::RoleAlias::new(r.to_string()))
+                .unwrap_or_else(|| conway.config().default_role.clone());
+            let report = conway.explain_routing(&role);
+            report.entries.into_iter().find_map(|e| match e.outcome {
+                conway::EntryOutcome::Selected { .. } => Some(e.model_ref),
+                conway::EntryOutcome::Skipped { .. } => None,
+            })?
+        }
+    };
+    let key = model_ref.to_string();
+    let entry = conway.config().backends.get(model_ref.backend.as_str())?;
+    let already_has_metadata_entry = conway.model_metadata().models.contains_key(&key);
+    let indexed_source = conway.capability_index().context_window_source(&model_ref);
+    first_turn_floor_notice(
+        already_has_metadata_entry,
+        indexed_source,
+        &key,
+        &entry.kind,
+        entry.dialect.as_deref(),
+    )
+}
+
 /// The DECISION half of `handle_context_window_at_setup` -- computes WHAT
 /// to confirm (the resolved `default`, its provenance label, and, for the
 /// one branch with nothing real to offer, rule B's own honesty note) without
@@ -2539,6 +2695,133 @@ mod tests {
         assert!(
             msg.contains("/home/op/.conway/models.json"),
             "must name the exact file the value was actually written to: {msg}"
+        );
+    }
+
+    // ---- first_turn_floor_notice (board item `01M2N2GJ9K7QEABGZD7R9GVT3Y`) ----
+
+    #[test]
+    fn first_turn_floor_notice_fires_for_an_unindexed_unverified_dialect() {
+        // No `models.json` entry (`already_has_metadata_entry: false`), no
+        // capability-index entry at all (`indexed_source: None` --
+        // `MinimalRouter`, or a `DeclarativeRouter` pair never indexed) --
+        // the literal `ollama_cloud/glm-5.3` reproduction this item exists
+        // to close.
+        let msg = first_turn_floor_notice(
+            false,
+            None,
+            "ollama_cloud/glm-5.3",
+            "openai-compat",
+            Some("ollama"),
+        );
+        let msg = msg.expect("an unindexed, unverified dialect must produce a notice");
+        assert!(msg.contains("ollama_cloud/glm-5.3"));
+        assert!(
+            msg.contains(CONTEXT_WINDOW_PROVENANCE_ASSUMED),
+            "must use the SAME provenance vocabulary the setup-time surface and `conway routes \
+             explain` already use, not a fresh label: {msg}"
+        );
+        assert!(
+            msg.contains("models.json"),
+            "must name the remedy, per GP-14/INTENT.md 8.3's own 'refuse and name what \
+             changed': {msg}"
+        );
+    }
+
+    #[test]
+    fn first_turn_floor_notice_is_silent_once_indexed_source_is_not_unverified() {
+        for source in [
+            conway::ContextTokensSource::Override,
+            conway::ContextTokensSource::Metadata,
+            conway::ContextTokensSource::Probed,
+            conway::ContextTokensSource::DialectDefaultFloor,
+        ] {
+            assert_eq!(
+                first_turn_floor_notice(
+                    false,
+                    Some(source),
+                    "ollama_cloud/glm-5.3",
+                    "openai-compat",
+                    Some("ollama"),
+                ),
+                None,
+                "a router-indexed, non-Unverified source must never nag: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_turn_floor_notice_fires_when_indexed_source_is_unverified() {
+        // The router itself already answered `Unverified` (a
+        // `DeclarativeRouter` pair that IS `models.json`-indexed but whose
+        // resolved source is still the floor) -- this is the one case
+        // `indexed_source: Some(..)` must fire, unlike every other `Some`.
+        let msg = first_turn_floor_notice(
+            true,
+            Some(conway::ContextTokensSource::Unverified),
+            "ollama_cloud/glm-5.3",
+            "openai-compat",
+            Some("ollama"),
+        );
+        assert!(msg.is_some());
+    }
+
+    #[test]
+    fn first_turn_floor_notice_is_silent_once_a_metadata_entry_already_exists() {
+        // No router-built index at all (`None`, the `MinimalRouter` case),
+        // but the operator (or a probe) already wrote a `models.json`
+        // entry for this exact pair -- "no re-asking about a window
+        // already confirmed" (parent item's own ruling, carried over
+        // verbatim).
+        assert_eq!(
+            first_turn_floor_notice(
+                true,
+                None,
+                "ollama_cloud/glm-5.3",
+                "openai-compat",
+                Some("ollama"),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn first_turn_floor_notice_is_silent_for_a_verified_dialect_with_nothing_indexed() {
+        // `openai`-dialect and `anthropic`-kind baselines are sourced facts
+        // (`context_window_is_verified`'s own doc) -- no notice even with
+        // nothing in the router's own index.
+        assert_eq!(
+            first_turn_floor_notice(
+                false,
+                None,
+                "openai/gpt-4o-mini",
+                "openai-compat",
+                Some("openai"),
+            ),
+            None,
+        );
+        assert_eq!(
+            first_turn_floor_notice(false, None, "anthropic/claude-sonnet-5", "anthropic", None),
+            None,
+        );
+    }
+
+    #[test]
+    fn first_turn_floor_notice_names_the_real_dialect_floor_number() {
+        let msg = first_turn_floor_notice(
+            false,
+            None,
+            "ollama_cloud/glm-5.3",
+            "openai-compat",
+            Some("ollama"),
+        )
+        .expect("unverified ollama dialect must produce a notice");
+        let floor = dialect_floor_window("openai-compat", Some("ollama"))
+            .expect("ollama dialect has a known floor");
+        assert!(
+            msg.contains(&floor.to_string()),
+            "must name the EXACT floor number a real turn would silently use, not a vague \
+             'small default': {msg}"
         );
     }
 
