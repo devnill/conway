@@ -318,6 +318,34 @@
 //!     `docs/scripting.md`'s flag table now states the behaviour.
 //!     Reconciliation #7 above already wired `--model` + `--resume`; this
 //!     closes the last arm.
+//! 12. **`--session <name>` on an UNCLAIMED name (board item F10,
+//!     `01M250H60AHVSKFW12HX8G5FF9`).** `session_names::resolve` -- what
+//!     the `--session` arm already called for `--resume`/`--fork-from`'s
+//!     benefit too -- only ever recognizes a name some EARLIER `sessions
+//!     name` call already bound; an unclaimed name is neither a valid
+//!     `SessionId` nor a known entry in [`NamesStore`], so it fell straight
+//!     through to `ResolveError`'s generic "not a valid session id ... and
+//!     no session is named that" -- a name could be BOUND to an existing
+//!     session and used, but never MINTED one in the same step. The
+//!     `--session` arm now checks that case first, as its own match guard:
+//!     when `id` neither parses as a `SessionId` nor already resolves
+//!     through `names`, it builds and creates a fresh [`SessionSpec`]
+//!     exactly as the flag-free arm does, then calls [`NamesStore::set`] to
+//!     bind `id` to the newly-minted session's id before returning the
+//!     handle -- one invocation, one round trip, no separate `sessions
+//!     name` call required. Every other shape of `--session`'s argument
+//!     (a bare id, valid or not; an already-bound name) still falls through
+//!     to the pre-existing arm below, unchanged: `--session <ulid>` colliding
+//!     with an existing session, and `--session <already-bound-name>`
+//!     resolving to a session that already exists, both still refuse with
+//!     the same "session already exists; pass --resume ... instead" usage
+//!     error they always did. **Disclosed, not closed:** if `new_session`
+//!     succeeds but the subsequent `names.set` fails (e.g. a concurrent
+//!     process bound the same name in between), the freshly-created session
+//!     is left unnamed rather than rolled back -- the same
+//!     "a real race is not a concern this single-shot CLI invocation needs
+//!     to close" tradeoff the pre-existing id-collision probe above already
+//!     accepts, applied to the new bind step.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -326,7 +354,7 @@ use std::time::Duration;
 use conway::gates::AllowListGate;
 use conway::{
     AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, PermissionDecisionKind, ResultStatus,
-    RoleAlias, SessionHandle, SessionSpec, ToolName, ToolSelector,
+    RoleAlias, SessionHandle, SessionId, SessionSpec, ToolName, ToolSelector,
 };
 use futures::StreamExt;
 use schemars::schema::RootSchema;
@@ -688,8 +716,11 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
     // above -- every arm below that resolves a `--session`/`--resume`/
     // `--fork-from` value sees the identical, already-loaded name table
     // (this item: `--session`/`--resume`/`--fork-from` accept an
-    // operator-chosen name wherever they accept an id).
-    let names = NamesStore::load(&session_names::session_root(conway))
+    // operator-chosen name wherever they accept an id). `mut`: the
+    // `--session` arm's unclaimed-name branch (board item F10, see this
+    // module's doc comment reconciliation #12) binds a fresh name into this
+    // same table before returning.
+    let mut names = NamesStore::load(&session_names::session_root(conway))
         .map_err(|e| usage_error(e.to_string()))?;
 
     match (&cli.session, &cli.resume, &cli.fork_from) {
@@ -723,6 +754,48 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
         // invocation needs to close: `new_session` would then fail with
         // that same typed store error, still surfaced as a usage error via
         // the `map_err` below, just with a less specific message.
+        //
+        // Board item F10 (see this module's doc comment, reconciliation
+        // #12): `id` is treated as an UNCLAIMED NAME -- mint a fresh
+        // session and bind `id` to it in this same call -- only when it
+        // does *not* parse as a `SessionId` at all (a bare id, valid or
+        // not, always takes the pre-existing path below) AND it is not
+        // already bound to a session (an already-bound name resolves via
+        // `session_names::resolve` just like an id does, and falls through
+        // to the SAME existence-probe-then-create path, unchanged).
+        (Some(id), None, None)
+            if id.parse::<SessionId>().is_err() && names.resolve(id).is_none() =>
+        {
+            let role = cli
+                .role_override
+                .as_ref()
+                .map(|r| RoleAlias::new(r.clone()));
+            let model = parse_model_pin(cli)?;
+            let spec = SessionSpec {
+                role,
+                cwd: cli.cwd.clone(),
+                model,
+                agent_def: cli.agent.clone(),
+                system_prompt_override,
+                budget,
+                result_contract,
+                tools,
+                ..SessionSpec::default()
+            };
+            let handle = conway
+                .new_session(spec)
+                .await
+                .map_err(|e| usage_error(format!("--session {id}: {e}")))?;
+            // Bind `id` to the freshly-minted session in the SAME
+            // invocation -- an operator who wrote `--session daily` never
+            // has to follow up with a separate `sessions name` call to make
+            // `daily` addressable again later.
+            names
+                .set(id, handle.id())
+                .map_err(|e| usage_error(format!("--session {id}: {e}")))?;
+            Ok(handle)
+        }
+
         (Some(id), None, None) => {
             let sid = session_names::resolve(id, &names).map_err(|e| usage_error(e.to_string()))?;
             if conway.resume(sid).await.is_ok() {

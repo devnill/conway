@@ -49,6 +49,7 @@ mod common;
 
 use common::{command, open_conway, run_conway, write_fixture, Fixture};
 use conway::{SessionFilter, SessionId};
+use serde_json::Value;
 
 use common::mock_backend::{Chunk, MockBackend, Script};
 
@@ -762,6 +763,90 @@ async fn session_flag_sets_id() {
         reuse_stderr.contains("already exists"),
         "stderr: {reuse_stderr}"
     );
+}
+
+/// `--session <name>` on a NOT-YET-BOUND name (board item F10): the first
+/// invocation must both create the session and bind the name in one step --
+/// before this item, `session_names::resolve` only ever recognized a name
+/// some earlier `sessions name` call had already bound, so an unclaimed
+/// name refused as "not a valid session id ... and no session is named
+/// that" instead of minting one, and this test fails against HEAD. The
+/// second invocation of the exact same command must then refuse with the
+/// same documented "already exists, use --resume" error `session_flag_sets_id`
+/// pins for a bare id -- pairing with that test (an id) so this one (a
+/// name) cannot pass by accidentally treating every `--session` argument as
+/// a name, or vice versa.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_flag_with_unclaimed_name_creates_and_binds_then_refuses() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("ok"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let first = run_conway(&["-p", "hi", "--session", "daily"], &fixture);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(first.stdout, b"ok\n");
+
+    // Exactly one session exists, and it now carries the name `--session`
+    // was given -- proving the bind, not just a coincidental refusal below.
+    let list_out = run_conway(&["sessions", "list", "--json"], &fixture);
+    assert!(list_out.status.success());
+    let value: Value = serde_json::from_slice(&list_out.stdout).expect("stdout is a JSON array");
+    let arr = value.as_array().expect("top-level array");
+    assert_eq!(arr.len(), 1, "expected exactly one session: {arr:?}");
+    assert_eq!(
+        arr[0]["name"].as_str(),
+        Some("daily"),
+        "the first run must have bound `daily` to the session it created: {arr:?}"
+    );
+
+    // A second run naming the exact same (now-bound) name refuses, per the
+    // documented "already exists" contract -- unchanged from what a bare id
+    // does on a second `--session` invocation.
+    let second = run_conway(&["-p", "hi", "--session", "daily"], &fixture);
+    assert_eq!(second.status.code(), Some(2));
+    assert!(second.stdout.is_empty());
+    let second_stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        second_stderr.contains("already exists") && second_stderr.contains("--resume"),
+        "stderr: {second_stderr}"
+    );
+}
+
+/// Pairs with the name test above: `--session <existing-id>` (a bare
+/// session id, not a name) must still behave exactly as it did before this
+/// item -- refusing with the unchanged "already exists" error rather than
+/// being swallowed into the new unclaimed-name branch (which only ever
+/// fires for an argument that does not parse as a `SessionId` at all).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_flag_with_existing_id_is_unchanged() {
+    let mock = MockBackend::start(ok_script()).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let first = run_conway(&["-p", "hi"], &fixture);
+    assert!(first.status.success());
+    let sid = only_session_id(&fixture).await;
+
+    let reuse = run_conway(&["-p", "hi", "--session", &sid.to_string()], &fixture);
+    assert_eq!(reuse.status.code(), Some(2));
+    assert!(reuse.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&reuse.stderr);
+    assert!(
+        stderr.contains("already exists") && stderr.contains("--resume"),
+        "stderr: {stderr}"
+    );
+
+    // Unaffected by the name-binding machinery: the existing session still
+    // carries no name.
+    let list_out = run_conway(&["sessions", "list", "--json"], &fixture);
+    let value: Value = serde_json::from_slice(&list_out.stdout).expect("stdout is a JSON array");
+    let arr = value.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert!(arr[0]["name"].is_null(), "expected no name bound: {arr:?}");
 }
 
 // ---------------------------------------------------------------------
