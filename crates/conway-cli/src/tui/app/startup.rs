@@ -598,6 +598,30 @@ impl App {
                 fatal: false,
             });
         }
+        // Board item `01M2N2GJ9K7QEABGZD7R9GVT3Y`: rule B, widened past
+        // guided setup's own confirm surface -- the interactive TUI's own
+        // half of the SAME check `main.rs`'s non-interactive branch just
+        // ran (`crate::first_run::resolve_first_turn_floor_notice`'s own
+        // doc), unconditional here for the identical reason `conway.
+        // warnings()` immediately above is: the TUI always reaches a
+        // model, unlike `sessions`/`routes`/`tools list` (`main.rs`'s own
+        // `command_needs_provider` gate, which does not apply to this
+        // dispatch target at all). `state.model_pin` -- already resolved
+        // from `cli` a few lines up -- is reused rather than re-parsed a
+        // second time (P-14). Rendered through the SAME `Entry::Error {
+        // fatal: false }` channel as the warnings loop just above, for the
+        // identical reason: an assumed, unsourced floor about to govern a
+        // real turn is a standing risk, not routine cyan chatter.
+        if let Some(text) = crate::first_run::resolve_first_turn_floor_notice(
+            conway,
+            state.model_pin.as_deref(),
+            cli.role_override.as_deref(),
+        ) {
+            state.transcript.push(crate::tui::state::Entry::Error {
+                text,
+                fatal: false,
+            });
+        }
         // Board item 01M1YVP3FDPHY4WZ72SXMWAN2D: the mode THIS session
         // STARTS in -- see `resolve_default_mode`'s own doc for the
         // precedence/trust contract. `report.paths`' first entry is
