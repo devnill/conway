@@ -108,29 +108,60 @@ fn accept_local_offer_and_land(
     // (`ubuntu-latest`, no `bwrap` installed) and the operator's own macOS
     // machine (`sandbox-exec` always present) answer differently.
     //
-    // The exact prompt text and how many questions follow are NOT assumed:
-    // an earlier version of this test guessed "Enable the bash shell tool?"
-    // and timed out, because the real question on a machine with a
-    // containment primitive reads "Enable conway.confine's confined shell
-    // tool?". Rather than hard-code a second guess, answer whatever shell
-    // question appears and then wait for the prompt line, tolerating either
-    // a one-question or a two-question branch.
+    // Anchored on each question's own TRAILING marker -- `"[Y/n]"` (the
+    // confine question's own default-yes bracket) or the plain-shell
+    // offer's own full, literal first line -- rather than on
+    // `"OS containment primitive"`/`"shell tool?"`, which is what this used
+    // to search for and is the root cause this suite's own flakiness
+    // traced to (board item `01M2MNMZ7BWS0KDHGNKP6JP47T`). Both of the old
+    // anchors are SUBSTRINGS of the confine question's own single sentence
+    // (`first_run.rs`'s `offer_opinion_set_and_shell`: "This machine has an
+    // OS containment primitive (...). Enable conway.confine's confined
+    // shell tool? ... [Y/n]"), with `"OS containment primitive"` starting
+    // BEFORE `"shell tool?"` in that same, already-fully-printed sentence.
+    // Because `wait_for_any` returns on whichever pattern starts EARLIEST,
+    // the old code always resolved `after_first_shell_question` to a point
+    // MID-sentence -- strictly before `"shell tool?"` itself, which was
+    // already sitting in the captured buffer. The very next wait then
+    // searched for `"shell tool?"` starting from that mid-sentence offset
+    // and matched that SAME, stale occurrence on its very first poll,
+    // instead of waiting for a genuine second question -- sending an extra,
+    // premature keystroke into a process that was about to toggle raw mode
+    // for its own next `read_single_key()` call (`enable_raw_mode`/
+    // `disable_raw_mode` around each read, `first_run.rs:1007-1018`). That
+    // stray keystroke's delivery relative to the raw-mode toggle is a
+    // genuine OS-level race, not something this harness controls -- exactly
+    // the kind of intermittent, load-sensitive failure this suite was
+    // quarantined for. `"[Y/n]"` and `"Enable the bash shell tool?"` each
+    // occur nowhere in this flow's output ahead of where they are used
+    // here: unlike a bare `"[y/N]"` (which "Add another provider? [y/N]",
+    // just answered immediately before this, also contains) and unlike
+    // `"shell tool?"` (which both possible first questions' sentences
+    // contain), so neither can produce a stale, premature match.
     let (_, after_first_shell_question) = session.wait_for_any(
-        &["OS containment primitive", "shell tool?"],
+        &["[Y/n]", "Enable the bash shell tool?"],
         add_another,
         Duration::from_secs(10),
     );
     session.send("n");
 
-    // Either we have landed, or one more shell question remains -- both are
-    // legitimate depending on which primitives this machine offers. Anchor
-    // the second wait at the FIRST question's offset, not at its own match:
-    // LANDED is the input-box placeholder and is redrawn continuously, so
-    // re-anchoring per iteration can step past the only emission that
-    // matters. A bounded answer-what-appears loop was tried here and was
-    // strictly worse (0/12) for exactly that reason.
+    // Either we have landed (no containment primitive on this machine, so
+    // the question just answered above WAS the only one), or one genuine
+    // second question remains (a containment primitive exists and was just
+    // declined, so `offer_plain_shell` asks its own "Enable the bash shell
+    // tool?" next) -- both legitimate, depending on what this machine
+    // offers. Anchored at the FIRST question's own offset, not at its own
+    // match: LANDED is the input-box placeholder and is redrawn on every
+    // dirty frame, not emitted once, so re-anchoring per iteration can step
+    // past the only emission that matters. A bounded answer-what-appears
+    // loop was tried here and was strictly worse (0/12) for exactly that
+    // reason. `"Enable the bash shell tool?"` cannot self-match here in the
+    // one-question branch: it was already consumed, in full, by the wait
+    // immediately above, and `since` is anchored at the END of that match,
+    // so only a SECOND, later occurrence (the genuine follow-up question)
+    // can satisfy this search.
     let (which_next, offset) = session.wait_for_any(
-        &[LANDED, "shell tool?"],
+        &[LANDED, "Enable the bash shell tool?"],
         after_first_shell_question,
         Duration::from_secs(20),
     );
@@ -146,11 +177,6 @@ fn accept_local_offer_and_land(
 /// already running ... offers it in one keypress if found". See this
 /// file's own top doc for the one, currently-unfixed call site that makes
 /// this test fail against HEAD today.
-#[ignore = "flaky: 8/10 and 18/20 measured on 2026-09-16. The three tests in \
-this file drive the full interactive guided-setup keystroke chain and \
-intermittently miss a redraw of the landed prompt line. They pass in \
-isolation and are correct; run them with --ignored. Tracked as a board item \
--- do not un-ignore without a fresh 20/20 measurement."]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_launch_interactive_guided_setup_offers_a_detected_local_server_in_one_keypress() {
     let mock = MockBackend::start(ok_script()).await;
@@ -169,11 +195,6 @@ async fn first_launch_interactive_guided_setup_offers_a_detected_local_server_in
 /// request" -- BEFORE landing in the session, not after. See this file's
 /// own top doc for the one, currently-unfixed call site that makes this
 /// test fail against HEAD today.
-#[ignore = "flaky: 8/10 and 18/20 measured on 2026-09-16. The three tests in \
-this file drive the full interactive guided-setup keystroke chain and \
-intermittently miss a redraw of the landed prompt line. They pass in \
-isolation and are correct; run them with --ignored. Tracked as a board item \
--- do not un-ignore without a fresh 20/20 measurement."]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guided_setup_verifies_with_a_real_request_before_landing() {
     let mock = MockBackend::start(ok_script()).await;
@@ -209,11 +230,6 @@ async fn guided_setup_verifies_with_a_real_request_before_landing() {
 /// (`LOCAL_OLLAMA_BASE_URL` not honoring the probe-override env var on the
 /// interactive path) that keeps this test itself from running green today
 /// despite the regression it guards being fixed.
-#[ignore = "flaky: 8/10 and 18/20 measured on 2026-09-16. The three tests in \
-this file drive the full interactive guided-setup keystroke chain and \
-intermittently miss a redraw of the landed prompt line. They pass in \
-isolation and are correct; run them with --ignored. Tracked as a board item \
--- do not un-ignore without a fresh 20/20 measurement."]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guided_setup_accepted_writes_settings_and_models_json_to_the_same_layer_and_the_resolved_window_is_identical_from_a_third_directory(
 ) {
