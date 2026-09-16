@@ -1840,7 +1840,7 @@ impl AppState {
                 }
             }
             // T3: capture the focused agent's serving model display name
-            // (`ModelRef::to_string()`, e.g. `anthropic/claude-sonnet-4-6`)
+            // (`ModelRef::to_string()`, e.g. `anthropic/claude-sonnet-5`)
             // and look up its max context window from the model-metadata
             // map populated at `App::new`. The status line's `model` field
             // renders the display name; `ctx%` divides `focused_ctx_tokens`
