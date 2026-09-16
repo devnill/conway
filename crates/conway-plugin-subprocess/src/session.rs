@@ -153,6 +153,15 @@ use tokio::time::timeout;
 use conway::plugin::{
     CapabilityError, ChildSession, Event, EventSink, EventSinkHandle, NotificationRoute, ToolError,
 };
+// Only the `#[cfg(not(unix))]` `PersistentSession::spawn` arm below calls a
+// `ChildSessionError` trait method (`SubprocessPluginError::spawn`) directly;
+// every other call in this file goes through `ChildSession`'s own generic
+// `E: ChildSessionError` bound, which needs no local trait import. Importing
+// this unconditionally would be an unused-import warning (denied under `-D
+// warnings`, see `.github/workflows/ci.yml`) on the unix build this crate
+// actually ships.
+#[cfg(not(unix))]
+use conway::plugin::ChildSessionError;
 
 use crate::wire::{
     build_observe_notification, parse_persistent_capability_response,
@@ -352,10 +361,10 @@ impl PersistentSession {
     pub(crate) async fn spawn(spec: &SubprocessPluginSpec) -> Result<Self, SubprocessPluginError> {
         #[cfg(not(unix))]
         {
-            return Err(SubprocessPluginError::Spawn {
-                config_id: spec.config_id.clone(),
-                detail: "the subprocess plugin host requires a unix host".into(),
-            });
+            return Err(SubprocessPluginError::spawn(
+                &spec.config_id,
+                "the subprocess plugin host requires a unix host".into(),
+            ));
         }
 
         #[cfg(unix)]

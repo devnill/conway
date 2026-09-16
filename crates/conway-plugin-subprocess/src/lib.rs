@@ -447,10 +447,10 @@ async fn spawn_one_shot(
     #[cfg(not(unix))]
     {
         let _ = payload;
-        return Err(SubprocessPluginError::Spawn {
-            config_id: spec.config_id.clone(),
-            detail: "the subprocess plugin host requires a unix host".into(),
-        });
+        return Err(SubprocessPluginError::spawn(
+            &spec.config_id,
+            "the subprocess plugin host requires a unix host".into(),
+        ));
     }
 
     #[cfg(unix)]
@@ -459,13 +459,9 @@ async fn spawn_one_shot(
         use tokio::process::Command;
         use tokio::time::{Duration, Instant};
 
-        let (program, args) =
-            spec.command
-                .split_first()
-                .ok_or_else(|| SubprocessPluginError::Spawn {
-                    config_id: spec.config_id.clone(),
-                    detail: "plugin command is empty".into(),
-                })?;
+        let (program, args) = spec.command.split_first().ok_or_else(|| {
+            SubprocessPluginError::spawn(&spec.config_id, "plugin command is empty".into())
+        })?;
 
         let mut command = Command::new(program);
         command
@@ -476,15 +472,17 @@ async fn spawn_one_shot(
             .process_group(0);
 
         let mut child = spawn_with_retry(|| command.spawn()).await.map_err(|err| {
-            SubprocessPluginError::Spawn {
-                config_id: spec.config_id.clone(),
-                detail: format!("failed to spawn '{program}': {err}"),
-            }
+            SubprocessPluginError::spawn(
+                &spec.config_id,
+                format!("failed to spawn '{program}': {err}"),
+            )
         })?;
 
-        let pgid = child.id().ok_or_else(|| SubprocessPluginError::Spawn {
-            config_id: spec.config_id.clone(),
-            detail: "spawned plugin process exited before its pid could be read".into(),
+        let pgid = child.id().ok_or_else(|| {
+            SubprocessPluginError::spawn(
+                &spec.config_id,
+                "spawned plugin process exited before its pid could be read".into(),
+            )
         })? as i32;
 
         let deadline = Instant::now() + Duration::from_millis(spec.timeout_ms);
@@ -542,16 +540,16 @@ async fn spawn_one_shot(
                 }
                 Ok(stdout)
             }
-            Ok(Err(err)) => Err(SubprocessPluginError::Spawn {
-                config_id: spec.config_id.clone(),
-                detail: format!("failed to wait for plugin process: {err}"),
-            }),
+            Ok(Err(err)) => Err(SubprocessPluginError::spawn(
+                &spec.config_id,
+                format!("failed to wait for plugin process: {err}"),
+            )),
             Err(_elapsed) => {
                 kill_group(&mut child, pgid).await;
-                Err(SubprocessPluginError::TimedOut {
-                    config_id: spec.config_id.clone(),
-                    after_ms: spec.timeout_ms,
-                })
+                Err(SubprocessPluginError::timed_out(
+                    &spec.config_id,
+                    spec.timeout_ms,
+                ))
             }
         }
     }
