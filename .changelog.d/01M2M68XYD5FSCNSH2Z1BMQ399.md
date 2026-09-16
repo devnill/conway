@@ -1,0 +1,7 @@
+### Fixed
+
+- **Guided setup no longer splits its own output across two config layers** — board item `01M2M68XYD5FSCNSH2Z1BMQ399`. `settings.json` and `models.json` used to land in different places: `settings.json` went to the resolved config layer (`$CONWAY_CONFIG_DIR`, `~/.conway/`, or a `--config` target), but the model's context window went to `<the directory conway happened to be invoked from>/.conway/models.json` — a path with no relationship to where `settings.json` landed, and dependent on the guided-setup process's own invocation directory rather than the layer it just wrote to. Guided setup now writes `models.json` as a plain sibling of the `settings.json` it just wrote, in the same directory, and its confirmation message names the real path. A pre-existing project-scope `models.json` is left untouched — precedence (project outranks user) is unaffected, and existing files are never migrated.
+
+### Known limitation
+
+- A real `conway` invocation from a directory unrelated to both the config layer and the directory guided setup ran from still resolves `models.json` via the general, cwd-relative `[models].metadata_path` default — this item fixes WHERE guided setup writes, not the general resolution rule (deliberately unchanged; see `docs/providers.md` and `first_run.rs`'s own `persist_context_window_beside_settings` doc). Closing that fully needs an explicit, absolute `[models].metadata_path` written into `settings.json` at setup time, which needs a new writer in `conway::config::writer` — not added here.
