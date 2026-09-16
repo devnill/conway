@@ -406,6 +406,137 @@ pub struct LoopDeps {
     pub plugin_events: Arc<dyn PluginEventEmitter>,
 }
 
+impl LoopDeps {
+    /// Builds a `LoopDeps` from the dependencies every construction site
+    /// must supply explicitly -- there is no workspace-wide sensible
+    /// default for a session store, router, or plugin registry, which is
+    /// why these thirteen have no `with_*` counterpart below and no
+    /// existing call site's own value for them ever matches another's
+    /// (board item `01M250E7VSXABG6FH4950SGYGC`). Every remaining field
+    /// starts at the SAME default every pre-existing construction site
+    /// already gave it by hand (`PluginConfig::default()`, a fresh
+    /// `ContextBuilder::new()`, `HeadroomPolicy::default()`,
+    /// `ToolResultBoundPolicy::default()`, `None` for each of
+    /// `context_hook`/`context_curator`/`artifact_writer`, an empty
+    /// `observers`, and a fresh `HookDispatcher` for `plugin_events`) and
+    /// is overridden, if at all, through the matching `with_*` method --
+    /// mirrors `conway::ConwayBuilder`'s `with_health_registry`/
+    /// `with_artifact_writer` shape. This is construction only: nothing
+    /// here changes what the loop does with any dependency once built.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        store: Arc<dyn SessionStore>,
+        path_store: Arc<dyn PathStore>,
+        router: Arc<dyn Router>,
+        attempt: Arc<AttemptEngine>,
+        registry: Arc<PluginRegistry>,
+        tool_runner: Arc<ToolRunner>,
+        subagents: Arc<dyn SubagentHost>,
+        context_path_host: Arc<dyn conway_core::ports::ContextPathHost>,
+        session_discovery_host: Arc<dyn conway_core::ports::SessionDiscoveryHost>,
+        capabilities: Arc<dyn conway_core::ports::CapabilityHost>,
+        bus: Arc<EventBus>,
+        tree: Arc<AgentTree>,
+        resolver: Arc<conway_core::transcript::TranscriptResolver>,
+    ) -> Self {
+        Self {
+            store,
+            path_store,
+            router,
+            attempt,
+            registry,
+            tool_runner,
+            subagents,
+            context_path_host,
+            session_discovery_host,
+            capabilities,
+            plugin_config: Arc::new(PluginConfig::default()),
+            bus,
+            builder: Arc::new(ContextBuilder::new()),
+            headroom: Arc::new(HeadroomPolicy::default()),
+            tool_result_bound: Arc::new(ToolResultBoundPolicy::default()),
+            tree,
+            resolver,
+            context_curator: RwLock::new(None),
+            context_hook: RwLock::new(None),
+            artifact_writer: RwLock::new(None),
+            observers: Vec::new(),
+            plugin_events: Arc::new(crate::hook_dispatch::HookDispatcher::new()),
+        }
+    }
+
+    /// Overrides the default `PluginConfig::default()` -- the production
+    /// site (`runtime.rs`) is the only caller with a non-default value to
+    /// supply.
+    pub fn with_plugin_config(mut self, plugin_config: Arc<PluginConfig>) -> Self {
+        self.plugin_config = plugin_config;
+        self
+    }
+
+    /// Overrides the default fresh `ContextBuilder::new()`.
+    pub fn with_builder(mut self, builder: Arc<ContextBuilder>) -> Self {
+        self.builder = builder;
+        self
+    }
+
+    /// Overrides the default `HeadroomPolicy::default()` -- the production
+    /// site and any test that cares about non-default headroom behavior
+    /// call this; every other site accepts the default.
+    pub fn with_headroom(mut self, headroom: Arc<HeadroomPolicy>) -> Self {
+        self.headroom = headroom;
+        self
+    }
+
+    /// Overrides the default `ToolResultBoundPolicy::default()`, mirroring
+    /// [`Self::with_headroom`] exactly.
+    pub fn with_tool_result_bound(mut self, tool_result_bound: Arc<ToolResultBoundPolicy>) -> Self {
+        self.tool_result_bound = tool_result_bound;
+        self
+    }
+
+    /// Sets [`Self::context_hook`]'s initial value (default `None`) --
+    /// mirrors `Runtime::set_context_hook`'s own post-construction wrap:
+    /// callers hand in an already-`GuardedContextHook`-wrapped value, never
+    /// a bare `Arc<dyn ContextHook>`.
+    pub fn with_context_hook(mut self, context_hook: Option<Arc<GuardedContextHook>>) -> Self {
+        self.context_hook = RwLock::new(context_hook);
+        self
+    }
+
+    /// Sets [`Self::context_curator`]'s initial value (default `None`).
+    pub fn with_context_curator(
+        mut self,
+        context_curator: Option<Arc<dyn conway_core::ports::Curator>>,
+    ) -> Self {
+        self.context_curator = RwLock::new(context_curator);
+        self
+    }
+
+    /// Sets [`Self::artifact_writer`]'s initial value (default `None`).
+    pub fn with_artifact_writer(
+        mut self,
+        artifact_writer: Option<Arc<dyn ArtifactWriter>>,
+    ) -> Self {
+        self.artifact_writer = RwLock::new(artifact_writer);
+        self
+    }
+
+    /// Overrides the default empty `observers`.
+    pub fn with_observers(mut self, observers: Vec<RegisteredObserver>) -> Self {
+        self.observers = observers;
+        self
+    }
+
+    /// Overrides the default fresh `HookDispatcher` -- the production site
+    /// (`runtime.rs`) shares its own dispatcher (`hooks.clone()`) here so
+    /// an observer's events and a tool's events fan out through the same
+    /// path; see [`Self::plugin_events`]'s own doc.
+    pub fn with_plugin_events(mut self, plugin_events: Arc<dyn PluginEventEmitter>) -> Self {
+        self.plugin_events = plugin_events;
+        self
+    }
+}
+
 /// One agent's turn state machine (architecture §7). `run` drives turns
 /// until a terminal `AgentResult` is produced; it never returns early with
 /// an error — every failure path is folded into a non-`Completed`
@@ -2759,7 +2890,6 @@ mod tests {
 
     use super::*;
     use crate::context::RuntimeContextPathHost;
-    use crate::hook_dispatch::HookDispatcher;
     use crate::permission::PermissionBroker;
 
     /// Builds an `AgentLoop` wired to `store`/`session`/`agent` with every
@@ -2783,34 +2913,25 @@ mod tests {
         let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(64));
         let tree = Arc::new(AgentTree::new(bus.clone()));
 
-        let deps = Arc::new(LoopDeps {
-            store: store.clone(),
-            path_store: path_store.clone(),
-            context_path_host: Arc::new(RuntimeContextPathHost::new(
-                store.clone(),
-                path_store.clone(),
-                resolver.clone(),
-            )),
-            session_discovery_host: Arc::new(FakeSessionDiscoveryHost::new()),
-            capabilities: Arc::new(CapabilityRegistry::default()),
-            router: Arc::new(FakeRouter::new(vec![])),
+        let deps = Arc::new(LoopDeps::new(
+            store.clone(),
+            path_store.clone(),
+            Arc::new(FakeRouter::new(vec![])),
             attempt,
             registry,
             tool_runner,
             subagents,
-            plugin_config: Arc::new(PluginConfig::default()),
-            bus: bus.clone(),
-            builder: Arc::new(ContextBuilder::new()),
-            headroom: Arc::new(HeadroomPolicy::default()),
-            tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
+            Arc::new(RuntimeContextPathHost::new(
+                store.clone(),
+                path_store.clone(),
+                resolver.clone(),
+            )),
+            Arc::new(FakeSessionDiscoveryHost::new()),
+            Arc::new(CapabilityRegistry::default()),
+            bus.clone(),
             tree,
             resolver,
-            context_curator: RwLock::new(None),
-            context_hook: RwLock::new(None),
-            artifact_writer: RwLock::new(None),
-            observers: Vec::new(),
-            plugin_events: Arc::new(HookDispatcher::new()),
-        });
+        ));
 
         let spec = AgentSpec {
             system_prompt: None,

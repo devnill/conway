@@ -449,52 +449,49 @@ impl Runtime {
                 resolver.clone(),
             ));
         Arc::new_cyclic(|weak: &std::sync::Weak<Runtime>| {
-            let loop_deps = Arc::new(LoopDeps {
-                store: store.clone(),
-                path_store,
-                context_path_host,
-                session_discovery_host: session_discovery,
-                capabilities,
-                router,
-                attempt,
-                registry: registry.clone(),
-                tool_runner,
-                subagents: Arc::new(crate::subagent::WeakRuntimeHost::new(weak.clone()))
-                    as Arc<dyn SubagentHost>,
-                plugin_config,
-                bus: event_bus.clone(),
-                builder,
-                headroom,
-                tool_result_bound,
-                tree: tree.clone(),
-                // The resolver Arc created above is shared between the
-                // runtime (for `subagent.rs`'s fork resolution) and the
-                // loop (for the curator stage's `CurateCtx`). One cache,
-                // two read sites.
-                resolver: resolver.clone(),
-                // no `RuntimeDeps` field sources this (out of that
-                // item's file scope to add here) -- `set_context_hook`
-                // below fills it in post-construction. `None` here
-                // preserves every existing caller's behavior unchanged.
-                context_hook: RwLock::new(None),
-                // Same additive-post-construction shape as `context_hook`
-                // above: `set_context_curator` below fills it in. `None`
-                // here is the zero-cost pass-through -- `apply_curator`
-                // returns the original path untouched, so the
-                // `context_golden` 11/11 gate stays unregenerated.
-                context_curator: RwLock::new(None),
-                // Same additive-post-construction shape as `context_hook`
-                // above: `set_artifact_writer` below fills it in. `None`
-                // here means every agent's `run_inner` builds its own
-                // `AgentArtifactWriter`, byte-identical to before this field
-                // existed.
-                artifact_writer: RwLock::new(None),
-                observers,
+            let loop_deps = Arc::new(
+                LoopDeps::new(
+                    store.clone(),
+                    path_store,
+                    router,
+                    attempt,
+                    registry.clone(),
+                    tool_runner,
+                    Arc::new(crate::subagent::WeakRuntimeHost::new(weak.clone()))
+                        as Arc<dyn SubagentHost>,
+                    context_path_host,
+                    session_discovery,
+                    capabilities,
+                    event_bus.clone(),
+                    tree.clone(),
+                    // The resolver Arc created above is shared between the
+                    // runtime (for `subagent.rs`'s fork resolution) and the
+                    // loop (for the curator stage's `CurateCtx`). One cache,
+                    // two read sites.
+                    resolver.clone(),
+                )
+                .with_plugin_config(plugin_config)
+                .with_builder(builder)
+                .with_headroom(headroom)
+                .with_tool_result_bound(tool_result_bound)
+                // No `RuntimeDeps` field sources `context_hook`/
+                // `context_curator` (out of that item's file scope to add
+                // here) -- `set_context_hook`/`set_context_curator` below
+                // fill them in post-construction. Leaving `LoopDeps::new`'s
+                // own `None` default preserves every existing caller's
+                // behavior unchanged, exactly as the explicit `RwLock::new
+                // (None)` this replaced did.
+                //
+                // Same for `artifact_writer`: `set_artifact_writer` below
+                // fills it in; the default `None` means every agent's
+                // `run_inner` builds its own `AgentArtifactWriter`,
+                // byte-identical to before this field existed.
+                .with_observers(observers)
                 // The SAME dispatcher `post_tool_use` and every other
                 // plugin-declared event already fan out through, so an
                 // observer's events and a tool's events share one path.
-                plugin_events: hooks.clone() as Arc<dyn PluginEventEmitter>,
-            });
+                .with_plugin_events(hooks.clone() as Arc<dyn PluginEventEmitter>),
+            );
 
             Runtime {
                 store,
