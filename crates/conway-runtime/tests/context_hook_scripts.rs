@@ -25,8 +25,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{Budget, PermissionDecision, ToolSelector};
 use conway_core::capabilities::{
-    CacheMode, Capabilities, HeadroomPolicy, ProbeReport, ReliabilityTier, StructuredOutput,
-    ToolCallSupport,
+    CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{ContentBlock, SamplingParams};
 use conway_core::error::{HookFailure, RoutingError};
@@ -43,7 +42,7 @@ use conway_core::routing::{Route, RouteRequest, RoutingReason};
 use conway_core::segment::CacheTtl;
 use conway_runtime::agent_loop::{AgentLoop, AgentSpec, LoopDeps};
 use conway_runtime::attempt::AttemptEngine;
-use conway_runtime::context::{ContextBuilder, GuardedContextHook};
+use conway_runtime::context::GuardedContextHook;
 use conway_runtime::events::EventBus;
 use conway_runtime::hook_dispatch::{HookSpec, CONTEXT_OVERFLOW, REQUEST_ASSEMBLED};
 use conway_runtime::permission::PermissionBroker;
@@ -316,36 +315,28 @@ fn build_loop(
     let path_store: Arc<dyn conway_core::ports::PathStore> =
         std::sync::Arc::new(conway_testkit::FakePathStore::new());
     let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(64));
-    let deps = Arc::new(LoopDeps {
-        store: store.clone(),
-        path_store: path_store.clone(),
-        context_path_host: Arc::new(conway_runtime::context::RuntimeContextPathHost::new(
+    let deps = Arc::new(
+        LoopDeps::new(
             store.clone(),
             path_store.clone(),
-            resolver.clone(),
-        )),
-        session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
-        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
-        router,
-        attempt,
-        registry: plugin_registry,
-        tool_runner,
-        subagents,
-        plugin_config: Arc::new(PluginConfig::default()),
-        bus: bus.clone(),
-        builder: Arc::new(ContextBuilder::new()),
-        headroom: Arc::new(HeadroomPolicy::default()),
-        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
-        tree,
-        context_hook: std::sync::RwLock::new(
-            context_hook.map(|inner| Arc::new(GuardedContextHook::new(inner))),
-        ),
-        resolver,
-        context_curator: std::sync::RwLock::new(None),
-        artifact_writer: std::sync::RwLock::new(None),
-        observers: Vec::new(),
-        plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
-    });
+            router,
+            attempt,
+            plugin_registry,
+            tool_runner,
+            subagents,
+            Arc::new(conway_runtime::context::RuntimeContextPathHost::new(
+                store.clone(),
+                path_store.clone(),
+                resolver.clone(),
+            )),
+            Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+            Arc::new(conway_core::ports::CapabilityRegistry::default()),
+            bus.clone(),
+            tree,
+            resolver,
+        )
+        .with_context_hook(context_hook.map(|inner| Arc::new(GuardedContextHook::new(inner)))),
+    );
 
     let spec = AgentSpec {
         system_prompt: None,
