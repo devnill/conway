@@ -822,7 +822,7 @@ mod tests {
         // now name the freshly added provider.
         assert_eq!(
             value["roles"]["coder"]["chain"],
-            serde_json::json!(["anthropic/claude-sonnet-4-6"]),
+            serde_json::json!(["anthropic/claude-sonnet-5"]),
             "{text}"
         );
 
@@ -867,7 +867,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
             value["roles"]["coder"]["chain"],
-            serde_json::json!(["kimi/k3", "anthropic/claude-sonnet-4-6"]),
+            serde_json::json!(["kimi/k3", "anthropic/claude-sonnet-5"]),
             "the existing entry must survive, with the new one appended after it: {text}"
         );
     }
@@ -1394,7 +1394,7 @@ mod tests {
                 base_url: None,
                 dialect: None,
                 kind: "anthropic",
-                model: "claude-sonnet-4-6",
+                model: "claude-sonnet-5",
             },
             &env,
             cwd.path(),

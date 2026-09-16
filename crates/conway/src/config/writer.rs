@@ -1595,6 +1595,106 @@ fn patch_or_insert_default_role(
     }
 }
 
+/// Sets `[models].metadata_path` to `metadata_path`, creating the
+/// top-level `models` object and the `metadata_path` member when either is
+/// missing.
+///
+/// **Why guided setup needs this, and why an ABSOLUTE path.** The schema
+/// default is the RELATIVE `.conway/models.json`
+/// (`config::schema`'s `ModelsConfig::default`), and `config::merge`
+/// resolves a relative `metadata_path` against the *reading* process's
+/// current directory -- not against the settings file it came from. So a
+/// window guided setup persists is only ever found again by a later
+/// `conway` invocation that happens to run from the same directory. Board
+/// item `01M2M68XYD5FSCNSH2Z1BMQ399` reproduced exactly that: the resolved
+/// headroom read 104857 in the setup directory and 8192 -- the assumed
+/// floor -- from anywhere else. Writing an absolute path here is what makes
+/// the window cwd-independent, which is the whole point of persisting it.
+///
+/// This writer is the eighth writable field, and it is deliberately short:
+/// it supplies a path and a value shape to `find_or_create_path` and
+/// nothing else. That is the saving board item `01M250DEEWA6FJZE11PKCAYNDC`
+/// promised when it consolidated seven hand-written splices into one
+/// primitive.
+pub fn set_metadata_path(path: &Path, metadata_path: &Path) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FacadeError::Config {
+                path: Some(path.to_path_buf()),
+                message: format!(
+                    "{} does not exist; this writer never invents a settings file -- run \
+                     first-run setup, or create it first",
+                    path.display()
+                ),
+            });
+        }
+        Err(e) => return Err(FacadeError::Io(e)),
+    };
+    if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+        return Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!(
+                "{} is not valid JSON, refusing to rewrite it blindly: {e}",
+                path.display()
+            ),
+        });
+    }
+    match patch_or_insert_metadata_path(&text, metadata_path) {
+        Ok(Some(patched)) => {
+            write_atomically(path, &patched)?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(msg) => Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!("{}: {msg}", path.display()),
+        }),
+    }
+}
+
+/// [`patch_or_insert_default_role`]'s two-level sibling: the path is
+/// `models.metadata_path`, so a missing `models` object and a missing
+/// `metadata_path` member inside it are both created in ONE splice by
+/// `nest_missing_path`.
+fn patch_or_insert_metadata_path(
+    text: &str,
+    metadata_path: &Path,
+) -> std::result::Result<Option<String>, String> {
+    let raw = json_string_literal(&metadata_path.to_string_lossy());
+    match find_or_create_path(text, &["models", "metadata_path"])? {
+        PathSplice::Missing {
+            parent_open,
+            parent_members,
+            parent_close,
+            missing,
+        } => {
+            let value = nest_missing_path(&missing[1..], &raw);
+            Ok(Some(insert_member(
+                text,
+                parent_open,
+                &parent_members,
+                parent_close,
+                &missing[0],
+                &value,
+            )))
+        }
+        PathSplice::Found { member, .. } => {
+            let current_raw = &text[member.value_start..member.value_end];
+            if current_raw == raw {
+                Ok(None)
+            } else {
+                Ok(Some(format!(
+                    "{}{}{}",
+                    &text[..member.value_start],
+                    raw,
+                    &text[member.value_end..]
+                )))
+            }
+        }
+    }
+}
+
 /// Sets `roles.<role>.chain` to `chain` (`"backend/model"` strings, in
 /// order), creating the top-level `roles` object, the `roles.<role>`
 /// object, and the `chain` member itself when any is missing -- the

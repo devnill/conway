@@ -25,7 +25,8 @@ pub use model_metadata::{set_context_window, ModelMetadata};
 pub use schema::ConwayConfig;
 pub use writer::{
     ensure_default_role, plugin_install_key_present, set_backend_provider, set_builtin_plugins,
-    set_claude_compat_entry, set_default_role, set_plugin_installed, set_role_chain,
+    set_claude_compat_entry, set_default_role, set_metadata_path, set_plugin_installed,
+    set_role_chain,
 };
 
 /// The result of [`load`]: the validated config plus any non-fatal

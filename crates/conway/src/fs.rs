@@ -1,4 +1,4 @@
-//! [`atomic_write`]: the sync-facing entry point for the one durable
+//! `atomic_write` is the sync-facing entry point for the one durable
 //! "write a small sidecar file" primitive this facade exposes -- board
 //! item `01M1WVNPYTFF0TEJGHGGRPDF8E` (architectural review finding F6),
 //! consolidated onto its one remaining implementation by board item

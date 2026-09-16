@@ -59,7 +59,7 @@
 //! `crossterm` raw-mode reads) -- it is a thin imperative shell over the
 //! pure functions above and is not, and cannot be, exercised by this crate's
 //! own `assert_cmd` suite (no pty is available and none is added -- C-04).
-//! [`verify_backend`] and [`detect_local_provider`] are async and touch the
+//! [`verify_backend`] and `detect_local_provider` are async and touch the
 //! network/filesystem, but neither one touches a terminal, so both are
 //! covered by ordinary `#[tokio::test]`s against a real mock HTTP server
 //! (`crates/conway-cli/tests/first_run.rs`), the same shape
@@ -95,7 +95,7 @@
 //! but, since board item `01M2M68XYD5FSCNSH2Z1BMQ399`, **the two setup
 //! entrances no longer share the SAME persist function.** `tui::app::
 //! provider_manage` (an operator editing an already-discovered project)
-//! calls [`persist_context_window_at`] -> `conway::config::
+//! calls `persist_context_window_at` -> `conway::config::
 //! metadata_path_for` -> `conway::config::set_context_window`, which
 //! writes into whichever `models.json` the CURRENT process would actually
 //! read back for a given `cwd`, honoring any existing `[models].
@@ -103,7 +103,7 @@
 //! two alternatives it rejected. Guided setup itself (this file's own
 //! `run_backend_setup`/`retry_credential_and_finish`, reached via
 //! `ask_and_persist_context_window`/`handle_context_window_at_setup`)
-//! instead calls [`persist_context_window_beside_settings`] -> `conway::
+//! instead calls `persist_context_window_beside_settings` -> `conway::
 //! config::set_context_window` directly: a real bug (see that function's
 //! own doc, and board item `01M2M68XYD5FSCNSH2Z1BMQ399`'s reproduction)
 //! found `metadata_path_for`'s `cwd`-relative resolution silently splitting
@@ -287,7 +287,7 @@ pub const HOSTED_CHOICES: &[ProviderChoice] = &[
     },
 ];
 
-/// What [`detect_local_provider`] found, if anything.
+/// What `detect_local_provider` found, if anything.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalOffer {
     pub base_url: String,
@@ -514,7 +514,7 @@ pub fn context_window_is_verified(kind: &str, dialect: Option<&str>) -> bool {
 /// already working against a real, discovered project. **No caller in this
 /// crate uses this bare wrapper today** -- guided setup's own two entrances
 /// (`ask_and_persist_context_window`/`handle_context_window_at_setup`) call
-/// [`persist_context_window_beside_settings`] instead (board item
+/// `persist_context_window_beside_settings` instead (board item
 /// `01M2M68XYD5FSCNSH2Z1BMQ399`: this function's `std::env::current_dir()`
 /// resolved a DIFFERENT location than wherever `settings.json` itself had
 /// just been written to, splitting guided setup's own output across two
@@ -522,7 +522,7 @@ pub fn context_window_is_verified(kind: &str, dialect: Option<&str>) -> bool {
 /// provider_manage`'s equivalent surface calls [`persist_context_window_
 /// at`] directly, with a real, already-known project `cwd` already in
 /// hand. Kept `pub` as a plain, cwd-implicit convenience over
-/// [`persist_context_window_at`] for a caller that has no better `cwd` to
+/// `persist_context_window_at` for a caller that has no better `cwd` to
 /// offer than its own.
 ///
 /// **The file/scope decision, made here and recorded in
@@ -582,7 +582,7 @@ pub(crate) fn persist_context_window_at(
 
 /// Guided setup's OWN persist decision -- board item
 /// `01M2M68XYD5FSCNSH2Z1BMQ399`. Deliberately does NOT go through
-/// [`persist_context_window`]/[`persist_context_window_at`]: those resolve
+/// [`persist_context_window`]/`persist_context_window_at`: those resolve
 /// the *general* `[models].metadata_path` precedence (default < user <
 /// project < env) against whatever directory the CALLER happens to be
 /// running in right now -- the right answer for an operator editing an
@@ -651,6 +651,7 @@ fn persist_context_window_beside_settings(
     let dir = settings_path.parent().unwrap_or_else(|| Path::new("."));
     let path = dir.join("models.json");
     conway::config::set_context_window(&path, key, window).map_err(|e| e.to_string())?;
+
     Ok(path)
 }
 
@@ -676,15 +677,15 @@ pub fn context_window_setup_notice(key: &str, window: u32, path: &std::path::Pat
 /// run with a local Ollama already answering on
 /// [`LOCAL_OLLAMA_BASE_URL`] used to print the identical "go get an
 /// Anthropic key" text anyway -- this function never probed anything, it
-/// was a pure `format!`. It now reuses [`detect_local_provider`] (never a
+/// was a pure `format!`. It now reuses `detect_local_provider` (never a
 /// second, hand-rolled probe -- P-14) and, if a server answers, prints the
 /// local `openai-compat`/`ollama` shape `docs/getting-started.md`'s own "An
 /// OpenAI-compatible endpoint" section documents, naming the model tag the
 /// server actually reported (never guessed, for the identical reason
-/// [`detect_local_provider`]'s own doc gives). If nothing answers -- no
+/// `detect_local_provider`'s own doc gives). If nothing answers -- no
 /// server, a timeout, a malformed reply, anything -- this falls back to the
 /// exact, byte-identical Anthropic snippet this function always printed
-/// (see [`local_probe_with_timeout`]'s own doc for the bound that makes
+/// (see `local_probe_with_timeout`'s own doc for the bound that makes
 /// "falls back" always win over "hangs").
 ///
 /// **Reads `std::env::vars()`/probes the network itself, rather than
@@ -692,18 +693,42 @@ pub fn context_window_setup_notice(key: &str, window: u32, path: &std::path::Pat
 /// (`main.rs`'s `build_conway`) already resolved a non-interactive run
 /// before reaching this call and this function's own public signature
 /// (`fn(path: &Path) -> String`) is relied on there as-is** -- see
-/// [`local_probe_with_timeout`]'s own doc for how the network probe stays
+/// `local_probe_with_timeout`'s own doc for how the network probe stays
 /// bounded despite that.
+/// The env var that redirects the local-server probe at a different single
+/// endpoint. **This is a test seam, not a scanner knob.**
+///
+/// `detect_local_provider` takes its base URL as a parameter, which makes
+/// the PURE half unit-testable but leaves the BINARY probing the real
+/// `127.0.0.1:11434` — so any test that spawns `conway` passes or fails
+/// according to whether the machine running it happens to have Ollama up.
+/// That is not hypothetical: `tests/first_run.rs`'s
+/// `first_run_no_usable_provider_prints_the_guided_setup_message_not_the_old_hard_error`
+/// asserted the Anthropic fallback snippet and began failing on a developer
+/// machine with a local server running, while still passing in CI.
+///
+/// Setting this to an unreachable address is how a test forces the
+/// "no local server" branch deterministically.
+///
+/// It does NOT make the probe a scanner, which `LOCAL_OLLAMA_BASE_URL`'s own
+/// doc rules out: exactly one endpoint is probed per call, before and after.
+/// This changes WHICH one, never HOW MANY.
+pub const LOCAL_PROBE_BASE_URL_ENV: &str = "CONWAY_LOCAL_PROBE_BASE_URL";
+
 pub fn non_interactive_guidance(path: &Path) -> String {
     let env: HashMap<String, String> = std::env::vars().collect();
-    let local = local_probe_with_timeout(env, LOCAL_OLLAMA_BASE_URL.to_string());
+    let base_url = env
+        .get(LOCAL_PROBE_BASE_URL_ENV)
+        .cloned()
+        .unwrap_or_else(|| LOCAL_OLLAMA_BASE_URL.to_string());
+    let local = local_probe_with_timeout(env, base_url);
     non_interactive_guidance_text(path, local.as_ref())
 }
 
 /// The pure half of [`non_interactive_guidance`] -- everything BELOW the
 /// probe. Takes the probe's own result (`None` covers every "nothing to
 /// offer" case: no server, a timeout, a malformed reply -- see
-/// [`local_probe_with_timeout`]'s own doc) rather than probing itself, so a
+/// `local_probe_with_timeout`'s own doc) rather than probing itself, so a
 /// test can assert on both branches without ever touching a real network
 /// call or `std::env::vars()` (P-14's testability half -- this module's own
 /// top doc).
@@ -750,7 +775,7 @@ fn non_interactive_guidance_text(path: &Path, local: Option<&LocalOffer>) -> Str
     }
 }
 
-/// Bridges [`detect_local_provider`] (async) into `non_interactive_
+/// Bridges `detect_local_provider` (async) into `non_interactive_
 /// guidance`'s sync, no-`env`-parameter signature -- board item
 /// `01M2M634QKE46DWNAZCB1003QN`'s own hard constraint: **the probe must
 /// never hang the error path**. `non_interactive_guidance`'s one caller
@@ -761,7 +786,7 @@ fn non_interactive_guidance_text(path: &Path, local: Option<&LocalOffer>) -> Str
 /// dedicated OS thread with its own throwaway current-thread runtime
 /// instead, which cannot collide with the ambient one no matter which
 /// thread called it from (a plain, synchronous test included). The bound
-/// on "must not hang" is [`detect_local_provider`]'s OWN two timeouts,
+/// on "must not hang" is `detect_local_provider`'s OWN two timeouts,
 /// unchanged and unwidened here: `DEFAULT_PROBE_TIMEOUT` (300ms) for the
 /// reachability probe, then [`first_available_model`]'s own 2-second cap
 /// for the model-listing request -- worst case a few seconds, never
@@ -832,7 +857,7 @@ pub async fn detect_local_provider(
 /// `GET {base}/models`, OpenAI-shaped (`{"data":[{"id":...}]}` --
 /// `conway-plugin-backends::probe.rs`'s own doc names this exact shape).
 /// Short timeout: the endpoint already answered a TCP connect in
-/// [`detect_local_provider`], so a real reply is expected in well under a
+/// `detect_local_provider`, so a real reply is expected in well under a
 /// second.
 async fn first_available_model(base_url: &str) -> Option<String> {
     let client = reqwest::Client::builder()
@@ -1310,7 +1335,7 @@ fn configured_mcp_server_count(settings_path: &Path) -> usize {
 
 /// The best (largest-window) OTHER model already recorded in `conway::
 /// config::model_metadata`'s file for this `cwd`/`env` (the SAME resolution
-/// [`persist_context_window_at`] uses -- `cwd` is an explicit parameter
+/// `persist_context_window_at` uses -- `cwd` is an explicit parameter
 /// here, not re-read from `std::env::current_dir()`, for the identical
 /// "unsafe to mutate the real process cwd from a parallel test" reason that
 /// function's own doc states) -- named in [`runway_fixed_cost_warning`]'s
@@ -1406,7 +1431,7 @@ fn verified_baseline_window(kind: &str, dialect: Option<&str>) -> Option<u32> {
 /// terminal I/O itself, which cannot be shared across a raw-mode read and a
 /// ratatui widget) -- and, since board item `01M2M68XYD5FSCNSH2Z1BMQ399`,
 /// in WHERE they persist a typed answer too: this pre-TUI entrance calls
-/// [`persist_context_window_beside_settings`], never
+/// `persist_context_window_beside_settings`, never
 /// [`persist_context_window`] -- see that function's own doc for why guided
 /// setup's own PERSIST decision differs from the TUI's.
 ///
@@ -1460,7 +1485,7 @@ fn ask_and_persist_context_window(env: &HashMap<String, String>, settings_path: 
 /// three-function split this composes:
 /// [`discover_setup_context_window`] (network), [`context_window_is_
 /// verified`] (decide whether asking is even warranted),
-/// [`persist_context_window_beside_settings`] (the shared write --
+/// `persist_context_window_beside_settings` (the shared write --
 /// guided setup's OWN persist decision, not [`persist_context_window`]'s;
 /// see that function's own doc for why), `ask_and_persist_context_window`
 /// (this entrance's own TTY read).
@@ -1800,6 +1825,39 @@ fn decline_or_keep(chain: &[String]) -> GuidedSetupOutcome {
 /// left disclosed). Every OTHER use in this function is unaffected: the
 /// two ordinary call sites in `run_backend_setup` already run that step
 /// themselves, before ever calling `finish_setup`.
+/// Pins `[models].metadata_path` to an ABSOLUTE `models.json` beside the
+/// settings file guided setup just wrote.
+///
+/// **Why this is not optional, and why it runs here rather than where the
+/// window is persisted.** `[models].metadata_path` defaults to the RELATIVE
+/// `.conway/models.json`, and `config::merge` resolves a relative value
+/// against the READING process's current directory -- never against the
+/// settings file it came from. A `models.json` sitting beside
+/// `settings.json` is therefore a file nothing ever looks for, and writing
+/// one without pinning the path is strictly worse than not moving it:
+/// measured on the merged tree, guided setup recorded a real
+/// 1,048,576-token window and `routes explain default` then reported
+/// `headroom_tokens=8192` -- the assumed floor -- from the setup directory
+/// AND from two others, where before the move the setup directory at least
+/// reported the true 104857. Board item `01M2M68XYD5FSCNSH2Z1BMQ399`.
+///
+/// It runs at THIS point, not inside `persist_context_window_beside_settings`,
+/// because `settings.json` does not exist yet when the window is persisted
+/// -- guided setup records the window before it writes the provider. Pinning
+/// earlier hits the writer's "does not exist" refusal and silently does
+/// nothing, which is exactly the shape this whole item exists to stop.
+///
+/// Best-effort by design: the provider is already saved by the time this
+/// runs, so a failure here must not fail setup. It degrades to the
+/// pre-existing cwd-relative behaviour, which every caller already
+/// tolerated.
+fn pin_metadata_path_beside(settings_path: &Path) {
+    let dir = settings_path.parent().unwrap_or_else(|| Path::new("."));
+    let models = dir.join("models.json");
+    let absolute = std::fs::canonicalize(&models).unwrap_or(models);
+    let _ = conway::config::set_metadata_path(settings_path, &absolute);
+}
+
 pub async fn finish_setup(
     path: &Path,
     id: &str,
@@ -1812,6 +1870,7 @@ pub async fn finish_setup(
         println!("Could not save this provider to {}: {e}", path.display());
         return decline_or_keep(chain_so_far.as_slice());
     }
+    pin_metadata_path_beside(path);
     println!("Saved to {}.", path.display());
     print!("Verifying with a real request... ");
     let _ = std::io::stdout().flush();
@@ -2396,13 +2455,13 @@ mod tests {
     /// module's own `persist_context_window_at` doc names exactly why that
     /// would be unsafe under `cargo test`'s parallel execution): the path
     /// guided setup used to call
-    /// ([`persist_context_window`]/[`persist_context_window_at`], resolved
+    /// ([`persist_context_window`]/`persist_context_window_at`, resolved
     /// against whatever directory the SETUP PROCESS happened to be invoked
     /// from) produces a DIFFERENT `models.json` for two different
     /// invocation directories, even though `settings.json` itself always
     /// resolves to the identical config-layer directory regardless of
     /// where `conway` was invoked from. Guided setup's own persist call
-    /// ([`persist_context_window_beside_settings`]) takes no `cwd` at all,
+    /// (`persist_context_window_beside_settings`) takes no `cwd` at all,
     /// so it cannot reproduce that divergence -- this test fails against
     /// the pre-fix call (`persist_context_window_at`, used from
     /// `ask_and_persist_context_window`/`handle_context_window_at_setup`
@@ -2459,7 +2518,7 @@ mod tests {
     /// existing precedence (project outranks user) is untouched by this
     /// item, and guided setup's own write never checks for, reads, or
     /// migrates a pre-existing project-scope file (a deliberate decision --
-    /// see [`persist_context_window_beside_settings`]'s own doc).
+    /// see `persist_context_window_beside_settings`'s own doc).
     #[test]
     fn a_genuine_project_scope_models_json_entry_still_wins_over_guided_setups_own_write() {
         let project = tempfile::tempdir().expect("tempdir");
@@ -3097,10 +3156,18 @@ mod tests {
 
     // ---- non_interactive_guidance: names the file AND the exact snippet ----
 
+    /// Drives `non_interactive_guidance_text(path, None)` -- the PURE half
+    /// -- not `non_interactive_guidance`, which probes the real
+    /// `127.0.0.1:11434`. This test predates the probe and asserted the
+    /// Anthropic shape unconditionally; once the probe landed it began
+    /// passing or failing according to whether the developer running it
+    /// happened to have Ollama up. It failed on exactly such a machine.
+    /// A unit test must not depend on what is listening on the host's
+    /// loopback interface, and the probe seam exists so it does not have to.
     #[test]
     fn non_interactive_guidance_names_the_path_and_a_pasteable_snippet() {
         let path = Path::new("/home/alice/.conway/settings.json");
-        let msg = non_interactive_guidance(path);
+        let msg = non_interactive_guidance_text(path, None);
         assert!(msg.starts_with(GUIDED_SETUP_MARKER));
         assert!(msg.contains("/home/alice/.conway/settings.json"));
         // Must be a real, complete, copy-pasteable JSON snippet, not a
@@ -3182,8 +3249,8 @@ mod tests {
     }
 
     /// The probe half, end to end against a real (fixture) HTTP server --
-    /// [`detect_local_provider`] piped straight into
-    /// [`non_interactive_guidance_text`], proving the two compose exactly
+    /// `detect_local_provider` piped straight into
+    /// `non_interactive_guidance_text`, proving the two compose exactly
     /// the way [`non_interactive_guidance`] itself does (that function's
     /// own signature has no room for a fixture URL -- see its own doc for
     /// why -- so this is the closest an automated test gets to it without
@@ -3214,7 +3281,7 @@ mod tests {
 
     /// The "nothing answers" half of the same pairing, against a real
     /// (refusing) address rather than a fixture -- proves
-    /// [`detect_local_provider`] itself resolves quickly rather than
+    /// `detect_local_provider` itself resolves quickly rather than
     /// hanging, the hard constraint this item's own brief states.
     #[tokio::test]
     async fn non_interactive_guidance_pipeline_with_nothing_listening_returns_none_quickly() {
@@ -3235,7 +3302,7 @@ mod tests {
     /// multi-thread tokio runtime already owns -- reproduced here, since a
     /// nested-runtime panic ("cannot start a runtime from within a
     /// runtime") only ever surfaces from exactly this shape, never from a
-    /// bare `#[test]`. See [`local_probe_with_timeout`]'s own doc for why
+    /// bare `#[test]`. See `local_probe_with_timeout`'s own doc for why
     /// this cannot panic: the probe runs on a dedicated OS thread with its
     /// own throwaway runtime, never the ambient one.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

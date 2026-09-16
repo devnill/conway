@@ -186,7 +186,6 @@ fn atomic_write_with<F: DurableWrite, D: DurableSync>(
     open_dir: impl FnOnce(&Path) -> std::io::Result<D>,
 ) -> std::io::Result<()> {
     use std::fs;
-    use std::io::Write;
 
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;

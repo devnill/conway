@@ -172,6 +172,20 @@ pub fn command(args: &[&str], fixture: &Fixture) -> Command {
         // `01M0QK9GRM8HSNWRAR414TCX42`, this ALSO keeps `[session].root`'s
         // now-central default inside the fixture -- see [`session_dir`].
         .env("CONWAY_CONFIG_DIR", fixture.dir.path())
+        // The SECOND half of test isolation, and it is the same kind as the
+        // line above: the non-interactive degrade message now probes for a
+        // local model server before choosing which snippet to print. Left
+        // alone, that probe hits the real `127.0.0.1:11434`, so a developer
+        // with Ollama running gets the local snippet and a CI runner without
+        // it gets the Anthropic one -- the same test, two outcomes, decided
+        // by the host. That is not hypothetical: it failed exactly that way
+        // on a machine with a local server up while passing in CI.
+        //
+        // Point it at a port nothing listens on so every test here takes the
+        // deterministic "no local server" branch. A test that WANTS the local
+        // branch overrides this with its own fixture address -- exactly one
+        // endpoint either way, never a scan.
+        .env("CONWAY_LOCAL_PROBE_BASE_URL", "http://127.0.0.1:1/v1")
         .arg("--config")
         .arg(&fixture.config_path)
         .args(args)
