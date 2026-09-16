@@ -463,13 +463,17 @@ If no installed plugin declares an instruction fragment, `/context` shows
 no preamble section at all — the ordinary per-segment listing (system
 prompt, skills, path) is unaffected either way.
 
-**Subagents do not get instruction fragments yet.** A forked or spawned
-child agent receives none, even when it holds a tool whose plugin declares
-one — the same limitation directory-loaded skills already have for child
-agents. So `/context <child-agent>` shows no preamble section, and that
-looks identical to a session where no plugin declares one at all. If a
-subagent is mishandling a tool that its parent uses correctly, a missing
-instruction fragment is a likely cause and is worth ruling out first.
+**Subagents get instruction fragments too** (board item
+`01M0VSKA76NSEHDSH25XJGJ2J5`). A forked or spawned child resolves fragments
+the same way a root agent does — the same `resolve_instructions`/
+`resolve_skills` functions are called for fork, spawn, and root alike, so a
+child holding a tool whose plugin declares a fragment sees that fragment,
+gated per-turn by the same `tool_ids` reachability check root goes through.
+Directory-loaded skills reach a child the same way, through its own
+resolved `agent_def.skills`. So `/context <child-agent>` shows a preamble
+section whenever the child's own tool set reaches an installed plugin's
+fragment — the same shape `/context` shows for the root, not a separate,
+weaker case.
 
 ### `/model` and `/role`: changing model mid-session
 
