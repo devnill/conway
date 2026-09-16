@@ -558,7 +558,13 @@ impl App {
                 // (`backends.<id>`, `models.json`) are independent, and a
                 // window question must never block or roll back the
                 // backend entry itself.
-                self.confirm_context_window_for_add(&key, &format!("{id}: {model}"), resolved, env, cwd);
+                self.confirm_context_window_for_add(
+                    &key,
+                    &format!("{id}: {model}"),
+                    resolved,
+                    env,
+                    cwd,
+                );
             }
             Err(e) => {
                 self.state.transcript.push(Entry::Error {
@@ -1817,8 +1823,7 @@ mod tests {
             std::fs::read_to_string(&models_path).expect("models.json must have been written");
         let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
-            parsed["models"]["ollama_cloud/glm-5.3"]["max_context_tokens"],
-            1_000_000,
+            parsed["models"]["ollama_cloud/glm-5.3"]["max_context_tokens"], 1_000_000,
             "an edited window must land as a real models.json entry, an Override on the next \
              read, exactly like a freshly-typed add-time answer"
         );

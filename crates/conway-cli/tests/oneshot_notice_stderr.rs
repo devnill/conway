@@ -104,7 +104,10 @@ async fn json_mode_stdout_stays_one_parseable_object_for_the_same_notice() {
     );
     let value: serde_json::Value =
         serde_json::from_str(stdout_text.trim_end()).expect("stdout must parse as one JSON object");
-    assert!(value.is_object(), "the one object must be a JSON object: {value:?}");
+    assert!(
+        value.is_object(),
+        "the one object must be a JSON object: {value:?}"
+    );
     assert_eq!(
         value["status"]["status"], "completed",
         "sanity: the scripted silent turn still completes normally: {value:?}"

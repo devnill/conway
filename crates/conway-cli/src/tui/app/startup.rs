@@ -1407,7 +1407,8 @@ mod tests {
     /// `ResumeSpec::model` all the way through to the routing request
     /// itself, not merely round-tripped through an intermediate field.
     ///
-    /// **Fails against HEAD, for a named reason**: before this item,
+    /// **Fails against HEAD, for a named reason**: before board item
+    /// `01M2MNP9H9Q52W84X3QMBC3PKM`,
     /// `Self::fork_from_ref` never called `crate::model_pin::
     /// parse_model_pin` at all, so `ForkSpec::model` was always left
     /// `None` regardless of `cli.model` -- the forked child would have
@@ -1484,13 +1485,10 @@ mod tests {
             "expected exactly the child's own one turn, calls: {calls:?}"
         );
         assert_eq!(
-            calls[0].model,
-            pinned_model.model,
+            calls[0].model, pinned_model.model,
             "the forked child's first turn must route to the --model pin ({:?}), not the role \
              chain's own default ({:?}) -- got {:?}",
-            pinned_model.model,
-            default_model.model,
-            calls[0].model
+            pinned_model.model, default_model.model, calls[0].model
         );
     }
 

@@ -816,7 +816,11 @@ mod tests {
         let path = dir.path().join("f.txt");
         fs::write(&path, "original").unwrap();
         let (original_ref, _) = store
-            .capture(b"original", DEFAULT_MAX_SNAPSHOT_BYTES, DEFAULT_MAX_PROJECT_BYTES)
+            .capture(
+                b"original",
+                DEFAULT_MAX_SNAPSHOT_BYTES,
+                DEFAULT_MAX_PROJECT_BYTES,
+            )
             .unwrap();
         // The write already landed by the time this runs (this method's own
         // contract) -- "changed" is what `fs::read` would see if nothing
@@ -835,7 +839,10 @@ mod tests {
             .unwrap();
         assert!(notices.is_empty());
         let ResolvedRef::Bytes(old_bytes) = store.resolve_ref(&entry.old).unwrap() else {
-            panic!("expected a resolvable old snapshot, not Unavailable: {:?}", entry.old);
+            panic!(
+                "expected a resolvable old snapshot, not Unavailable: {:?}",
+                entry.old
+            );
         };
         assert_eq!(
             old_bytes, b"original",

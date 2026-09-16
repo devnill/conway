@@ -453,10 +453,14 @@ async fn execute_one(
         // already applies (`AgentLoop::run_inner`'s observer loop): a
         // panicking observer must not turn into a failure of the call it
         // was about to watch.
-        if AssertUnwindSafe(registered.observer.before_tool_call(&observer_ctx, &pending))
-            .catch_unwind()
-            .await
-            .is_err()
+        if AssertUnwindSafe(
+            registered
+                .observer
+                .before_tool_call(&observer_ctx, &pending),
+        )
+        .catch_unwind()
+        .await
+        .is_err()
         {
             tracing::warn!(
                 plugin = %registered.plugin_id,

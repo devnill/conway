@@ -171,14 +171,14 @@
 //! pins Ollama Cloud's guided-setup entry to exactly one model
 //! (`"glm-5.2"`) -- a model referenced any OTHER way (a chain edit, a
 //! roster move to `"glm-5.3"`, a hand-authored `backends`/`roles` entry)
-//! never reaches [`handle_context_window_at_setup`] at all, add-time or
+//! never reaches `handle_context_window_at_setup` at all, add-time or
 //! otherwise, and resolves silently through the ordinary runtime precedence
 //! chain (`conway_plugin_backends::capabilities::max_context_tokens_
 //! source`) with no operator-facing surface anywhere in this crate. Before
 //! this item, even the ONE branch that reliably fires for Ollama Cloud
 //! (branch 3, nothing to discover, nothing verified) never named the
 //! specific number (`32768`) an operator declining it would silently get --
-//! the request below this addendum ([`confirm_and_persist_context_window`],
+//! the request below this addendum (`confirm_and_persist_context_window`,
 //! now called from every branch, not just the third) is this file's own
 //! half of the fix; `tui::app::provider_manage`'s equivalent surface and a
 //! confirm-vs-inform split forced by that file's own rendering fence are
@@ -1140,7 +1140,7 @@ fn read_plain_line() -> Option<String> {
 // first command. [`InstallFootprint`] is the fixed-cost estimate;
 // [`runway_fixed_cost_warning`] is the pure threshold check over it;
 // [`warn_about_runway_if_needed`] is the imperative caller
-// [`handle_context_window_at_setup`] (below) invokes at every point a
+// `handle_context_window_at_setup` (below) invokes at every point a
 // window becomes known.
 
 /// One configured `[plugins].mcp[]` server's estimated tool-schema cost, in
@@ -1425,7 +1425,7 @@ fn larger_window_alternative(
 /// install (folding in however
 /// many `[plugins].mcp[]` entries `settings_path` already declares), checks
 /// it against `window` via [`runway_fixed_cost_warning`], and prints the
-/// result. Called from every [`handle_context_window_at_setup`] branch that
+/// result. Called from every `handle_context_window_at_setup` branch that
 /// resolves a real `window` -- a freshly-discovered window, an
 /// already-verified baseline, and an operator's own typed answer all get
 /// the identical check.
@@ -1535,7 +1535,7 @@ fn assumed_floor_honesty_note(kind: &str, dialect: Option<&str>) -> Option<Strin
     ))
 }
 
-/// The DECISION half of [`handle_context_window_at_setup`] -- computes WHAT
+/// The DECISION half of `handle_context_window_at_setup` -- computes WHAT
 /// to confirm (the resolved `default`, its provenance label, and, for the
 /// one branch with nothing real to offer, rule B's own honesty note) without
 /// touching a terminal, so a test can drive every branch directly against a
@@ -1543,7 +1543,7 @@ fn assumed_floor_honesty_note(kind: &str, dialect: Option<&str>) -> Option<Strin
 /// top doc establishes for every other network-touching, terminal-free
 /// function here. `handle_context_window_at_setup` itself is now a thin
 /// wrapper: call this, then hand the result to
-/// [`confirm_and_persist_context_window`].
+/// `confirm_and_persist_context_window`.
 async fn resolve_context_window_for_setup(
     base_url: Option<&str>,
     dialect: Option<&str>,
@@ -1617,7 +1617,7 @@ pub(crate) fn resolve_context_window_answer(
 }
 
 /// Pure: the confirm prompt's own body text -- shared by every branch of
-/// [`handle_context_window_at_setup`]. `default`/`provenance` name what
+/// `handle_context_window_at_setup`. `default`/`provenance` name what
 /// conway resolved (`None` only for the assumed-floor branch, which has
 /// nothing real to offer); `honesty_note` carries
 /// [`assumed_floor_honesty_note`]'s own sentence for that ONE branch, per
@@ -1686,7 +1686,10 @@ fn apply_context_window_answer(
         ),
         ContextWindowAnswer::Override(window) => {
             match persist_context_window_beside_settings(settings_path, key, window) {
-                Ok(path) => (Some(window), context_window_setup_notice(key, window, &path)),
+                Ok(path) => (
+                    Some(window),
+                    context_window_setup_notice(key, window, &path),
+                ),
                 Err(e) => (None, format!("Could not save {key}'s context window: {e}")),
             }
         }
@@ -1747,7 +1750,7 @@ fn confirm_and_persist_context_window(
 /// sequence itself (P-14): [`resolve_context_window_for_setup`] decides
 /// WHAT to confirm (network discovery, `context_window_is_verified`, and
 /// rule B's own honesty note, none of which touch a terminal), and
-/// [`confirm_and_persist_context_window`] is the ONE surface that shows it
+/// `confirm_and_persist_context_window` is the ONE surface that shows it
 /// to the operator and persists their answer -- every branch, always, per
 /// board item `01M23M2P79R5G28TPGG7PPJQ32`'s own rule A. Before that item,
 /// this function's three branches diverged sharply here: a successful probe
