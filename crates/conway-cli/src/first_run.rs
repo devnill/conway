@@ -573,25 +573,118 @@ pub fn context_window_setup_notice(key: &str, window: u32, path: &std::path::Pat
 
 /// The exact, non-interactive degrade message: names the file to edit and
 /// the precise content to add, per `INTENT.md` §8.3 ("refuse and name what
-/// changed") and this item's own acceptance 5. Uses the Anthropic shape as
-/// the one worked example -- picking one concrete, complete snippet rather
-/// than an abstract description of "add a backend" is what makes this
-/// copy-pasteable by someone who has never seen `settings.json` before.
+/// changed") and this item's own acceptance 5.
+///
+/// **Board item `01M2M634QKE46DWNAZCB1003QN`: probes for a local server
+/// before falling back to the Anthropic worked example.** A non-interactive
+/// run with a local Ollama already answering on
+/// [`LOCAL_OLLAMA_BASE_URL`] used to print the identical "go get an
+/// Anthropic key" text anyway -- this function never probed anything, it
+/// was a pure `format!`. It now reuses [`detect_local_provider`] (never a
+/// second, hand-rolled probe -- P-14) and, if a server answers, prints the
+/// local `openai-compat`/`ollama` shape `docs/getting-started.md`'s own "An
+/// OpenAI-compatible endpoint" section documents, naming the model tag the
+/// server actually reported (never guessed, for the identical reason
+/// [`detect_local_provider`]'s own doc gives). If nothing answers -- no
+/// server, a timeout, a malformed reply, anything -- this falls back to the
+/// exact, byte-identical Anthropic snippet this function always printed
+/// (see [`local_probe_with_timeout`]'s own doc for the bound that makes
+/// "falls back" always win over "hangs").
+///
+/// **Reads `std::env::vars()`/probes the network itself, rather than
+/// taking an `env: &HashMap` parameter, because its one caller
+/// (`main.rs`'s `build_conway`) already resolved a non-interactive run
+/// before reaching this call and this function's own public signature
+/// (`fn(path: &Path) -> String`) is relied on there as-is** -- see
+/// [`local_probe_with_timeout`]'s own doc for how the network probe stays
+/// bounded despite that.
 pub fn non_interactive_guidance(path: &Path) -> String {
-    format!(
-        "{GUIDED_SETUP_MARKER}, and this isn't an interactive terminal, so conway can't ask you \
-         about it here.\n\
-         \n\
-         Add a provider by hand: edit (or create) {path} and add:\n\
-         \n\
-         {{\n  \"backends\": {{\n    \"anthropic\": {{\n      \"kind\": \"anthropic\",\n      \
-         \"api_key_env\": \"ANTHROPIC_API_KEY\"\n    }}\n  }},\n  \"roles\": {{\n    \"coder\": \
-         {{ \"chain\": [\"anthropic/claude-sonnet-4-6\"] }}\n  }}\n}}\n\
-         \n\
-         then export ANTHROPIC_API_KEY and run conway again. See docs/getting-started.md for \
-         other providers, including a local server.",
-        path = path.display()
-    )
+    let env: HashMap<String, String> = std::env::vars().collect();
+    let local = local_probe_with_timeout(env, LOCAL_OLLAMA_BASE_URL.to_string());
+    non_interactive_guidance_text(path, local.as_ref())
+}
+
+/// The pure half of [`non_interactive_guidance`] -- everything BELOW the
+/// probe. Takes the probe's own result (`None` covers every "nothing to
+/// offer" case: no server, a timeout, a malformed reply -- see
+/// [`local_probe_with_timeout`]'s own doc) rather than probing itself, so a
+/// test can assert on both branches without ever touching a real network
+/// call or `std::env::vars()` (P-14's testability half -- this module's own
+/// top doc).
+fn non_interactive_guidance_text(path: &Path, local: Option<&LocalOffer>) -> String {
+    match local {
+        Some(offer) => {
+            // [`chain_entry`], never a second, hand-rolled `"local/" +
+            // model` (P-14) -- the exact construction the real written
+            // chain and `verify_backend` both use.
+            let chain = chain_entry(LOCAL_OLLAMA_ID, &offer.model);
+            format!(
+                "{GUIDED_SETUP_MARKER}, and this isn't an interactive terminal, so conway can't \
+                 ask you about it here.\n\
+                 \n\
+                 conway found a local model server already running at {base_url} (model \
+                 \"{model}\"). Add a provider by hand: edit (or create) {path} and add:\n\
+                 \n\
+                 {{\n  \"backends\": {{\n    \"local\": {{\n      \"kind\": \"openai-compat\",\n      \
+                 \"dialect\": \"ollama\",\n      \"base_url\": \"{base_url}\"\n    }}\n  }},\n  \"roles\": {{\n    \
+                 \"coder\": {{ \"chain\": [\"{chain}\"] }}\n  }}\n}}\n\
+                 \n\
+                 then run conway again. See docs/getting-started.md for other providers, \
+                 including a hosted one.",
+                path = path.display(),
+                base_url = offer.base_url,
+                model = offer.model,
+                chain = chain,
+            )
+        }
+        None => format!(
+            "{GUIDED_SETUP_MARKER}, and this isn't an interactive terminal, so conway can't ask you \
+             about it here.\n\
+             \n\
+             Add a provider by hand: edit (or create) {path} and add:\n\
+             \n\
+             {{\n  \"backends\": {{\n    \"anthropic\": {{\n      \"kind\": \"anthropic\",\n      \
+             \"api_key_env\": \"ANTHROPIC_API_KEY\"\n    }}\n  }},\n  \"roles\": {{\n    \"coder\": \
+             {{ \"chain\": [\"anthropic/claude-sonnet-5\"] }}\n  }}\n}}\n\
+             \n\
+             then export ANTHROPIC_API_KEY and run conway again. See docs/getting-started.md for \
+             other providers, including a local server.",
+            path = path.display()
+        ),
+    }
+}
+
+/// Bridges [`detect_local_provider`] (async) into `non_interactive_
+/// guidance`'s sync, no-`env`-parameter signature -- board item
+/// `01M2M634QKE46DWNAZCB1003QN`'s own hard constraint: **the probe must
+/// never hang the error path**. `non_interactive_guidance`'s one caller
+/// (`main.rs`'s `build_conway`) already runs on the ambient `#[tokio::
+/// main]` runtime, and calling `Handle::block_on` (or building a second
+/// runtime) FROM a thread that runtime already owns panics ("cannot start
+/// a runtime from within a runtime") -- so this runs the probe on a
+/// dedicated OS thread with its own throwaway current-thread runtime
+/// instead, which cannot collide with the ambient one no matter which
+/// thread called it from (a plain, synchronous test included). The bound
+/// on "must not hang" is [`detect_local_provider`]'s OWN two timeouts,
+/// unchanged and unwidened here: `DEFAULT_PROBE_TIMEOUT` (300ms) for the
+/// reachability probe, then [`first_available_model`]'s own 2-second cap
+/// for the model-listing request -- worst case a few seconds, never
+/// unbounded. Any failure at any stage (the spawned thread panicking, the
+/// throwaway runtime failing to build, the probe itself returning `None`)
+/// collapses to `None` here -- silently, on purpose: an unhelpful fallback
+/// message is a far smaller failure than an error path that never prints
+/// anything at all.
+fn local_probe_with_timeout(env: HashMap<String, String>, base_url: String) -> Option<LocalOffer> {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        rt.block_on(detect_local_provider(&env, &base_url))
+    })
+    .join()
+    .ok()
+    .flatten()
 }
 
 /// Probes for a local Ollama server already running and, if one answers,
@@ -603,10 +696,24 @@ pub fn non_interactive_guidance(path: &Path) -> String {
 /// reachability half; the model-listing half is this flow's own, genuinely
 /// new capability -- `backend_usability` explicitly never performs
 /// inference or lists models (its own module doc).
-pub async fn detect_local_provider(env: &HashMap<String, String>) -> Option<LocalOffer> {
+///
+/// `base_url` is a parameter (not a bare read of [`LOCAL_OLLAMA_BASE_URL`])
+/// for the identical reason [`discover_setup_context_window`]'s own
+/// `base_url` parameter is -- board item `01M2M68XYD5FSCNSH2Z1BMQ399`'s own
+/// testability half (see this module's top doc): a test stands up a
+/// `wiremock::MockServer` and points THIS probe at it, never `conway`'s
+/// module-level scanner into a general "probe any configured endpoint"
+/// capability (`LOCAL_OLLAMA_BASE_URL`'s own doc's "no general local-server
+/// scanner" ruling stands -- this is still exactly one endpoint per call,
+/// the caller just gets to say which one). Every production call site
+/// still passes [`LOCAL_OLLAMA_BASE_URL`] itself.
+pub async fn detect_local_provider(
+    env: &HashMap<String, String>,
+    base_url: &str,
+) -> Option<LocalOffer> {
     let probe_entry = BackendEntry {
         local: true,
-        base_url: LOCAL_OLLAMA_BASE_URL.to_string(),
+        base_url: base_url.to_string(),
         ..BackendEntry::default()
     };
     let usability = classify_entry(
@@ -619,9 +726,9 @@ pub async fn detect_local_provider(env: &HashMap<String, String>) -> Option<Loca
     if !matches!(usability, Usability::Usable) {
         return None;
     }
-    let model = first_available_model(LOCAL_OLLAMA_BASE_URL).await?;
+    let model = first_available_model(base_url).await?;
     Some(LocalOffer {
-        base_url: LOCAL_OLLAMA_BASE_URL.to_string(),
+        base_url: base_url.to_string(),
         model,
     })
 }
@@ -1365,7 +1472,7 @@ async fn run_backend_setup(env: &HashMap<String, String>, path: &Path) -> Guided
     // clearly going the hosted route -- neither is the fourth question the
     // appetite ruling forbids, but both are noise this flow's own "get out
     // of the way" already argues against.
-    if let Some(offer) = detect_local_provider(env).await {
+    if let Some(offer) = detect_local_provider(env, LOCAL_OLLAMA_BASE_URL).await {
         println!("found one, model \"{}\".", offer.model);
         // Accurate about all three outcomes, not just two of them: `Enter`
         // accepts, `Esc` abandons the WHOLE flow (matching every other
@@ -2747,6 +2854,143 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(snippet).expect("the printed snippet must itself be valid JSON");
         assert!(parsed["backends"]["anthropic"]["api_key_env"].is_string());
+    }
+
+    // ---- non_interactive_guidance_text: the probe-result-driven pure ----
+    // ---- half (board item `01M2M634QKE46DWNAZCB1003QN`) ----
+
+    #[test]
+    fn non_interactive_guidance_text_with_a_local_offer_prints_the_local_snippet_naming_the_real_tag(
+    ) {
+        let path = Path::new("/home/alice/.conway/settings.json");
+        let offer = LocalOffer {
+            base_url: "http://127.0.0.1:11434/v1".to_string(),
+            model: "glm-5.3:cloud".to_string(),
+        };
+        let msg = non_interactive_guidance_text(path, Some(&offer));
+        assert!(msg.starts_with(GUIDED_SETUP_MARKER));
+        assert!(msg.contains("/home/alice/.conway/settings.json"));
+        assert!(
+            msg.contains("glm-5.3:cloud"),
+            "must name the real tag the server reported, never a guess: {msg}"
+        );
+        assert!(
+            !msg.contains("ANTHROPIC_API_KEY"),
+            "must not also offer the Anthropic snippet once a local server answered: {msg}"
+        );
+        let start = msg.find('{').expect("snippet has an opening brace");
+        let end = msg.rfind('}').expect("snippet has a closing brace");
+        let snippet = &msg[start..=end];
+        let parsed: serde_json::Value =
+            serde_json::from_str(snippet).expect("the printed snippet must itself be valid JSON");
+        assert_eq!(parsed["backends"]["local"]["kind"], "openai-compat");
+        assert_eq!(parsed["backends"]["local"]["dialect"], "ollama");
+        assert_eq!(
+            parsed["backends"]["local"]["base_url"],
+            "http://127.0.0.1:11434/v1"
+        );
+        assert_eq!(parsed["roles"]["coder"]["chain"][0], "local/glm-5.3:cloud");
+    }
+
+    /// Paired with the local-offer test above -- without this pairing, a
+    /// change that broke the "nothing answered" fallback could still pass
+    /// by only ever exercising the `Some` branch. Asserted against the
+    /// literal, byte-for-byte original message (not merely "contains
+    /// ANTHROPIC_API_KEY"), matching this item's own acceptance: the
+    /// Anthropic snippet is unchanged, not just still present.
+    #[test]
+    fn non_interactive_guidance_text_with_no_local_offer_is_byte_identical_to_the_original_anthropic_snippet(
+    ) {
+        let path = Path::new("/home/alice/.conway/settings.json");
+        let msg = non_interactive_guidance_text(path, None);
+        let expected = format!(
+            "{GUIDED_SETUP_MARKER}, and this isn't an interactive terminal, so conway can't ask you \
+             about it here.\n\
+             \n\
+             Add a provider by hand: edit (or create) {path} and add:\n\
+             \n\
+             {{\n  \"backends\": {{\n    \"anthropic\": {{\n      \"kind\": \"anthropic\",\n      \
+             \"api_key_env\": \"ANTHROPIC_API_KEY\"\n    }}\n  }},\n  \"roles\": {{\n    \"coder\": \
+             {{ \"chain\": [\"anthropic/claude-sonnet-5\"] }}\n  }}\n}}\n\
+             \n\
+             then export ANTHROPIC_API_KEY and run conway again. See docs/getting-started.md for \
+             other providers, including a local server.",
+            path = path.display()
+        );
+        assert_eq!(
+            msg, expected,
+            "the no-server fallback must remain byte-identical to what this function always \
+             printed"
+        );
+    }
+
+    /// The probe half, end to end against a real (fixture) HTTP server --
+    /// [`detect_local_provider`] piped straight into
+    /// [`non_interactive_guidance_text`], proving the two compose exactly
+    /// the way [`non_interactive_guidance`] itself does (that function's
+    /// own signature has no room for a fixture URL -- see its own doc for
+    /// why -- so this is the closest an automated test gets to it without
+    /// a real port 11434).
+    #[tokio::test]
+    async fn non_interactive_guidance_pipeline_with_a_real_local_server_prints_the_local_snippet() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/models"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": [{"id": "glm-5.3:cloud", "type": "model"}]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let offer = detect_local_provider(&HashMap::new(), &server.uri())
+            .await
+            .expect("a reachable server with a /models route must be detected");
+        assert_eq!(offer.model, "glm-5.3:cloud");
+
+        let path = Path::new("/home/alice/.conway/settings.json");
+        let msg = non_interactive_guidance_text(path, Some(&offer));
+        assert!(msg.contains("glm-5.3:cloud"));
+        assert!(!msg.contains("ANTHROPIC_API_KEY"));
+    }
+
+    /// The "nothing answers" half of the same pairing, against a real
+    /// (refusing) address rather than a fixture -- proves
+    /// [`detect_local_provider`] itself resolves quickly rather than
+    /// hanging, the hard constraint this item's own brief states.
+    #[tokio::test]
+    async fn non_interactive_guidance_pipeline_with_nothing_listening_returns_none_quickly() {
+        let started = std::time::Instant::now();
+        // Port 1 is a well-known low port nothing listens on; a refused
+        // connection returns near-instantly rather than waiting out
+        // `DEFAULT_PROBE_TIMEOUT`.
+        let offer = detect_local_provider(&HashMap::new(), "http://127.0.0.1:1").await;
+        assert!(offer.is_none());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "must never hang the error path"
+        );
+    }
+
+    /// The real call site (`main.rs`'s async `build_conway`) calls the
+    /// SYNCHRONOUS `non_interactive_guidance` from a thread an ambient
+    /// multi-thread tokio runtime already owns -- reproduced here, since a
+    /// nested-runtime panic ("cannot start a runtime from within a
+    /// runtime") only ever surfaces from exactly this shape, never from a
+    /// bare `#[test]`. See [`local_probe_with_timeout`]'s own doc for why
+    /// this cannot panic: the probe runs on a dedicated OS thread with its
+    /// own throwaway runtime, never the ambient one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn non_interactive_guidance_does_not_panic_when_called_from_inside_a_tokio_runtime() {
+        let path = Path::new("/home/alice/.conway/settings.json");
+        let started = std::time::Instant::now();
+        let msg = non_interactive_guidance(path);
+        assert!(msg.starts_with(GUIDED_SETUP_MARKER));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "must never hang the error path"
+        );
     }
 
     // ---- acceptance 8's own grep check: production code calls the real ----

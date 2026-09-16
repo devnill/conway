@@ -37,9 +37,11 @@ where, before writing it.
 Declining before configuring anything leaves conway usable but
 unconfigured, with a clear statement of what will not work. Under
 `-p`/`--print`, a pipe, or CI — anywhere an interactive prompt is
-impossible — this degrades instead to printing the
-exact file to edit and the exact JSON to add, and never blocks waiting for
-input nobody can give.
+impossible — this degrades instead to a quick, bounded check for that same
+local server; if one answers, the printed JSON names it and the model tag
+it actually reported, otherwise it prints the exact file to edit and the
+exact JSON to add for a hosted provider — and either way this never blocks
+waiting for input nobody can give.
 
 The rest of this section describes what that flow (or a non-interactive
 run) is actually setting up, for anyone editing `settings.json` by hand —
