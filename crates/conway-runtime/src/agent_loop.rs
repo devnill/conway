@@ -2052,6 +2052,16 @@ impl AgentLoop {
                 // A future item can close that gap without touching this
                 // runner-level enforcement at all.
                 tool_timeout: None,
+                // Board item `01M20RYAK1T1DK7XWX431FFCYQ`: the SAME
+                // observer list this loop's own post-call pass below
+                // iterates (`self.deps.observers`) -- `ToolRunner::
+                // execute_one` needs it too, to call `before_tool_call` at
+                // the one place that seam runs. Cloning it here (cheap: an
+                // empty `Vec` in the overwhelming common case, otherwise one
+                // `Arc` clone per registered observer) rather than storing
+                // an `Arc<Vec<_>>` on `LoopDeps` itself keeps `LoopDeps::
+                // observers`'s own public shape untouched.
+                observers: Arc::new(self.deps.observers.clone()),
             };
             // Counted from the DISPATCHED batch rather than `outcomes` below:
             // the cancel check immediately after discards every outcome,

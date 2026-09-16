@@ -1,0 +1,7 @@
+### Fixed
+
+- **`conway.checkpoint` can now roll back a file's FIRST edit in a session, not just its second one onward** — board item `01M20RYAK1T1DK7XWX431FFCYQ`. `ToolObserver` gains a new, defaulted `before_tool_call` method, called once per tool call after the permission decision resolves to allow it and before the tool executes — a denied call never reaches it, and it is a pure observer (no veto, same fail-open/panic-contained posture as the existing `after_tool_call`). Every existing `ToolObserver` implementation keeps compiling and behaving identically, unedited. `conway.checkpoint` uses it to read a path's real bytes immediately before a `write`/`edit` overwrites them for the first time in a session, closing the one hole its own module doc flagged as structural when it shipped: previously, a path's first observed touch had no baseline to chain from and `/conway.checkpoint.diff`/`.rollback` reported it as unavailable. `SnapshotRef::Unavailable` still applies to a genuinely unreadable path; it is no longer the normal outcome for a first edit.
+
+### Changed
+
+- **`docs/plugins/checkpoint.md` and `conway.checkpoint`'s own plugin description** no longer disclose a first-edit limitation, now that it is closed; the `bash`-coverage limitation (only `write`/`edit` are observed) remains disclosed in both, unchanged. `docs/vision/CATALOGUE.md`'s own reversal note for filesystem checkpointing is updated to match: the plugin tier's pre-call gap is now scoped to `bash`-driven changes only.

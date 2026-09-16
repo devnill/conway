@@ -44,9 +44,10 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{
     CancellationToken as CoreCancellationToken, CapabilityCallHandle, CapabilityHost,
-    ContextPathHandle, ContextPathHost, CwdHandle, EventSinkHandle, PluginConfig,
-    PluginEventEmitter, PluginEventHandle, SessionDiscoveryHandle, SessionDiscoveryHost,
-    SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
+    ContextPathHandle, ContextPathHost, CwdHandle, EventSinkHandle, ObserverCtx, PendingCall,
+    PluginConfig, PluginEventEmitter, PluginEventHandle, RegisteredObserver,
+    SessionDiscoveryHandle, SessionDiscoveryHost, SubagentHandle, SubagentHost, Tool, ToolCtx,
+    ToolOutput,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -127,6 +128,16 @@ pub struct ToolBatchCtx {
     /// item -- this item's own acceptance criteria exercise the runner's
     /// enforcement directly against this field, not that facade wiring.
     pub tool_timeout: Option<Duration>,
+    /// Board item `01M20RYAK1T1DK7XWX431FFCYQ`: every registered
+    /// `ToolObserver`, so `execute_one` (below) can call
+    /// `ToolObserver::before_tool_call` at the one place that seam is
+    /// documented to run -- after the permission decision resolves to
+    /// allow, before the tool executes. The SAME list `AgentLoop::
+    /// run_inner`'s own post-call pass already iterates
+    /// (`LoopDeps::observers`); `Arc`-wrapped here so cloning it into every
+    /// per-call spawned task (`run_batch`'s own per-call `for` loop) is one
+    /// pointer bump, not a re-clone of each observer's own `Arc`.
+    pub observers: Arc<Vec<RegisteredObserver>>,
 }
 
 /// The outcome of one dispatched tool call.
@@ -252,6 +263,7 @@ impl ToolRunner {
             let root = ctx.root.clone();
             let tool_timeout = ctx.tool_timeout;
             let hooks = self.hooks.clone();
+            let observers = ctx.observers.clone();
             let call_id_for_panic = call.call_id.clone();
             let tool_for_panic = call.name.clone();
 
@@ -267,6 +279,7 @@ impl ToolRunner {
                     broker,
                     bus,
                     hooks,
+                    observers,
                     semaphore,
                     batch_cancel,
                     agent_id,
@@ -330,6 +343,7 @@ async fn execute_one(
     broker: Arc<PermissionBroker>,
     bus: Arc<EventBus>,
     hooks: Arc<HookDispatcher>,
+    observers: Arc<Vec<RegisteredObserver>>,
     semaphore: Arc<Semaphore>,
     batch_cancel: TokioCancellationToken,
     agent_id: AgentId,
@@ -407,6 +421,48 @@ async fn execute_one(
         // `ToolCallStarted` is emitted and `invoke` is never called.
         PermissionOutcome::Deny { rendered_error } => {
             return ToolOutcome::error(call_id, tool_name, rendered_error);
+        }
+    }
+
+    // Board item `01M20RYAK1T1DK7XWX431FFCYQ`: `ToolObserver::
+    // before_tool_call`, the pre-call half of the observer seam. Placement
+    // is load-bearing and this is it -- strictly AFTER the permission
+    // decision above resolved to `Allow` (the `Deny` arm already returned,
+    // so a denied call never reaches here and never trips an observer's own
+    // side effects for a write that was never going to happen), and
+    // strictly BEFORE anything below has any effect: no `ToolCallStarted`,
+    // no `invoke`. `execute_one` is the ONE place every call of every tool
+    // kind passes through (`run_batch`'s own per-call spawn, above) -- this
+    // is the single call site the trait's own doc promises, not one per
+    // tool kind.
+    for registered in observers.iter() {
+        let observer_ctx = ObserverCtx {
+            events: PluginEventHandle::new(
+                hooks.clone() as Arc<dyn PluginEventEmitter>,
+                registered.plugin_id.clone(),
+            ),
+        };
+        let pending = PendingCall {
+            agent_id,
+            session: session_id,
+            call_id: call_id.clone(),
+            tool: tool_name.clone(),
+            arguments: call.arguments.clone(),
+        };
+        // Same fail-open contract `after_tool_call`'s own post-call pass
+        // already applies (`AgentLoop::run_inner`'s observer loop): a
+        // panicking observer must not turn into a failure of the call it
+        // was about to watch.
+        if AssertUnwindSafe(registered.observer.before_tool_call(&observer_ctx, &pending))
+            .catch_unwind()
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                plugin = %registered.plugin_id,
+                tool = %tool_name,
+                "tool observer panicked in before_tool_call; ignoring"
+            );
         }
     }
 

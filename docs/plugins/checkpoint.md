@@ -26,25 +26,24 @@ every other one. `docs/vision/CATALOGUE.md` records the reversal and its
 cost alongside the amendment; it is not left as a doc that still argues
 against a capability that ships.
 
-## What it captures, and the one case it cannot
+## What it captures, including the first edit of a session
 
-Every successful `write`/`edit` tool call is snapshotted: the plugin's
-observer reads the file's bytes right after the call lands and stores them,
-content-addressed, in a shadow store under `.conway/checkpoints`. It reads
-whatever the tool call's own arguments name, without re-deriving the tool's
-output — so this works identically whether `edit` replaced one line or
-`write` replaced the whole file.
+Every successful `write`/`edit` tool call is snapshotted, including the
+FIRST time a session touches a given path: the plugin's observer reads the
+target path's real bytes just before the write runs
+(`ToolObserver::before_tool_call`, which fires after the permission decision
+allows the call and before the tool executes) and again right after the
+call lands, and stores both, content-addressed, in a shadow store under
+`.conway/checkpoints`. It reads whatever the tool call's own arguments
+name, without re-deriving the tool's output — so this works identically
+whether `edit` replaced one line or `write` replaced the whole file.
 
-There is exactly one gap, and it is structural, not an oversight: a plugin
-has no in-process seam that runs BEFORE a tool call, only after
-(`ToolObserver::after_tool_call`). So the "before" bytes for one checkpoint
-entry are always the bytes THIS plugin itself captured for that same path's
-most recent earlier entry — a chain, not a fresh read. For the very FIRST
-time a session touches a given path, there is no earlier entry to chain
-from, and the plugin says so plainly (`/conway.checkpoint.list`/`.diff` show
-"unavailable", never a guessed-empty baseline) rather than restoring the
-wrong thing. In practice this only bites a path's first edit in a session —
-every SUBSEQUENT edit to that same path has a real baseline to roll back to.
+From a path's second touch in a session onward, the "before" bytes are the
+bytes this plugin already captured as that path's most recent earlier
+"after" — a chain, needing no extra read. `/conway.checkpoint.list`/`.diff`
+still report a baseline as "unavailable", never a guessed-empty one, for
+the genuinely unrecoverable remainder: a path this plugin could not read at
+all (e.g. a permissions error) when it tried to capture a baseline.
 
 ## `bash` is not captured
 

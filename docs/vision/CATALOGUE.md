@@ -421,15 +421,19 @@ failure mode the brief warns against.
   The operator ruled: build it, as a plugin (never core), in the default
   opinion set, removable like every other one — `conway-plugin-checkpoint`,
   documented at `docs/plugins/checkpoint.md`. **The cost this reversal
-  actually paid**: the plugin tier has no in-process seam that runs BEFORE
-  a tool call, only after (`ToolObserver::after_tool_call`), so it cannot
-  read a path's TRUE pre-edit bytes the way a git commit or Claude Code's
-  own host-level interception can — it chains each snapshot's "before" from
-  its own most recent EARLIER capture of that same path, and discloses,
-  rather than guesses, when a path's first-ever touch in a session has no
-  baseline to chain from. That is a real, load-bearing limit this rung of
-  the extension model imposes, not a gap this item quietly routed around by
-  reaching into `conway-core`/`conway-runtime`.
+  actually paid, at first**: the plugin tier had no in-process seam that ran
+  BEFORE a tool call, only after (`ToolObserver::after_tool_call`), so a
+  path's very first observed touch in a session had no TRUE pre-edit bytes
+  to roll back to — only a chain of each snapshot's "before" from its own
+  most recent EARLIER capture, which cannot exist for a first touch. Board
+  item `01M20RYAK1T1DK7XWX431FFCYQ` closed that specific gap by adding
+  `ToolObserver::before_tool_call` (fires after the permission decision
+  allows a call and before the tool runs), so `conway.checkpoint` now reads
+  a path's real bytes at that moment for a first touch too. What remains,
+  unchanged: no seam here (or anywhere in-process) observes a `bash`-driven
+  change, because an unconstrained shell subprocess's own file I/O is not
+  something a tool-call observer can see — that limit is load-bearing and
+  disclosed (`docs/plugins/checkpoint.md`), not routed around.
 - **A dedicated "thinking budget" dial as a harness concept.** This is
   provider-shaped, not harness-shaped — each backend already declares what
   it supports, and a role's routing config is where this belongs

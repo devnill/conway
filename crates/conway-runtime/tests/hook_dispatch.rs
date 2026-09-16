@@ -150,6 +150,10 @@ fn tool_batch_ctx() -> ToolBatchCtx {
         // timeout) -- unlimited keeps every test here byte-for-byte
         // unchanged.
         tool_timeout: None,
+        // Unrelated to this file's own hook-dispatch acceptance criteria
+        // (board item `01M20RYAK1T1DK7XWX431FFCYQ`'s pre-call observer
+        // seam) -- empty keeps every test here byte-for-byte unchanged.
+        observers: Arc::new(Vec::new()),
     }
 }
 

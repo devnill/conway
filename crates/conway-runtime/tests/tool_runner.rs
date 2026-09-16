@@ -338,6 +338,11 @@ fn batch_ctx_with_chdir(max_parallel_tools: usize, chdir: CwdHandle) -> ToolBatc
         // its unlimited behavior; the timeout tests below set this field on
         // the `ToolBatchCtx` they build directly.
         tool_timeout: None,
+        // Every existing test in this file predates the pre-call observer
+        // seam (board item `01M20RYAK1T1DK7XWX431FFCYQ`); the tests that
+        // exercise it below build a `ToolBatchCtx` with a real observer
+        // list directly rather than through this helper.
+        observers: Arc::new(Vec::new()),
     }
 }
 
@@ -1024,5 +1029,214 @@ async fn tool_timeout_none_leaves_a_normal_call_unaffected() {
     assert!(
         !observed_cancel.load(Ordering::SeqCst),
         "no timeout means no cancellation"
+    );
+}
+
+// ---------------------------------------------------------------------
+// before_tool_call: board item `01M20RYAK1T1DK7XWX431FFCYQ`, the pre-call
+// half of the observer seam. `after_tool_call`'s own placement/panic-
+// containment tests live at the `AgentLoop` layer
+// (`agent_loop_e2e.rs`, "ToolObserver" section) because that loop is the
+// one that calls it; `before_tool_call` is different -- `ToolRunner::
+// execute_one` is the one place it runs, so this file (which already
+// drives `ToolRunner::run_batch` directly) is the right home for it.
+// ---------------------------------------------------------------------
+
+/// Pushes `"before:<tool>"` into a shared, order-preserving log every time
+/// it runs, and counts its own invocations separately -- so a test can
+/// check BOTH "did this run" (the counter) and "did this run at the right
+/// moment relative to something else" (the log's own order), which a
+/// counter alone cannot distinguish from the old post-call-only seam.
+struct RecordingObserver {
+    events: Arc<Mutex<Vec<String>>>,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl conway_core::ports::ToolObserver for RecordingObserver {
+    async fn before_tool_call(
+        &self,
+        _ctx: &conway_core::ports::ObserverCtx,
+        call: &conway_core::ports::PendingCall,
+    ) {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("before:{}", call.tool));
+    }
+
+    async fn after_tool_call(
+        &self,
+        _ctx: &conway_core::ports::ObserverCtx,
+        _call: &conway_core::ports::ObservedCall,
+    ) -> conway_core::ports::ObserverAnswer {
+        // `ToolRunner::run_batch` never calls this half -- `AgentLoop` does,
+        // and these tests drive `run_batch` directly -- so a real
+        // implementation is unreachable here; the trait requires one
+        // regardless (no default), so this stub exists only to satisfy it.
+        conway_core::ports::ObserverAnswer::default()
+    }
+}
+
+/// Pushes `"invoke:<tool>"` into the SAME shared log `RecordingObserver`
+/// writes to, so a test can read one ordered sequence spanning both the
+/// observer and the tool itself.
+struct RecordingTool {
+    name: ToolName,
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl Tool for RecordingTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        simple_spec(self.name.clone())
+    }
+
+    async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("invoke:{}", self.name));
+        Ok(text_output("done"))
+    }
+}
+
+fn observed_batch_ctx(
+    max_parallel_tools: usize,
+    observer: Arc<dyn conway_core::ports::ToolObserver>,
+) -> ToolBatchCtx {
+    let mut ctx = batch_ctx(max_parallel_tools);
+    ctx.observers = Arc::new(vec![conway_core::ports::RegisteredObserver {
+        plugin_id: "test.observer".to_string(),
+        observer,
+    }]);
+    ctx
+}
+
+/// P-15's own bar: an end-state-only assertion ("was it rollable") cannot
+/// distinguish `before_tool_call` from the pre-existing post-call chain --
+/// this reads the SHARED event log both the observer and the tool write to,
+/// and asserts the observer's own entry comes first. The end state alone
+/// (both entries present) would pass even if the runtime called
+/// `before_tool_call` AFTER `invoke`, which is exactly the bug this seam's
+/// placement exists to prevent.
+///
+/// FAILS AGAINST HEAD: `conway_core::ports::ToolObserver` has no
+/// `before_tool_call` method at HEAD, and `ToolBatchCtx` has no `observers`
+/// field -- this test does not compile against HEAD at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn before_tool_call_runs_after_allow_and_strictly_before_invoke() {
+    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tool_name = ToolName::new("rec");
+    let reg = registry(vec![Arc::new(RecordingTool {
+        name: tool_name.clone(),
+        events: events.clone(),
+    })]);
+    let (runner, _bus) = runner_with_gate(reg, PermissionDecision::AllowOnce);
+    let observer = Arc::new(RecordingObserver {
+        events: events.clone(),
+        calls: calls.clone(),
+    }) as Arc<dyn conway_core::ports::ToolObserver>;
+    let ctx = observed_batch_ctx(4, observer);
+
+    let outcomes = runner
+        .run_batch(&ctx, vec![call("c1", "rec", serde_json::json!({}))])
+        .await;
+
+    assert!(!outcomes[0].is_error, "{outcomes:?}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "before_tool_call must run exactly once for one call, not once per tool kind or not at \
+         all"
+    );
+    assert_eq!(
+        events.lock().unwrap().clone(),
+        vec!["before:rec".to_string(), "invoke:rec".to_string()],
+        "before_tool_call must run strictly before the tool's own invoke"
+    );
+}
+
+/// ACCEPTANCE 2: "a denied tool call produces NO snapshot" -- generalized to
+/// the seam itself, since the checkpoint plugin's own snapshot is just one
+/// consumer: a denied call must never reach `before_tool_call` at all, for
+/// ANY observer, because the runtime's own `Deny` arm returns before this
+/// loop is ever entered.
+///
+/// FAILS AGAINST HEAD: same reason as the test above -- the seam this
+/// asserts on does not exist at HEAD.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn denied_call_never_reaches_before_tool_call() {
+    let reg = registry(vec![Arc::new(EchoTool(ToolName::new("read")))]);
+    let (runner, _bus) = runner_with_gate(
+        reg,
+        PermissionDecision::Deny {
+            reason: "no way".into(),
+        },
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observer = Arc::new(RecordingObserver {
+        events: Arc::new(Mutex::new(Vec::new())),
+        calls: calls.clone(),
+    }) as Arc<dyn conway_core::ports::ToolObserver>;
+    let ctx = observed_batch_ctx(4, observer);
+
+    let outcomes = runner
+        .run_batch(&ctx, vec![call("c1", "read", serde_json::json!({}))])
+        .await;
+
+    assert!(outcomes[0].is_error, "{outcomes:?}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "a denied call must never trigger before_tool_call"
+    );
+}
+
+/// An observer whose `before_tool_call` always panics.
+struct PanickingBeforeObserver;
+
+#[async_trait]
+impl conway_core::ports::ToolObserver for PanickingBeforeObserver {
+    async fn before_tool_call(
+        &self,
+        _ctx: &conway_core::ports::ObserverCtx,
+        _call: &conway_core::ports::PendingCall,
+    ) {
+        panic!("before_tool_call blew up");
+    }
+
+    async fn after_tool_call(
+        &self,
+        _ctx: &conway_core::ports::ObserverCtx,
+        _call: &conway_core::ports::ObservedCall,
+    ) -> conway_core::ports::ObserverAnswer {
+        conway_core::ports::ObserverAnswer::default()
+    }
+}
+
+/// Same containment contract `after_tool_call` already carries (see
+/// `agent_loop_e2e.rs`'s `PanickingObserver`): observation never fails the
+/// thing it observed, whether the observation happens before or after.
+///
+/// FAILS AGAINST HEAD: same reason as the two tests above -- `before_tool_
+/// call` does not exist at HEAD, so there is nothing for a panic to be
+/// contained BY.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_panicking_before_tool_call_does_not_fail_the_call_it_was_about_to_watch() {
+    let reg = registry(vec![Arc::new(EchoTool(ToolName::new("read")))]);
+    let (runner, _bus) = runner_with_gate(reg, PermissionDecision::AllowOnce);
+    let observer = Arc::new(PanickingBeforeObserver) as Arc<dyn conway_core::ports::ToolObserver>;
+    let ctx = observed_batch_ctx(4, observer);
+
+    let outcomes = runner
+        .run_batch(&ctx, vec![call("c1", "read", serde_json::json!({}))])
+        .await;
+
+    assert!(
+        !outcomes[0].is_error,
+        "a panicking before_tool_call must not fail the call it was about to watch: {outcomes:?}"
     );
 }

@@ -462,9 +462,10 @@ pub mod plugin {
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, CurateCtx,
         CurateOutcome, Curator, EventSink, EventSinkHandle, HookRunner, HostCapability, Memory,
         MemoryProvenance, MemoryStore, ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote,
-        OverflowInfo, PathArgs, Plugin, PluginConfig, PluginEventHandle, PluginHookRule,
-        PluginManifest, PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution,
-        RegisteredObserver, RenderKind, Tool, ToolCtx, ToolObserver, ToolOutput,
+        OverflowInfo, PathArgs, PendingCall, Plugin, PluginConfig, PluginEventHandle,
+        PluginHookRule, PluginManifest, PluginPermissionRule, PluginPermissionVerdict,
+        PluginStatusContribution, RegisteredObserver, RenderKind, Tool, ToolCtx, ToolObserver,
+        ToolOutput,
     };
     /// Edge B's plugin -> plugin capability CALL channel (board item
     /// `01M0WWNHQQYN1EVTH8WPZ33EBF`,
