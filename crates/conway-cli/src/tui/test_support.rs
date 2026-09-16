@@ -104,7 +104,13 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // terminal-free harness does not have. `press` returns the action
         // unapplied, so a test asserts on the ACTION -- the install/persist
         // half is covered where the facade lives.
-        Action::GrantPermissionPattern(_, _)
+        // Board item `01M22DA3JRGN22QRWMCPK8RANR`: expanding the session
+        // picker to all projects needs `Conway::discover_sessions_all_projects`
+        // -- a live facade call this terminal-free harness has no session to
+        // make, exactly like the grant/revoke actions beside it. A test
+        // asserts on the ACTION; `app/run.rs` owns applying it.
+        Action::ExpandSessionPickerAllProjects
+        | Action::GrantPermissionPattern(_, _)
         | Action::GrantPermissionRule(_, _)
         | Action::CyclePermissionMode
         | Action::RevokePermissionGrants

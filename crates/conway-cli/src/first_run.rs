@@ -715,12 +715,29 @@ pub fn context_window_setup_notice(key: &str, window: u32, path: &std::path::Pat
 /// This changes WHICH one, never HOW MANY.
 pub const LOCAL_PROBE_BASE_URL_ENV: &str = "CONWAY_LOCAL_PROBE_BASE_URL";
 
+/// The single endpoint the local-server probe should target for this run:
+/// `LOCAL_PROBE_BASE_URL_ENV` when set, `LOCAL_OLLAMA_BASE_URL` otherwise.
+///
+/// **Both probe call sites must go through here.** When the override was
+/// first added it was wired into `non_interactive_guidance` only, so the
+/// INTERACTIVE guided-setup path (`run_backend_setup`) kept probing the
+/// hardcoded `127.0.0.1:11434` and could not be pointed at a fixture. A pty
+/// test written against guided setup therefore had no way to reach a mock
+/// server, which is exactly the coverage the override exists to enable.
+/// Board item `01M2M6NR49FYQSRS00B95PTAZT` found that gap.
+///
+/// This still resolves to exactly ONE endpoint per call — it changes WHICH,
+/// never HOW MANY, so `LOCAL_OLLAMA_BASE_URL`'s own "not a scanner" rule is
+/// unaffected.
+pub fn effective_local_probe_base_url(env: &HashMap<String, String>) -> String {
+    env.get(LOCAL_PROBE_BASE_URL_ENV)
+        .cloned()
+        .unwrap_or_else(|| LOCAL_OLLAMA_BASE_URL.to_string())
+}
+
 pub fn non_interactive_guidance(path: &Path) -> String {
     let env: HashMap<String, String> = std::env::vars().collect();
-    let base_url = env
-        .get(LOCAL_PROBE_BASE_URL_ENV)
-        .cloned()
-        .unwrap_or_else(|| LOCAL_OLLAMA_BASE_URL.to_string());
+    let base_url = effective_local_probe_base_url(&env);
     let local = local_probe_with_timeout(env, base_url);
     non_interactive_guidance_text(path, local.as_ref())
 }
@@ -1601,7 +1618,7 @@ async fn run_backend_setup(env: &HashMap<String, String>, path: &Path) -> Guided
     // clearly going the hosted route -- neither is the fourth question the
     // appetite ruling forbids, but both are noise this flow's own "get out
     // of the way" already argues against.
-    if let Some(offer) = detect_local_provider(env, LOCAL_OLLAMA_BASE_URL).await {
+    if let Some(offer) = detect_local_provider(env, &effective_local_probe_base_url(env)).await {
         println!("found one, model \"{}\".", offer.model);
         // Accurate about all three outcomes, not just two of them: `Enter`
         // accepts, `Esc` abandons the WHOLE flow (matching every other

@@ -1598,9 +1598,16 @@ mod tests {
             text.contains("filter: release"),
             "the typed filter text itself must be shown: {text}"
         );
+        // Asserts on `[tab]` alone, not the full "all projects" phrase:
+        // at this test's render width the footer wraps between "all" and
+        // "projects", so a contiguous-substring check on the phrase fails
+        // even though the footer is present and correct. Assert on the
+        // shortest token that carries the claim -- the key that performs
+        // the toggle -- rather than on text the layout owns the line
+        // breaks of.
         assert!(
-            text.contains("all projects"),
-            "the session picker's own footer must name the toggle: {text}"
+            text.contains("[tab]"),
+            "the session picker's own footer must name the toggle key: {text}"
         );
     }
 
