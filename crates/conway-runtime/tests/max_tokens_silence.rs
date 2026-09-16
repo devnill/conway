@@ -35,7 +35,7 @@ use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
-use conway_core::ports::{GenerateResponse, Router, SessionStore};
+use conway_core::ports::{Backend, GenerateResponse, Router, SessionStore};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
