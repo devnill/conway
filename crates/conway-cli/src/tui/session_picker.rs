@@ -32,7 +32,7 @@
 //! twice.
 
 use chrono::{DateTime, Utc};
-use conway::SessionId;
+use conway::{SessionId, SessionMatch};
 
 /// One row `bare /resume`'s picker shows, fully resolved -- no lazy
 /// fields, no further I/O once built (`commands::LiveHost::
@@ -99,6 +99,49 @@ pub fn format_row(row: &ResumableSessionRow) -> String {
 /// `conway_plugin_ui::AskSelectRequest::options` needs.
 pub fn format_rows(rows: &[ResumableSessionRow]) -> Vec<String> {
     rows.iter().map(format_row).collect()
+}
+
+/// Board item `01M22DA3JRGN22QRWMCPK8RANR` (the session picker's
+/// all-projects toggle): converts one cross-project [`SessionMatch`]
+/// (`conway::Conway::discover_sessions_all_projects`,
+/// `SessionSearchScope::AllProjects`) into the SAME [`ResumableSessionRow`]
+/// shape the current-project listing produces, so [`format_row`]/
+/// [`session_id_from_option`] need no second formatting path for this
+/// feature -- a row built this way renders through the identical furniture
+/// as one `commands::LiveHost::resumable_sessions` built.
+///
+/// `title` is resolved by the CALLER through `commands::sessions::
+/// display_title` (the one function that decides a session's title,
+/// everywhere -- see that function's own doc) and handed in already
+/// resolved; this module holds no I/O and derives no second opinion of its
+/// own.
+///
+/// Metadata-only, like the discovery query that produced `m`: `first_prompt`
+/// is always `None` (deriving it would need a records read -- real I/O --
+/// this feature deliberately does not pay for, across every project) and
+/// `last_activity`/`seq_count` are likewise left at their own "unknown"
+/// values, so [`format_row`] renders them as `(no prompt yet)`/`never`/`0
+/// records` for a row built this way -- an honest "nothing beyond the
+/// header was read" rather than a fabricated figure.
+///
+/// [`SessionMatch::project_key`] is appended to `labels` as `project:<key>`
+/// -- the row's own visible marker that it was surfaced from a DIFFERENT
+/// project's own session-root key than the picker's other (current-project)
+/// rows, since [`ResumableSessionRow`] itself carries no dedicated field for
+/// it (adding one would mean every existing row -- current-project included
+/// -- now has to say which project it belongs to, for a fact only THIS
+/// feature's rows ever need to state).
+pub fn row_from_match(m: &SessionMatch, title: Option<String>) -> ResumableSessionRow {
+    let mut labels = m.labels.clone();
+    labels.push(format!("project:{}", m.project_key));
+    ResumableSessionRow {
+        id: m.session,
+        title,
+        first_prompt: None,
+        last_activity: None,
+        seq_count: 0,
+        labels,
+    }
 }
 
 /// The inverse of [`format_row`]'s own `ID_MARKER` suffix: recovers the
@@ -273,5 +316,43 @@ mod tests {
         assert!(text.contains("never"));
         assert!(text.contains("0 records"));
         assert_eq!(session_id_from_option(&text), Some(id));
+    }
+
+    /// **VERIFICATION ANCHOR, P-15(b) (pure-conversion half).** Board item
+    /// `01M22DA3JRGN22QRWMCPK8RANR`: a cross-project `SessionMatch` becomes a
+    /// `ResumableSessionRow` whose formatted line both round-trips its own
+    /// id (the SAME `format_row`/`session_id_from_option` pairing every
+    /// other row uses) and names the DIFFERENT project key it came from.
+    #[test]
+    fn row_from_match_carries_the_id_and_marks_the_project_key() {
+        let id = SessionId::new();
+        let m = SessionMatch {
+            session: id,
+            project_key: "-Users-dan-other-checkout".to_string(),
+            cwd: std::path::PathBuf::from("/tmp/other-checkout"),
+            created: Utc::now(),
+            agent_def: None,
+            labels: vec!["urgent".to_string()],
+            matched_records: Vec::new(),
+        };
+
+        let row = row_from_match(&m, Some("an older session".to_string()));
+        let text = format_row(&row);
+
+        assert_eq!(session_id_from_option(&text), Some(id));
+        assert!(text.contains("an older session"), "{text:?}");
+        assert!(
+            text.contains("[urgent, project:-Users-dan-other-checkout]"),
+            "the original label AND the project marker must both show: {text:?}"
+        );
+        assert_eq!(
+            row.first_prompt, None,
+            "metadata-only: no records were read"
+        );
+        assert_eq!(
+            row.last_activity, None,
+            "metadata-only: no records were read"
+        );
+        assert_eq!(row.seq_count, 0, "metadata-only: no records were read");
     }
 }

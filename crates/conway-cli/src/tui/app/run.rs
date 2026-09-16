@@ -845,6 +845,104 @@ impl App {
                                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
                                     );
                                 }
+                                // Board item `01M22DA3JRGN22QRWMCPK8RANR`:
+                                // bare `/resume`'s own picker's all-projects
+                                // toggle. Mirrors `Action::MakeModelDefault`
+                                // immediately above in every respect that
+                                // matters here -- this key never goes
+                                // through `commands::execute` either
+                                // (`input::handle_ui_form_key` fires it
+                                // directly), so it needs the identical
+                                // direct-dispatch door, not a second
+                                // mechanism -- but it DOES need a facade
+                                // call (`Conway::discover_sessions_all_
+                                // projects`, the one narrow method this
+                                // change added), unlike that sibling's pure local
+                                // rewrite.
+                                //
+                                // `100` mirrors `SessionSearchQuery::
+                                // default().max_sessions`'s own figure
+                                // (`conway_core::ports::discovery`'s module
+                                // doc: the hard cap every implementation
+                                // clamps into) -- the widest single press can
+                                // ever cost, named here rather than
+                                // rediscovered.
+                                //
+                                // Each match's title is resolved through the
+                                // SAME `commands::sessions::display_title`
+                                // every other row's title comes from (P-14:
+                                // one function decides a session's name,
+                                // everywhere) -- `NamesStore::load` failing
+                                // (the sidecar file could not be read) is
+                                // treated as "no bound name" rather than
+                                // failing the whole toggle, matching
+                                // `LiveHost::resolve_session_ref`'s own
+                                // best-effort posture elsewhere in this
+                                // file. A `SessionMatch` carries no full
+                                // `SessionMeta` (a DIFFERENT project's own
+                                // store built it, not this one) -- only
+                                // `.id` is ever read by `display_title`
+                                // (see `session_picker::row_from_match`'s
+                                // own doc), so the throwaway `SessionMeta`
+                                // built here exists solely to satisfy that
+                                // function's signature, never to assert
+                                // anything about its OTHER fields.
+                                Action::ExpandSessionPickerAllProjects => {
+                                    match self.conway.discover_sessions_all_projects(100).await {
+                                        Ok(matches) => {
+                                            let names = crate::session_names::NamesStore::load(
+                                                &crate::session_names::session_root(
+                                                    &self.conway,
+                                                ),
+                                            )
+                                            .ok();
+                                            let mut extra = Vec::with_capacity(matches.len());
+                                            for m in &matches {
+                                                let title = match &names {
+                                                    Some(names) => {
+                                                        let stub = conway::SessionMeta {
+                                                            id: m.session,
+                                                            agent_id: conway::AgentId::new(),
+                                                            origin: None,
+                                                            agent_def: m.agent_def.clone(),
+                                                            role: None,
+                                                            created: m.created,
+                                                            cwd: m.cwd.clone(),
+                                                            labels: m.labels.clone(),
+                                                            ephemeral: false,
+                                                            ask_origin: None,
+                                                            root: None,
+                                                            plugin_config: Default::default(),
+                                                        };
+                                                        // `crate::commands::sessions`, NOT
+                                                        // `crate::tui::commands` (this file's own
+                                                        // `commands` alias, imported above) --
+                                                        // named in full to keep the two apart.
+                                                        crate::commands::sessions::display_title(
+                                                            &self.conway,
+                                                            names,
+                                                            &stub,
+                                                        )
+                                                        .await
+                                                    }
+                                                    None => None,
+                                                };
+                                                let row = session_picker::row_from_match(
+                                                    m, title,
+                                                );
+                                                extra.push(session_picker::format_row(&row));
+                                            }
+                                            self.state.add_ui_form_options(extra);
+                                        }
+                                        Err(e) => {
+                                            self.state.transcript.push(Entry::Notice {
+                                                text: format!(
+                                                    "could not list other projects' sessions: {e}"
+                                                ),
+                                            });
+                                        }
+                                    }
+                                }
                                 Action::GrantPermissionPattern(rule, scope) => {
                                     // The granting agent is the one whose
                                     // call is being decided -- NOT
