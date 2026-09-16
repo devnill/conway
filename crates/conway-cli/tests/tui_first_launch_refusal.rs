@@ -17,6 +17,7 @@
 //! still passed, so it actually proves the `-p` override -- not merely the
 //! absence-of-a-terminal fallback `tests/first_run.rs` already covers.
 
+#[allow(dead_code)]
 mod common;
 
 use std::time::Duration;

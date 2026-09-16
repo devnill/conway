@@ -35,6 +35,7 @@
 //! form is exactly that usage refusal, reachable with any ordinary
 //! configured session -- no env-only reproduction needed.
 
+#[allow(dead_code)]
 mod common;
 
 use std::time::Duration;
@@ -116,12 +117,16 @@ async fn bare_model_lists_the_configured_model_rather_than_claiming_none_exist()
 }
 
 /// Traces to `01M24ZJ9ABPP0DGVAA2PS3XVDD` -- the `/role` half of §4 F1.
-/// Unlike `/model` above, this needs no env-only reproduction: `/role`
-/// with no alias has always required one (`docs/interactive.md:392`), and
-/// this test just proves the TUI actually shows that usage line rather
-/// than silently doing nothing or panicking.
+///
+/// **This test was written against the OLD behaviour and is now the
+/// regression guard for the new one.** Bare `/role` used to be a parse
+/// error rendering `usage: /role <alias>`; that was half the defect the
+/// board item names, because a session running on a perfectly good role
+/// could not be asked which roles exist. It now lists them, marking the
+/// built-in `default` and the active one. The pty caught the change the
+/// moment both lanes merged, which is the coverage this harness is for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bare_role_shows_the_documented_usage_line() {
+async fn bare_role_lists_the_configured_roles_rather_than_a_usage_error() {
     let mock = MockBackend::start(ok_script()).await;
     let fixture = common::write_fixture(&mock, 10);
 
@@ -130,5 +135,15 @@ async fn bare_role_shows_the_documented_usage_line() {
     session.wait_for(LANDED, Duration::from_secs(15));
 
     session.send("/role\r");
-    session.wait_for("usage: /role <alias>", Duration::from_secs(10));
+    session.wait_for("configured roles:", Duration::from_secs(10));
+
+    let screen = session.screen();
+    assert!(
+        screen.contains("default") && screen.contains("[built-in]"),
+        "the baked-in `default` role must be listed and marked as built-in. Screen:\n{screen}"
+    );
+    assert!(
+        !screen.contains("usage: /role <alias>"),
+        "bare /role must no longer refuse with a usage error. Screen:\n{screen}"
+    );
 }

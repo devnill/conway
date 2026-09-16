@@ -77,7 +77,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, Child, MasterPty, PtySize, PtySystem, SlavePty};
+use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 pub use portable_pty::{CommandBuilder, ExitStatus};
 
 /// How often [`PtySession::wait_for_any`] re-checks the accumulated output

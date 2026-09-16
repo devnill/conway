@@ -12,6 +12,11 @@ pub mod mock_backend;
 // [`mock_backend`]: nothing in [`PtySession`](pty::PtySession) itself
 // knows what a `Fixture`/`command` is, so [`pty_command`] below is the one
 // seam that connects the two.
+/// `#[allow(dead_code)]` on the module, not per item: every `tests/*.rs`
+/// binary compiles `common/` fresh, so for the majority that never drive a
+/// pty the whole type reads as dead. The same reason the individual helpers
+/// below carry one.
+#[allow(dead_code)]
 pub mod pty;
 
 use std::io::Write;

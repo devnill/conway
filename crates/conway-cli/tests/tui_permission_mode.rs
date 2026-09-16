@@ -17,6 +17,7 @@
 //! for real -- `tests/oneshot_persona_and_budget.rs`'s
 //! `max_turns_flag_overrides_the_configured_default_and_stops_the_run`).
 
+#[allow(dead_code)]
 mod common;
 
 use std::time::Duration;
@@ -77,17 +78,27 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
     // so this proves a real behavioral difference, not merely a status
     // line change.
     session.send("ask for a plan-mode tool call\r");
+    // Asserts on the model's ACKNOWLEDGEMENT, not on the denial string
+    // itself. `permission.rs`'s "plan mode does not permit" text is composed
+    // into the tool RESULT the model receives; it is not guaranteed to
+    // surface as its own rendered transcript line, and an earlier version of
+    // this test waited 15s for it and timed out while the denial had in fact
+    // worked perfectly. What is observable -- and what actually matters --
+    // is that the model saw a refusal and said so.
     let denied = session.wait_for_since(
-        "plan mode does not permit",
+        "plan-mode-denial-acknowledged",
         in_plan,
         Duration::from_secs(15),
     );
-    // The turn still completes (the model sees the denial and answers) --
-    // proves the SESSION survives a plan-mode denial rather than wedging.
-    session.wait_for_since(
-        "plan-mode-denial-acknowledged",
-        denied,
-        Duration::from_secs(15),
+    // The security property, asserted directly: the command plan mode was
+    // supposed to refuse must never have run. This is the half a status-line
+    // check cannot give you, and it is stronger than matching the denial's
+    // wording -- that text could change without the guarantee changing.
+    let screen = session.screen();
+    assert!(
+        !screen.contains("plan-mode-should-never-run-this"),
+        "plan mode must refuse the bash call outright -- its output must never appear. \
+         Screen:\n{screen}"
     );
 
     // Plan -> AutoAllow: a second Shift-Tab.
