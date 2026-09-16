@@ -276,9 +276,9 @@ Members today:
   behind a configured provider, `web_search`): the first tool in this
   workspace that reaches the network on the model's behalf. GET only,
   bounded redirects and bytes, and a scheme/address guard that refuses
-  loopback, private, link-local and IPv4-in-IPv6 targets. Its remaining
-  gaps — DNS rebinding, tunnelled address forms — are named in
-  `docs/plugins/web.md`.
+  loopback, private, link-local and IPv4-in-IPv6 targets, and pins the
+  connection to the address that guard actually vetted. Its remaining
+  gap — tunnelled address forms — is named in `docs/plugins/web.md`.
 - **`crates/conway-plugin-toolindex`** (`conway.toolindex`) — an opt-in
   `ContextHook` that replaces a deferrable tool's full schema in the
   announced set with a one-line index entry, plus a `describe_tool` that
