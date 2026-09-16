@@ -1,14 +1,25 @@
 //! `--output-format json`: stdout carries nothing at all until the run
 //! finishes, then exactly one JSON object -- the terminal `AgentResult` --
-//! and nothing else. Every streaming envelope is silently dropped; this
-//! mode trades incremental output for "one document in, one document out"
-//! scriptability.
+//! and nothing else. This mode trades incremental output for "one document
+//! in, one document out" scriptability.
+//!
+//! Two envelopes are the exception, and they do NOT touch stdout: progress
+//! notes (`AgentProgress`) and runway/budget-crossing notices
+//! (`BudgetWarning`) go to stderr as prose, exactly as `TextRenderer`
+//! renders them (board item `01M2MGPF52NHFYN1AKBPR9FDK6`). A caller
+//! redirecting stdout to a file still gets one parseable document; a human
+//! watching a pipeline still learns that the run is running out of context
+//! or that a turn produced nothing. Silence is the one outcome
+//! indistinguishable from a hang, and a `json`-mode caller has no
+//! transcript to read it from instead. Every other streaming envelope is
+//! still dropped.
 
 use std::io::{self, Write};
 
-use conway::{AgentResult, Envelope};
+use conway::{AgentResult, Envelope, Event};
 
 use super::Renderer;
+use crate::diag;
 
 pub struct JsonRenderer {
     out: Box<dyn Write + Send>,
@@ -21,7 +32,24 @@ impl JsonRenderer {
 }
 
 impl Renderer for JsonRenderer {
-    fn on_event(&mut self, _env: &Envelope) -> io::Result<()> {
+    fn on_event(&mut self, env: &Envelope) -> io::Result<()> {
+        match &env.event {
+            // Board item `01M2MGPF52NHFYN1AKBPR9FDK6`. `diag::warn` writes
+            // to the real process stderr, never to `self.out`, so the
+            // one-document-on-stdout contract this whole renderer exists
+            // for is structurally untouched -- there is no path from here
+            // to `self.out` at all.
+            Event::AgentProgress { note } => diag::warn(note),
+            Event::BudgetWarning { text, .. } => diag::warn(text),
+            // Everything else really is dropped: this mode's whole promise
+            // is that stdout stays empty until `finish`. The wildcard is
+            // unavoidable (`conway_core::Event` is `#[non_exhaustive]` and
+            // this is a different crate), so a future variant lands here
+            // silently. `conway-core`'s own variant-count test is the
+            // trip-wire that catches the addition; this comment is where
+            // whoever trips it should look.
+            _ => {}
+        }
         Ok(())
     }
 

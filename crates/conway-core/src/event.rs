@@ -591,6 +591,24 @@ mod tests {
         // (board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`) is the 25th; `BudgetWarning`
         // (board item A5.6) is the 26th; `PermissionDecision` (board item
         // `01M1YS2ACS0TKJYKF8TBPESTTC`) is the 27th.
+        //
+        // IF YOU ARE HERE BECAUSE THIS COUNT FAILED, you are adding a
+        // variant, and this is the only place in the tree that will stop
+        // you. `Event` is `#[non_exhaustive]`, so every consumer OUTSIDE
+        // `conway-core` must carry a wildcard arm and will therefore drop
+        // your new variant SILENTLY -- no compiler error anywhere. Before
+        // you bump the number, decide what each of these should do with it
+        // and say so, even if the answer is "nothing":
+        //
+        //   - `conway-cli`'s three renderers: `render::text` (stderr prose),
+        //     `render::json` (stderr prose; stdout stays one document),
+        //     `render::jsonl` (emits every envelope, so it needs no arm)
+        //   - `conway-cli`'s `tui::state::apply`
+        //
+        // Board item `01M2MGPF52NHFYN1AKBPR9FDK6` exists because exactly
+        // this happened to `AgentProgress` and `BudgetWarning`: both
+        // reached the TUI and `jsonl`, both fell into the wildcard arm in
+        // `render::text` and `render::json`, and no test anywhere failed.
         assert_eq!(variants.len(), 27);
         for (event, expected_tag) in variants {
             let value = serde_json::to_value(&event).unwrap();

@@ -479,12 +479,13 @@ caller nothing to opt into — there is no flag for it. `--output-format
 jsonl` carries it like any other event (`budget_warning`). `text` mode
 prints the identical sentence verbatim as a `conway: warning: …` line on
 **stderr**, the instant it crosses — not just its indirect effect on
-whatever the model does with it. `--output-format json` does not print it
-at all: that format withholds every incremental envelope until the
-terminal `AgentResult` (see above), by design, so the crossing is visible
-there only through its effect on the model's own behavior, never as a
-line of its own. (Board item `01M2MGPF52NHFYN1AKBPR9FDK6`: `text` used to
-drop this notice entirely, on every output format that isn't `jsonl`.)
+whatever the model does with it. `--output-format json` prints the same
+line on **stderr** as well: that format withholds every incremental
+envelope from *stdout* until the terminal `AgentResult` (see above), and
+that contract is about stdout only — a `json` caller still gets the
+warning, on the stream that is not the document. (Board item
+`01M2MGPF52NHFYN1AKBPR9FDK6`: both `text` and `json` used to drop this
+notice entirely, on every output format that isn't `jsonl`.)
 
 ```console
 conway -p "summarize this log" --max-turns 3 --max-seconds 30 < build.log
@@ -500,8 +501,8 @@ rather than leaving an exit-0 run with empty output and no explanation
 turn that hit the same cap after already saying something gets separate,
 distinguishing wording (`"max_tokens_truncated"`, "cut off mid-answer")
 instead. Same visibility rule as the runway note above: `jsonl` carries it
-as an `agent_progress` line, `text` prints it to stderr, `json` does not
-print it at all.
+as an `agent_progress` line, and both `text` and `json` print it to
+stderr — `json`'s stdout still carries exactly one JSON object.
 
 **`[limits].tool_timeout_secs` is a fourth dimension with no CLI flag of its
 own** — a per-tool-call ceiling enforced by the tool runner itself, not a

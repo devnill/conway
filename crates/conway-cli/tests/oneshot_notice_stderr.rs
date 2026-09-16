@@ -78,11 +78,11 @@ async fn text_mode_prints_the_silent_max_tokens_notice_to_stderr() {
 /// carry exactly one parseable JSON object -- the terminal `AgentResult` --
 /// and nothing else, byte-clean. This is what stops a fix for the test
 /// above from being implemented by (incorrectly) writing the notice to
-/// stdout: `--output-format json` withholds all incremental output until
-/// the terminal result by design (`crate::render::json`'s own module doc),
-/// so any notice reaching stdout in this mode -- from this event or any
-/// other -- would corrupt the one-document contract every script depends
-/// on.
+/// stdout: `--output-format json` withholds all incremental output from
+/// STDOUT until the terminal result by design (`crate::render::json`'s own
+/// module doc), so any notice reaching stdout in this mode -- from this
+/// event or any other -- would corrupt the one-document contract every
+/// script depends on. Its stderr half is the test immediately below.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn json_mode_stdout_stays_one_parseable_object_for_the_same_notice() {
     let mock = MockBackend::start(silent_max_tokens_script()).await;
@@ -108,5 +108,36 @@ async fn json_mode_stdout_stays_one_parseable_object_for_the_same_notice() {
     assert_eq!(
         value["status"]["status"], "completed",
         "sanity: the scripted silent turn still completes normally: {value:?}"
+    );
+}
+
+/// The stderr half of the same `--output-format json` run: a `json`-mode
+/// caller gets the notice too, as prose on stderr, alongside the untouched
+/// JSON on stdout.
+///
+/// This is the pair that makes the two tests above mean what they claim.
+/// Without it, `json` mode could satisfy "nothing on stdout" by rendering
+/// nothing anywhere -- which is exactly what it did before board item
+/// `01M2MGPF52NHFYN1AKBPR9FDK6`, and exactly the silence that item exists
+/// to remove. A `json`-mode caller is the one with NO transcript to read
+/// the notice from instead, so it is the surface that can least afford to
+/// be the one left silent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn json_mode_still_prints_the_silent_max_tokens_notice_to_stderr() {
+    let mock = MockBackend::start(silent_max_tokens_script()).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = run_conway(&["-p", "hi", "--output-format", "json"], &fixture);
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("max_tokens") && stderr.to_lowercase().contains("no visible answer"),
+        "expected the silent max_tokens notice on stderr in json mode too, got: {stderr:?}"
     );
 }
