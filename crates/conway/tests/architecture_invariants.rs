@@ -85,34 +85,6 @@ fn internal_deps(crate_name: &str) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// Files under a crate's `src/` whose text contains `needle`.
-fn src_files_containing(crate_name: &str, needle: &str) -> BTreeSet<String> {
-    fn walk(dir: &Path, needle: &str, root: &Path, out: &mut BTreeSet<String>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, needle, root, out);
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && std::fs::read_to_string(&path).is_ok_and(|t| t.contains(needle))
-            {
-                out.insert(
-                    path.strip_prefix(root)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-            }
-        }
-    }
-    let src = repo_root().join(format!("crates/{crate_name}/src"));
-    let mut out = BTreeSet::new();
-    walk(&src, needle, &src, &mut out);
-    out
-}
-
 fn set(items: &[&str]) -> BTreeSet<String> {
     items.iter().map(|s| (*s).to_string()).collect()
 }
@@ -163,10 +135,209 @@ fn t1_core_depends_on_no_workspace_crate() {
 /// confinement root once conway.fs enforces its own", which is the item the
 /// forward-declaration labels name and the one that must delete them.
 ///
-/// Pinned as: exactly one file does I/O. Fails if a second one starts.
+/// **What this guard actually checks, and why the previous version did
+/// not.** The original scan greped for one literal, `"canonicalize("`. That
+/// certified nothing about any OTHER I/O entry point: a brand new
+/// `std::fs::write`, `std::fs::rename`, `File::open`, `OpenOptions::new`, or
+/// `tokio::fs::*` call added anywhere else in the crate compiled, passed
+/// this test unnoticed, and left the module doc's "no I/O" claim false with
+/// nothing here objecting. It now scans for that whole surface
+/// (`std::fs::`, `tokio::fs::`, `File::`, `OpenOptions::` -- the exact
+/// vocabulary `lib.rs`'s forward-declaration names -- plus `canonicalize(`
+/// itself, kept because `containment.rs`'s own call is a *method* call,
+/// `root.canonicalize()?`, which none of the other four patterns match),
+/// not one function name, so a second I/O entry point of any of those
+/// shapes fails here, by whatever name it calls itself.
+///
+/// The scan excludes three things a naive substring search would wrongly
+/// flag -- not hypothetically; each was checked against the crate as it
+/// stands today:
+/// - **Comments.** A line's text stops at the first `//` found outside a
+///   string, so a whole-line doc comment or a trailing remark cannot
+///   register a match. Load-bearing today: `lib.rs`'s own
+///   forward-declaration prose and two `ports/*.rs` doc comments already
+///   say `std::fs` in exactly this crate; an unguarded scan would flag all
+///   three as new offenders the moment the pattern widened past
+///   `canonicalize(`.
+/// - **String literals.** Text between `"` pairs is blanked before
+///   matching, so a message that happens to name `std::fs::write` is not
+///   mistaken for a call to it.
+/// - **`#[cfg(test)]` code.** This guard's own name says "production
+///   paths" -- fixture setup is not that, and `containment.rs`'s own test
+///   module already calls `fs::create_dir`/`fs::write` (via a bare
+///   `use std::fs;`) throughout to build containment fixtures. The scan
+///   tracks brace depth from a `#[cfg(test)]` attribute through the block
+///   that follows it and does not look inside.
+///
+/// `File::` and `OpenOptions::` are matched only at a left word boundary
+/// (the character immediately before the match, if any, is not
+/// alphanumeric or `_`) so a type merely named `...File::` cannot be
+/// mistaken for `std::fs::File::` -- this crate already has
+/// `ParsedPermissionFile::unknown_keys` in a doc comment (itself excluded
+/// as a comment regardless), and the boundary check holds even if a name
+/// shaped like that ever appeared in real code. `std::fs::`/`tokio::fs::`
+/// are boundary-checked too, for the same reason belt-and-suspenders costs
+/// nothing here, though no realistic identifier collides with either.
+///
+/// **Known, disclosed gap:** a call reached through an unqualified `fs::`
+/// after `use std::fs as fs;` (or the `tokio` equivalent) is not matched by
+/// name alone. The five literal patterns above are the surface this guard
+/// was scoped to -- the one `lib.rs`'s forward-declaration names, plus the
+/// one method call its named exception already makes -- not a scope-aware
+/// read of every possible alias.
+///
+/// Pinned as: exactly one file does I/O, and it is named. Fails if a second
+/// file starts, or if `containment.rs` stops.
 #[test]
 fn t2_core_io_is_confined_to_the_one_known_file() {
-    let offenders = src_files_containing("conway-core", "canonicalize(");
+    /// The literal patterns that mark a filesystem I/O entry point in Rust
+    /// source -- the surface `lib.rs`'s forward-declaration names
+    /// (`std::fs`/`tokio::fs`) plus the two free-standing types that reach
+    /// the same syscalls without going through an `fs::` path at all, and
+    /// the one method call this crate's own sanctioned exception makes.
+    /// `canonicalize(` stays in the set (carried over from the guard's
+    /// previous, narrower form) precisely because it is NOT a
+    /// `std::fs::`/`tokio::fs::`/`File::`/`OpenOptions::` match: `Path`'s
+    /// `canonicalize` is a method (`root.canonicalize()?`), not a
+    /// free-function call, so without this fifth entry the widened
+    /// patterns above would miss `containment.rs`'s own I/O entirely and
+    /// this guard would wrongly report zero offenders instead of the one
+    /// sanctioned exception -- caught by running the scan against this
+    /// crate before relying on it, not by inspection alone.
+    const IO_PATTERNS: &[&str] = &[
+        "std::fs::",
+        "tokio::fs::",
+        "File::",
+        "OpenOptions::",
+        "canonicalize(",
+    ];
+
+    fn is_ident_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    /// One line of Rust source with comments removed (from the first `//`
+    /// outside a string to the end of the line) and string-literal
+    /// CONTENTS blanked to spaces, so a needle inside either cannot
+    /// register a match. Line-based and unaware of raw strings or block
+    /// comments -- neither appears in `conway-core` today (checked by hand
+    /// while writing this guard, `grep -rn '/\*' crates/conway-core/src`
+    /// found none); T7/T9/T10/T11 above are the same kind of heuristic for
+    /// the same reason -- a full parser is not worth it for a source-text
+    /// guard.
+    fn sanitize(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut chars = line.chars().peekable();
+        let mut in_string = false;
+        while let Some(c) = chars.next() {
+            if in_string {
+                out.push(' ');
+                if c == '\\' && chars.peek().is_some() {
+                    chars.next();
+                    out.push(' ');
+                } else if c == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            if c == '"' {
+                in_string = true;
+                out.push(' ');
+                continue;
+            }
+            if c == '/' && chars.peek() == Some(&'/') {
+                break;
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// Whether `sanitized` contains `needle` at a left word boundary (start
+    /// of line, or preceded by a non-identifier character).
+    fn boundary_contains(sanitized: &str, needle: &str) -> bool {
+        let mut search_from = 0;
+        while let Some(pos) = sanitized[search_from..].find(needle) {
+            let abs = search_from + pos;
+            let ok = sanitized[..abs]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_ident_char(c));
+            if ok {
+                return true;
+            }
+            search_from = abs + 1;
+        }
+        false
+    }
+
+    /// Does `text` (one file's full source) contain any `IO_PATTERNS` match
+    /// outside a `#[cfg(test)]` block, a comment, or a string literal?
+    fn has_production_io(text: &str) -> bool {
+        let mut depth: i32 = 0;
+        let mut skip_until_depth: Option<i32> = None;
+        let mut pending_test_attr = false;
+
+        for raw_line in text.lines() {
+            if raw_line.trim_start().starts_with("#[cfg(test)]") {
+                pending_test_attr = true;
+            }
+            let sanitized = sanitize(raw_line);
+
+            if pending_test_attr && sanitized.contains('{') {
+                skip_until_depth = Some(depth);
+                pending_test_attr = false;
+            }
+
+            if skip_until_depth.is_none()
+                && IO_PATTERNS
+                    .iter()
+                    .any(|needle| boundary_contains(&sanitized, needle))
+            {
+                return true;
+            }
+
+            depth += sanitized.matches('{').count() as i32;
+            depth -= sanitized.matches('}').count() as i32;
+            if skip_until_depth.is_some_and(|target| depth <= target) {
+                skip_until_depth = None;
+            }
+        }
+        false
+    }
+
+    /// `.rs` files under `crates/conway-core/src` whose source trips
+    /// [`has_production_io`], named relative to that `src/` directory.
+    fn production_io_offenders() -> BTreeSet<String> {
+        fn walk(dir: &Path, root: &Path, out: &mut BTreeSet<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, root, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path)
+                        .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+                    if has_production_io(&text) {
+                        out.insert(
+                            path.strip_prefix(root)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
+                    }
+                }
+            }
+        }
+        let src = repo_root().join("crates/conway-core/src");
+        let mut out = BTreeSet::new();
+        walk(&src, &src, &mut out);
+        out
+    }
+
+    let offenders = production_io_offenders();
     assert_eq!(
         offenders,
         set(&["containment.rs"]),
