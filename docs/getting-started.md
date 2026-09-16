@@ -90,7 +90,7 @@ plugin filters candidates on their declared capabilities before any request
 goes out, and a pair it has no entry for is not a candidate:
 
 ```text
-routing error: no candidate for role coder (1 considered): anthropic/claude-sonnet-4-6: capability: capabilities: unknown (backend, model) pair
+routing error: no candidate for role coder (1 considered): anthropic/claude-sonnet-5: capability: capabilities: unknown (backend, model) pair
 ```
 
 That error comes from the routing plugin and cannot occur without it. If
@@ -134,7 +134,7 @@ that follows you across projects).
     }
   },
   "roles": {
-    "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
+    "coder": { "chain": ["anthropic/claude-sonnet-5"] }
   }
 }
 ```
@@ -143,7 +143,7 @@ that follows you across projects).
 // .conway/models.json
 {
   "models": {
-    "anthropic/claude-sonnet-4-6": {
+    "anthropic/claude-sonnet-5": {
       "max_context_tokens": 200000,
       "tool_calling": "yes",
       "reasoning": true,

@@ -133,7 +133,7 @@ mod tests {
     fn filter_models_matches_a_case_insensitive_substring() {
         let models = vec![
             "anthropic/claude-haiku".to_string(),
-            "anthropic/claude-sonnet-4-6".to_string(),
+            "anthropic/claude-sonnet-5".to_string(),
             "openai/gpt-5".to_string(),
         ];
 
@@ -143,7 +143,7 @@ mod tests {
             got,
             vec![
                 "anthropic/claude-haiku".to_string(),
-                "anthropic/claude-sonnet-4-6".to_string(),
+                "anthropic/claude-sonnet-5".to_string(),
             ],
             "a wrong-case query must still match, and the non-matching entry \
              must be excluded"

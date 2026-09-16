@@ -224,7 +224,7 @@ pub const HOSTED_CHOICES: &[ProviderChoice] = &[
         // `https://api.anthropic.com` when no `base_url` is set
         // (`docs/providers.md`); no reason to restate that default here.
         base_url: None,
-        default_model: "claude-sonnet-4-6",
+        default_model: "claude-sonnet-5",
         credential_env: "ANTHROPIC_API_KEY",
     },
     ProviderChoice {

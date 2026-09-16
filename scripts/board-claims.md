@@ -377,3 +377,17 @@ claim: conway-plugin-skeleton exists as a bundled example plugin and docs/plugin
 paths: crates/conway-plugin-skeleton/src/lib.rs
 present: (pub fn|pub struct|impl)
 -->
+
+<!-- claim-check
+why: board item 01M2M624WRKDZ5YH3WAZHSZE12 -- the guided-setup TUI model picker's own test fixtures, the doc-comment example in tui/state.rs, and getting-started.md's worked Anthropic example all named a model a generation behind Anthropic's current line (Claude 5) before this item. Verified failing against the pre-fix tree (all three files matched claude-sonnet-4-6) before this predicate was kept -- see the item's own commit for the check. A future edit reintroducing the stale id in any of these three surfaces reopens the exact "picker offers a different default than the error message" defect that item's brief named.
+claim: none of tui/model_picker.rs, tui/state.rs, or getting-started.md names the stale claude-sonnet-4-6 id any more
+paths: crates/conway-cli/src/tui/model_picker.rs crates/conway-cli/src/tui/state.rs docs/getting-started.md
+absent: claude-sonnet-4-6
+-->
+
+<!-- claim-check
+why: board item 01M2M624WRKDZ5YH3WAZHSZE12's own highest-traffic site: `HOSTED_CHOICES`'s Anthropic entry is the `default_model` guided setup actually WRITES into settings.json the moment an operator picks Anthropic -- a stale id here reaches a real config file, not just a doc example. Verified failing against the pre-fix tree (default_model: "claude-sonnet-4-6", no claude-sonnet-5 line existed) before this predicate was kept.
+claim: first_run.rs's Anthropic ProviderChoice.default_model is claude-sonnet-5, not a generation-behind id
+paths: crates/conway-cli/src/first_run.rs
+present: default_model: .claude-sonnet-5.
+-->
