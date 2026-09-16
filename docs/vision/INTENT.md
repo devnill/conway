@@ -307,6 +307,15 @@ clearly not made for anything except agentic coding. conway's equivalent should 
 a general way to get an answer out of a model — usable by someone who is not
 writing code, in a repository that may not exist.
 
+> **This surface gets an answer; it does not orchestrate agents.** A script
+> drives one agent per invocation. Spawning, forking, steering and awaiting
+> children belong to surface one, where an operator can see what they started,
+> and to surface three, where a host already holds the facade and can call those
+> methods directly. That is an appetite judgment about what this surface is for
+> in its current form, not a claim that scripted orchestration is wrong — but
+> until it is revisited, a missing `conway agent` verb is the boundary working,
+> not a gap.
+
 **Three — embedded in another application.** A host application depends on conway
 to reach models: routing, permissions, the log, the agent primitives if it wants
 them, and none of them if it does not. It is a surface with its own users, its own
@@ -323,6 +332,11 @@ implementation — the runtime that keeps the log is the only thing that may for
 it, because a second authority over what a session's ancestry means would be a
 second answer to a question that has one. Every other socket an embedder can
 supply its own implementation of; this one it can only decline to use.
+
+A socket nobody outside the harness has filled is either waiting for its first
+caller or is not a socket. Say which, at the definition, so a reader can tell a
+seam from a fixture. A socket that has waited through two reviews without a
+caller has answered the question.
 
 None of the three should feel like it is borrowing a coding agent's plumbing.
 
@@ -658,6 +672,13 @@ means point 3 of this list.
    they arrived at. conway's job is to meet those conventions rather than improve
    on them — the same argument §4 makes about Unix and §7b makes about where
    configuration lives.
+
+   The convention for configuration found in a checkout is direnv's, not the
+   shell's: it is applied only after the operator has said yes to *these bytes*,
+   and an edit un-says it. What a project file may do without consent is bounded
+   by what it cannot do harm with — a plugin list, a backend, a tool it enables
+   are all authority, and authority found in a directory somebody else controls
+   is offered, never installed.
 
    Ship the lightweight version first: enough to work daily, with sophistication
    arriving later as plugins that may bring inference and heuristics of their own.
