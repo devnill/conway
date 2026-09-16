@@ -29,9 +29,10 @@
 //! deterministic failures a retry would only hide or stall. It adds no new
 //! dependency (it sleeps via `tokio::time::sleep`, already transitively
 //! present at every call site) and it does not touch the error type or text
-//! its callers surface: each call site still maps the final error through
-//! its own `E::spawn(config_id, detail)` / `SubprocessPluginError::Spawn`
-//! exactly as before.
+//! its callers surface: every call site maps the final error through the
+//! shared `E::spawn(config_id, detail)` constructor. That was once true only
+//! of the `ChildSession`-mediated path -- `spawn_one_shot` built the variant
+//! by hand -- and is now true of both.
 //!
 //! **Testability.** The helper accepts an injectable spawn attempt (a
 //! closure `FnMut() -> Result<Child, std::io::Error>`) so the retry/backoff
