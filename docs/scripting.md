@@ -137,7 +137,11 @@ above.
 Stdout carries nothing at all until the run finishes, then exactly one JSON
 object — the terminal `AgentResult` — and nothing else. Every streaming
 envelope is silently dropped; this trades incremental output for "one
-document in, one document out" scriptability. A real run, captured live:
+document in, one document out" scriptability. A real run, captured live from an operator's heavily-configured environment
+(2,800 input tokens is what a clean install pays — see
+[`docs/vision/STATE-OF-THE-UNION.md`](vision/STATE-OF-THE-UNION.md) §2
+for the authoritative weight table; the figure below depends on installed
+plugins and session history):
 
 ```console
 $ conway -p "reply with exactly the word pong and nothing else" --output-format json

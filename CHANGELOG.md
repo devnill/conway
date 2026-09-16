@@ -6734,15 +6734,6 @@ capability is a plugin.
 - Cross-session agent access is rejected (`AgentNotInSession`); an agent handle
   cannot drive a session it does not belong to.
 
-### Known limitations (deliberate for 0.1.0)
-
-- No Claude Pro/Max subscription authentication — metered API keys only.
-- `--model` is accepted by the CLI parser but not yet wired to a facade pin field.
-- Cross-*backend-kind* failover has unit coverage but no end-to-end integration
-  test yet.
-- No bundled example third-party plugin, and OSS-release docs (README,
-  plugin-author guide) are not yet written.
-
 <!-- Only versions that carry a git tag are linked. Tagging began at v0.4.0
     ; 0.3.0 and earlier were released
      untagged and have no target to point at. -->

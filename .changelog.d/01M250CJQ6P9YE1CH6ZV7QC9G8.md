@@ -1,0 +1,7 @@
+### Fixed
+
+- **Removed the stale "Known limitations (deliberate for 0.1.0)" section from `CHANGELOG.md` — board item `01M250CJQ6P9YE1CH6ZV7QC9G8`.** Three of its four bullets were false against the current tree: `--model` has been wired to a facade pin field (via `parse_model_pin` on three of four dispatcher arms in `oneshot.rs`); Claude Pro/Max subscription-token rejection was removed in 0.3.0 (config no longer inspects API key shape); and a bundled example third-party plugin (`conway-plugin-skeleton`) and plugin-author guide (`docs/plugins/authoring.md`) both exist. The fourth bullet — no end-to-end cross-backend-kind failover integration test — remained true but sat in a section whose title read present-tense despite the "(deliberate for 0.1.0)" parenthetical, with no version anchor a reader could use to judge currency. Claim-check predicates added to `scripts/board-claims.md` pin the three corrected claims against regression.
+
+### Changed
+
+- **`docs/scripting.md`'s cost example now names what it measures.** The captured `usage.input_tokens` of 15,856 was taken from an operator's heavily-configured environment, not a clean install (which pays 2,800). The example now says so explicitly, pointing at `docs/vision/STATE-OF-THE-UNION.md` §2's weight table as the authoritative measurement.

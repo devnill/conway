@@ -349,3 +349,31 @@ claim: no comment in crates/conway-cli/src/tui says "this item"
 paths: crates/conway-cli/src/tui
 absent: this item
 -->
+
+<!-- claim-check
+why: the CHANGELOG.md "Known limitations (deliberate for 0.1.0)" section had three of four bullets go stale -- --model was wired up, sk-ant-oat rejection was removed, and a bundled example plugin + plugin-author guide landed. The section was deleted (F9, board item 01M250CJQ6P9YE1CH6ZV7QC9G8). This predicate prevents the stale negative claims from returning: a future edit that reintroduces any of them reopens the exact understating defect that made F9 necessary.
+claim: CHANGELOG.md no longer carries a "Known limitations" section with stale 0.1.0 bullets -- --model is wired, subscription tokens are accepted, and a bundled example plugin exists
+paths: CHANGELOG.md
+absent: Known limitations \(deliberate for 0\.1\.0\)
+-->
+
+<!-- claim-check
+why: --model IS wired to a facade pin field (parse_model_pin is called on three of four dispatcher arms in oneshot.rs). The stale "not yet wired" claim in CHANGELOG.md was the highest-traffic bullet of the limitations section F9 deleted; this present-guard pins the wired reality against silent regression.
+claim: --model is wired -- parse_model_pin is called in oneshot.rs's dispatcher arms
+paths: crates/conway-cli/src/oneshot.rs
+present: parse_model_pin
+-->
+
+<!-- claim-check
+why: subscription-style API keys (sk-ant-oat*) are accepted without inspection -- the prefix rejection was removed in 0.3.0 (CHANGELOG.md). conway-plugin-backends explicitly tests this with subscription_style_keys_are_accepted_without_inspection. A future edit that reintroduces shape policing would make the 0.3.0 changelog entry false and block Anthropic-compatible third-party endpoints again.
+claim: conway does not police API key shape -- subscription-style tokens are accepted without inspection
+paths: crates/conway-plugin-backends/src/config.rs
+present: subscription_style_keys_are_accepted_without_inspection
+-->
+
+<!-- claim-check
+why: a bundled example third-party plugin (conway-plugin-skeleton) and a plugin-author guide (docs/plugins/authoring.md) both exist. The stale 0.1.0 claim that neither existed was deleted from CHANGELOG.md by F9; this present-guard pins the shipped reality so the stale negative cannot return.
+claim: conway-plugin-skeleton exists as a bundled example plugin and docs/plugins/authoring.md documents plugin authoring
+paths: crates/conway-plugin-skeleton/src/lib.rs
+present: (pub fn|pub struct|impl)
+-->
