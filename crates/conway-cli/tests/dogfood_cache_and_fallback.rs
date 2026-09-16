@@ -268,6 +268,28 @@ async fn reported_percentage_corroborates_raw_counts_in_sessions_show() {
 /// `write_env_only_fixture` -- a bare, hand-built `conway.json` plus its
 /// own `.conway/models.json`, since `common::write_fixture`'s template has
 /// no slot for a second chain entry.
+///
+/// **`"plugins": {"install": ["conway.routing"]}` is load-bearing, not
+/// decorative.** Established while diagnosing this test's own timeout:
+/// `ConwayBuilder::build` (`crates/conway/src/builder.rs`) only installs
+/// the real `conway_plugin_routing::DeclarativeRouter` -- the router with
+/// per-candidate headroom/health checking and a genuine `after:` skip list
+/// -- when a `RouterFactory` naming `conway_plugin_routing::ROUTER_ID`
+/// (`"conway.routing"`) is present, either injected directly or (as here)
+/// named in `[plugins].install`. Absent that, `build` falls back to
+/// `conway_core::routing::MinimalRouter`, which does NOT filter candidates
+/// by capability/headroom at all -- `MinimalRouter::reason_for`'s own
+/// non-primary-position arm hard-codes `RoutingReason::Fallback { after:
+/// Vec::new(), .. }`, an ALWAYS-empty skip list, by construction. Since
+/// `fallback_notice_text` (`tui/state.rs`) returns `None` whenever `after`
+/// is empty, a fixture on `MinimalRouter` can NEVER produce this gate's
+/// own notice, regardless of whether a real runtime skip happens -- not
+/// because the notice is broken, but because nothing ever computed a skip
+/// to report. `common::write_fixture`'s own shared TEMPLATE has no
+/// `[plugins]` section either (confirmed by reading it) and so is subject
+/// to the identical limitation -- out of this writer's fence to change,
+/// and NOT this test's problem to work around, since this fixture is
+/// hand-built specifically to exercise a real `DeclarativeRouter` skip.
 fn write_two_model_fixture(base_url: &str, tiny: &str, big: &str) -> Fixture {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = serde_json::json!({
@@ -278,7 +300,8 @@ fn write_two_model_fixture(base_url: &str, tiny: &str, big: &str) -> Fixture {
         },
         "roles": {
             "default": { "chain": [format!("mock/{tiny}"), format!("mock/{big}")] }
-        }
+        },
+        "plugins": { "install": ["conway.routing"] }
     });
     let config_path = dir.path().join("conway.json");
     std::fs::write(
@@ -329,7 +352,19 @@ fn write_multi_model_fixture(base_url: &str, models: &[&str]) -> Fixture {
         },
         "roles": {
             "default": { "chain": [chain[0].clone()] }
-        }
+        },
+        // Parity with `write_two_model_fixture`'s own fix (see that
+        // function's doc for the full `MinimalRouter`/`DeclarativeRouter`
+        // reasoning): `/model <ref>`'s PIN path bypasses the role chain
+        // and capability checking under EITHER router (`DeclarativeRouter::
+        // evaluate`'s pin arm uses `std::slice::from_ref(pin_ref)`;
+        // `MinimalRouter::chain_for`'s pin arm is the identical bypass), so
+        // this was not identified as the cause of this test's own timeout
+        // -- installed anyway, for the same reason a real operator's
+        // session normally has it, and so this fixture's routing behavior
+        // is not a second unverified variable alongside the real fix
+        // below.
+        "plugins": { "install": ["conway.routing"] }
     });
     let config_path = dir.path().join("conway.json");
     std::fs::write(
@@ -470,6 +505,22 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
 
     session.send("hi\r");
     since = session.wait_for_since("on-a", since, Duration::from_secs(15));
+    // Wait for the ACTIVITY field to return to `idle` before sending the
+    // next command -- an earlier version of this test sent `/model`
+    // immediately once the reply TEXT landed on screen, which races
+    // `/model`'s own keypress against the tail of this turn's own
+    // finish-housekeeping (the reply's content delta streams in and is
+    // drawn BEFORE `Event::TurnFinished` is fully processed --
+    // `view/status.rs::tokens_label`'s own doc: the activity field shows a
+    // spinner+word ladder "while active", "just idle while idle"). Not
+    // `" tok"` (this file's first attempt at a settle marker): that text is
+    // the STATUS LINE's own `tokens` field too (`tokens_label`, ALWAYS
+    // shown, from session start, not only after a turn finishes), so it is
+    // already on screen well before any turn completes and proves nothing.
+    // `idle` only appears once the busy -> idle transition has actually
+    // happened, which is what genuinely indicates the turn -- and every
+    // event it caused -- has settled.
+    since = session.wait_for_since("idle", since, Duration::from_secs(15));
 
     for (from, to) in [
         ("model-a", "model-b"),
@@ -489,6 +540,7 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
             since,
             Duration::from_secs(15),
         );
+        since = session.wait_for_since("idle", since, Duration::from_secs(15));
     }
 
     // Four decisions this session: the initial primary selection plus
