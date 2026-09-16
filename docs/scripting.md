@@ -801,7 +801,7 @@ naming both flags rather than a silently dropped one.
 | `--max-tokens <n>` | Total-token ceiling for this run. See "Budget flags" above. |
 | `--max-seconds <n>` | Wall-clock ceiling, in seconds, for this run. See "Budget flags" above. |
 | `--output-schema <path>` | Constrain the run's structured result to a JSON Schema file. See "`--output-schema`: structured output" above. |
-| `--session <id>` | Use (creating if new) a specific session id. |
+| `--session <id\|name>` | Use (creating if new) a specific session id — also accepts an operator-chosen name (`conway sessions name`). An unclaimed name creates a session and binds the name to it in this same invocation; an already-bound name, or a colliding id, is a usage error pointing at `--resume` instead — never a silent overwrite. |
 | `--resume <id>` | Reattach to a persisted session and continue its transcript. |
 | `--fork-from <id>[@seq]` | Start a new session branched from another one, optionally at a specific point in its log. Not combinable with `--cwd` (see above). `--model` composes with it (the forked child uses the pinned model). |
 | `--config <path>` | Load config from this exact path, bypassing the usual discovery walk. |

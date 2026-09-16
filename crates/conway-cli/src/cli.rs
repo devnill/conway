@@ -181,10 +181,13 @@ pub struct Cli {
 
     /// Use (creating if new) a specific session id. Also accepts an
     /// operator-chosen name (`conway sessions name`) wherever it accepts an
-    /// id -- since a name is only ever bound to a session that already
-    /// exists, passing one here always resolves to the "already exists,
-    /// use --resume instead" usage error below, exactly as passing that
-    /// session's own id would.
+    /// id. Board item F10: an UNCLAIMED name -- one no earlier `sessions
+    /// name` call has bound yet -- creates a fresh session and binds the
+    /// name to it in this same invocation, so a script can call `--session
+    /// <name>` unconditionally without checking whether the name exists
+    /// first. Passing an id (valid or not) or an already-bound name still
+    /// resolves to the "already exists, use --resume instead" usage error
+    /// below, exactly as it always did.
     ///
     /// Still one-shot-only (board item `01M1YS4FMJH004D1Y619MTBY7A` did not
     /// extend this one): the TUI has no "create with this exact id" use
