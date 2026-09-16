@@ -362,6 +362,32 @@ fn canonicalize_when(when: &When, base: &Path) -> Option<CanonicalRoot> {
     }
 }
 
+/// The desugar-then-assert sequence shared by
+/// [`PermissionBroker::remember_pattern`],
+/// [`PermissionBroker::remember_deny_pattern`], and
+/// [`PermissionBroker::remember_prompt_pattern`] -- consolidating the copy
+/// each of those three used to carry independently (board item
+/// `01M250G53W26PMY0XAHX5RJF20`, the `_pattern` residual of the `_rule`
+/// consolidation `install_canonicalized_rule` below already did for board
+/// item `01M1WVMVT17B61PV1FQ82W51J5`). A flat [`PatternRule`] desugars
+/// (`PatternRule::to_rule`) to `When::Always` or `When::CommandPrefix`
+/// only -- never `When::PathsUnder` -- so the `base` the resulting
+/// [`Rule`] would need for a `PathsUnder` prefix is never consulted by any
+/// of the three callers (each passes `Path::new("/")` as a placeholder).
+/// The `debug_assert!` turns that reasoning into code: if a future
+/// flat-form extension ever desugars to `PathsUnder`, this placeholder
+/// would silently resolve the prefix against `/` -- fail the test build
+/// instead.
+fn desugar_flat(rule: PatternRule, then: Then) -> Rule {
+    let desugared = rule.to_rule(then);
+    debug_assert!(
+        !matches!(desugared.when, When::PathsUnder(_)),
+        "flat rules must never desugar to PathsUnder: the placeholder \
+         base would silently resolve the prefix against `/`"
+    );
+    desugared
+}
+
 /// P-14: the ONE canonicalize-and-fail-closed-install sequence shared by
 /// [`PermissionBroker::remember_pattern_rule`],
 /// [`PermissionBroker::remember_deny_rule`], and
@@ -1001,20 +1027,9 @@ impl PermissionBroker {
         granting_agent: AgentId,
         origin: PatternOrigin,
     ) {
-        // A flat rule desugars to `When::Always`/`When::CommandPrefix` only
-        // (`PatternRule::to_rule`) -- never `When::PathsUnder` -- so the
-        // `base` `remember_pattern_rule` takes is never consulted on this
-        // path. The placeholder is therefore not a resolution choice; it
-        // only satisfies the signature. The `debug_assert!` turns that
-        // comment into code (B2 review): if a future flat-form extension
-        // ever desugars to `PathsUnder`, this placeholder would silently
-        // resolve the prefix against `/` -- fail the test build instead.
-        let desugared = rule.to_rule(Then::Allow);
-        debug_assert!(
-            !matches!(desugared.when, When::PathsUnder(_)),
-            "flat rules must never desugar to PathsUnder: the placeholder \
-             base would silently resolve the prefix against `/`"
-        );
+        // See `desugar_flat`'s own doc for why `base` is never consulted on
+        // this path and what the `debug_assert!` it carries guards against.
+        let desugared = desugar_flat(rule, Then::Allow);
         self.remember_pattern_rule(desugared, scope, granting_agent, origin, Path::new("/"));
     }
 
@@ -1077,14 +1092,9 @@ impl PermissionBroker {
     /// narrowing what is authorized has no failure mode worth scoping
     /// (an earlier design item, D4 §3).
     pub fn remember_deny_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
-        // Never-`PathsUnder` desugaring, so `base` is never consulted --
-        // see `remember_pattern`'s own comment and its `debug_assert!`.
-        let desugared = rule.to_rule(Then::Deny);
-        debug_assert!(
-            !matches!(desugared.when, When::PathsUnder(_)),
-            "flat rules must never desugar to PathsUnder: the placeholder \
-             base would silently resolve the prefix against `/`"
-        );
+        // See `desugar_flat`'s own doc for why `base` is never consulted on
+        // this path and what the `debug_assert!` it carries guards against.
+        let desugared = desugar_flat(rule, Then::Deny);
         self.remember_deny_rule(desugared, origin, Path::new("/"));
     }
 
@@ -1115,14 +1125,9 @@ impl PermissionBroker {
     /// worth scoping, the same reasoning `remember_deny_pattern`'s own doc
     /// gives for `deny`.
     pub fn remember_prompt_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
-        // Never-`PathsUnder` desugaring, so `base` is never consulted --
-        // see `remember_pattern`'s own comment and its `debug_assert!`.
-        let desugared = rule.to_rule(Then::Prompt);
-        debug_assert!(
-            !matches!(desugared.when, When::PathsUnder(_)),
-            "flat rules must never desugar to PathsUnder: the placeholder \
-             base would silently resolve the prefix against `/`"
-        );
+        // See `desugar_flat`'s own doc for why `base` is never consulted on
+        // this path and what the `debug_assert!` it carries guards against.
+        let desugared = desugar_flat(rule, Then::Prompt);
         self.remember_prompt_rule(desugared, origin, Path::new("/"));
     }
 
