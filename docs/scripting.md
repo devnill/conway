@@ -7,6 +7,19 @@ permissions work with nobody there to answer a prompt. For the interactive
 TUI, see [`interactive.md`](interactive.md); for driving conway as a library
 instead of a subprocess, see [`embedding.md`](embedding.md).
 
+**One invocation, one agent.** `-p` answers with a single agent and exits —
+that agent can still fork or spawn a subagent of its own mid-run (the model
+does that itself with `conway_fork`/`conway_spawn`, see "Streaming" below),
+and a shell can launch several `conway -p` processes side by side (see
+"`--agent` + `--model`: the delegation recipe" below), but there is no verb
+here for a script to spawn, steer, and await a fleet of agents as a group —
+that is surface one's job (the TUI, where an operator watches what started)
+or surface three's (an embedder calling [`Conway`](embedding.md) directly,
+which already has the methods for it and does not need this CLI at all). A
+missing multi-agent-orchestration flag on this page is that boundary
+holding, not a gap; see [`docs/vision/INTENT.md`](vision/INTENT.md) §7 for
+the reasoning, including that it is an appetite call and not a permanent one.
+
 ## Invocation and input
 
 Pass the prompt as `-p`'s value:
