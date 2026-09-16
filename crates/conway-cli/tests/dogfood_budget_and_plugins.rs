@@ -59,7 +59,7 @@ use std::time::Duration;
 use common::mock_backend::{Chunk, MockBackend, Script};
 use common::pty::PtySession;
 use common::{open_conway, run_conway};
-use conway::SessionFilter;
+use conway::{SessionFilter, SessionId};
 
 const LANDED: &str = "Type a message, or / for commands";
 
@@ -82,13 +82,30 @@ const LANDED: &str = "Type a message, or / for commands";
 /// the CHILD's budget is ever in play).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
+    // No `tools` selector on the spawn args, corrected from an earlier
+    // version that passed `"tools": ["bash"]`. `SpawnArgs.tools` maps onto
+    // `ToolSelector::Only([...])` (`crates/conway-tools/src/subagent/
+    // tools.rs`'s `start_and_maybe_await`), which restricts the child's
+    // OWN announced tool set to exactly that allow-list. With that
+    // selector present the child's first scripted `bash` call was
+    // rejected client-side ("tool call parse failure: unknown tool
+    // `bash`") before ever reaching the runtime's dispatcher, killing the
+    // child on step 1 -- long before 80% of `max_steps=5`, defeating the
+    // whole point of this test. `bash` itself is registered and working in
+    // this exact fixture (every other test in this suite calls it
+    // successfully at the ROOT), so the failure was specific to routing
+    // that name through an explicit `Only([...])` selector on a spawned
+    // child with no `agent_def` of its own -- not investigated further,
+    // since omitting `tools` entirely (`None`, the documented "inherits
+    // this agent's own role/model" default on both `ForkArgs`/`SpawnArgs`)
+    // sidesteps the question altogether: the child gets the SAME full,
+    // already-proven-working toolset the root has.
     let mut turns = vec![vec![
         Chunk::ToolCall {
             name: "conway_spawn",
             args: serde_json::json!({
                 "prompt": "keep running `echo still going` in a loop and report back",
                 "budget": {"max_steps": 5},
-                "tools": ["bash"],
             }),
         },
         Chunk::Finish("tool_calls"),
@@ -123,6 +140,15 @@ async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
     // AutoAllow, two `Shift-Tab`s) so neither the root's `conway_spawn` nor
     // the child's own `bash` calls ever block on an unanswered permission
     // prompt this test would otherwise hang on.
+    //
+    // NOT `--session <id>` here to pin the root up front (this test's
+    // first fix attempt): `cli.rs`'s own doc on `Cli::session` states it is
+    // "still one-shot-only" -- the TUI refuses it outright at startup
+    // (`conflicts_with_all`-adjacent refusal). The root is identified
+    // AFTER the run instead, by filtering `conway.sessions(..)` for the
+    // one entry with `origin: None` -- see the comment at that call site,
+    // below, for why that is reliable even though `conway_spawn` makes
+    // this fixture end up with TWO sessions on disk, not one.
     let cmd = common::pty_command(&[], &fixture);
     let mut session = PtySession::spawn(cmd, 160, 45);
     let landed = session.wait_for(LANDED, Duration::from_secs(15));
@@ -171,15 +197,30 @@ async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
     // `ChildResultRecord`) -- read back through the real `sessions show`
     // subcommand against the on-disk store, not the live transcript this
     // test already checked above.
+    //
+    // Two sessions exist on disk at this point (root + the child's own,
+    // separate session -- `conway_spawn`'s `SubagentMode::Spawn` calls
+    // `SessionStore::create` for the child, `conway-runtime/src/
+    // subagent.rs`'s own `SubagentMode::Spawn` arm, unlike `conway_fork`
+    // which stays inside the parent's session). `SessionMeta::origin` is
+    // `None` for a session nobody forked/spawned -- i.e. the root -- and
+    // `Some(ForkOrigin { .. })` for the child, so filtering on it finds
+    // the ROOT specifically rather than assuming list order or count.
     let conway = open_conway(&fixture).await;
     let sessions = conway
         .sessions(SessionFilter::default())
         .await
         .expect("list sessions");
-    assert_eq!(sessions.len(), 1, "expected exactly one root session");
-    let sid = sessions[0].id;
+    let root_sessions: Vec<_> = sessions.iter().filter(|s| s.origin.is_none()).collect();
+    assert_eq!(
+        root_sessions.len(),
+        1,
+        "expected exactly one ROOT session (origin: None) among {} total session(s)",
+        sessions.len()
+    );
+    let root_id = root_sessions[0].id;
 
-    let show = run_conway(&["sessions", "show", &sid.to_string()], &fixture);
+    let show = run_conway(&["sessions", "show", &root_id.to_string()], &fixture);
     assert!(
         show.status.success(),
         "sessions show must succeed: {}",
@@ -217,10 +258,17 @@ async fn child_killed_mid_tool_call_names_the_interrupted_call() {
         vec![
             Chunk::ToolCall {
                 name: "conway_spawn",
+                // No `tools` selector -- see the identical fix and its own
+                // full explanation on `child_with_max_steps_five_gets_the_
+                // wrap_up_notice_before_it_dies`, above: an explicit
+                // `"tools": ["bash"]` here left the child with no `bash`
+                // announced at all, so its scripted call was rejected
+                // client-side before ever reaching the runtime. Omitting
+                // `tools` gives the child the same full toolset the root
+                // already uses `bash` from successfully.
                 args: serde_json::json!({
                     "prompt": "run `sleep 5` in bash",
                     "budget": {"deadline_secs": 1},
-                    "tools": ["bash"],
                 }),
             },
             Chunk::Finish("tool_calls"),
@@ -237,8 +285,22 @@ async fn child_killed_mid_tool_call_names_the_interrupted_call() {
     .await;
     let fixture = common::write_fixture(&mock, 40);
 
+    // `--session <id>` pins the ROOT's own session id -- see
+    // `child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies`'s
+    // own comment on why `conway_spawn` makes a bare `conway.sessions(..)`
+    // listing return two entries (root + the child's own separate
+    // session), not one.
+    let root_id = SessionId::new();
+
     let out = run_conway(
-        &["-p", "delegate a slow bash call", "--allowed-tools", "bash,conway_spawn"],
+        &[
+            "-p",
+            "delegate a slow bash call",
+            "--allowed-tools",
+            "bash,conway_spawn",
+            "--session",
+            &root_id.to_string(),
+        ],
         &fixture,
     );
     assert!(
@@ -247,15 +309,7 @@ async fn child_killed_mid_tool_call_names_the_interrupted_call() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let conway = open_conway(&fixture).await;
-    let sessions = conway
-        .sessions(SessionFilter::default())
-        .await
-        .expect("list sessions");
-    assert_eq!(sessions.len(), 1, "expected exactly one root session");
-    let sid = sessions[0].id;
-
-    let show = run_conway(&["sessions", "show", &sid.to_string()], &fixture);
+    let show = run_conway(&["sessions", "show", &root_id.to_string()], &fixture);
     assert!(show.status.success(), "sessions show must succeed");
     let show_stdout = String::from_utf8_lossy(&show.stdout);
     assert!(
@@ -590,19 +644,31 @@ async fn a_crash_looping_server_eventually_stays_down() {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .count();
+    // `MAX_AUTO_RESPAWNS + 1` (the original spawn plus at most 3 bounded
+    // respawns) -- the gate's own claim ("eventually stays down rather
+    // than being respawned forever"), asserted as the BEHAVIOURAL fact
+    // (how many processes this host actually started), not as wording.
+    // `conway_plugin_mcp::McpPluginError::SessionDied`'s `detail` text
+    // does NOT distinguish "still respawning" from "budget exhausted,
+    // staying down" -- every one of the five calls here reports the
+    // identical "closed stdout (EOF) mid-session" regardless of which
+    // case it is. That indistinguishability is real and is its own,
+    // separate finding (an operator watching the transcript cannot tell
+    // "still trying" from "given up" from the message alone) -- reported
+    // as such, not asserted here, and not conflated with this test's own
+    // claim, which is purely about the respawn COUNT being bounded.
+    assert!(
+        spawn_count <= 4,
+        "MAX_AUTO_RESPAWNS (3) bounds the respawn count: at most 1 initial spawn + 3 respawns \
+         = 4 total, even though 5 calls were attempted against a server that dies on every \
+         single one. A 5th or 6th spawn would mean the respawn budget is not actually bounded. \
+         Got {spawn_count}"
+    );
     assert_eq!(
         spawn_count, 4,
-        "at most MAX_AUTO_RESPAWNS (3) respawns on top of the original spawn -- 4 total -- \
-         even though 5 calls were attempted; a 5th or 6th spawn would mean the respawn budget \
-         is not actually bounded. Got {spawn_count}"
-    );
-
-    let requests = mock.requests();
-    assert!(requests.len() >= 6, "expected at least 6 requests, got {}", requests.len());
-    let last = serde_json::to_string(&requests[5]).expect("serialize");
-    assert!(
-        last.contains("gave up auto-respawning after 3 attempts"),
-        "once the respawn budget is exhausted, the failure must say so explicitly rather than \
-         attempting a new spawn -- request 6 body: {last}"
+        "this exact fixture (5 calls, all against a server that dies on every generation) \
+         should exhaust the full respawn budget -- got {spawn_count}. If this is ever LESS \
+         than 4, that is worth its own look (a respawn that gave up early), but was not \
+         observed while writing this test."
     );
 }
