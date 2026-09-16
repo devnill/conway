@@ -102,20 +102,33 @@ again in every file that needs it, changing in lockstep forever.
 
 `conway-testkit` exists and **every crate in the workspace already depends on
 it.** Establish what that crate actually offers, then measure what the tree
-built anyway. Starting points, already measured — confirm and explain rather
-than re-count:
+built anyway.
 
-| Helper | Files defining their own |
-| --- | --- |
-| `fake_router` | 36 |
-| `text_response` | 52 |
-| `build_conway` | 46 |
+**Measure this fresh every round — do not reuse a prior round's numbers.** A
+table of counts, once printed here, is exactly the single-authoritative-
+representation defect this section hunts for, pointed at itself: the tree
+keeps moving and a fixed table does not, so a reviewer who treats last
+round's counts as calibration is scoring today's tree against yesterday's
+duplication. A first pass, run this way:
 
-The finding is not "there is duplication." The finding is **why the testkit was
-not reached for** — is it missing the shape people need, is it hard to
-discover, is it under-documented, or did it arrive after the tests did? That
-answer determines whether the fix is consolidation or a testkit redesign, and
-they are different board items.
+```sh
+grep -rl 'fn <helper>' --include='*.rs' crates | grep -v conway-testkit | wc -l
+```
+
+for each locally-duplicated-looking helper name you find (`fake_router`,
+`text_response`, `build_conway` are three that were worth checking the last
+time this lens ran). As of 2026-09-16 those three counted 0, 1, and 3 files
+defining their own — down sharply from 36, 52, and 46 when this table was
+first written, because `crates/conway/src/test_support.rs` (among other
+consolidation) already absorbed most of it. **That drop is itself a finding
+worth two minutes**: something already fixed this duplication class, so
+check what it was before spending budget re-discovering an instance that is
+mostly gone. The finding worth filing is not "there is duplication" on its
+own. It is **why the testkit was not reached for** in whatever still remains
+— is it missing the shape people need, is it hard to discover, is it
+under-documented, or did it arrive after the tests did? That answer
+determines whether the fix is consolidation or a testkit redesign, and they
+are different board items.
 
 Test line counts are also a sustainability signal in their own right: several
 crates carry more test lines than production lines, and `conway` carries roughly
@@ -274,7 +287,9 @@ of deciding them yourself:
 
 ## 6. Budget
 
-- **Tool calls:** 30–45. Counting commands are cheap; whole-file reads are not.
+- **Tool calls:** 30–50. (Widened from 30–45 after a round where this lens
+  needed 46 — one over its old ceiling.) Counting commands are cheap;
+  whole-file reads are not.
 - **Return:** the shape in `CONDUCT.md` §4, **under 1,200 words**.
 - **Findings:** aim for 3–6. More than eight means you are inventorying.
 - Every finding carries `path:line` evidence, a measured extent, and the change
