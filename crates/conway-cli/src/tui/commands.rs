@@ -235,15 +235,23 @@ pub enum SlashCommand {
     Model {
         model: Option<String>,
     },
-    /// `/role <alias>` -- the same mid-session-switch mechanism as
-    /// [`SlashCommand::Model`], naming a role instead of pinning a model
-    /// directly. `role` is the raw alias text; an alias the configured
-    /// `[routing]` table does not recognize is not caught here (`parse`
-    /// stays state-free) -- it surfaces the first time the switched-to
-    /// child actually runs a turn, the same as any other roleless-fork
-    /// misconfiguration.
+    /// `/role [<alias>]` -- `Some(alias)` is the same mid-session-switch
+    /// mechanism as [`SlashCommand::Model`]'s own `Some(_)` arm, naming a
+    /// role instead of pinning a model directly; `role` is the raw alias
+    /// text, and an alias the configured `[roles]` table does not
+    /// recognize is not caught here (`parse` stays state-free) -- it
+    /// surfaces at the runtime's own role probe the first time the
+    /// switched-to child actually runs (`conway-runtime::subagent`'s
+    /// "invalid subagent spec" error).
+    ///
+    /// **Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: `None` (bare `/role`) is
+    /// no longer a [`ParseError`].** It used to be -- `/role` with nothing
+    /// after it errored `usage: /role <alias>` the same way this arm's
+    /// argument-taking siblings do. Bare now lists every configured role
+    /// (mirroring [`SlashCommand::Model`]'s own `None` precedent exactly)
+    /// instead. See [`execute`]'s own `Role { role: None }` arm.
     Role {
-        role: String,
+        role: Option<String>,
     },
     Help,
     /// V4: opens the `/settings` menu (`view/settings.rs`), replacing the
@@ -498,9 +506,9 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
         },
         SlashCommand::Role { .. } => CommandSpec {
             name: "/role",
-            usage: "/role <alias>",
-            description:
-                "switch the focused agent to a different role (forks; see /why for the reason)",
+            usage: "/role [<alias>]",
+            description: "list configured roles, or switch the focused agent to a different \
+                           role (forks; see /why for the reason)",
         },
         SlashCommand::Help => CommandSpec {
             name: "/help",
@@ -585,9 +593,7 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
         },
         SlashCommand::Resume { sid: None },
         SlashCommand::Model { model: None },
-        SlashCommand::Role {
-            role: String::new(),
-        },
+        SlashCommand::Role { role: None },
         SlashCommand::Help,
         SlashCommand::Quit,
     ]
@@ -746,7 +752,17 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             Ok(SlashCommand::Model { model })
         }
         "/role" => {
-            let role = parse_one_arg(rest, "/role <alias>")?;
+            // Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: bare `/role` (no
+            // argument) is a valid parse now, not a `ParseError` --
+            // mirrors `/model`'s own identical precedent immediately
+            // above (empty `rest` means "list what's configured", handled
+            // entirely in `execute`; `parse` stays state-free either way).
+            let trimmed = rest.trim();
+            let role = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
             Ok(SlashCommand::Role { role })
         }
         "/help" => {
@@ -2146,6 +2162,15 @@ pub async fn apply_resume<H: Host>(sid: String, state: &mut AppState, host: &H) 
 /// and still answers "which one is this session already running" before a
 /// single key is pressed.
 ///
+/// **Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: falls back to
+/// `AppState::model_pin` when no turn has completed yet.**
+/// `focused_model` is `None` until a real `Event::ModelDecision` arrives,
+/// which never happens before the session's first turn -- but a `--model`
+/// pin is known from the moment the CLI parsed it, so the acceptance
+/// criterion "marks it active" holds even for `/model` invoked before any
+/// message is sent (this board item's own reproduction runs `/model`
+/// immediately after startup).
+///
 /// **What this does NOT do, and why: there is no typed live-filter box
 /// inside the open picker, and no second key that promotes the highlighted
 /// entry to the persistent default.** Both would need a new key handler
@@ -2161,7 +2186,10 @@ pub async fn apply_resume<H: Host>(sid: String, state: &mut AppState, host: &H) 
 fn open_model_picker(state: &mut AppState, options: Vec<String>) {
     let prompt = match state.focused_model.as_deref() {
         Some(current) => format!("select a model -- currently running {current}"),
-        None => "select a model".to_string(),
+        None => match state.model_pin.as_deref() {
+            Some(pin) => format!("select a model -- pinned to {pin} for this session"),
+            None => "select a model".to_string(),
+        },
     };
     let ask = PendingFormAsk::new_local(conway_plugin_ui::AskSelectRequest { prompt, options });
     state.offer_ui_form(ask);
@@ -2752,6 +2780,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 let candidates = model_picker::candidate_models(
                     &state.configured_models,
                     state.model_max_context.keys().cloned(),
+                    state.model_pin.as_deref(),
                 );
                 let filtered = model_picker::filter_models(&candidates, &model);
                 if filtered.is_empty() {
@@ -2784,26 +2813,77 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         // unaffected -- this arm still only ever calls
         // [`PendingFormAsk::new_local`]/`AppState::offer_ui_form`, the same
         // calls it already made; nothing about the tool-raised path changed.
+        //
+        // Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: "no models are
+        // configured" used to be printed whenever `candidates` was empty,
+        // conflating two genuinely different states -- zero backends
+        // reachable at all, versus backends that ARE reachable (a
+        // provider genuinely IS configured -- `state.configured_backend_ids`
+        // is non-empty) but no role chain or `--model` pin names a model on
+        // any of them (the exact shape of a launch with backends declared
+        // only through `CONWAY_BACKENDS__*`, since a role chain cannot be
+        // built from the environment at all -- `conway::config::merge::
+        // env_to_value`'s own doc). Only the first case is "add a provider"
+        // -- the second needs a different fix (`roles.<alias>.chain`, or
+        // `--model`), and telling an operator who already has a working
+        // backend to go add one is the exact wrong-about-the-state defect
+        // board item `01M24ZJ9ABPP0DGVAA2PS3XVDD` closes.
         SlashCommand::Model { model: None } => {
             let candidates = model_picker::candidate_models(
                 &state.configured_models,
                 state.model_max_context.keys().cloned(),
+                state.model_pin.as_deref(),
             );
             if candidates.is_empty() {
+                if state.configured_backend_ids.is_empty() {
+                    notice(
+                        state,
+                        "no models are configured -- add a provider and a role chain first \
+                         (see /settings)"
+                            .to_string(),
+                    );
+                } else {
+                    notice(
+                        state,
+                        format!(
+                            "no role chain or --model pin names a model yet, though {} \
+                             {} configured ({}) -- add roles.<alias>.chain, or start with \
+                             --model <backend/model>",
+                            state.configured_backend_ids.len(),
+                            if state.configured_backend_ids.len() == 1 {
+                                "backend is"
+                            } else {
+                                "backends are"
+                            },
+                            state.configured_backend_ids.join(", ")
+                        ),
+                    );
+                }
+                return Effect::None;
+            }
+            // A reachable backend that no candidate above names (no chain
+            // entry, no pin) still gets a named callout, rather than
+            // silently vanishing from an otherwise non-empty listing -- see
+            // [`model_picker::backends_without_a_named_model`]'s own doc.
+            for id in model_picker::backends_without_a_named_model(
+                &state.configured_backend_ids,
+                &candidates,
+            ) {
                 notice(
                     state,
-                    "no models are configured -- add a provider and a role chain first \
-                     (see /settings)"
-                        .to_string(),
+                    format!(
+                        "{id} is configured and reachable but no role chain or --model pin \
+                         names a model on it yet -- add roles.<alias>.chain, or --model \
+                         {id}/<model>"
+                    ),
                 );
-                return Effect::None;
             }
             open_model_picker(state, candidates);
             Effect::None
         }
         // `/role <alias>` -- same mechanism as `Model` above, naming a role
         // instead of pinning a model directly.
-        SlashCommand::Role { role } => {
+        SlashCommand::Role { role: Some(role) } => {
             let focused = state.focused_agent;
             let spec = ForkSpec::new(String::new())
                 .keep_alive(true)
@@ -2817,6 +2897,45 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 spec,
             )
             .await
+        }
+        // Bare `/role` -- board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: lists
+        // every configured role (including `conway::config::
+        // is_baked_in_role_floor`'s baked-in `"default"` floor, labelled
+        // built-in -- see `AppState::role_listing`'s own doc for why that
+        // floor must appear here even though the settings menu's own cycle
+        // list excludes it) and marks the active one, instead of what used
+        // to happen: `parse_one_arg` refused an argument-less `/role`
+        // outright with a `usage: /role <alias>` `ParseError` (see
+        // `parse`'s own `"/role"` arm, just below `builtin_variant_samples`
+        // in this file) -- bare `/role` never reached this `execute`
+        // function at all before this fix, let alone attempted a subagent
+        // spec. `/role <alias>` naming an UNCONFIGURED alias is what
+        // actually produces the runtime's "invalid subagent spec: role
+        // '<alias>' is not a configured routing role alias" error (`conway-
+        // runtime::subagent`'s own role probe) -- a natural consequence of
+        // typing any nonexistent name, not a hardcoded string.
+        SlashCommand::Role { role: None } => {
+            if state.role_listing.is_empty() {
+                notice(state, "no roles are configured".to_string());
+                return Effect::None;
+            }
+            let active = state
+                .role_pin
+                .clone()
+                .unwrap_or_else(|| state.default_role_snapshot.clone());
+            let mut lines = vec!["configured roles:".to_string()];
+            for r in &state.role_listing {
+                let marker = if r.name == active { " (active)" } else { "" };
+                let label = if r.builtin { " [built-in]" } else { "" };
+                let chain = if r.chain.is_empty() {
+                    "no chain configured".to_string()
+                } else {
+                    r.chain.join(" -> ")
+                };
+                lines.push(format!("  {}{}{}: {}", r.name, label, marker, chain));
+            }
+            notice(state, lines.join("\n"));
+            Effect::None
         }
         // T7: `/help` opens the keybinding overlay (`view/help.rs`) instead
         // of dumping a command list into the transcript -- `AppState::open_help`
@@ -4433,15 +4552,22 @@ mod tests {
         assert_eq!(
             parse("/role planner"),
             Ok(SlashCommand::Role {
-                role: "planner".to_string(),
+                role: Some("planner".to_string()),
             })
         );
     }
 
+    /// **VERIFICATION ANCHOR (board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`).**
+    /// Bare `/role` used to be a `ParseError` naming the form -- it is now
+    /// a valid parse carrying `role: None`, which `execute`'s own `Role {
+    /// role: None }` arm turns into a listing rather than an error,
+    /// mirroring `model_with_no_argument_parses_as_a_bare_listing_request`
+    /// immediately above.
     #[test]
-    fn role_missing_value_is_a_parse_error_naming_the_form() {
-        let err = parse("/role").unwrap_err();
-        assert!(err.to_string().contains("/role <alias>"));
+    fn role_with_no_argument_parses_as_a_bare_listing_request() {
+        assert_eq!(parse("/role"), Ok(SlashCommand::Role { role: None }));
+        // Bare whitespace after the command name is the same as none at all.
+        assert_eq!(parse("/role   "), Ok(SlashCommand::Role { role: None }));
     }
 
     #[test]
@@ -8238,7 +8364,7 @@ mod tests {
 
         let effect = execute(
             SlashCommand::Role {
-                role: "planner".to_string(),
+                role: Some("planner".to_string()),
             },
             &mut state,
             &host,

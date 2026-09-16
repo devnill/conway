@@ -1,0 +1,7 @@
+### Fixed
+
+- **`/model` and `/role` no longer claim nothing is configured while the session is actively routing turns through a real backend** — board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`. A session launched with backends declared only through `CONWAY_BACKENDS__*` and a `--model` pin (a role chain has no environment-variable form at all, so such a launch can never have an operator-authored `[roles]` table) used to have both commands report a state that was not true: bare `/model` said "no models are configured" even though the pin was already answering prompts, and `/role <alias>` for any alias other than the empty built-in `default` floor failed with "invalid subagent spec" naming roles the operator never typed. Bare `/model` now lists every model a `--model` pin, an operator-configured role chain, or the local model-metadata file names, marks the one serving this session, and calls out (rather than silently dropping) a reachable backend that nothing names yet; the "no models are configured" message is now reserved for the one case it actually describes — zero backends in the merged config, file or environment layer alike. Bare `/role` lists every configured role, including the built-in `default` floor (labelled as such), and marks the active one, instead of erroring.
+
+### Changed
+
+- **`docs/providers.md`** now documents the `CONWAY_BACKENDS__<ID>__<FIELD>` environment-variable form for declaring a backend, that a role chain cannot be created from the environment at all, and what `/model`/`/role` show in that state.

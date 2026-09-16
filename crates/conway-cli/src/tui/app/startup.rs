@@ -323,6 +323,31 @@ impl App {
         // `--fork-from`, `--continue`) in one place -- see its own doc.
         let handle = Self::resolve_handle(cli, conway).await?;
         let mut state = AppState::new(handle.root());
+        // Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: capture the `--model`/
+        // `--role-override` pins directly from `cli`, independent of any
+        // live `Event::ModelDecision` -- see `AppState::model_pin`'s own
+        // doc for why bare `/model`/`/role` need these BEFORE the
+        // session's first turn, not only after (a `--model` pin makes the
+        // session route correctly from its very first prompt, but a
+        // `ModelDecision` only arrives once that prompt has actually run).
+        // A parse failure here degrades to `None` (`.ok().flatten()`)
+        // rather than propagating: `Self::resolve_handle` (just above)
+        // already ran the identical parse on the flag-free/`--resume`/
+        // `--continue` paths and would have returned this same `Err`
+        // first, so those three never reach this line with a malformed
+        // value at all. `--fork-from` is the one arm that does not
+        // validate `--model` (`Self::fork_from_ref`'s own doc: that flag
+        // simply is not wired onto a forked child today, a pre-existing
+        // gap board item `01M24ZJ9ABPP0DGVAA2PS3XVDD` does not widen) --
+        // degrading rather than erroring here keeps that combination
+        // exactly as permissive as it already was, instead of this
+        // display-only field newly refusing a launch `resolve_handle`
+        // itself let through.
+        state.model_pin = crate::model_pin::parse_model_pin(cli)
+            .ok()
+            .flatten()
+            .map(|m| m.to_string());
+        state.role_pin = cli.role_override.clone();
         // Board item `01M1YS4FMJH004D1Y619MTBY7A`: backfill this session's
         // own history into the transcript BEFORE any of the startup
         // notices below are pushed, so a resumed conversation's past reads

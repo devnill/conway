@@ -339,7 +339,21 @@ impl App {
                     // its existing `[roles]` read, so this is the SAME call
                     // the `/settings` branch makes, not a second
                     // implementation of "read the configured chains".
-                    if matches!(cmd, commands::SlashCommand::Model { model: None }) {
+                    //
+                    // Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: bare `/role`
+                    // needs `AppState::role_listing`/`configured_backend_ids`
+                    // fresh on the identical seam, for the identical
+                    // reason -- `commands::execute`'s `Role { role: None }`
+                    // arm is just as pure a function of `AppState` as
+                    // `Model { model: None }`'s own arm, and
+                    // `refresh_default_entries` already computes both
+                    // fields (see that method's own doc) alongside
+                    // everything this branch already needed.
+                    if matches!(
+                        cmd,
+                        commands::SlashCommand::Model { model: None }
+                            | commands::SlashCommand::Role { role: None }
+                    ) {
                         let env_vars: std::collections::HashMap<String, String> =
                             std::env::vars().collect();
                         let cwd = std::env::current_dir()
@@ -550,6 +564,7 @@ mod tests {
     //! in-memory `Conway` (the same fake port set `conway`'s own
     //! `tests/session_handle.rs` builds).
 
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use conway::config::schema::HooksConfig;
@@ -1613,6 +1628,236 @@ mod tests {
         assert!(
             all.iter().all(|m| m.agent_id != child),
             "the discarded child must be purged: {all:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: `/model`/`/role` must stay
+    // accurate about what a merged config -- file OR environment layer --
+    // actually offers, rather than declaring nothing configured while the
+    // session is genuinely routing every turn to a real, pinned model.
+    //
+    // Every test below calls [`App::refresh_default_entries`] directly
+    // with a hand-built `env` `HashMap`, exactly like `app/defaults.rs`'s
+    // own test module -- never `std::env::set_var`/`remove_var` in this
+    // process (this crate's own documented hazard: `std::env`'s
+    // process-global mutation races cargo's parallel-by-default test
+    // threads -- see `app/editor.rs`'s own module doc, "a documented
+    // pattern elsewhere in this crate"). `App::submit`'s own `/model`/
+    // `/role` seam reads `std::env::vars()` internally and is therefore
+    // deliberately NOT exercised here; `commands::execute` is called
+    // directly instead, against `LiveHost`, mirroring every other
+    // `commands::*` test already in this module (e.g. `ask_fate_fork_...`
+    // just above).
+    // -----------------------------------------------------------------
+
+    /// **VERIFICATION ANCHOR, test (a).** Board item
+    /// `01M24ZJ9ABPP0DGVAA2PS3XVDD`'s own reproduction, reduced to a
+    /// hermetic test: backends declared ONLY through `CONWAY_BACKENDS__*`
+    /// (so `configured_models` -- every operator role chain's own union --
+    /// is necessarily empty; a role chain cannot be built from the
+    /// environment at all), no `[roles]` table, and a `--model` pin. Bare
+    /// `/model` must list the pin and must NOT print "no models are
+    /// configured" -- confirmed to fail against HEAD before this fix (the
+    /// old `Model { model: None }` arm declared the set empty the instant
+    /// `configured_models`/`model_max_context` were both empty, with no
+    /// third, pin-aware source at all).
+    #[tokio::test]
+    async fn model_bare_lists_the_pin_when_backends_are_env_only_with_no_role_table() {
+        let conway = echo_conway();
+        let mut cli = minimal_cli();
+        cli.model = Some("ollama_cloud/glm-5.2".to_string());
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.path().to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "CONWAY_BACKENDS__OLLAMA_CLOUD__KIND".to_string(),
+            "openai-compat".to_string(),
+        );
+        env.insert(
+            "CONWAY_BACKENDS__OLLAMA_CLOUD__BASE_URL".to_string(),
+            "https://ollama.com/v1".to_string(),
+        );
+        env.insert(
+            "CONWAY_BACKENDS__OLLAMA_CLOUD__DIALECT".to_string(),
+            "ollama".to_string(),
+        );
+        env.insert(
+            "CONWAY_BACKENDS__OLLAMA_CLOUD__API_KEY_ENV".to_string(),
+            "OLLAMA_API_KEY".to_string(),
+        );
+
+        app.refresh_default_entries(&env, cwd.path());
+        assert!(
+            app.state.configured_models.is_empty(),
+            "sanity: no [roles] table means no operator-configured chain, matching the \
+             item's own premise that a role cannot be built from the environment: {:?}",
+            app.state.configured_models
+        );
+        assert_eq!(
+            app.state.configured_backend_ids,
+            vec!["ollama_cloud".to_string()],
+            "the env-declared backend must still be visible to the merge"
+        );
+
+        let host = commands::LiveHost {
+            handle: &app.handle,
+            conway: &app.conway,
+            commands: &app.command_registry,
+        };
+        let effect = commands::execute(
+            commands::SlashCommand::Model { model: None },
+            &mut app.state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, commands::Effect::None));
+        assert!(
+            !app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("no models are configured")
+            )),
+            "a pinned, reachable backend must never be reported as nothing configured: {:?}",
+            app.state.transcript
+        );
+        match &app.state.mode {
+            Mode::UiForm(form) => {
+                assert!(
+                    form.ask
+                        .request
+                        .options
+                        .contains(&"ollama_cloud/glm-5.2".to_string()),
+                    "the picker must offer the --model pin: {:?}",
+                    form.ask.request.options
+                );
+                assert!(
+                    form.ask.request.prompt.contains("ollama_cloud/glm-5.2"),
+                    "the pin must be named as active in the prompt: {}",
+                    form.ask.request.prompt
+                );
+            }
+            other => panic!("expected Mode::UiForm, got {other:?}"),
+        }
+    }
+
+    /// **VERIFICATION ANCHOR, test (b).** Same env-only configuration as
+    /// the test above (no `--model` this time): bare `/role` must list the
+    /// baked-in `default` role, labelled built-in and marked active,
+    /// rather than the `usage: /role <alias>` `ParseError` bare `/role`
+    /// used to be -- confirmed to fail against HEAD (bare `/role` did not
+    /// parse into a variant `execute` could even receive).
+    #[tokio::test]
+    async fn role_bare_lists_the_builtin_default_role_when_none_is_configured() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.path().to_string_lossy().into_owned(),
+        );
+
+        app.refresh_default_entries(&env, cwd.path());
+        assert!(
+            app.state.known_role_names.is_empty(),
+            "sanity: no operator-declared role exists in this config"
+        );
+
+        let host = commands::LiveHost {
+            handle: &app.handle,
+            conway: &app.conway,
+            commands: &app.command_registry,
+        };
+        let effect = commands::execute(
+            commands::SlashCommand::Role { role: None },
+            &mut app.state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, commands::Effect::None));
+        let text = match app.state.transcript.last() {
+            Some(Entry::Notice { text }) => text.clone(),
+            other => panic!(
+                "expected a Notice, got {other:?}: {:?}",
+                app.state.transcript
+            ),
+        };
+        assert!(
+            text.contains("default") && text.contains("built-in") && text.contains("(active)"),
+            "must list the baked-in default role, labelled built-in and marked active: {text}"
+        );
+        assert!(
+            !text.to_lowercase().contains("invalid subagent spec"),
+            "bare /role must never attempt a subagent spec: {text}"
+        );
+    }
+
+    /// **VERIFICATION ANCHOR, test (c).** A config with ZERO backends
+    /// (no `CONWAY_BACKENDS__*`, no `settings.json` `[backends]` table)
+    /// must still print the original "no models are configured" notice,
+    /// UNCHANGED -- without this test, a fix that widened the candidate
+    /// set could accidentally silence the one case the message exists for.
+    #[tokio::test]
+    async fn model_bare_with_zero_backends_still_says_no_models_are_configured() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.path().to_string_lossy().into_owned(),
+        );
+
+        app.refresh_default_entries(&env, cwd.path());
+        assert!(
+            app.state.configured_backend_ids.is_empty(),
+            "sanity: this config must declare zero backends: {:?}",
+            app.state.configured_backend_ids
+        );
+
+        let host = commands::LiveHost {
+            handle: &app.handle,
+            conway: &app.conway,
+            commands: &app.command_registry,
+        };
+        let effect = commands::execute(
+            commands::SlashCommand::Model { model: None },
+            &mut app.state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, commands::Effect::None));
+        assert!(
+            matches!(
+                app.state.transcript.last(),
+                Some(Entry::Notice { text })
+                    if text == "no models are configured -- add a provider and a role chain \
+                                first (see /settings)"
+            ),
+            "the original message must survive unchanged when there is genuinely nothing \
+             configured: {:?}",
+            app.state.transcript
         );
     }
 }

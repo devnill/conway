@@ -293,6 +293,20 @@ pub struct PluginBrowserEntry {
     pub description: conway::plugin::PluginDescription,
 }
 
+/// One row of [`AppState::role_listing`] -- board item
+/// `01M24ZJ9ABPP0DGVAA2PS3XVDD`: a role name, its currently configured
+/// `chain`, and whether it is `conway::config::is_baked_in_role_floor`'s
+/// baked-in `"default"` floor rather than something an operator declared
+/// (see that field's own doc for why bare `/role` needs the floor
+/// included, labelled, rather than excluded the way `known_role_names`
+/// excludes it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleListingEntry {
+    pub name: String,
+    pub chain: Vec<String>,
+    pub builtin: bool,
+}
+
 /// The TUI's whole render model. Every mutation goes through [`Self::apply`]
 /// (event-driven) or the app loop's direct field writes for input-driven
 /// state (`input`, `mode`, `scroll`) -- see `input.rs`/`app.rs`.
@@ -1107,6 +1121,67 @@ pub struct AppState {
     /// for the identical reason: an unconfigured floor role is a validation
     /// safety net, never something an operator actually set up to route to.
     pub configured_models: Vec<String>,
+    /// Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: the `--model` flag's own
+    /// `"backend/model"` string (`cli.model`, parsed once via `crate::
+    /// model_pin::parse_model_pin`), set at `App::new` and never mutated
+    /// afterward. `None` when no `--model` flag was given.
+    ///
+    /// Distinct from [`Self::focused_model`]: that field is the CONFIRMED
+    /// serving model of the most recently completed turn (`Event::
+    /// ModelDecision`/`SessionHandle::last_model`), `None` until one
+    /// exists. This field is the CLI's own stated intent, known before any
+    /// turn at all -- what lets bare `/model` (`commands::execute`'s
+    /// `Model { model: None }` arm) list and mark the pin even before the
+    /// session has answered a single message, the exact gap the
+    /// reproduction in this board item's own spec exercises: a launch with
+    /// backends declared only through `CONWAY_BACKENDS__*` (so
+    /// [`Self::configured_models`] is necessarily empty -- no role chain
+    /// can be built from the environment at all, see
+    /// `conway::config::merge::env_to_value`'s own doc) plus a `--model`
+    /// pin. `model_picker::candidate_models` unions this in as a third
+    /// source, alongside the chain and metadata sources its own doc
+    /// already named.
+    pub model_pin: Option<String>,
+    /// [`Self::model_pin`]'s own sibling for `--role-override`: `cli.
+    /// role_override`, set at `App::new` and never mutated afterward.
+    /// `None` when the flag was not given, in which case bare `/role`
+    /// (`commands::execute`'s `Role { role: None }` arm) reports
+    /// [`Self::default_role_snapshot`] as the active role instead.
+    pub role_pin: Option<String>,
+    /// Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: every `backends.<id>` key
+    /// the CURRENT merged config declares, file OR environment layer alike
+    /// (`conway::config::merged_document`'s own five-layer merge -- the
+    /// SAME source [`Self::provider_entries`] reads, but refreshed on bare
+    /// `/model`/`/role`'s own seam, `App::refresh_default_entries`,
+    /// instead of `/settings`' -- see that method's own doc). Sorted (a
+    /// `serde_json::Map`'s own key order, alphabetic without the
+    /// `preserve_order` feature).
+    ///
+    /// What this is FOR: telling "zero backends configured" -- the only
+    /// case that earns bare `/model`'s "no models are configured" notice
+    /// -- apart from "backends exist, but no role chain or `--model` pin
+    /// names a model on any of them," a different situation that needs a
+    /// different message (naming `roles.<alias>.chain`/`--model` as what
+    /// to add, not "add a provider": a provider already IS configured).
+    /// Empty only before the first refresh, exactly like
+    /// [`Self::configured_models`]'s own doc.
+    pub configured_backend_ids: Vec<String>,
+    /// Board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: every role the CURRENT
+    /// merged config's `[roles]` table names, INCLUDING `conway::config::
+    /// is_baked_in_role_floor`'s baked-in `"default"` floor -- unlike
+    /// [`Self::known_role_names`], which deliberately excludes it (that
+    /// field drives `/settings`' cycle list, where offering the floor
+    /// would let an operator switch the session default onto an
+    /// intentionally empty chain). Bare `/role` has the opposite need: an
+    /// environment-only configuration can never author a real role at all
+    /// (`conway::config::merge::env_to_value`'s own doc, "a role chain
+    /// cannot be created from the environment"), so the floor is the ONLY
+    /// role such a launch ever has, and it must still be listed --
+    /// labelled built-in, per this board item's own acceptance criterion
+    /// -- rather than making bare `/role` report nothing configured at
+    /// all. Refreshed on the SAME seam as [`Self::known_role_names`]
+    /// (`App::refresh_default_entries`), sorted by name.
+    pub role_listing: Vec<RoleListingEntry>,
     /// Set by `commands::execute`'s `Model { model: None }` arm the instant
     /// it opens `Mode::UiForm` as `/model`'s own picker (`conway.ui`
     /// installed) -- read and cleared by `run.rs`'s `Action::
@@ -1393,6 +1468,10 @@ impl AppState {
             default_model_snapshot: None,
             known_role_names: Vec::new(),
             configured_models: Vec::new(),
+            model_pin: None,
+            role_pin: None,
+            configured_backend_ids: Vec::new(),
+            role_listing: Vec::new(),
             model_picker_active: false,
             session_picker_active: false,
             // empty here by default

@@ -129,6 +129,54 @@ caught at load time — it is silently captured alongside any real custom key
 rather than erroring. Double-check spelling against the fields named above;
 `conway` cannot catch that typo for you.
 
+## Declaring a backend through the environment
+
+Every field a `backends.<id>` entry in `settings.json` accepts also has an
+environment-variable form: `CONWAY_BACKENDS__<ID>__<FIELD>`, uppercase,
+`<ID>` the id you want the backend to have (folded to lowercase in the
+merged config, the same as a JSON key would be). This is one more layer in
+the precedence chain ["Where a backend is
+declared"](#where-a-backend-is-declared) already describes — it wins over
+`settings.json` and conway's own built-in defaults, merged the same way
+every other top-level section is:
+
+```bash
+CONWAY_BACKENDS__OLLAMA_CLOUD__KIND=openai-compat \
+CONWAY_BACKENDS__OLLAMA_CLOUD__BASE_URL=https://ollama.com/v1 \
+CONWAY_BACKENDS__OLLAMA_CLOUD__DIALECT=ollama \
+CONWAY_BACKENDS__OLLAMA_CLOUD__API_KEY_ENV=OLLAMA_API_KEY \
+conway --model ollama_cloud/glm-5.2
+```
+
+This declares a backend named `ollama_cloud` exactly as if it had been
+written into `settings.json`'s own `backends.ollama_cloud` object — and
+with a `--model` pin naming it directly, a session launched this way
+genuinely routes every turn through it (`--model` bypasses role
+resolution entirely; see [`routing.md`](routing.md)).
+
+**What the environment cannot do: create a role.** `roles.<alias>.chain`
+has no environment-variable form at all — the only per-role field the
+environment can touch is `CONWAY_ROLES__<ALIAS>__HEADROOM_TOKENS`
+([`routing.md`](routing.md)'s own "Headroom" section), and only for an
+alias that already exists in the merged config. A launch with backends
+declared only through `CONWAY_BACKENDS__*` and no `settings.json` `[roles]`
+table therefore has exactly one role available: the built-in, empty
+`default` floor every config validates against even with nothing
+configured — never a real, operator-authored chain.
+
+**What the TUI shows in that state.** `/model` bare lists every model a
+`--model` pin or a role chain actually names — the pin, when one was given
+at launch, counts as a real candidate even with an empty `[roles]` table,
+so the session above's own `ollama_cloud/glm-5.2` still appears, marked
+active. A reachable backend that neither a chain nor the pin names gets a
+one-line callout instead of silently vanishing from the list (`<id> is
+configured and reachable but no role chain or --model pin names a model on
+it yet`), and the "no models are configured" refusal is reserved for the
+one case it actually describes: zero backends in the merged config at
+all. `/role` bare lists every configured role, including that baked-in
+`default` floor — labelled built-in, since an environment-only launch can
+never produce anything else — instead of erroring.
+
 ## Anthropic and Anthropic-compatible endpoints
 
 ```json
