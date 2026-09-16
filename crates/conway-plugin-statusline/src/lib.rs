@@ -770,71 +770,79 @@ mod tests {
     /// slow_run_is_in_flight` proves a read never blocks, but starts from
     /// an EMPTY cache (no run has ever succeeded), so it cannot show that a
     /// timed-out run leaves the PREVIOUS GOOD VALUE on screen rather than
-    /// wiping it. This test drives the real background loop end to end
-    /// through both states in sequence: a first run that succeeds fast
-    /// (populating the cache with a real value), then a second run of the
-    /// SAME plugin instance that sleeps well past its own `timeout_ms` --
-    /// and asserts that WHILE that second run is still in flight,
+    /// wiping it. This test drives the real background loop -- a real
+    /// `sh -c` command, spawned through the unmodified `refresh_loop`/
+    /// `run_once` path, on the plugin's real configured `timeout_ms` (200ms)
+    /// -- and asserts that WHILE that command is still in flight,
     /// `status_contributions()` (a) returns instantly (the loop is not
-    /// blocked on the slow child) and (b) still shows the FIRST run's
-    /// value, not an empty/failed placeholder -- exactly "a slow command
-    /// shows the previous value", acceptance criterion 2's own wording.
+    /// blocked on the slow child) and (b) still shows a previously-cached
+    /// good value, not an empty/failed placeholder -- exactly "a slow
+    /// command shows the previous value", acceptance criterion 2's own
+    /// wording.
     ///
-    /// The command is a marker-file shell script rather than a fixed
-    /// `sleep N`: the SAME command string has to behave differently on its
-    /// first invocation (fast, succeeds) than on every invocation after
-    /// (slow, exceeds `timeout_ms`) so this one `StatusLineSpec` can drive
-    /// the background loop through both states without swapping the spec
-    /// out from under it mid-test -- swapping the spec would prove nothing
-    /// about a REAL config's stable command doing this.
+    /// **Board item `01M2MVGM3X504SN3NTH8QPWWSC`: this used to establish
+    /// that "previous good value" by racing a real subprocess spawn against
+    /// this same 200ms `timeout_ms` -- a marker-file command whose FIRST
+    /// invocation had to complete (fork, `sh` startup, `touch`, `echo`)
+    /// inside 200ms to seed the cache before a SECOND invocation (with the
+    /// marker now present) ran long and timed out. Process spawn is not
+    /// reliably sub-200ms; under load (measured: load average 6.4) that
+    /// setup race itself failed 4 of 5 runs, well before the property this
+    /// test exists to prove was ever reached. One `timeout_ms` cannot serve
+    /// as both a generous budget for an unraced baseline and a tight budget
+    /// for the run under test.**
+    ///
+    /// The fix: don't establish the baseline through a timed subprocess at
+    /// all. `StatusLinePlugin::state` is a private field of a type defined
+    /// in THIS file's crate-root module; `mod tests` is a descendant module
+    /// of that same crate root, so ordinary Rust privacy already gives this
+    /// test direct access to it -- no new production API, no change to
+    /// `StatusLinePlugin`'s public surface or behavior. Seeding `state`
+    /// directly is safe, not merely less-racy-than-before: the plugin's
+    /// real background loop cannot write anything to `state` until its
+    /// current run resolves (success, failure, or timeout), and this test's
+    /// command is `sleep 5` -- unconditionally slower than the 200ms
+    /// `timeout_ms`, so the loop's own write cannot land before that 200ms
+    /// elapses. Writing to `state` directly is an uncontended mutex
+    /// lock-and-store, not a process spawn -- categorically faster and not
+    /// subject to the fork/exec/shell-startup cost that made the old
+    /// subprocess race load-sensitive -- so seeding it immediately after
+    /// construction, well inside that 200ms window, cannot lose the race
+    /// against the loop's own eventual write.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_command_that_times_out_leaves_the_previous_good_value_visible_while_in_flight() {
-        let marker = std::env::temp_dir().join(format!(
-            "conway-plugin-statusline-timeout-test-{}-{}.marker",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_file(&marker);
         let spec = StatusLineSpec {
-            command: vec![
-                "sh".to_string(),
-                "-c".to_string(),
-                format!(
-                    "if [ -e {path} ]; then sleep 5; else touch {path}; echo first-run; fi",
-                    path = marker.display()
-                ),
-            ],
+            command: vec!["sh".to_string(), "-c".to_string(), "sleep 5".to_string()],
             refresh_interval_ms: MIN_REFRESH_INTERVAL_MS,
             timeout_ms: 200,
             ..StatusLineSpec::default()
         };
+        let key = spec.key.clone();
         let plugin = StatusLinePlugin::new(spec);
 
-        // Wait for the FIRST run (fast, no marker yet) to populate the
-        // cache with a real value -- the baseline this test exists to show
-        // survives a subsequent timeout.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let contributions = plugin.status_contributions();
-            if contributions.first().map(|c| c.value.as_str()) == Some("first-run") {
-                break;
+        // Seed the cache directly with a known-good baseline -- no
+        // subprocess involved, so nothing here can race a 200ms deadline.
+        // This is safe (not merely convenient) because the background
+        // loop's own real run (`sleep 5`) cannot possibly write to `state`
+        // before its own 200ms `timeout_ms` elapses -- see this test's own
+        // doc comment above for the full argument.
+        match plugin.state.lock() {
+            Ok(mut guard) => {
+                *guard = Some(PluginStatusContribution {
+                    key,
+                    status: ResultStatus::Completed,
+                    value: "first-run".to_string(),
+                });
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the first (fast) run never populated the cache with its real value"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            Err(_) => panic!("failed to lock plugin state to seed the baseline value"),
         }
 
-        // The background loop now sleeps `refresh_interval_ms` (the floor,
-        // 1000ms) before starting the SECOND run -- the marker file now
-        // exists, so this run sleeps 5s, well past its own 200ms
-        // `timeout_ms`. Wait past the sleep-then-start boundary but well
-        // short of `timeout_ms` firing, landing squarely mid-flight.
-        tokio::time::sleep(Duration::from_millis(MIN_REFRESH_INTERVAL_MS + 100)).await;
+        // Give the background loop's real run time to actually start (it
+        // began the instant `StatusLinePlugin::new` returned), while
+        // staying comfortably under its own 200ms `timeout_ms` -- landing
+        // squarely mid-flight, well before the loop could have anything of
+        // its own to write.
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Mid-flight: a direct, synchronous call, exactly like this crate's
         // own `status_contributions_never_blocks_while_a_slow_run_is_in_
@@ -845,19 +853,17 @@ mod tests {
         let contributions = plugin.status_contributions();
         assert!(
             started.elapsed() < Duration::from_millis(150),
-            "status_contributions() took {:?} while the second (slow) run was in flight -- \
-             the loop must not be blocked on it",
+            "status_contributions() took {:?} while the run was in flight -- the loop must not \
+             be blocked on it",
             started.elapsed()
         );
         assert_eq!(
             contributions.first().map(|c| c.value.as_str()),
             Some("first-run"),
-            "while the second run is still in flight (has not yet hit its own 200ms timeout), \
-             the PREVIOUS good value must still be what status_contributions() reports, not \
-             empty or failed: {contributions:?}"
+            "while the run is still in flight (has not yet hit its own 200ms timeout), the \
+             PREVIOUS good value must still be what status_contributions() reports, not empty \
+             or failed: {contributions:?}"
         );
-
-        let _ = std::fs::remove_file(&marker);
     }
 
     #[test]
