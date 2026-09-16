@@ -327,6 +327,12 @@ pub struct PluginArgs {
 // stretched across the terminal every time an operator asks for help.
 #[derive(Subcommand, Debug)]
 pub enum PluginAction {
+    // Board item `01M250BXW12HVMKZBCFPKG3704`: this action never dials a
+    // model, so `main.rs`'s `command_needs_provider` exempts it from the
+    // first-run guided-setup trigger every other dispatch target
+    // (`install`/`remove` included) still clears -- it runs, and prints
+    // this real listing, against a config directory with zero backends
+    // declared.
     /// List every compiled-in plugin this binary links: `[x]`/`[ ]`, id,
     /// and a one-line summary -- the same table `/plugin` shows in the TUI.
     List {

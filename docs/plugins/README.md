@@ -118,6 +118,14 @@ chose to install.
 Fifteen capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild.
 
+Run `conway plugin list` to see this exact table (`[x]`/`[ ]`, id, and a
+one-line summary — `--verbose`, or a single id, for the full "you get / you
+lose / costs" breakdown) headlessly, from a script or a terminal with no
+TUI in sight. It never proposes a turn, so — unlike `-p`, the TUI, or
+`conway sessions`/`conway routes` — it runs with **no provider configured
+at all**: it is meant to be the first command you run after installing
+conway, before deciding what to turn on.
+
 - [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
   write to (`remember`/`forget`/`list_memories`), injected into context by a
   `ContextHook`. Durable at `<cwd>/.conway/memory` once installed — a memory

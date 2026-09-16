@@ -16,11 +16,36 @@ use std::path::PathBuf;
 
 use common::mock_backend::{Chunk, MockBackend, Script};
 use common::{command, write_fixture, Fixture};
+use conway_cli::first_run::GUIDED_SETUP_MARKER;
 
 /// The exact path `/plugin`'s own writer (and this command) targets for
 /// `fixture` -- mirrors `common::command`'s own `CONWAY_CONFIG_DIR` choice.
 fn settings_path(fixture: &Fixture) -> PathBuf {
     fixture.dir.path().join("settings.json")
+}
+
+/// A fixture with `"backends": {}` and an empty role chain -- the canonical
+/// `NoBackendsConfigured` case `first_run.rs`'s own `write_no_backends_
+/// fixture` pins (this is a byte-identical copy; each `tests/*.rs` file
+/// compiles `common` fresh as its own independent crate, so the small
+/// helper is duplicated here rather than shared, matching this
+/// directory's existing convention). Board item `01M250BXW12HVMKZBCFPKG3704`:
+/// `conway plugin list` must produce a real listing against exactly this
+/// fixture, with no provider ever configured.
+fn write_no_backends_fixture() -> Fixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config_path = dir.path().join("conway.json");
+    std::fs::write(
+        &config_path,
+        serde_json::json!({
+            "default_role": "default",
+            "backends": {},
+            "roles": { "default": { "chain": [] } },
+        })
+        .to_string(),
+    )
+    .expect("write conway.json");
+    Fixture { dir, config_path }
 }
 
 /// conway's own six-id default opinion set (decision
@@ -345,5 +370,63 @@ async fn an_explicit_empty_install_array_silences_the_notice() {
     assert!(
         !stderr.contains("no first-party plugins are installed"),
         "an explicit empty plugins.install must silence the notice, got: {stderr:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Board item `01M250BXW12HVMKZBCFPKG3704`: `conway plugin list` must not
+// need a working provider -- it never proposes a turn.
+// ---------------------------------------------------------------------
+
+/// Acceptance 1: against a config with zero backends declared, `conway
+/// plugin list` still prints the real, compiled-in bundle table and exits
+/// 0 -- this would fail against HEAD, which refuses with the guided-setup
+/// provider error before `commands::plugin::run_admin` ever runs.
+#[test]
+fn plugin_list_succeeds_with_no_backends_configured() {
+    let fixture = write_no_backends_fixture();
+
+    let out = command(&["plugin", "list"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains(GUIDED_SETUP_MARKER),
+        "plugin list must never hit the provider gate: {stderr:?}"
+    );
+    for id in ["conway.memory", "conway.history", "conway.idiom"] {
+        assert!(
+            stdout.contains(&format!("[ ] {id} ")),
+            "expected the real compiled-in bundle, got stdout:\n{stdout}"
+        );
+    }
+}
+
+/// Acceptance 2: on the SAME zero-backend config, `-p` still fails with the
+/// unchanged provider error -- proves the gate itself was narrowed to the
+/// two listing commands, not removed for every dispatch target.
+#[test]
+fn print_mode_still_refuses_with_no_backends_configured() {
+    let fixture = write_no_backends_fixture();
+
+    let out = command(&["-p", "hi"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    assert!(
+        !out.status.success(),
+        "no provider is configured -- one-shot mode must still refuse"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(GUIDED_SETUP_MARKER),
+        "expected the unchanged guided-setup provider error, got stderr: {stderr:?}"
     );
 }
