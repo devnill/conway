@@ -323,8 +323,12 @@ struct SystemResolver;
 #[async_trait]
 impl HostResolver for SystemResolver {
     async fn lookup(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        // `lookup_host` takes the target BY VALUE (`String: ToSocketAddrs`)
+        // rather than by reference: under `#[async_trait]` the returned
+        // future is boxed, and a borrow of a local would have to outlive
+        // this frame for the desugared future to hold it.
         let target = format!("{host}:{port}");
-        Ok(tokio::net::lookup_host(&target).await?.collect())
+        Ok(tokio::net::lookup_host(target).await?.collect())
     }
 }
 
@@ -1168,10 +1172,11 @@ mod tests {
             addrs: vec![SocketAddr::from(([8, 8, 8, 8], 80))],
         };
         let pinned = PinnedResolver(vetted);
-        let err = pinned
-            .resolve("b.example".parse().unwrap())
-            .await
-            .unwrap_err();
+        // `Addrs` is a boxed `dyn Iterator`, which cannot be `Debug`, so
+        // `unwrap_err()` is unavailable here -- match the error out instead.
+        let Err(err) = pinned.resolve("b.example".parse().unwrap()).await else {
+            panic!("a name the resolver was not vetted for must be refused");
+        };
         assert!(err.to_string().contains("pinned only for"), "{err}");
     }
 
@@ -1183,10 +1188,10 @@ mod tests {
     #[tokio::test]
     async fn pinned_resolver_refuses_any_lookup_for_an_ip_literal_host() {
         let pinned = PinnedResolver(Vetted::Literal);
-        let err = pinned
-            .resolve("anything.example".parse().unwrap())
-            .await
-            .unwrap_err();
+        // See the sibling test above on why `unwrap_err()` is unavailable.
+        let Err(err) = pinned.resolve("anything.example".parse().unwrap()).await else {
+            panic!("an IP-literal host must never be answered by the pin");
+        };
         assert!(err.to_string().contains("IP literal"), "{err}");
     }
 
