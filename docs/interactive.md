@@ -244,6 +244,17 @@ allowance. This is what "each turn independently bounded" means in
 practice — a single runaway tool loop can no longer take the whole session
 down with it.
 
+Separately from all of that, the *model's own* per-call output budget can
+run out mid-turn — its `stop` came back `max_tokens` on the wire, unrelated
+to this session's own `[limits] max_tokens` above. If it had already said
+something, you'll see a notice that the response was cut off before it
+finished (retry, or raise the model's own `max_tokens` cap). If the cap was
+hit before it produced any visible output at all — no text, no tool call,
+its whole budget spent on reasoning you can still read above in the
+transcript — you'll see a notice that says exactly that, instead of the
+transcript going quiet with no explanation: retry the turn, raise the cap,
+or ask something narrower that needs less reasoning to answer.
+
 ### When the root session itself ends
 
 Two budget dimensions are **session-lifetime**, not per-turn: `max_tokens`
