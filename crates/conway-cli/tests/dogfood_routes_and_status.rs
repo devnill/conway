@@ -310,7 +310,7 @@ async fn tui_ctx_field_marks_the_assumed_floor_exactly_when_routes_explain_does(
     let fixture = fixture_with_unverified_floor(0);
 
     let cmd = common::pty_command(&[], &fixture);
-    let mut session = PtySession::spawn(cmd, 160, 45);
+    let session = PtySession::spawn(cmd, 160, 45);
     session.wait_for(LANDED, Duration::from_secs(15));
     session.wait_for("floor (assumed)", Duration::from_secs(10));
 
@@ -332,7 +332,7 @@ async fn tui_ctx_field_never_shows_the_assumed_floor_marker_for_a_models_json_ov
     let fixture = common::write_fixture(&mock, 5);
 
     let cmd = common::pty_command(&[], &fixture);
-    let mut session = PtySession::spawn(cmd, 160, 45);
+    let session = PtySession::spawn(cmd, 160, 45);
     session.wait_for(LANDED, Duration::from_secs(15));
     let screen = session.screen();
     assert!(
@@ -394,7 +394,7 @@ async fn status_line_command_output_refreshes_in_the_live_tui() {
     );
 
     let cmd = common::pty_command(&[], &fixture);
-    let mut session = PtySession::spawn(cmd, 160, 45);
+    let session = PtySession::spawn(cmd, 160, 45);
     session.wait_for(LANDED, Duration::from_secs(15));
     // `PLUGIN_STATUS_POLL_TICK` (`tui/app/run.rs`) and the plugin's own
     // refresh floor are both 1000ms; generous timeouts below account for
@@ -440,12 +440,17 @@ async fn status_line_command_stuck_past_its_timeout_never_blocks_the_prompt() {
     // generous deadline cannot change the answer, only how patiently we wait
     // for it -- unlike a timeout that arbitrates between two events, where a
     // bigger number moves the failure threshold without removing the race.
-    // Measured 2026-09-16: 3s failed 1 run in 20 on a cold binary.
+    // Measured 2026-09-16: 3s failed 1 run in 20 on a cold binary; 20s then
+    // failed under full-workspace parallelism, where dozens of test binaries
+    // compete for CPU and a TUI render loop is not scheduled promptly. 60s is
+    // deliberately far past any plausible healthy latency: the ONLY cost of a
+    // generous bound here is how long a genuine hang takes to report, and a
+    // hang is what this test exists to catch.
     session.send("dogfood-input-liveness-probe");
     session.wait_for_since(
         "dogfood-input-liveness-probe",
         landed,
-        Duration::from_secs(20),
+        Duration::from_secs(60),
     );
 }
 
@@ -469,7 +474,7 @@ async fn status_line_command_nonzero_exit_renders_failed_with_reason_not_blank()
     );
 
     let cmd = common::pty_command(&[], &fixture);
-    let mut session = PtySession::spawn(cmd, 160, 45);
+    let session = PtySession::spawn(cmd, 160, 45);
     session.wait_for(LANDED, Duration::from_secs(15));
     session.wait_for("dogfood: exit 3: boom", Duration::from_secs(8));
 }

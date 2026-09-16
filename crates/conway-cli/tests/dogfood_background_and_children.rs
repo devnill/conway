@@ -35,7 +35,10 @@
 //! doc for the SIGTERM half, and this module's closing doc comment for
 //! why the SIGKILL half is reported rather than guessed at.
 
-#[allow(dead_code)]
+// No `#[allow(dead_code)]` here: `common/child_procs.rs` carries its own
+// file-level `#![allow(dead_code)]`, which covers every consumer of the
+// module rather than just this one. Declaring both is a `duplicated_attribute`
+// error under `-D warnings`.
 #[path = "common/child_procs.rs"]
 mod child_procs;
 #[allow(dead_code)]

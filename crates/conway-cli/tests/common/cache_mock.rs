@@ -49,7 +49,7 @@
 //! and adding unused vocabulary here would just be dead code with extra
 //! steps.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;

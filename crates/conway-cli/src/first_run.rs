@@ -1554,7 +1554,7 @@ fn assumed_floor_honesty_note(kind: &str, dialect: Option<&str>) -> Option<Strin
 // [`resolve_first_turn_floor_notice`] is the one check every dispatch
 // target (TUI, one-shot `-p`) runs immediately before that can happen.
 //
-// **Not a second resolver.** [`first_turn_floor_notice`] asks the exact
+// **Not a second resolver.** `first_turn_floor_notice` asks the exact
 // same two questions [`resolve_context_window_for_setup`] already asks
 // ("does this pair have a models.json entry", via
 // [`context_window_is_verified`]/[`dialect_floor_window`]) -- reused, not
@@ -1635,11 +1635,11 @@ pub(crate) fn first_turn_floor_notice(
 /// explicit `--model` pin (`model_pin`, the raw CLI string) when one was
 /// passed, otherwise whatever `role_override` (`--role-override`) or,
 /// absent that, `conway.config().default_role` resolves to -- and hands it
-/// to [`first_turn_floor_notice`].
+/// to `first_turn_floor_notice`.
 ///
 /// A malformed `--model` yields `None` here (`.ok()?`): its own usage-error
 /// path runs later, in `oneshot::resolve_session`/`tui::app::App::
-/// session_spec` (both already call [`crate::model_pin::parse_model_pin`]
+/// session_spec` (both already call `crate::model_pin::parse_model_pin`
 /// against the SAME string) -- duplicating that diagnosis here would be a
 /// second, drifting copy of it (P-14). An unpinned request with no
 /// SELECTED routing candidate at all ALSO yields `None`: an empty or
