@@ -51,18 +51,31 @@
 //! unestablished boundary confers no boundary, so the call it would have
 //! gated is refused rather than passed through ungated.
 //!
+//! # Pinning the vetted address -- closing the DNS-rebinding TOCTOU
+//!
+//! [`guard_url`] does not classify a domain's resolution and then hand the
+//! bare hostname to `reqwest` to resolve AGAIN at connect time -- that
+//! shape is exactly the time-of-check-to-time-of-use window a hostile DNS
+//! server exploits by answering a safe address the first time and a
+//! private one the second. Instead [`guard_url`] returns the exact
+//! address(es) it classified, as [`Vetted`], and [`fetch_loop`] installs a
+//! [`PinnedResolver`] built from that value -- a `reqwest::dns::Resolve`
+//! that answers ONLY the vetted set and refuses every other name -- as the
+//! sole resolver on a fresh `reqwest::Client` built for that one hop. There
+//! is no second real DNS query for the connection to race against: the
+//! address that was vetted is provably the address that gets connected to,
+//! or the call is refused ([`PinnedResolver`] fails closed on any mismatch,
+//! and a client-build failure propagates as a refusal rather than falling
+//! back to an unpinned connect). Each redirect hop gets its OWN
+//! [`guard_url`] call and its OWN pinned client, so a redirect cannot
+//! reopen the window the initial request closed. This pins the
+//! CONNECTION, not the URL: the `Host` header and TLS SNI still name the
+//! original hostname, so certificate verification and virtual hosting are
+//! unaffected -- see [`PinnedResolver`]'s own doc for why an IP-literal
+//! URL rewrite was rejected in favor of a resolver-level pin.
+//!
 //! # What this guard does NOT cover -- disclosed, not implied
 //!
-//! - **DNS-rebinding TOCTOU.** [`guard_url`] resolves a domain name once,
-//!   classifies THAT answer, and then hands the ORIGINAL URL (the
-//!   hostname, not a pinned IP) to `reqwest`, which resolves it AGAIN to
-//!   actually connect. A name that answers a safe address at guard time
-//!   and a private one microseconds later at connect time is not caught.
-//!   Closing this fully needs a custom `reqwest::dns::Resolve` that pins
-//!   the vetted address for the connection itself; this crate does not
-//!   implement one (the risk of shipping an unverified custom-resolver
-//!   integration with no compiler available this session outweighed
-//!   closing a narrow, timing-dependent gap for a first cut).
 //! - **6to4 (`2002::/16`) and Teredo (`2001:0000::/32`) tunneling
 //!   addresses**, which can themselves encapsulate an arbitrary IPv4
 //!   address, are not unwrapped or specially classified -- only the two
@@ -80,7 +93,7 @@
 //! see, which is the same bar every comparable harness's own fetch tool
 //! sets, not a stronger one.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -89,6 +102,13 @@ use conway::plugin::{
     ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 use futures::StreamExt;
+// The DNS-rebinding fix's own seam ([`Vetted`]/[`PinnedResolver`], this
+// module's own doc has the full argument): `Addrs`/`Name`/`Resolve`/
+// `Resolving` are `reqwest::dns`'s public re-export of its custom-resolver
+// trait, unconditionally exported (not gated behind any Cargo feature) --
+// see this crate's own Cargo.toml doc for why `reqwest` is already a
+// pinned dependency this crate is a third consumer of, not a new one.
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use url::{Host, Url};
@@ -108,10 +128,12 @@ pub struct FetchConfig {
     /// is followed.
     pub max_redirects: u8,
     /// Per-request timeout (connect + read), applied to the `reqwest`
-    /// client this tool builds fresh for every call -- the same
-    /// build-per-call precedent `conway-plugin-marketplace::manifest::
-    /// client` documents, rather than one long-lived client this crate
-    /// would need to manage the lifetime of.
+    /// client this tool builds fresh for every HOP (see `fetch_loop`'s own
+    /// doc for why a hop cannot share a client with any other hop once
+    /// address-pinning is involved) -- the same build-per-call precedent
+    /// `conway-plugin-marketplace::manifest::client` documents, rather
+    /// than one long-lived client this crate would need to manage the
+    /// lifetime of.
     pub timeout: Duration,
 }
 
@@ -214,16 +236,19 @@ impl Tool for WebFetchTool {
             detail: format!("{:?} is not a valid URL: {e}", args.url),
         })?;
 
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(self.config.timeout)
-            .build()
-            .map_err(|e| ToolError::Internal {
-                detail: e.to_string(),
-            })?;
-
-        let page =
-            fetch_guarded(&client, url, effective_max_bytes, self.config.max_redirects).await?;
+        // No client is built here any more -- [`fetch_loop`] builds ONE,
+        // freshly, for EACH hop, pinned to that hop's own [`Vetted`]
+        // address (see this module's own "Pinning the vetted address"
+        // doc). A single client shared across every hop could not be
+        // pinned this way: a later redirect hop resolves a different host
+        // than the first.
+        let page = fetch_guarded(
+            url,
+            effective_max_bytes,
+            self.config.max_redirects,
+            self.config.timeout,
+        )
+        .await?;
 
         let text = format!(
             "URL: {}\nContent-Type: {}\n\n{}",
@@ -253,10 +278,72 @@ impl Tool for WebFetchTool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GuardRefusal(String);
 
+/// What [`guard_url`] classified for exactly one host -- carried forward
+/// so the CONNECTION can be pinned to it, closing the DNS-rebinding TOCTOU
+/// this module's own doc describes under "Pinning the vetted address".
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Vetted {
+    /// The URL's host was already an IP literal (`Host::Ipv4`/
+    /// `Host::Ipv6`). Nothing to pin -- hyper's own `HttpConnector` never
+    /// invokes the DNS resolver for an IP-literal host at all, parsing the
+    /// address directly instead (`hyper_util::client::legacy::connect::
+    /// http::HttpConnector::call_async`, the `SocketAddrs::try_parse` fast
+    /// path). [`PinnedResolver`] is still installed for this case and
+    /// refuses any lookup regardless, so a resolver call that should never
+    /// happen fails closed rather than silently reaching the system
+    /// resolver.
+    Literal,
+    /// The URL's host was a domain name that resolved, at guard time, to
+    /// ONLY these addresses -- every one of them already classified safe.
+    /// [`guard_url`] refuses the WHOLE call if any resolved address is
+    /// unsafe, so this is never a filtered subset of a mixed answer; it is
+    /// everything a connection to `name` may use.
+    Domain {
+        name: String,
+        addrs: Vec<SocketAddr>,
+    },
+}
+
+/// The hostname-resolution seam [`guard_url`] classifies against.
+/// Production code only ever uses [`SystemResolver`] (`guard_url` itself);
+/// this module's own tests substitute a fixture that can answer
+/// DIFFERENTLY on a second call, to prove directly that a domain name is
+/// resolved exactly ONCE per guard call and that the [`Vetted`] set
+/// returned is what [`PinnedResolver`] pins the connection to -- never a
+/// fresh answer a later, hostile query might give.
+#[async_trait]
+trait HostResolver: Send + Sync {
+    async fn lookup(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>>;
+}
+
+/// The real resolver -- `tokio::net::lookup_host`, the same call this
+/// guard has always made. [`guard_url`]'s only production entry point.
+struct SystemResolver;
+
+#[async_trait]
+impl HostResolver for SystemResolver {
+    async fn lookup(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        let target = format!("{host}:{port}");
+        Ok(tokio::net::lookup_host(&target).await?.collect())
+    }
+}
+
 /// The SSRF/scheme guard -- see this module's own doc for exactly what it
 /// classifies and what it does not. Called before every request
-/// [`fetch_loop`] makes, including each redirect hop.
-async fn guard_url(url: &Url) -> Result<(), GuardRefusal> {
+/// [`fetch_loop`] makes, including each redirect hop. Always resolves via
+/// [`SystemResolver`]; see [`guard_url_with`] for the injectable form this
+/// module's own tests use to prove the DNS-rebinding fix directly.
+async fn guard_url(url: &Url) -> Result<Vetted, GuardRefusal> {
+    guard_url_with(url, &SystemResolver).await
+}
+
+/// [`guard_url`] with the hostname-resolution step swapped for `resolver`
+/// -- exists so a DNS-rebinding fixture (one answer at guard time, a
+/// DIFFERENT one on any later call) can be tested directly rather than
+/// only through a real, non-deterministic DNS server. Production code
+/// never calls this directly; only [`guard_url`] (always [`SystemResolver`])
+/// does.
+async fn guard_url_with(url: &Url, resolver: &dyn HostResolver) -> Result<Vetted, GuardRefusal> {
     let scheme = url.scheme();
     if scheme != "http" && scheme != "https" {
         return Err(GuardRefusal(format!(
@@ -266,13 +353,14 @@ async fn guard_url(url: &Url) -> Result<(), GuardRefusal> {
     let host = url
         .host()
         .ok_or_else(|| GuardRefusal(format!("refusing to fetch {url}: URL has no host")))?;
-    match host {
+    let vetted = match host {
         Host::Ipv4(v4) => {
             if let Some(reason) = classify_ipv4(v4) {
                 return Err(GuardRefusal(format!(
                     "refusing to fetch {url}: {v4} is a {reason} address"
                 )));
             }
+            Vetted::Literal
         }
         Host::Ipv6(v6) => {
             if let Some(reason) = classify_ipv6(v6) {
@@ -280,19 +368,18 @@ async fn guard_url(url: &Url) -> Result<(), GuardRefusal> {
                     "refusing to fetch {url}: {v6} is a {reason} address"
                 )));
             }
+            Vetted::Literal
         }
         Host::Domain(name) => {
             let port = url.port_or_known_default().unwrap_or(80);
-            let lookup_target = format!("{name}:{port}");
-            let addrs: Vec<std::net::SocketAddr> =
-                match tokio::net::lookup_host(&lookup_target).await {
-                    Ok(iter) => iter.collect(),
-                    Err(e) => {
-                        return Err(GuardRefusal(format!(
-                            "refusing to fetch {url}: could not resolve host {name:?}: {e}"
-                        )));
-                    }
-                };
+            let addrs = match resolver.lookup(name, port).await {
+                Ok(addrs) => addrs,
+                Err(e) => {
+                    return Err(GuardRefusal(format!(
+                        "refusing to fetch {url}: could not resolve host {name:?}: {e}"
+                    )));
+                }
+            };
             if addrs.is_empty() {
                 return Err(GuardRefusal(format!(
                     "refusing to fetch {url}: host {name:?} resolved to no addresses"
@@ -307,9 +394,72 @@ async fn guard_url(url: &Url) -> Result<(), GuardRefusal> {
                     )));
                 }
             }
+            Vetted::Domain {
+                name: name.to_string(),
+                addrs,
+            }
         }
+    };
+    Ok(vetted)
+}
+
+/// A `reqwest::dns::Resolve` that answers exactly the resolution
+/// [`guard_url`] already vetted, and refuses every other lookup -- the fix
+/// for the DNS-rebinding TOCTOU this module's own doc describes. Installed
+/// via `ClientBuilder::dns_resolver`, REPLACING the client's resolver
+/// entirely -- not layered as a `ClientBuilder::resolve_to_addrs`
+/// override, which falls back to a real DNS query for any name it does
+/// not recognize, reopening the exact race this exists to close. A request
+/// for any name this resolver was not built for fails closed rather than
+/// resolving for real.
+///
+/// **Deliberately does not rewrite the URL to an IP literal instead.**
+/// Replacing the host with the vetted IP would break TLS certificate
+/// verification (the certificate is checked against the ORIGINAL
+/// hostname) and any virtual-hosting the origin server does by `Host`
+/// header -- this resolver leaves the URL, the `Host` header, and the TLS
+/// SNI exactly as they were, and only changes which address the socket
+/// connects to.
+#[derive(Debug, Clone)]
+struct PinnedResolver(Vetted);
+
+impl Resolve for PinnedResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let requested = name.as_str().to_string();
+        let result: Result<Vec<SocketAddr>, String> = match &self.0 {
+            Vetted::Literal => Err(format!(
+                "pinned resolver refuses to resolve {requested:?}: this connection's host was \
+                 an IP literal, which must never invoke DNS resolution at all"
+            )),
+            Vetted::Domain { name, addrs } => {
+                if names_match(&requested, name) {
+                    Ok(addrs.clone())
+                } else {
+                    Err(format!(
+                        "pinned resolver refuses to resolve {requested:?}: pinned only for \
+                         {name:?}"
+                    ))
+                }
+            }
+        };
+        Box::pin(async move {
+            let addrs =
+                result.map_err(|msg| -> Box<dyn std::error::Error + Send + Sync> { msg.into() })?;
+            Ok(Box::new(addrs.into_iter()) as Addrs)
+        })
     }
-    Ok(())
+}
+
+/// Case-insensitive, trailing-dot-insensitive hostname comparison for
+/// [`PinnedResolver`] -- the connector's own `Name` and [`guard_url`]'s
+/// `Host::Domain` string come from parsing the same URL, so they are
+/// expected to match exactly; this only guards against a spelling
+/// difference (case, or a trailing FQDN dot) causing a SAFE request to be
+/// refused, never against a genuine mismatch being accepted.
+fn names_match(requested: &str, vetted: &str) -> bool {
+    requested
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case(vetted.trim_end_matches('.'))
 }
 
 fn classify_ip(addr: IpAddr) -> Option<&'static str> {
@@ -426,16 +576,51 @@ pub(crate) struct FetchedPage {
 /// [`fetch_loop`] with the SSRF guard always enforced -- the only entry
 /// point production code (`WebFetchTool::invoke`) calls.
 async fn fetch_guarded(
-    client: &reqwest::Client,
     url: Url,
     max_bytes: usize,
     max_redirects: u8,
+    timeout: Duration,
 ) -> Result<FetchedPage, ToolError> {
-    fetch_loop(client, url, max_bytes, max_redirects, true).await
+    fetch_loop(url, max_bytes, max_redirects, timeout, true).await
+}
+
+/// A plain `reqwest::Client` -- no redirects (this loop follows them
+/// itself, re-guarding each hop) and the caller's timeout. Used for the
+/// `enforce_guard = false` transport-only tests below; guarded fetches use
+/// [`pinned_client`] instead.
+fn plain_client(timeout: Duration) -> Result<reqwest::Client, ToolError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout)
+        .build()
+        .map_err(|e| ToolError::Internal {
+            detail: e.to_string(),
+        })
+}
+
+/// A `reqwest::Client` whose DNS resolution is PINNED to `vetted` -- see
+/// [`PinnedResolver`]. Built fresh for each hop [`fetch_loop`] takes, never
+/// reused across hops: each redirect hop can resolve to a different host,
+/// so each hop needs its own pin, never a resolver state a LATER hop could
+/// accidentally satisfy from an EARLIER hop's vetted set. A build failure
+/// here is a refusal (`ToolError::Internal`, propagated by `?`), never a
+/// fallback to an unpinned client -- the guard fails closed.
+fn pinned_client(vetted: Vetted, timeout: Duration) -> Result<reqwest::Client, ToolError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout)
+        .dns_resolver(PinnedResolver(vetted))
+        .build()
+        .map_err(|e| ToolError::Internal {
+            detail: e.to_string(),
+        })
 }
 
 /// The GET-and-follow-redirects transport loop, bounded to `max_redirects`
-/// hops and `max_bytes` of response body.
+/// hops and `max_bytes` of response body. Builds its OWN `reqwest::Client`
+/// for every hop -- see [`plain_client`]/[`pinned_client`] -- rather than
+/// accepting one from the caller, precisely so a guarded hop's client can
+/// be pinned to that hop's own [`Vetted`] address.
 ///
 /// `enforce_guard` is `pub(crate)`-only surface, never reachable from
 /// outside this crate and never set anywhere in production code except
@@ -443,23 +628,27 @@ async fn fetch_guarded(
 /// to exercise the redirect-following/truncation behavior below against a
 /// local `wiremock` server bound to `127.0.0.1` -- which [`guard_url`]
 /// would itself refuse as a loopback address, since a fixture server has
-/// no way to bind anywhere else. The guard's OWN refusal behavior is
-/// proven separately, directly against [`guard_url`]/[`classify_ipv4`]/
-/// [`classify_ipv6`], with no network involved at all.
+/// no way to bind anywhere else. The guard's OWN refusal behavior, AND the
+/// address-pinning behavior it now carries, are proven separately, directly
+/// against [`guard_url_with`]/[`PinnedResolver`], with no live network
+/// connection involved at all.
 pub(crate) async fn fetch_loop(
-    client: &reqwest::Client,
     mut url: Url,
     max_bytes: usize,
     max_redirects: u8,
+    timeout: Duration,
     enforce_guard: bool,
 ) -> Result<FetchedPage, ToolError> {
     let mut hops: u8 = 0;
     loop {
-        if enforce_guard {
-            guard_url(&url)
+        let client = if enforce_guard {
+            let vetted = guard_url(&url)
                 .await
                 .map_err(|refusal| ToolError::Denied { reason: refusal.0 })?;
-        }
+            pinned_client(vetted, timeout)?
+        } else {
+            plain_client(timeout)?
+        };
         let resp = client
             .get(url.clone())
             .send()
@@ -838,6 +1027,169 @@ mod tests {
         assert!(err.0.contains("loopback"), "{}", err.0);
     }
 
+    // ---- DNS-rebinding: pinning the vetted address ----
+    //
+    // These tests substitute `guard_url_with`'s injectable `HostResolver`
+    // for a fixture that can answer DIFFERENTLY on a second call -- the
+    // exact shape of a hostile DNS server exploiting the TOCTOU window a
+    // guard-then-reqwest-resolves-again design leaves open. No live
+    // network connection is involved: proving the CONNECTION is pinned
+    // means proving `PinnedResolver::resolve` -- the one seam a hyper
+    // connector actually calls to get an address -- returns only the
+    // vetted set, directly, rather than trying to observe a real socket's
+    // destination.
+
+    /// A `HostResolver` fixture that answers `first` on its FIRST call and
+    /// `second` on every call after that -- lets a test simulate a hostile
+    /// DNS server's rebind directly, and count how many times the
+    /// resolution step actually ran.
+    struct RebindingResolver {
+        first: Vec<SocketAddr>,
+        second: Vec<SocketAddr>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl HostResolver for RebindingResolver {
+        async fn lookup(&self, _host: &str, _port: u16) -> std::io::Result<Vec<SocketAddr>> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(if n == 0 {
+                self.first.clone()
+            } else {
+                self.second.clone()
+            })
+        }
+    }
+
+    /// The load-bearing test: a hostname whose FIRST resolution is public
+    /// and whose SECOND (and every later) resolution is private. Proves
+    /// `guard_url_with` resolves exactly ONCE (never re-queries), and that
+    /// the `PinnedResolver` built from its `Vetted` answer -- the one a
+    /// connector actually calls to reach the network -- returns ONLY the
+    /// first, vetted, public address, no matter how many times it is
+    /// asked. The private "second answer" is never reachable through it.
+    #[tokio::test]
+    async fn dns_rebinding_never_reaches_the_second_private_answer() {
+        let url = Url::parse("http://rebind.example/").unwrap();
+        let public_addr = SocketAddr::from(([93, 184, 216, 34], 80));
+        let private_addr = SocketAddr::from(([127, 0, 0, 1], 80));
+        let resolver = RebindingResolver {
+            first: vec![public_addr],
+            second: vec![private_addr],
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+
+        let vetted = guard_url_with(&url, &resolver)
+            .await
+            .expect("the FIRST answer is public and must be vetted, not refused");
+        match &vetted {
+            Vetted::Domain { addrs, .. } => assert_eq!(
+                addrs,
+                &vec![public_addr],
+                "the vetted set must be exactly the first answer"
+            ),
+            other => panic!("expected Vetted::Domain, got {other:?}"),
+        }
+        assert_eq!(
+            resolver.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "guard_url_with must resolve exactly once per call, never re-querying"
+        );
+
+        // The connection itself: a hyper connector's ONLY way to reach an
+        // address for this host is `PinnedResolver::resolve`. Ask it
+        // several times, the way retries/pooling might, and confirm it
+        // NEVER answers with the private address a second real DNS query
+        // would have given.
+        let pinned = PinnedResolver(vetted);
+        for _ in 0..3 {
+            let addrs: Vec<SocketAddr> = pinned
+                .resolve("rebind.example".parse().unwrap())
+                .await
+                .expect("the pinned resolver must answer for the name it was vetted for")
+                .collect();
+            assert_eq!(
+                addrs,
+                vec![public_addr],
+                "the pinned resolver must never return the private second answer"
+            );
+        }
+    }
+
+    /// Paired with the rebinding test above: an ORDINARY host with a
+    /// single, stable, public answer still resolves and pins correctly --
+    /// catches a pinning implementation that (for example) refuses every
+    /// domain host regardless of whether it is actually reachable, which
+    /// would make the fix indistinguishable from breaking the tool.
+    #[tokio::test]
+    async fn dns_rebinding_pinning_does_not_break_an_ordinary_public_host() {
+        let url = Url::parse("http://public.example/").unwrap();
+        let addr = SocketAddr::from(([8, 8, 8, 8], 80));
+        let resolver = RebindingResolver {
+            first: vec![addr],
+            second: vec![addr],
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+
+        let vetted = guard_url_with(&url, &resolver)
+            .await
+            .expect("an ordinary public host must not be refused");
+        let pinned = PinnedResolver(vetted);
+        let addrs: Vec<SocketAddr> = pinned
+            .resolve("public.example".parse().unwrap())
+            .await
+            .expect("the pinned resolver must answer for the vetted host")
+            .collect();
+        assert_eq!(addrs, vec![addr]);
+    }
+
+    /// A domain name that resolves to a private address is refused at
+    /// `guard_url_with` itself -- the fixture-resolver seam makes this
+    /// testable directly for the first time (previously this branch was
+    /// only reachable via a real DNS lookup).
+    #[tokio::test]
+    async fn guard_url_with_refuses_a_domain_that_resolves_to_a_private_address() {
+        let url = Url::parse("http://internal.example/").unwrap();
+        let resolver = RebindingResolver {
+            first: vec![SocketAddr::from(([127, 0, 0, 1], 80))],
+            second: vec![],
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let err = guard_url_with(&url, &resolver).await.unwrap_err();
+        assert!(err.0.contains("loopback"), "{}", err.0);
+    }
+
+    /// Fail-closed: a `PinnedResolver` refuses a lookup for any name other
+    /// than the one it was vetted for.
+    #[tokio::test]
+    async fn pinned_resolver_refuses_a_name_it_was_not_vetted_for() {
+        let vetted = Vetted::Domain {
+            name: "a.example".to_string(),
+            addrs: vec![SocketAddr::from(([8, 8, 8, 8], 80))],
+        };
+        let pinned = PinnedResolver(vetted);
+        let err = pinned
+            .resolve("b.example".parse().unwrap())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("pinned only for"), "{err}");
+    }
+
+    /// Fail-closed, defense in depth: an IP-literal host should never
+    /// trigger a DNS lookup at all (hyper's own connector skips the
+    /// resolver for an IP literal) -- but if one somehow reached
+    /// `PinnedResolver` anyway, it must be refused, not silently answered
+    /// by falling through to a real resolver.
+    #[tokio::test]
+    async fn pinned_resolver_refuses_any_lookup_for_an_ip_literal_host() {
+        let pinned = PinnedResolver(Vetted::Literal);
+        let err = pinned
+            .resolve("anything.example".parse().unwrap())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("IP literal"), "{err}");
+    }
+
     /// End-to-end through the real public `Tool` surface, no wiremock
     /// involved: the guard refuses before any connection is attempted, so
     /// this test needs no network at all -- catches a regression where
@@ -881,12 +1233,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
         let url = Url::parse(&format!("{}/big", server.uri())).unwrap();
-        let page = fetch_loop(&client, url, 100, 5, false).await.unwrap();
+        let page = fetch_loop(url, 100, 5, Duration::from_secs(5), false)
+            .await
+            .unwrap();
         assert_eq!(
             page.body.len(),
             100,
@@ -913,12 +1263,10 @@ mod tests {
                 .await;
         }
 
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
         let url = Url::parse(&format!("{}/r0", server.uri())).unwrap();
-        let err = fetch_loop(&client, url, 1_000, 2, false).await.unwrap_err();
+        let err = fetch_loop(url, 1_000, 2, Duration::from_secs(5), false)
+            .await
+            .unwrap_err();
         match err {
             ToolError::Denied { reason } => assert!(reason.contains("redirect"), "{reason}"),
             other => panic!("expected Denied, got {other:?}"),
@@ -949,12 +1297,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
         let url = Url::parse(&format!("{}/start", server.uri())).unwrap();
-        let page = fetch_loop(&client, url, 1_000, 5, false).await.unwrap();
+        let page = fetch_loop(url, 1_000, 5, Duration::from_secs(5), false)
+            .await
+            .unwrap();
         assert_eq!(page.body, "hello");
         assert!(page.final_url.as_str().ends_with("/final"));
     }
