@@ -65,27 +65,48 @@ operator's real `~/.conway`. Exercise everything headless yourself: one-shot,
 piping, output formats, resume, permission modes, `sessions`/`routes`/`tools`/
 `plugin` subcommands.
 
-**You cannot drive the TUI; the operator can.** A subagent has no interactive
-terminal, and reading `tui/` source and calling it driven is the failure mode
-`CONDUCT.md` §5.2 names. Your brief says whether the operator is available this
-run. If they are, the TUI is driven **by hand, from a script you write**:
+**Drive the TUI yourself. `tmux` is a pty.** For three rounds this lens said a
+subagent cannot drive the TUI and must hand a script to the operator. That
+premise was false, and it cost three rounds of coverage: `tmux` gives you a real
+pty, the TUI cannot tell it from a terminal, and you drive it from `Bash` with no
+MCP server and no operator in the loop. The loop is Playwright's, for a terminal:
 
-- Return the script under its own heading, `## Manual TUI script`, after
-  **Not checked**. **At most twelve steps.** Each step is one line — *type this
-  → expect this* — and covers something only the TUI can show: model switching
-  and the picker (§2.4), permission-mode cycling, `/context`, `/plugin` toggling
-  and what changes, slash-command parity for agent lifecycle (§2.5), time to
-  first token on the default model. Do not script what you already checked
-  headless.
-- Step 0 is a single command that starts the TUI against the isolated config
-  dir you already prepared, copy-pasteable. The operator sets nothing up.
-- The operator replies with the step number and one line of what happened.
-  Fold those observations into your findings as evidence — cite them as
-  "operator-driven, step N" — and only then finalise your return.
+```
+tmux new-session -d -s rev -x 200 -y 50 -c <cwd> "sh -c 'CMD; echo [EXIT=$?]; sleep 600'"
+tmux send-keys -t rev "/model" Enter      # also: Escape, or a bare key like "n"
+tmux capture-pane -t rev -p               # the screen, as greppable text
+tmux kill-session -t rev
+```
 
-If the operator is not available, say so and put "TUI not driven — no pty"
-first in **Not checked**. Two consecutive runs like that is a process defect
-and the state of the union names it.
+Two failures that cost a retry each, so do not rediscover them. **The pane dies
+the instant your command exits**, taking the scrollback with it — always wrap in
+`sh -c '...; sleep 600'`. And **size the window explicitly** (`-x 200 -y 50`) or
+the TUI wraps at 80 columns and your assertions on rendered lines break.
+
+**This is now the expected coverage, not a stretch goal.** End-to-end is where
+this project's defects actually live: the first tmux-driven run of guided setup
+found that it writes `settings.json` to the config dir and `models.json` to the
+project dir, so `cd` collapses the context window 12.8x — the root cause of a
+session loss that had been on the board for a week as an unexplained symptom. No
+amount of source reading had found it, and two reviewers had already looked.
+Budget the upper half of your run for driving, and drive the paths an operator
+actually walks: first launch with nothing configured, guided setup end to end,
+model switching and the picker, permission-mode cycling, `/context`, `/plugin`
+toggling, slash-command parity for agent lifecycle (§2.5), time to first token.
+
+**Reading `tui/` source and calling it driven is still the failure mode**
+`CONDUCT.md` §5.2 names. `capture-pane` output is the evidence — paste the lines
+that prove the finding, exactly as they rendered.
+
+**The operator is for judgement, not transcription.** A human describing a screen
+is lossy and slow, and you no longer need them for it. Ask them only what
+`capture-pane` cannot answer: whether something *feels* wrong, whether a wait was
+tolerable, whether an error read as helpful. If you still want a hand-run script,
+it is a supplement to your own driving, never a substitute for it.
+
+"TUI not driven — no pty" is **no longer an acceptable line in Not checked.**
+If `tmux` is genuinely unavailable in your environment, say that specifically and
+name what you tried.
 
 Judge against **friction**, not feature count. `INTENT.md` §2 is explicit that
 conway is not trying to have fewer features — it is trying to make each one earn
