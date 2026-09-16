@@ -155,6 +155,19 @@ Questions your territory raised that INTENT.md does not answer. One line each.
 What your territory contains that you did not get to, and why.
 ```
 
+**A `What done looks like` grep predicate must survive the formatter.** A
+`grep` that matches a multi-token expression — `.iter().rev().find(...)`,
+an `if` condition, any call spanning more than one identifier — is at the
+mercy of whatever `rustfmt` decides is one line. One acceptance criterion
+verified a duplicate-JSON-key extraction this way, the extraction landed
+correctly, and the criterion still read as failed the moment the formatter
+re-wrapped the same call across four lines — a worker had run the grep
+before `cargo fmt`, not after, and reported the pre-format count as if it
+were final. Write the predicate as a single identifier, a literal comment
+string, or an explicitly whitespace-tolerant pattern instead — something
+`rustfmt` cannot silently break by re-wrapping code that is otherwise
+unchanged.
+
 **Operator sees comes first and decides the rank.** `INTENT.md` §8.7's test:
 if the sentence can be written, the finding is significant on those grounds
 alone and the philosophy chooses the remedy underneath it. A finding with an
