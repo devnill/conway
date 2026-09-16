@@ -36,10 +36,10 @@
 //! why the SIGKILL half is reported rather than guessed at.
 
 #[allow(dead_code)]
-mod common;
-#[allow(dead_code)]
 #[path = "common/child_procs.rs"]
 mod child_procs;
+#[allow(dead_code)]
+mod common;
 
 use std::time::{Duration, Instant};
 
@@ -54,7 +54,10 @@ use conway::{LogRecord, ResultStatus, SessionFilter};
 /// its one scripted tool call.
 fn one_bash_call(command: serde_json::Value) -> Script {
     Script(vec![vec![
-        Chunk::ToolCall { name: "bash", args: command },
+        Chunk::ToolCall {
+            name: "bash",
+            args: command,
+        },
         Chunk::Finish("tool_calls"),
     ]])
 }
@@ -105,7 +108,10 @@ async fn backgrounded_job_returns_fast_leaves_output_uncaptured_and_leaves_the_p
     let fixture = common::write_fixture(&mock, 5);
 
     let started = Instant::now();
-    let out = common::run_conway(&["-p", "background a job", "--allowed-tools", "bash"], &fixture);
+    let out = common::run_conway(
+        &["-p", "background a job", "--allowed-tools", "bash"],
+        &fixture,
+    );
     let elapsed = started.elapsed();
     assert!(
         out.status.success(),
@@ -121,13 +127,19 @@ async fn backgrounded_job_returns_fast_leaves_output_uncaptured_and_leaves_the_p
     );
 
     let conway = common::open_conway(&fixture).await;
-    let sessions = conway.sessions(SessionFilter::default()).await.expect("list sessions");
+    let sessions = conway
+        .sessions(SessionFilter::default())
+        .await
+        .expect("list sessions");
     assert_eq!(sessions.len(), 1);
     let handle = conway.resume(sessions[0].id).await.expect("resume session");
     let root = handle.root();
     let records = handle.transcript(root).await.expect("read transcript");
     let (text, is_error) = first_tool_result_text(&records);
-    assert!(!is_error, "a successfully backgrounded job must not be an error result: {text:?}");
+    assert!(
+        !is_error,
+        "a successfully backgrounded job must not be an error result: {text:?}"
+    );
 
     let pid = child_procs::pid_from_bash_stdout(&text);
     let _guard = child_procs::KillOnDrop(pid);
@@ -171,7 +183,10 @@ async fn foreground_sleep_past_a_short_timeout_is_killed_and_reports_only_timed_
     .await;
     let fixture = common::write_fixture(&mock, 5);
 
-    let out = common::run_conway(&["-p", "run something slow", "--allowed-tools", "bash"], &fixture);
+    let out = common::run_conway(
+        &["-p", "run something slow", "--allowed-tools", "bash"],
+        &fixture,
+    );
     assert!(
         out.status.success(),
         "the RUN itself still completes (the tool call fails, the agent still finishes its \
@@ -180,13 +195,19 @@ async fn foreground_sleep_past_a_short_timeout_is_killed_and_reports_only_timed_
     );
 
     let conway = common::open_conway(&fixture).await;
-    let sessions = conway.sessions(SessionFilter::default()).await.expect("list sessions");
+    let sessions = conway
+        .sessions(SessionFilter::default())
+        .await
+        .expect("list sessions");
     let handle = conway.resume(sessions[0].id).await.expect("resume session");
     let root = handle.root();
     let records = handle.transcript(root).await.expect("read transcript");
     let (text, is_error) = first_tool_result_text(&records);
 
-    assert!(is_error, "a killed-by-timeout foreground call must be an error result: {text:?}");
+    assert!(
+        is_error,
+        "a killed-by-timeout foreground call must be an error result: {text:?}"
+    );
     assert!(text.contains("timed out after 500ms"), "{text:?}");
     assert!(
         !text.contains("exit code:"),
@@ -280,11 +301,20 @@ async fn sigterm_mid_work_child_persists_a_cancelled_terminal_record() {
         .sessions(SessionFilter::default())
         .await
         .expect("list outer sessions");
-    let outer_handle = outer_conway.resume(outer_sessions[0].id).await.expect("resume outer");
+    let outer_handle = outer_conway
+        .resume(outer_sessions[0].id)
+        .await
+        .expect("resume outer");
     let outer_root = outer_handle.root();
-    let outer_records = outer_handle.transcript(outer_root).await.expect("outer transcript");
+    let outer_records = outer_handle
+        .transcript(outer_root)
+        .await
+        .expect("outer transcript");
     let (outer_tool_text, outer_is_error) = first_tool_result_text(&outer_records);
-    assert!(!outer_is_error, "backgrounding the inner process must not itself be an error: {outer_tool_text:?}");
+    assert!(
+        !outer_is_error,
+        "backgrounding the inner process must not itself be an error: {outer_tool_text:?}"
+    );
 
     let inner_pid = child_procs::pid_from_bash_stdout(&outer_tool_text);
     let _guard = child_procs::KillOnDrop(inner_pid);
@@ -315,9 +345,15 @@ async fn sigterm_mid_work_child_persists_a_cancelled_terminal_record() {
         1,
         "expected exactly one session in the inner fixture's own store: {inner_sessions:?}"
     );
-    let inner_handle = inner_conway.resume(inner_sessions[0].id).await.expect("resume inner");
+    let inner_handle = inner_conway
+        .resume(inner_sessions[0].id)
+        .await
+        .expect("resume inner");
     let inner_root = inner_handle.root();
-    let inner_records = inner_handle.transcript(inner_root).await.expect("inner transcript");
+    let inner_records = inner_handle
+        .transcript(inner_root)
+        .await
+        .expect("inner transcript");
     let last = inner_records
         .last()
         .unwrap_or_else(|| panic!("the inner session's transcript must not be empty"));
@@ -326,7 +362,9 @@ async fn sigterm_mid_work_child_persists_a_cancelled_terminal_record() {
         LogRecord::AgentResultRecord { result, .. } => {
             assert_eq!(
                 result.status,
-                ResultStatus::Cancelled { reason: "signal: SIGTERM".to_string() },
+                ResultStatus::Cancelled {
+                    reason: "signal: SIGTERM".to_string()
+                },
                 "the last record must be a Cancelled result naming the SIGTERM signal, not any \
                  other terminal status: {result:?}"
             );
