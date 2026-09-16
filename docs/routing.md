@@ -144,7 +144,12 @@ and a matching explainer are guaranteed to agree with each other about
 ## Asking why a route was chosen
 
 `conway routes explain <role>` is the direct answer to "which model
-served this, and why":
+served this, and why". It never proposes a turn, so — like `conway plugin
+list`/`conway tools list` — it needs no working provider either: it runs
+against a completely empty `settings.json`, or none on disk at all,
+printing the same degenerate-but-real report the `MinimalRouter` fallback
+below describes. `-p` and the TUI are unaffected by this — both still
+refuse with a guided-setup error until a working provider exists.
 
 ```console
 conway routes explain coder

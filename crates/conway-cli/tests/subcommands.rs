@@ -15,6 +15,7 @@ mod common;
 
 use common::mock_backend::{Chunk, MockBackend, Script};
 use common::{command, run_conway, write_fixture, write_fixture_with, Fixture};
+use conway_cli::first_run::GUIDED_SETUP_MARKER;
 use serde_json::Value;
 
 const NO_ESC: u8 = 0x1b;
@@ -643,4 +644,104 @@ fn routes_explain_unknown_role_exits_2_lists_configured_roles() {
     assert!(stderr.contains("no-such-role"));
     assert!(stderr.contains("default"));
     assert!(stderr.contains("coder"));
+}
+
+// ---------------------------------------------------------------------
+// Board item `01M2M4Y32TKAA1CSFGD3134E09`: `sessions`/`routes` must not
+// need a working provider -- neither one ever starts an agent or proposes
+// a tool call (`main.rs`'s own `gate_override` comment, `main.rs:118-131`).
+// Byte-identical fixture shape to `plugin_cli.rs::write_no_backends_
+// fixture`/`tools_list.rs::write_no_backends_fixture` (each `tests/*.rs`
+// file compiles `common` fresh as its own independent crate, matching this
+// directory's existing duplicated-small-helper convention).
+// ---------------------------------------------------------------------
+
+/// A fixture with `"backends": {}` and an empty role chain -- the canonical
+/// `NoBackendsConfigured` case that trips `should_offer_guided_setup()`.
+/// `static_fixture` above (a declared-but-unreachable backend) does NOT
+/// exercise this: an unreachable, non-`local` entry classifies as
+/// `Undetermined`, not `NoBackendsConfigured`, so it never trips the
+/// guided-setup gate this section is about -- these tests need the
+/// genuinely empty fleet instead.
+fn write_no_backends_fixture() -> Fixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config_path = dir.path().join("conway.json");
+    std::fs::write(
+        &config_path,
+        serde_json::json!({
+            "default_role": "default",
+            "backends": {},
+            "roles": { "default": { "chain": [] } },
+        })
+        .to_string(),
+    )
+    .expect("write conway.json");
+    Fixture { dir, config_path }
+}
+
+/// Acceptance 1: against a config with zero backends declared, `conway
+/// sessions list` still prints its real header row and exits 0 -- this
+/// would fail against HEAD, which refuses with the guided-setup provider
+/// error before `commands::sessions::run` ever runs.
+#[test]
+fn sessions_list_succeeds_with_no_backends_configured() {
+    let fixture = write_no_backends_fixture();
+
+    let out = run_conway(&["sessions", "list"], &fixture);
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains(GUIDED_SETUP_MARKER),
+        "sessions list must never hit the provider gate: {stderr:?}"
+    );
+    assert_eq!(out.stdout, b"ID  NAME  CREATED  ROLE  ORIGIN\n".to_vec());
+}
+
+/// Acceptance 1's `routes explain` counterpart: `conway routes explain
+/// default` (the working form -- `explain` requires a `<ROLE>` argument)
+/// still prints a real report and exits 0 against the same zero-backend
+/// config.
+#[test]
+fn routes_explain_succeeds_with_no_backends_configured() {
+    let fixture = write_no_backends_fixture();
+
+    let out = run_conway(&["routes", "explain", "default"], &fixture);
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains(GUIDED_SETUP_MARKER),
+        "routes explain must never hit the provider gate: {stderr:?}"
+    );
+    let text = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(text.contains("role: default"));
+}
+
+/// Acceptance 2: on the SAME zero-backend config, `-p` still fails with the
+/// unchanged provider error -- proves the gate itself was narrowed to
+/// specific read-only commands, not removed for every dispatch target.
+#[test]
+fn print_mode_still_refuses_with_no_backends_configured() {
+    let fixture = write_no_backends_fixture();
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+
+    assert!(
+        !out.status.success(),
+        "no provider is configured -- one-shot mode must still refuse"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(GUIDED_SETUP_MARKER),
+        "expected the unchanged guided-setup provider error, got stderr: {stderr:?}"
+    );
 }

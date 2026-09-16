@@ -39,11 +39,13 @@ mode (and unlike the TUI), it is unaffected by `tools.builtin_plugins`'s
 default — `bash` is always in its output, the same "always registered,
 gated by `--allowed-tools`" story described above.
 
-`conway tools list` never dials a model, so — unlike `-p`, the TUI, or
-`conway sessions`/`conway routes` — it runs with **no provider configured
-at all**: a completely empty `settings.json`, or none on disk, still prints
-the full registered set and exits 0. It is meant to be the first thing you
-run after installing conway, before deciding what to turn on.
+`conway tools list` never dials a model, so — unlike `-p` or the TUI — it
+runs with **no provider configured at all**: a completely empty
+`settings.json`, or none on disk, still prints the full registered set and
+exits 0. It is meant to be the first thing you run after installing conway,
+before deciding what to turn on. `conway sessions`/`conway routes` share
+this same "no provider needed" footing, for the identical reason — see
+[`sessions.md`](sessions.md) and [`routing.md`](routing.md).
 
 ## The `fs` tools (`conway.fs`, on by default)
 

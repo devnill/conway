@@ -333,10 +333,21 @@ async fn build_conway(
     // {"` -- still contains the exact substring the P-14 test above pins,
     // `"if fleet_usability.should_offer_guided_setup() {"`), so this stays
     // a direct call to the real predicate rather than a second, hand-rolled
-    // copy of it. `sessions`/`routes` sit behind this identical gate and do
-    // not need it either (confirmed while building this item), but
-    // widening past the two commands this item's own brief named is left
-    // to a later item, not done here silently.
+    // copy of it.
+    //
+    // Board item `01M2M4Y32TKAA1CSFGD3134E09`: widened past those original
+    // two. `sessions`/`routes` are the exact "read-only inspections" this
+    // same file's `main` already argues for, above, where `gate_override`
+    // picks `DenyAllGate` for them (see that `if`/`else` chain's own
+    // comment, `main.rs:118-131`: "`sessions`/`routes` are read-only
+    // inspections: they never start an agent and never propose a tool
+    // call") -- this is that identical reasoning, applied to the OTHER
+    // gate the same two commands sit behind. `plugin install`/`remove`
+    // join them too, judged against the same test while widening this:
+    // both are a `conway::config::set_plugin_installed` file write, never
+    // a turn -- see `command_needs_provider`'s own doc, below, for the
+    // full judgement (including the fresh-install evidence that made the
+    // call).
     let builder = if !command_needs_provider(&cli.command) {
         builder
     } else if fleet_usability.should_offer_guided_setup() {
@@ -472,26 +483,54 @@ async fn build_conway(
     Ok((conway, memory_store, agent_names))
 }
 
-/// Board item `01M250BXW12HVMKZBCFPKG3704`: does this dispatch target
-/// actually reach a model? Only two commands answer no -- `conway plugin
-/// list` (`commands::plugin::PluginAction::List`) and `conway tools list`
-/// (`commands::tools::ToolsAction::List`), both pure formatters over what
-/// `build_conway` above has ALREADY assembled by the time either one runs
-/// (the compiled-in plugin bundle / the registered `ToolSpec` set), neither
-/// one ever proposing a turn. Every other `Command` variant, `plugin
-/// install`/`remove` included (writes a config file; still never reaches a
-/// model, but out of THIS item's named scope -- left alone rather than
-/// folded in silently), keeps needing a provider exactly as before, as
-/// does `cli.command.is_none()` (the TUI and one-shot `-p`, `main`'s own
-/// `is_tui` doc).
+/// Board item `01M250BXW12HVMKZBCFPKG3704` named two commands that answer
+/// no to "does this dispatch target actually reach a model?" -- `conway
+/// plugin list` (`commands::plugin::PluginAction::List`) and `conway tools
+/// list` (`commands::tools::ToolsAction::List`), both pure formatters over
+/// what `build_conway` above has ALREADY assembled by the time either one
+/// runs (the compiled-in plugin bundle / the registered `ToolSpec` set),
+/// neither ever proposing a turn. Board item `01M2M4Y32TKAA1CSFGD3134E09`
+/// widens this to the full set that passes the same test:
+///
+/// - **`sessions`/`routes`** (`Command::Sessions`, `Command::Routes`):
+///   read-only inspections, identically reasoned about by `main`'s own
+///   `gate_override` selection above (`main.rs:118-131`: "`sessions`/
+///   `routes` are read-only inspections: they never start an agent and
+///   never propose a tool call"). That comment already asserted this; the
+///   provider gate, until this item, disagreed with it.
+/// - **`plugin install`/`plugin remove`** (`commands::plugin::
+///   PluginAction::Install`, `::Remove`): the predecessor item left these
+///   gated as out of its named scope, not because either one reaches a
+///   model -- neither does. Both are a single `conway::config::
+///   set_plugin_installed` file write (`commands::plugin::install`/
+///   `remove`), restart-to-apply, same as `list`. Judged here against the
+///   identical test `list` already passed: no turn, ever. The evidence
+///   that tipped this from "could" to "should": `conway`'s own
+///   `NoFirstPartyPluginsInstalled` startup warning
+///   (`first_party_plugins::warn_if_no_plugin_opinion`) tells a fresh
+///   operator to "run `conway plugin install --defaults`" -- before this
+///   change, that exact command, run against the exact fleet the warning
+///   fired for, refused with the provider error the warning was trying to
+///   route them around.
+///
+/// `cli.command.is_none()` (the TUI and one-shot `-p`, `main`'s own
+/// `is_tui` doc) keeps needing a provider exactly as before, and so does
+/// `Command::External` -- a plugin-contributed command can end in
+/// `CommandOutcome::SubmitPrompt`, a real turn. `Command::Memory`
+/// (`commands::memory::run`) is, on inspection, a similar pure-store
+/// surface to the ones widened here -- it never dials a model either --
+/// but naming it is out of THIS item's own brief (`sessions`/`routes`,
+/// plus a judgement on `plugin install`/`remove` only), so it is left
+/// gated rather than folded in silently. Noted, not decided, here.
 fn command_needs_provider(command: &Option<Command>) -> bool {
     !matches!(
         command,
-        Some(Command::Plugin(commands::plugin::PluginArgs {
-            action: commands::plugin::PluginAction::List { .. },
-        })) | Some(Command::Tools(commands::tools::ToolsArgs {
-            action: commands::tools::ToolsAction::List { .. },
-        }))
+        Some(Command::Plugin(_))
+            | Some(Command::Tools(commands::tools::ToolsArgs {
+                action: commands::tools::ToolsAction::List { .. },
+            }))
+            | Some(Command::Sessions(_))
+            | Some(Command::Routes(_))
     )
 }
 
@@ -521,12 +560,51 @@ mod command_needs_provider_tests {
     }
 
     #[test]
-    fn plugin_install_still_needs_a_provider() {
-        assert!(command_needs_provider(&Some(Command::Plugin(
+    fn plugin_install_does_not_need_a_provider() {
+        // Board item `01M2M4Y32TKAA1CSFGD3134E09`: judged against the same
+        // test `list` already passed (a config-file write, never a turn) --
+        // see `command_needs_provider`'s own doc for the full reasoning.
+        assert!(!command_needs_provider(&Some(Command::Plugin(
             commands::plugin::PluginArgs {
                 action: commands::plugin::PluginAction::Install {
                     ids: vec!["conway.memory".to_string()],
                     defaults: false,
+                },
+            }
+        ))));
+    }
+
+    #[test]
+    fn plugin_remove_does_not_need_a_provider() {
+        assert!(!command_needs_provider(&Some(Command::Plugin(
+            commands::plugin::PluginArgs {
+                action: commands::plugin::PluginAction::Remove {
+                    ids: vec!["conway.memory".to_string()],
+                },
+            }
+        ))));
+    }
+
+    #[test]
+    fn sessions_does_not_need_a_provider() {
+        assert!(!command_needs_provider(&Some(Command::Sessions(
+            commands::sessions::SessionsArgs {
+                action: commands::sessions::SessionsAction::List {
+                    limit: None,
+                    label: None,
+                    json: false,
+                },
+            }
+        ))));
+    }
+
+    #[test]
+    fn routes_does_not_need_a_provider() {
+        assert!(!command_needs_provider(&Some(Command::Routes(
+            commands::routes::RoutesArgs {
+                action: commands::routes::RoutesAction::Explain {
+                    role: "default".to_string(),
+                    json: false,
                 },
             }
         ))));

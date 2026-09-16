@@ -381,6 +381,12 @@ A few things worth knowing before you rely on the output:
   gate unconditionally, regardless of anything in `settings.json` — a
   no-op for a subcommand that never calls a tool, and one less thing to
   set up before either one works.
+- **No provider needed either.** `sessions`/`routes` never propose a turn,
+  so — like `conway plugin list`/`conway tools list` — they run against a
+  completely empty `settings.json`, or none on disk at all: `sessions list`
+  on a project with no configured backend still prints its real header row
+  and exits 0. `-p` and the TUI are unaffected by this — both still refuse
+  with a guided-setup error until a working provider exists.
 - **An unknown session id is a usage error (exit 2), not a crash or an
   `AgentFailed` (exit 1)** — `show`/`tree`/`export`/`name` map "not found"
   and "malformed id" the same way, and `label`/`unlabel` do too (via

@@ -121,10 +121,16 @@ with a one-line `settings.json` edit and no rebuild.
 Run `conway plugin list` to see this exact table (`[x]`/`[ ]`, id, and a
 one-line summary — `--verbose`, or a single id, for the full "you get / you
 lose / costs" breakdown) headlessly, from a script or a terminal with no
-TUI in sight. It never proposes a turn, so — unlike `-p`, the TUI, or
-`conway sessions`/`conway routes` — it runs with **no provider configured
-at all**: it is meant to be the first command you run after installing
-conway, before deciding what to turn on.
+TUI in sight. It never proposes a turn, so — unlike `-p` or the TUI — it
+runs with **no provider configured at all**: it is meant to be the first
+command you run after installing conway, before deciding what to turn on.
+`conway plugin install`/`conway plugin remove` share this same footing
+(neither dials a model either — each is a single `settings.json` write),
+which matters in practice: it is exactly what lets a fresh install follow
+conway's own suggestion to run `conway plugin install --defaults` before
+any provider is configured at all. So do `conway sessions`/`conway
+routes` — see [`sessions.md`](../sessions.md) and
+[`routing.md`](../routing.md).
 
 - [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
   write to (`remember`/`forget`/`list_memories`), injected into context by a
