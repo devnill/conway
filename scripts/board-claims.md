@@ -391,3 +391,10 @@ claim: first_run.rs's Anthropic ProviderChoice.default_model is claude-sonnet-5,
 paths: crates/conway-cli/src/first_run.rs
 present: default_model: .claude-sonnet-5.
 -->
+
+<!-- claim-check
+why: F11 (board item 01M250DEEWA6FJZE11PKCAYNDC, done) extracted every duplicate-JSON-key resolution in writer.rs into one place, find_or_create_path's reverse scan -- but the acceptance check that verified it, `grep -c "iter().rev().find" crates/conway/src/config/writer.rs` returning 1, false-passed as 0 the moment rustfmt re-wrapped that call across four lines (it now reads across writer.rs:1129-1132). The worker's "-> 1. Verified." claim was run before cargo fmt, not after; the extraction was correct and the check describing it was not. A multi-token expression is not a safe grep predicate because rustfmt owns its line breaks. This claim restates F11's property against a single-token pattern rustfmt cannot re-wrap, so the property stays machine-checked instead of living only in a closed item's note.
+claim: writer.rs resolves a duplicate JSON key by scanning in reverse (last-wins) via find_or_create_path -- one `.rev()` call, not a per-call hand-rolled scan
+paths: crates/conway/src/config/writer.rs
+present: \.rev\(\)
+-->

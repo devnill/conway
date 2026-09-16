@@ -72,6 +72,8 @@ Most of this tree's surfaces sit at *exercised*. Saying so is the finding.
 
 ## 4. Budget
 
-- **Tool calls:** 30–40.
+- **Tool calls:** 30–45. (Widened from 30–40 after a round where this lens
+  needed 46 to actually run the ports it was checking rather than just
+  reading them — the same reason `lens-caller.md`'s range widened.)
 - **Return:** the shape in `CONDUCT.md` §4, **under 1,200 words**. Include the
   port table — it is the artifact the operator gets the most from.

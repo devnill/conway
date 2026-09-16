@@ -30,17 +30,21 @@ not linking Rust.
 
 ## 2. What to drive
 
-Run against an **isolated `$HOME`** (or the config-dir override the tree
-documents) with a provider configured, so nothing touches the operator's real
-`~/.conway`. Every check below is a command you run, and your return quotes
-what came back.
+Run with **`CONWAY_CONFIG_DIR` pointed at a scratch directory AND your working
+directory outside `$HOME`**, with a provider configured, so nothing touches the
+operator's real `~/.conway`. `HOME=<scratch>` alone does not isolate you —
+conway's config search walks ancestor directories for `~/.conway`, so a
+scratch `$HOME` still nested under the operator's real one finds it anyway.
+Every check below is a command you run, and your return quotes what came back.
 
 **2.1 One-shot from nowhere.** `conway -p` from an empty directory that is
 not a repository, with a question that has nothing to do with code. Does it
 answer? What did the first turn cost — `--output-format json`, then
 `usage.input_tokens`? What in that cost did a non-coding question not need?
 Calibration: on 2026-09-07 a default configuration paid 15,856 input tokens
-to answer "pong" (`docs/scripting.md`).
+to answer "pong" (`docs/scripting.md`). Record `steps_taken` alongside
+`usage.input_tokens` and discard the run if it is not 1 — only a single-step
+run is comparable to that calibration figure or to a prior round's.
 
 **2.2 The pipe.** stdin in, stdout out, errors on stderr, exit codes as
 `docs/scripting.md` documents them. `--output-format text`, `json`, `jsonl`.
@@ -91,7 +95,10 @@ findings rather than diagnosing the port yourself.
 
 ## 4. Budget
 
-- **Tool calls:** 25–40, and most of them running the binary.
+- **Tool calls:** 25–45, and most of them running the binary. (Widened from
+  25–40 after a round where this lens needed 43 to actually drive every
+  check in §2 — a lens that runs the binary spends more calls per finding
+  than one that reads source.)
 - **Return:** the shape in `CONDUCT.md` §4, **under 1,200 words**. Include the
   **weight table** — bare, default, and default plus one plugin, each with
   `usage.input_tokens` and the tool count — it is the artifact the operator

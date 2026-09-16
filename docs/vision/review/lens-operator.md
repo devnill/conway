@@ -60,10 +60,22 @@ next.
 read from `cli.rs` tells you what exists; it does not tell you that the thing
 you want takes four commands and a config edit.
 
-Run against an **isolated `$HOME`** (or config dir) so nothing touches the
-operator's real `~/.conway`. Exercise everything headless yourself: one-shot,
-piping, output formats, resume, permission modes, `sessions`/`routes`/`tools`/
-`plugin` subcommands.
+Run with **`CONWAY_CONFIG_DIR` pointed at a scratch directory AND your working
+directory outside `$HOME`.** `HOME=<scratch>` alone is not isolation — conway's
+config search walks ancestor directories looking for `~/.conway`, so a scratch
+`$HOME` that still sits beneath the operator's real home finds it anyway,
+silently mixing real config into what you thought was a clean run. Confirm both
+before trusting anything you measure. Exercise everything headless yourself:
+one-shot, piping, output formats, resume, permission modes,
+`sessions`/`routes`/`tools`/`plugin` subcommands.
+
+**Bounding a run.** macOS ships no `timeout`(1) — do not assume it exists.
+Inside a `tmux` pane, you already bound the run yourself: poll `capture-pane`
+in a loop with a hard cap on iterations, then `tmux kill-session` once you hit
+it, whether or not the command finished. Outside `tmux`, background the
+command, capture its PID, `sleep` your bound, then `kill` it if it is still
+running (`gtimeout`, from Homebrew's coreutils, works too if it happens to be
+installed — do not depend on it being there).
 
 **Drive the TUI yourself. `tmux` is a pty.** For three rounds this lens said a
 subagent cannot drive the TUI and must hand a script to the operator. That
@@ -104,6 +116,12 @@ is lossy and slow, and you no longer need them for it. Ask them only what
 tolerable, whether an error read as helpful. If you still want a hand-run script,
 it is a supplement to your own driving, never a substitute for it.
 
+**If you asked the operator something and have not heard back, say your return
+is provisional on it.** Your own `tmux` driving no longer waits on anyone, but a
+judgement question you put to the operator still does — file your findings from
+what you drove yourself, and name the open judgement question separately rather
+than silently treating an unanswered one as settled.
+
 "TUI not driven — no pty" is **no longer an acceptable line in Not checked.**
 If `tmux` is genuinely unavailable in your environment, say that specifically and
 name what you tried.
@@ -117,8 +135,12 @@ Judge against **weight** in the operator's sense, and measure it. A bare
 one-shot run's `usage.input_tokens` (`conway -p "reply with exactly the word
 pong and nothing else" --output-format json`) is the price of the first turn;
 on 2026-09-07 a default configuration paid 15,856 tokens for "pong"
-(`docs/scripting.md`). Record it alongside the length of `conway tools list`
-and `conway plugin list`, and say what each is buying. Being strategic about
+(`docs/scripting.md`). Record `steps_taken` alongside `usage.input_tokens` and
+**discard the run if `steps_taken` is not 1** — only a single-step run is
+comparable across rounds; anything else already paid for a second turn the
+"first token" number was not supposed to include. Record the token count
+alongside the length of `conway tools list` and `conway plugin list`, and say
+what each is buying. Being strategic about
 what reaches context is the bet underneath conway (`INTENT.md` §7a): a default
 that commits things the work did not ask for is a finding, and so is a surface
 the person has to keep up with that the work did not need. Binary size is not
