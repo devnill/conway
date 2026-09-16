@@ -240,7 +240,7 @@ pub(crate) async fn write_file_atomic(
     content: &str,
 ) -> Result<u64, ToolError> {
     match resolve(ctx, candidate)? {
-        Access::Unconfined => super::write::atomic_write(candidate, content).await,
+        Access::Unconfined => super::write::atomic_write_str(candidate, content).await,
         Access::Confined { root, relative } => {
             let candidate = candidate.to_path_buf();
             let content = content.to_string();

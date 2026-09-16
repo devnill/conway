@@ -38,6 +38,15 @@ mod discovery_host;
 mod error;
 mod event_stream;
 mod fork_child;
+/// Gated `#[cfg(feature = "builtin-tools")]`, unlike most modules declared
+/// here: [`fs::atomic_write`] is a thin wrapper over
+/// `conway_tools::fs::write::atomic_write`, its one implementation in the
+/// workspace (board item `01M2M5KVC9J7MWY56DQK5YPXNR`), and that crate is
+/// only compiled in when this feature (default-on) pulls it in -- see
+/// [`fs`]'s own module doc for the full argument and
+/// [`plugin::kill_group`]'s re-export doc below for the identical
+/// pattern applied to a different `conway-tools` primitive.
+#[cfg(feature = "builtin-tools")]
 pub mod fs;
 pub mod gates;
 mod host_caps;
