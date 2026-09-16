@@ -1653,6 +1653,13 @@ impl Conway {
                 agent_def: spec.knobs.agent_def.map(|r| r.0),
                 role: spec.knobs.role,
                 tools: spec.knobs.tools,
+                // The seventh knob. Every other `AgentKnobs` field was
+                // mapped here; `model` was not, so a `ForkSpec::model` pin
+                // set by any caller -- `conway --model X --fork-from <ref>`
+                // included -- was accepted by the builder and then dropped
+                // on this line (board item F3,
+                // `01M250BBPEJ2XMXCJPZ7G573T7`).
+                model: spec.knobs.model,
                 budget: spec.knobs.budget,
                 result_contract: spec.knobs.result_contract,
                 keep_alive: spec.knobs.keep_alive,

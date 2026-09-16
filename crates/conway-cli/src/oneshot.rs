@@ -299,6 +299,25 @@
 //!     what keeps the two from printing the same denial twice. See the
 //!     `Event::PermissionDecision`/`Event::PermissionResolved` match arms
 //!     in [`run`]'s own event loop for the exact mechanism.
+//! 11. **`--model` + `--fork-from` (board item F3,
+//!     `01M250BBPEJ2XMXCJPZ7G573T7`).** The `--fork-from` dispatch arm
+//!     `(None, None, Some(r))` never called `parse_model_pin` -- the
+//!     other three arms each did, but this one silently dropped `--model`
+//!     and the failure surfaced three layers downstream as a routing
+//!     error ("no candidate for role default (0 considered)"), naming the
+//!     wrong cause. **Two things were missing, not one** -- the item's own
+//!     spec predicted a single missing call, and that premise was wrong.
+//!     This arm now reads `cli.model` through `parse_model_pin` and sets it
+//!     on the `ForkSpec` via `spec.model`, exactly as the other three arms
+//!     already did; but that alone changed nothing, because
+//!     `Conway::fork_from` mapped six of `AgentKnobs`' seven fields into
+//!     `ForkChildRequest` and dropped `model`. A pin set by ANY caller --
+//!     an embedder calling `ForkSpec::model` directly, not just this arm --
+//!     was discarded there before reaching `ResumeSpec`. See
+//!     `conway::fork_child::ForkChildRequest::model` for that half.
+//!     `docs/scripting.md`'s flag table now states the behaviour.
+//!     Reconciliation #7 above already wired `--model` + `--resume`; this
+//!     closes the last arm.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -812,9 +831,13 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 .role_override
                 .as_ref()
                 .map(|r| RoleAlias::new(r.clone()));
+            let model = parse_model_pin(cli)?;
             let mut spec = ForkSpec::new(String::new());
             if let Some(role) = role {
                 spec = spec.role(role);
+            }
+            if let Some(model) = model {
+                spec = spec.model(model);
             }
             // `--agent` genuinely wires here (unlike `--system-prompt`/
             // budget -- see this module's doc comment, reconciliation #4):

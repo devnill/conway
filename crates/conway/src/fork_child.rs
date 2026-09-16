@@ -32,7 +32,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use conway_core::agent::{AgentKnobs, Budget, ToolSelector};
 use conway_core::error::RuntimeError;
-use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
+use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
 use conway_core::log::SessionMeta;
 use conway_core::ports::SessionStore;
 use conway_runtime::runtime::{ResumeSpec, Runtime};
@@ -48,6 +48,19 @@ pub(crate) struct ForkChildRequest {
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
     pub tools: Option<ToolSelector>,
+    /// The child's model pin -- threaded into `ResumeSpec::model` below.
+    /// `None` when [`crate::Conway::fork_from`]'s caller left
+    /// [`crate::ForkSpec::model`] unset, which preserves the pre-this-field
+    /// behavior exactly: the child resolves its pin the way an ordinary
+    /// resume does, from its `agent_def`'s own configured model if any.
+    ///
+    /// This closes board item F3 (`01M250BBPEJ2XMXCJPZ7G573T7`). The pin
+    /// applies to the run this request starts, not to the child's persisted
+    /// header -- `SessionMeta` carries no pin field, and a later
+    /// `Conway::resume` of the same child resolves its model afresh, exactly
+    /// as the `--resume` arm's own `--model` does. A CLI pin is per
+    /// invocation on every arm; this arm is no exception.
+    pub model: Option<ModelRef>,
     pub budget: Budget,
     /// The live child agent's result contract -- threaded into
     /// `ResumeSpec::result_contract` below (board item
@@ -169,12 +182,16 @@ pub(crate) async fn fork_child(
             knobs: AgentKnobs {
                 agent_def: None,
                 role: None,
-                // `fork_from`/`ForkChildRequest` exposes no model-pin
-                // override today -- the persisted child resolves its pin
-                // the same way an ordinary resume does (agent_def's own
-                // configured model, if any). Adding one is a natural
-                // follow-on, not this item's scope.
-                model: None,
+                // The caller's `ForkSpec::model` pin, threaded through
+                // `ForkChildRequest::model` (board item F3,
+                // `01M250BBPEJ2XMXCJPZ7G573T7` -- the "natural follow-on"
+                // this comment previously deferred). `None` keeps the
+                // original behavior: the child resolves its pin the way an
+                // ordinary resume does, from `agent_def`'s configured model
+                // if any. `Some` pins this run outright, which is what makes
+                // `conway --model X -p "…" --fork-from <ref>` route to X
+                // instead of silently falling back to the role chain.
+                model: req.model,
                 tools: req.tools,
                 budget: req.budget,
                 result_contract: req.result_contract,

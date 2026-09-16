@@ -573,6 +573,156 @@ async fn fork_from_malformed_ref_exits_2() {
     assert!(stderr.contains("<session-id>[@<seq>]"), "stderr: {stderr}");
 }
 
+/// `--model` + `--fork-from` (board item F3, `01M250BBPEJ2XMXCJPZ7G573T7`):
+/// the `--fork-from` dispatch arm never called `parse_model_pin`, so a
+/// `--model` pin was silently dropped and the failure surfaced three
+/// layers downstream as a routing error ("no candidate for role
+/// default"). This test drives all three continuity arms (`--session`,
+/// `--resume`, `--fork-from`) with `--model` set to a model that
+/// overrides a broken role chain -- the same pattern
+/// `oneshot.rs`'s `model_flag_pins_and_overrides_role_chain` uses for
+/// the flag-free arm -- and asserts each one's backend request actually
+/// used the pinned model. The flag-free arm is already covered by that
+/// test in `oneshot.rs`; this suite covers the other three.
+///
+/// Each sub-test breaks the fixture's `default` role chain (rewrites
+/// `mock/<real>` → `mock/unregistered-model`) so routing through the
+/// chain would fail, then passes `--model mock/<real>` to override it.
+/// If the pin is silently dropped (the old F3 bug), the broken chain
+/// reaches the router and the run exits 4 instead of 0.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_pin_with_session_arm_routes_to_pinned_model() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("ok"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+    // Break the default role's chain so routing without a pin would fail.
+    let broken = std::fs::read_to_string(&fixture.config_path)
+        .unwrap()
+        .replace(&format!("mock/{}", mock.model), "mock/unregistered-model");
+    std::fs::write(&fixture.config_path, broken).unwrap();
+
+    let pin = format!("mock/{}", mock.model);
+    let fresh = SessionId::new();
+    let out = run_conway(
+        &["-p", "hi", "--session", &fresh.to_string(), "--model", &pin],
+        &fixture,
+    );
+    assert!(
+        out.status.success(),
+        "--model should override the broken role chain on the --session arm; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"ok\n");
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]["model"], mock.model,
+        "the pinned model, not the broken chain's, must be the one actually dialed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_pin_with_resume_arm_routes_to_pinned_model() {
+    let mock = MockBackend::start(Script(vec![
+        vec![Chunk::Text("ok"), Chunk::Finish("stop")],
+        vec![Chunk::Text("noted"), Chunk::Finish("stop")],
+    ]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+
+    // First run with the good chain to create a session.
+    let first = run_conway(&["-p", "hi"], &fixture);
+    assert!(first.status.success(), "first run must succeed");
+    let sid = only_session_id(&fixture).await;
+
+    // Now break the chain so a resume without --model would route to the
+    // broken model and fail.
+    let broken = std::fs::read_to_string(&fixture.config_path)
+        .unwrap()
+        .replace(&format!("mock/{}", mock.model), "mock/unregistered-model");
+    std::fs::write(&fixture.config_path, broken).unwrap();
+
+    let pin = format!("mock/{}", mock.model);
+    let second = run_conway(
+        &[
+            "-p",
+            "what did I say",
+            "--resume",
+            &sid.to_string(),
+            "--model",
+            &pin,
+        ],
+        &fixture,
+    );
+    assert!(
+        second.status.success(),
+        "--model should override the broken role chain on the --resume arm; stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]["model"], mock.model,
+        "the resumed turn's backend request must use the pinned model, not the broken chain's"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_pin_with_fork_from_arm_routes_to_pinned_model() {
+    let mock = MockBackend::start(Script(vec![
+        vec![Chunk::Text("ok"), Chunk::Finish("stop")],
+        vec![Chunk::Text("branched"), Chunk::Finish("stop")],
+    ]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+
+    // First run with the good chain to create a parent session.
+    let first = run_conway(&["-p", "remember the root context"], &fixture);
+    assert!(first.status.success(), "first run must succeed");
+    let parent = only_session_id(&fixture).await;
+    let parent_head = open_conway(&fixture)
+        .await
+        .session_head(parent)
+        .await
+        .expect("read parent head");
+
+    // Now break the chain so a fork without --model would route to the
+    // broken model and fail.
+    let broken = std::fs::read_to_string(&fixture.config_path)
+        .unwrap()
+        .replace(&format!("mock/{}", mock.model), "mock/unregistered-model");
+    std::fs::write(&fixture.config_path, broken).unwrap();
+
+    let pin = format!("mock/{}", mock.model);
+    let second = run_conway(
+        &[
+            "-p",
+            "branch this",
+            "--fork-from",
+            &format!("{parent}@{}", parent_head.0),
+            "--model",
+            &pin,
+        ],
+        &fixture,
+    );
+    assert!(
+        second.status.success(),
+        "--model should override the broken role chain on the --fork-from arm; stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(second.stdout, b"branched\n");
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]["model"], mock.model,
+        "the forked child's backend request must use the pinned model, not the broken chain's"
+    );
+}
+
 // ---------------------------------------------------------------------
 // --session
 // ---------------------------------------------------------------------

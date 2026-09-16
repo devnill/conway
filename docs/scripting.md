@@ -793,7 +793,7 @@ naming both flags rather than a silently dropped one.
 | `--deny-tools <name[,name…]>` | Comma-separated tool names to deny even when `--allowed-tools` lists them; also accepts `tool_name(arg_glob)` entries; also consulted only in `allowlist` mode. A bare entry is also dropped from the announced set; a scoped (`tool(arg_glob)`) entry is not. |
 | `--permission-mode <allowlist\|deny>` | See "Permissions with no human present" above. |
 | `--role-override <role>` | Use this role instead of `default_role` for the session. |
-| `--model <backend/model>` | Pin a specific model instead of routing through a role's chain. |
+| `--model <backend/model>` | Pin a specific model instead of routing through a role's chain. Composes with `--fork-from` (the forked child uses the pinned model, not the parent's role chain) and `--resume` (the resumed turn uses the pinned model). |
 | `--agent <name>` | Run as this named `.conway/agents/<name>.md` definition. See "`--agent`: run as a named persona" above. |
 | `--system-prompt <text>` | Replace the effective system prompt outright. See "`--system-prompt` / `--append-system-prompt`" above. |
 | `--append-system-prompt <text>` | Add to the effective system prompt instead of replacing it. See above. |
@@ -803,7 +803,7 @@ naming both flags rather than a silently dropped one.
 | `--output-schema <path>` | Constrain the run's structured result to a JSON Schema file. See "`--output-schema`: structured output" above. |
 | `--session <id>` | Use (creating if new) a specific session id. |
 | `--resume <id>` | Reattach to a persisted session and continue its transcript. |
-| `--fork-from <id>[@seq]` | Start a new session branched from another one, optionally at a specific point in its log. Not combinable with `--cwd` (see above). |
+| `--fork-from <id>[@seq]` | Start a new session branched from another one, optionally at a specific point in its log. Not combinable with `--cwd` (see above). `--model` composes with it (the forked child uses the pinned model). |
 | `--config <path>` | Load config from this exact path, bypassing the usual discovery walk. |
 | `--cwd <dir>` | See "`--cwd` and `--root`" above. |
 | `--root <dir>` | See "`--cwd` and `--root`" above. |
