@@ -152,7 +152,7 @@ use conway_core::agent::{AgentMessage, AgentResult, Budget, ResultStatus, ToolSe
 use conway_core::capabilities::{
     CacheMode, HeadroomPolicy, RequiredCaps, ToolCallSupport, ToolResultBoundPolicy,
 };
-use conway_core::content::{ContentBlock, ToolResult, ToolSpec, Usage};
+use conway_core::content::{ContentBlock, StopReason, ToolResult, ToolSpec, Usage};
 use conway_core::error::{ConwayError, RoutingError, RuntimeError};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
@@ -1834,6 +1834,89 @@ impl AgentLoop {
             // call `AgentTree::publish_result`, which clears this
             // defensively too -- see `turn_in_flight`'s own doc.
             self.deps.tree.mark_turn_finished(self.agent_id);
+
+            // Board item `01M23JRDAM480SRXFGM46GBVA6`: a turn that ends
+            // `stop: max_tokens` having produced neither a `Text` nor a
+            // `ToolUse` block is indistinguishable, from the transcript
+            // alone, from a hang or a crash in conway itself -- the model
+            // spent its whole output budget inside a `Thinking` block
+            // (still persisted, in full, by the `Assistant` record just
+            // above -- this note does not touch that) and never got to say
+            // anything. Named here, once, right after that record and
+            // `Event::TurnFinished` are both durable/emitted -- BEFORE the
+            // natural-completion branch immediately below
+            // (`outcome.response.tool_calls.is_empty()`) can
+            // `continue`/`return` out of this iteration, since that branch
+            // is exactly where the silent case always lands (no tool call
+            // was made either, or this note would not be the silent
+            // wording -- see `has_tool_use` below). A turn that hit the
+            // SAME cap but had already said something (`has_text`) or
+            // already proposed a tool call (`has_tool_use`) is a
+            // different, far less confusing shape -- "cut off mid-answer"
+            // rather than "said nothing at all" -- and gets its own
+            // wording, never a conflated one (P-15's own two paired
+            // cases). `has_text` checks for the PRESENCE of a
+            // `ContentBlock::Text` block, never `full_text(..).is_empty()`:
+            // an assistant record whose only content is one bare `Text {
+            // text: "" }` block is a different, weirder shape than "no
+            // `Text` block was ever produced" and must not be folded into
+            // the silent case.
+            if outcome.response.stop == StopReason::MaxTokens {
+                let has_text = outcome
+                    .response
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text { .. }));
+                let has_tool_use = !outcome.response.tool_calls.is_empty();
+                let (reason, text) = if has_text || has_tool_use {
+                    (
+                        "max_tokens_truncated",
+                        "the model hit its output token budget (stop: max_tokens) mid-answer: \
+                         the response above was cut off before the model finished. Retry the \
+                         turn, raise the max_tokens cap for this model/route, or ask something \
+                         narrower."
+                            .to_string(),
+                    )
+                } else {
+                    (
+                        "max_tokens_silent",
+                        "the model exhausted its output token budget (stop: max_tokens) while \
+                         still reasoning, and produced no visible answer -- no text, no tool \
+                         call. The reasoning that spent the budget is preserved above (this \
+                         turn's own thinking block); nothing was ever said. Retry the turn, \
+                         raise the max_tokens cap for this model/route, or ask something \
+                         narrower that needs less reasoning to answer."
+                            .to_string(),
+                    )
+                };
+                try_rt!(
+                    state,
+                    self.persist(|seq| LogRecord::SystemNote {
+                        seq,
+                        ts: Utc::now(),
+                        text: text.clone(),
+                        reason: reason.to_string(),
+                        prov: Provenance::SystemNote {
+                            reason: reason.to_string(),
+                        },
+                    })
+                    .await
+                );
+                // `Event::AgentProgress` is the live twin: no `Event`
+                // variant mirrors a plain `SystemNote` outside the handful
+                // with their own dedicated shape (`TurnAborted`/
+                // `BudgetWarning`), so this is the exact "live
+                // runtime-authored note" precedent `Runtime::
+                // append_pull_in_truncation_note` already established for
+                // the identical reason (that fn's own doc) -- a live TUI
+                // subscriber sees this the instant the turn ends, not only
+                // on the next resume's backfill.
+                self.deps.bus.emit(
+                    self.session,
+                    self.agent_id,
+                    Event::AgentProgress { note: text },
+                );
+            }
 
             if outcome.response.tool_calls.is_empty() {
                 let summary = full_text(&outcome.response.content);
