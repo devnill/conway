@@ -72,16 +72,23 @@ logic described below, run in-process before every request.
 resolution errors, or that resolves to zero addresses — is refused, never
 allowed through on the absence of evidence.
 
+**The vetted address is what the connection uses — not a fresh lookup.**
+A domain name is resolved once, classified, and the exact address(es)
+that classification passed are pinned for the connection itself (a
+custom `reqwest` resolver that answers only the vetted set and refuses
+every other name). The HTTP client never resolves the hostname a second
+time, so a DNS server that would answer a safe address at guard time and
+a private one moments later cannot reach the private one: the connection
+either goes to the address that was actually classified, or the call is
+refused. Every redirect hop gets its own guard pass and its own pin, so a
+redirect cannot reopen the window the first request closed. This pins the
+connection, not the URL — the `Host` header and TLS SNI still name the
+original hostname, so certificate verification and virtual hosting are
+unaffected.
+
 **What this does NOT cover — read this before assuming complete
 protection:**
 
-- **DNS-rebinding.** The guard resolves a domain name once, classifies
-  that answer, and then hands the ORIGINAL hostname (not a pinned IP
-  address) to the HTTP client, which resolves it again to actually
-  connect. A name that answers a safe address at guard time and a private
-  one moments later at connect time is not caught. Closing this fully
-  needs the HTTP client to connect to the exact address the guard already
-  vetted; that is not implemented.
 - **6to4 (`2002::/16`) and Teredo (`2001:0000::/32`) tunneling addresses**,
   which can themselves encapsulate an arbitrary IPv4 address, are not
   unwrapped. Neither is **NAT64 (`64:ff9b::/96`)**, which embeds an IPv4
