@@ -37,6 +37,25 @@
 //! `post_tool_use` already takes, for the same reason. An observer that wants
 //! to *stop* something wants a different seam: `PermissionGate` or a
 //! `pre_tool_use` hook, both of which run before anything happens.
+//!
+//! ## A pre-call seam, added later, on the same terms
+//!
+//! Board item `01M20RYAK1T1DK7XWX431FFCYQ`: [`ToolObserver::before_tool_call`]
+//! closes a real gap in that original design -- a plugin that wants to
+//! observe a file's bytes BEFORE a `write`/`edit` overwrites them had no
+//! in-process seam at all (`conway-plugin-checkpoint`'s own module doc,
+//! "the seam gap that shapes it", written when this port had exactly the
+//! one method above). It is deliberately NOT a second permission gate: it
+//! returns nothing, so it cannot deny, cancel, or alter the call either --
+//! the same observation-only posture as [`Self::after_tool_call`], just
+//! timed differently. `PermissionGate` remains the one place a call is
+//! allowed or denied; this method runs strictly AFTER that decision has
+//! already resolved to allow, so a denied call never reaches it and never
+//! trips an observer's side effects (e.g. a snapshot) for a change that was
+//! never going to happen. Defaulted to a no-op so every observer written
+//! against the original one-method trait keeps compiling and behaving
+//! identically -- see this method's own doc for the containment/latency
+//! contract, identical to `after_tool_call`'s.
 
 use std::sync::Arc;
 
@@ -64,6 +83,27 @@ pub struct ObservedCall {
     /// Where this call's result landed in the session log, so a note an
     /// observer returns can point a reader (or the model) at it.
     pub result_seq: LogSeq,
+}
+
+/// One tool call about to execute, as [`ToolObserver::before_tool_call`]
+/// sees it: authorized (the permission decision already resolved to allow)
+/// but not yet run, so `arguments` are the model's own proposed arguments
+/// and there is no result yet to carry -- unlike [`ObservedCall`], there is
+/// no `is_error` (nothing has happened yet) and no `result_seq` (nothing has
+/// been persisted yet).
+#[derive(Clone, Debug)]
+pub struct PendingCall {
+    pub agent_id: AgentId,
+    pub session: SessionId,
+    /// The provider-assigned id tying this call to its eventual result --
+    /// the SAME id `ObservedCall::call_id` carries, so an observer that
+    /// wants to correlate its own pre-call and post-call sightings of one
+    /// call can key on it.
+    pub call_id: String,
+    pub tool: ToolName,
+    /// The arguments the model supplied. UNTRUSTED, like every other
+    /// model-supplied value -- see `ObservedCall::arguments`'s own doc.
+    pub arguments: serde_json::Value,
 }
 
 /// A note an observer asks the runtime to append to the session log.
@@ -122,6 +162,30 @@ pub trait ToolObserver: Send + Sync + 'static {
     /// A panic is contained by the runtime and the call proceeds unaffected —
     /// observation never fails the thing it observed.
     async fn after_tool_call(&self, ctx: &ObserverCtx, call: &ObservedCall) -> ObserverAnswer;
+
+    /// Called once per call, after the permission decision has already
+    /// resolved to allow it and before the tool actually runs -- see this
+    /// module's own doc, "A pre-call seam, added later, on the same terms",
+    /// for why this exists and why it is timed exactly there. A denied call
+    /// never reaches this method.
+    ///
+    /// Returns nothing: this is NOT a second permission gate and cannot
+    /// refuse, alter, or delay the call -- `PermissionGate` is the one place
+    /// that decision is made. An observer that wants to stop something
+    /// wants that seam, not this one.
+    ///
+    /// MUST NOT block for long, for the same reason as [`Self::
+    /// after_tool_call`]: a slow `before_tool_call` is latency the agent
+    /// pays on every tool call.
+    ///
+    /// A panic is contained by the runtime and the call proceeds unaffected
+    /// -- observation never fails the thing it observed, whether the
+    /// observation happens before or after.
+    ///
+    /// Defaults to doing nothing, so every observer written before this
+    /// method existed keeps compiling and behaving identically without any
+    /// change of its own.
+    async fn before_tool_call(&self, _ctx: &ObserverCtx, _call: &PendingCall) {}
 }
 
 /// A [`ToolObserver`] together with the plugin that supplied it, so the

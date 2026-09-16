@@ -19,34 +19,41 @@
 //! reversal's own cost, rather than left as a contradiction between a
 //! shipped capability and a doc that still argues against it.
 //!
-//! # What this plugin actually observes, and the seam gap that shapes it
+//! # What this plugin observes, and how the first-edit gap closed
 //!
-//! A `Plugin` gets exactly one seam for watching a tool call in-process:
-//! [`ToolObserver::after_tool_call`], which fires **after**
-//! a call's result is already durable -- the file has already been
-//! written by the time this plugin ever sees the call. There is no
-//! in-process "before" seam a compiled `Plugin` can hook: the only
-//! `pre_tool_use` registration surface a plugin has (`PluginHookRule`,
-//! `Plugin::hooks`) dispatches through
-//! a SPAWNED SUBPROCESS (`docs/plugins/hooks.md` point 13), the same
-//! mechanism a declarative `[hooks].rules[]` entry uses -- built for
+//! A `Plugin` originally got exactly one seam for watching a tool call
+//! in-process: [`ToolObserver::after_tool_call`], which fires **after** a
+//! call's result is already durable -- the file has already been written by
+//! the time this plugin sees the call. At the time this plugin first
+//! shipped, that was a genuine gap: the only `pre_tool_use` registration
+//! surface a plugin has (`PluginHookRule`, `Plugin::hooks`) dispatches
+//! through a SPAWNED SUBPROCESS (`docs/plugins/hooks.md` point 13), the
+//! same mechanism a declarative `[hooks].rules[]` entry uses -- built for
 //! wrapping an operator's own script, not for a first-party Rust plugin's
 //! own file I/O, and a poor fit for a snapshot that has to run on every
-//! single edit. **This is a genuine gap, reported rather than routed
-//! around**: nothing in `conway-core`/`conway-runtime` was touched to build
-//! this plugin, per this item's own "what not to build".
+//! single edit. That gap was reported rather than routed around (this
+//! plugin's own original "what not to build"), and board item
+//! `01M20RYAK1T1DK7XWX431FFCYQ` is the follow-up that closed it:
+//! [`ToolObserver::before_tool_call`] now runs after the permission
+//! decision resolves and before the write/edit actually happens, so
+//! `CheckpointObserver` (below) can read a path's real bytes at the one
+//! moment they are still the ORIGINAL ones.
 //!
-//! So `old` (what a path looked like immediately before one checkpoint
-//! entry) is never read off disk directly -- it is CHAINED: the `new` this
-//! store captured for that same path's most recent EARLIER entry, if this
-//! session's checkpoint history has one. The one case that leaves
-//! genuinely unrecoverable is a path's FIRST observed touch in a session --
-//! there was no earlier entry to chain from, and by the time this plugin
-//! is ever asked about the call, the pre-edit bytes are already gone. That
-//! case is represented explicitly ([`SnapshotRef::Unavailable`]),
-//! never guessed at: `/conway.checkpoint.diff`/`.rollback` say plainly that
-//! no baseline is known for that path rather than silently treating it as
-//! empty or skipping it without a word.
+//! `old` (what a path looked like immediately before one checkpoint entry)
+//! therefore has two sources now, tried in this order:
+//!
+//! 1. CHAINED: the `new` this store captured for that same path's most
+//!    recent EARLIER entry, if this session's checkpoint history has one.
+//!    Still the normal case from a path's SECOND touch onward, and still
+//!    correct there -- `before_tool_call` does not re-read the path in that
+//!    case (see `CheckpointObserver::before_tool_call`'s own doc).
+//! 2. REAL: for a path's FIRST observed touch in a session, the bytes
+//!    `before_tool_call` read directly off disk before the write ran.
+//!
+//! Only when NEITHER is available (no pre-call seam ran for this call, or
+//! it could not read the path, e.g. a permissions error) does an entry fall
+//! back to [`SnapshotRef::Unavailable`] -- still represented explicitly,
+//! never guessed at, for that genuinely-unrecoverable remainder.
 //!
 //! # `bash` is not captured, and this says so
 //!
@@ -98,12 +105,14 @@
 mod diff;
 mod store;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use conway::plugin::{
     async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, ObservedCall, ObserverAnswer,
-    ObserverCtx, ObserverNote, Plugin, PluginDescription, PluginManifest, Tool, ToolObserver,
+    ObserverCtx, ObserverNote, PendingCall, Plugin, PluginDescription, PluginManifest, Tool,
+    ToolObserver,
 };
 use conway::LogSeq;
 
@@ -136,17 +145,87 @@ fn describe_snapshot(snapshot: &SnapshotRef) -> String {
 }
 
 /// The [`ToolObserver`] half of this plugin -- see this crate's own module
-/// doc, "What this plugin actually observes", for why only `write`/`edit`
-/// are inspected and why `old` is a chain rather than a genuine pre-hook
-/// read.
+/// doc, "What this plugin observes, and how the first-edit gap closed", for
+/// why only `write`/`edit` are inspected and for the two sources `old` now
+/// has.
 struct CheckpointObserver {
     store: Arc<CheckpointStore>,
     max_snapshot_bytes: u64,
     max_project_bytes: u64,
+    /// A path's real pre-write bytes, captured by `before_tool_call` for a
+    /// path this session has not touched yet, keyed by `call_id` and
+    /// consumed by the matching `after_tool_call` for that SAME call.
+    /// `call_id` (not `path`) is the key because it is what ties one
+    /// observer's pre-call sighting of a call to its own post-call sighting
+    /// of the SAME call (`PendingCall::call_id`/`ObservedCall::call_id`
+    /// share the one id).
+    pending_baseline: Mutex<HashMap<String, SnapshotRef>>,
+}
+
+impl CheckpointObserver {
+    /// `write`/`edit` map to a [`ToolKind`]; every other tool (`bash`
+    /// included -- this crate's own module doc, "`bash` is not captured")
+    /// is `None`. Shared by both halves of [`ToolObserver`] so the tool
+    /// filter cannot drift between them.
+    fn tool_kind(tool: &str) -> Option<ToolKind> {
+        match tool {
+            TOOL_WRITE => Some(ToolKind::Write),
+            TOOL_EDIT => Some(ToolKind::Edit),
+            _ => None,
+        }
+    }
 }
 
 #[async_trait]
 impl ToolObserver for CheckpointObserver {
+    /// Reads a path's TRUE pre-write bytes, while they are still true --
+    /// see this crate's own module doc for why this is the seam that makes
+    /// that possible at all. Only does the read for a path's FIRST touch
+    /// this session ([`CheckpointStore::latest_for_path`] returns `None`):
+    /// from the second touch onward, `after_tool_call`'s own chain already
+    /// recovers the true baseline (the prior entry's `new`), so reading
+    /// here again would only duplicate that work for no benefit.
+    ///
+    /// This is observation, not a gate: nothing here can refuse, alter, or
+    /// delay the call (`ToolObserver::before_tool_call`'s own doc) -- a
+    /// read failure just means `after_tool_call` falls back to its
+    /// pre-existing [`SnapshotRef::Unavailable`] behavior for this path.
+    async fn before_tool_call(&self, _ctx: &ObserverCtx, call: &PendingCall) {
+        if Self::tool_kind(call.tool.as_str()).is_none() {
+            return;
+        }
+        let Some(raw_path) = call.arguments.get("path").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let path = self.store.resolve(raw_path);
+        let session = call.session.to_string();
+        if !matches!(self.store.latest_for_path(&session, &path), Ok(None)) {
+            // Either a prior entry already exists for this path (the chain
+            // already has the true baseline), or the read itself failed --
+            // either way, nothing to capture here.
+            return;
+        }
+        let baseline = match std::fs::read(&path) {
+            Ok(bytes) => self
+                .store
+                .capture(&bytes, self.max_snapshot_bytes, self.max_project_bytes)
+                .ok()
+                .map(|(snapshot, _notice)| snapshot),
+            // A positive fact, not a guess: this store read the filesystem
+            // itself, synchronously, before the write ran -- the same
+            // justification `SnapshotRef::Absent`'s own doc gives for a
+            // rollback's `old`/`new`.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(SnapshotRef::Absent),
+            Err(_) => None,
+        };
+        if let Some(snapshot) = baseline {
+            self.pending_baseline
+                .lock()
+                .expect("pending_baseline lock poisoned")
+                .insert(call.call_id.clone(), snapshot);
+        }
+    }
+
     async fn after_tool_call(&self, _ctx: &ObserverCtx, call: &ObservedCall) -> ObserverAnswer {
         // A failed call never mutated the filesystem -- nothing to
         // snapshot (and the write/edit tools' own `path_args` contract
@@ -155,23 +234,31 @@ impl ToolObserver for CheckpointObserver {
         if call.is_error {
             return ObserverAnswer::default();
         }
-        let tool = match call.tool.as_str() {
-            TOOL_WRITE => ToolKind::Write,
-            TOOL_EDIT => ToolKind::Edit,
+        let Some(tool) = Self::tool_kind(call.tool.as_str()) else {
             // Every other tool, `bash` included -- see this crate's own
             // module doc, "`bash` is not captured, and this says so".
-            _ => return ObserverAnswer::default(),
+            return ObserverAnswer::default();
         };
         let Some(raw_path) = call.arguments.get("path").and_then(|v| v.as_str()) else {
             return ObserverAnswer::default();
         };
         let path = self.store.resolve(raw_path);
         let session = call.session.to_string();
+        // Consumed (removed), not just read: a stale entry left behind
+        // under this `call_id` could never be read again anyway (call ids
+        // are not reused), so this also keeps the map from growing
+        // unbounded over a long session.
+        let pre_captured = self
+            .pending_baseline
+            .lock()
+            .expect("pending_baseline lock poisoned")
+            .remove(&call.call_id);
         let recorded = self.store.record_observed(
             &session,
             call.result_seq.0,
             &path,
             tool,
+            pre_captured,
             self.max_snapshot_bytes,
             self.max_project_bytes,
         );
@@ -528,10 +615,7 @@ impl Plugin for CheckpointPlugin {
                        than `write`/`edit`) -- this plugin observes ONLY those two tools, so a \
                        model that edits a file through a shell command leaves no snapshot to \
                        roll back to, the same disclosed limit Claude Code's own checkpoints \
-                       carry for the identical reason; AND the ability to undo a path's FIRST \
-                       edit in a session -- this harness has no pre-write seam, so a baseline \
-                       exists only from the second edit of a given file onward, and diff and \
-                       rollback say a baseline is unknown rather than guessing it was empty"
+                       carry for the identical reason"
                 .to_string(),
             costs: format!(
                 "disk under .conway/checkpoints, bounded to {} bytes per snapshotted file and \
@@ -567,6 +651,7 @@ impl Plugin for CheckpointPlugin {
             store: self.store.clone(),
             max_snapshot_bytes: self.max_snapshot_bytes,
             max_project_bytes: self.max_project_bytes,
+            pending_baseline: Mutex::new(HashMap::new()),
         }) as Arc<dyn ToolObserver>]
     }
 }
@@ -605,6 +690,21 @@ mod tests {
         }
     }
 
+    /// The pre-call sibling of [`call`] -- SAME `call_id` for the same
+    /// `seq`, so a test that calls both against the same `seq` exercises
+    /// one observer's pre-call and post-call sighting of one real call,
+    /// exactly as the runtime pairs them (`PendingCall::call_id`/
+    /// `ObservedCall::call_id`).
+    fn pending(session: SessionId, tool: &str, path: &str, seq: u64) -> PendingCall {
+        PendingCall {
+            agent_id: AgentId::new(),
+            session,
+            call_id: format!("c{seq}"),
+            tool: ToolName::new(tool),
+            arguments: serde_json::json!({ "path": path }),
+        }
+    }
+
     #[test]
     fn manifest_id_matches_the_published_constant() {
         let plugin = CheckpointPlugin::new(std::env::temp_dir());
@@ -622,6 +722,22 @@ mod tests {
         assert!(
             description.you_lose.to_lowercase().contains("bash"),
             "you_lose must name the bash gap plainly: {:?}",
+            description.you_lose
+        );
+    }
+
+    /// Board item `01M20RYAK1T1DK7XWX431FFCYQ`: the first-edit limitation
+    /// is retired now that `before_tool_call` closes it -- `you_lose` must
+    /// no longer claim a first edit cannot be rolled back, while the
+    /// (still-true) `bash` limitation stays (covered by the test above).
+    #[test]
+    fn description_no_longer_discloses_a_first_edit_limit() {
+        let plugin = CheckpointPlugin::new(std::env::temp_dir());
+        let description = plugin.description();
+        let lower = description.you_lose.to_lowercase();
+        assert!(
+            !lower.contains("first"),
+            "the first-edit limitation must be retired: {:?}",
             description.you_lose
         );
     }
@@ -695,6 +811,124 @@ mod tests {
             .entries(&session.to_string())
             .unwrap()
             .is_empty());
+    }
+
+    /// `before_tool_call` gets the SAME tool filter as `after_tool_call` --
+    /// a `bash` call must never populate `pending_baseline`, or a later
+    /// unrelated call to a `write`/`edit` sharing the same `call_id` space
+    /// (never happens in practice, but this is the seam that would let a
+    /// stray entry leak) could pick it up by accident.
+    #[tokio::test]
+    async fn before_tool_call_ignores_bash_and_every_other_tool() {
+        let dir = TempDir::new().unwrap();
+        let plugin = CheckpointPlugin::new(dir.path());
+        std::fs::write(dir.path().join("f.txt"), "hello").unwrap();
+        let session = SessionId::new();
+        let observers = plugin.observers();
+        let observer = &observers[0];
+        observer
+            .before_tool_call(&observer_ctx(), &pending(session, "bash", "f.txt", 1))
+            .await;
+        std::fs::write(dir.path().join("f.txt"), "changed").unwrap();
+        observer
+            .after_tool_call(&observer_ctx(), &call(session, "bash", "f.txt", 1))
+            .await;
+        assert!(plugin
+            .store()
+            .entries(&session.to_string())
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Board item `01M20RYAK1T1DK7XWX431FFCYQ`, ACCEPTANCE 1: a file's
+    /// FIRST edit in a session can now be rolled back to its TRUE original
+    /// bytes. Drives `before_tool_call` and `after_tool_call` in the exact
+    /// order the runtime calls them (`ToolRunner::execute_one`): pre-call
+    /// seam while the path still holds its original bytes, then the write
+    /// itself, then the post-call seam -- so this exercises the real
+    /// two-hook contract, not just `CheckpointStore::record_observed`
+    /// directly (that is `store::tests`' own job).
+    #[tokio::test]
+    async fn before_tool_call_lets_a_first_edit_roll_back_to_its_true_original_bytes() {
+        let dir = TempDir::new().unwrap();
+        let plugin = CheckpointPlugin::new(dir.path());
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "original").unwrap();
+        let session = SessionId::new();
+        let observers = plugin.observers();
+        let observer = &observers[0];
+
+        observer
+            .before_tool_call(&observer_ctx(), &pending(session, "write", "f.txt", 1))
+            .await;
+        // The write itself, exactly as `ToolRunner::execute_one` would run
+        // it between calling `before_tool_call` and `after_tool_call`.
+        std::fs::write(&path, "changed").unwrap();
+        observer
+            .after_tool_call(&observer_ctx(), &call(session, "write", "f.txt", 1))
+            .await;
+
+        let entries = plugin.store().entries(&session.to_string()).unwrap();
+        assert_eq!(entries.len(), 1);
+        let ResolvedRef::Bytes(old_bytes) = plugin.store().resolve_ref(&entries[0].old).unwrap()
+        else {
+            panic!(
+                "expected a resolvable baseline for a FIRST edit, got {:?}",
+                entries[0].old
+            );
+        };
+        assert_eq!(
+            old_bytes, b"original",
+            "the pre-call seam must have captured the TRUE pre-write bytes, not the post-write \
+             ones a chain-only implementation would be stuck with"
+        );
+
+        // End to end through the real command surface: `rollback 1`
+        // restores the true original, not a skip.
+        let commands = plugin.commands();
+        let rollback_cmd = &commands[2];
+        let outcome = rollback_cmd.invoke(ctx_for(session, "1")).await;
+        match outcome {
+            CommandOutcome::Output(lines) => {
+                assert!(
+                    lines.iter().any(|l| l.contains("restored")),
+                    "expected a restore, not a skip: {lines:?}"
+                );
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+    }
+
+    /// P-15's own bar: the test above alone cannot prove the PRE-CALL seam
+    /// is what produced the resolvable baseline, rather than some other
+    /// change to `record_observed`'s fallback. This is the contrast: the
+    /// identical scenario, MINUS the `before_tool_call` call, must still
+    /// fall back to `Unavailable` exactly as it did before this item --
+    /// proving the seam above, not a changed default, is what did it.
+    #[tokio::test]
+    async fn without_before_tool_call_a_first_edit_still_falls_back_to_unavailable() {
+        let dir = TempDir::new().unwrap();
+        let plugin = CheckpointPlugin::new(dir.path());
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "original").unwrap();
+        let session = SessionId::new();
+        let observers = plugin.observers();
+        let observer = &observers[0];
+
+        // No `before_tool_call` call at all -- the pre-item shape.
+        std::fs::write(&path, "changed").unwrap();
+        observer
+            .after_tool_call(&observer_ctx(), &call(session, "write", "f.txt", 1))
+            .await;
+
+        let entries = plugin.store().entries(&session.to_string()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            matches!(entries[0].old, SnapshotRef::Unavailable { .. }),
+            "without before_tool_call, a first touch must still fall back to Unavailable: {:?}",
+            entries[0].old
+        );
     }
 
     /// Anchor: acceptance scenario 1, driven through the real

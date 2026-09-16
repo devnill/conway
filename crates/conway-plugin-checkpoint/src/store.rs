@@ -535,28 +535,34 @@ impl CheckpointStore {
     }
 
     /// Records one observed `write`/`edit` at `seq` against `path`: `old`
-    /// chains from the latest EARLIER entry this session has for `path`, or
-    /// [`SnapshotRef::Unavailable`] when there is none -- see that
-    /// variant's own doc for why this store can never do better for the
-    /// FIRST touch of a path. `new` is [`Self::capture`] of whatever bytes
-    /// are on `path` right now -- correct by this method's own contract:
-    /// call it from `ToolObserver::after_tool_call`, strictly after the
-    /// write/edit already landed, never before.
+    /// chains from the latest EARLIER entry this session has for `path`
+    /// when there is one. For the FIRST touch of a path, `old` instead comes
+    /// from `pre_captured_old` -- a real baseline read off disk BEFORE the
+    /// write/edit ran, via `ToolObserver::before_tool_call` (board item
+    /// `01M20RYAK1T1DK7XWX431FFCYQ`) -- and falls back to
+    /// [`SnapshotRef::Unavailable`] only when even that is `None` (no
+    /// pre-call seam ran, or it could not read the path). `new` is
+    /// [`Self::capture`] of whatever bytes are on `path` right now --
+    /// correct by this method's own contract: call it from
+    /// `ToolObserver::after_tool_call`, strictly after the write/edit
+    /// already landed, never before.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_observed(
         &self,
         session: &str,
         seq: u64,
         path: &Path,
         tool: ToolKind,
+        pre_captured_old: Option<SnapshotRef>,
         max_snapshot_bytes: u64,
         max_project_bytes: u64,
     ) -> io::Result<(CheckpointEntry, Vec<String>)> {
         let old = match self.latest_before(session, path, seq)? {
             Some(prior) => prior.new,
-            None => SnapshotRef::Unavailable {
+            None => pre_captured_old.unwrap_or_else(|| SnapshotRef::Unavailable {
                 reason: "not observed by conway.checkpoint before this seq in this session"
                     .to_string(),
-            },
+            }),
         };
         let (new, notices) = match fs::read(path) {
             Ok(bytes) => {
@@ -787,6 +793,7 @@ mod tests {
                 1,
                 &path,
                 ToolKind::Write,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -794,6 +801,46 @@ mod tests {
         assert!(notices.is_empty());
         assert!(matches!(entry.old, SnapshotRef::Unavailable { .. }));
         assert!(matches!(entry.new, SnapshotRef::Bytes { .. }));
+    }
+
+    /// Board item `01M20RYAK1T1DK7XWX431FFCYQ`: when a caller supplies a
+    /// real `pre_captured_old` (what `ToolObserver::before_tool_call` reads
+    /// off disk before the write runs), the FIRST touch of a path gets a
+    /// resolvable baseline instead of `Unavailable` -- this is the store-
+    /// layer half of the fix; `CheckpointObserver`'s own tests (`lib.rs`)
+    /// cover the seam that actually produces `pre_captured_old`.
+    #[test]
+    fn record_observed_first_touch_uses_a_supplied_pre_captured_baseline() {
+        let dir = TempDir::new().unwrap();
+        let store = store(&dir);
+        let path = dir.path().join("f.txt");
+        fs::write(&path, "original").unwrap();
+        let (original_ref, _) = store
+            .capture(b"original", DEFAULT_MAX_SNAPSHOT_BYTES, DEFAULT_MAX_PROJECT_BYTES)
+            .unwrap();
+        // The write already landed by the time this runs (this method's own
+        // contract) -- "changed" is what `fs::read` would see if nothing
+        // else supplied the true pre-write bytes.
+        fs::write(&path, "changed").unwrap();
+        let (entry, notices) = store
+            .record_observed(
+                SESSION,
+                1,
+                &path,
+                ToolKind::Write,
+                Some(original_ref),
+                DEFAULT_MAX_SNAPSHOT_BYTES,
+                DEFAULT_MAX_PROJECT_BYTES,
+            )
+            .unwrap();
+        assert!(notices.is_empty());
+        let ResolvedRef::Bytes(old_bytes) = store.resolve_ref(&entry.old).unwrap() else {
+            panic!("expected a resolvable old snapshot, not Unavailable: {:?}", entry.old);
+        };
+        assert_eq!(
+            old_bytes, b"original",
+            "the FIRST touch must recover its true pre-write bytes, not the post-write ones"
+        );
     }
 
     #[test]
@@ -808,6 +855,7 @@ mod tests {
                 1,
                 &path,
                 ToolKind::Write,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -819,6 +867,7 @@ mod tests {
                 2,
                 &path,
                 ToolKind::Edit,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -844,6 +893,7 @@ mod tests {
                 1,
                 &path,
                 ToolKind::Write,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -855,6 +905,7 @@ mod tests {
                 2,
                 &path,
                 ToolKind::Edit,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -866,6 +917,7 @@ mod tests {
                 3,
                 &path,
                 ToolKind::Edit,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -903,6 +955,7 @@ mod tests {
                 1,
                 &path,
                 ToolKind::Write,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -914,6 +967,7 @@ mod tests {
                 2,
                 &path,
                 ToolKind::Edit,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -925,6 +979,7 @@ mod tests {
                 3,
                 &path,
                 ToolKind::Edit,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -965,6 +1020,7 @@ mod tests {
                 1,
                 &path,
                 ToolKind::Write,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -976,6 +1032,7 @@ mod tests {
                 2,
                 &path,
                 ToolKind::Edit,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -1012,6 +1069,7 @@ mod tests {
                 1,
                 &path,
                 ToolKind::Write,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -1023,6 +1081,7 @@ mod tests {
                 2,
                 &path,
                 ToolKind::Edit,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -1082,6 +1141,7 @@ mod tests {
                 5,
                 &path,
                 ToolKind::Write,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -1117,6 +1177,7 @@ mod tests {
                     seq,
                     &path,
                     ToolKind::Edit,
+                    None,
                     DEFAULT_MAX_SNAPSHOT_BYTES,
                     DEFAULT_MAX_PROJECT_BYTES,
                 )
@@ -1140,6 +1201,7 @@ mod tests {
                 7,
                 &path,
                 ToolKind::Write,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
@@ -1159,6 +1221,7 @@ mod tests {
                 1,
                 &path,
                 ToolKind::Write,
+                None,
                 DEFAULT_MAX_SNAPSHOT_BYTES,
                 DEFAULT_MAX_PROJECT_BYTES,
             )
