@@ -606,6 +606,11 @@ command** — it writes exactly the user-scope file `/plugin` writes,
 nothing else. Like every `/plugin` toggle, a write here applies on your
 *next* restart, never to the invocation that made it. Naming an id this
 binary does not link is a usage error (exit 2) naming every id it does.
+Neither `install` nor `remove` dials a model, so — like `conway plugin
+list` — neither needs a working provider: `conway plugin install
+--defaults` runs against a completely empty `settings.json`, which is
+exactly what lets the startup notice below name it as the remedy without
+that remedy being blocked on the very thing it is fixing.
 
 `conway plugin` with no subcommand prints help and exits 2.
 

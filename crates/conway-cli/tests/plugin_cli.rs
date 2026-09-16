@@ -521,3 +521,87 @@ async fn plugin_with_no_declared_events_gets_no_events_section() {
         "conway.memory declares no events -- expected no events section at all, got block:\n{block}"
     );
 }
+
+/// `conway plugin install --defaults` succeeds against a config with zero
+/// backends declared -- this would fail against HEAD, which refuses with
+/// the guided-setup provider error before `commands::plugin::run_admin`
+/// ever runs.
+#[test]
+fn plugin_install_succeeds_with_no_backends_configured() {
+    let fixture = write_no_backends_fixture();
+
+    let out = command(&["plugin", "install", "--defaults"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains(GUIDED_SETUP_MARKER),
+        "plugin install must never hit the provider gate: {stderr:?}"
+    );
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(settings_path(&fixture)).expect("read settings.json"),
+    )
+    .expect("settings.json must be valid JSON");
+    let installed: Vec<String> = settings["plugins"]["install"]
+        .as_array()
+        .expect("plugins.install must be an array")
+        .iter()
+        .map(|v| v.as_str().expect("id must be a string").to_string())
+        .collect();
+    assert_eq!(
+        installed,
+        DEFAULT_IDS.to_vec(),
+        "settings.json plugins.install must equal the ruled default set, in order"
+    );
+}
+
+/// `conway plugin remove` counterpart: succeeds against the same
+/// zero-backend config, once an id is actually on disk to remove.
+#[test]
+fn plugin_remove_succeeds_with_no_backends_configured() {
+    let fixture = write_no_backends_fixture();
+
+    let install_out = command(&["plugin", "install", "conway.memory"], &fixture)
+        .output()
+        .expect("run conway binary");
+    assert!(
+        install_out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&install_out.stderr)
+    );
+
+    let out = command(&["plugin", "remove", "conway.memory"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains(GUIDED_SETUP_MARKER),
+        "plugin remove must never hit the provider gate: {stderr:?}"
+    );
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(settings_path(&fixture)).expect("read settings.json"),
+    )
+    .expect("settings.json must be valid JSON");
+    let installed: Vec<String> = settings["plugins"]["install"]
+        .as_array()
+        .expect("plugins.install must be an array")
+        .iter()
+        .map(|v| v.as_str().expect("id must be a string").to_string())
+        .collect();
+    assert!(
+        !installed.iter().any(|id| id == "conway.memory"),
+        "conway.memory must be gone: {installed:?}"
+    );
+}
