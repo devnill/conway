@@ -41,6 +41,32 @@
 //! [`Self::set_head`], by contrast, are narrowed to ONE session by
 //! [`ContextPathHandle`] below -- a tool composes and freezes only the
 //! calling session's own head, never another session's.
+//!
+//! # Exactly one intended implementor (operator ruling 2026-09-16, board
+//! item `01M2M5HVF43FERZA5DFJ88CWDX`)
+//!
+//! Unlike `SessionStore`/`PathStore` -- the two ports that same ruling left
+//! as genuine extension points, each with its own runnable example under
+//! `crates/conway/examples/` -- this trait has exactly one intended
+//! implementor: the runtime that assembles context
+//! (`conway_runtime::context::RuntimeContextPathHost`, reached via
+//! `resolve_default_path`/`write_head`). This is a decided design, not an
+//! unfilled seam -- the identical argument [`crate::ports::SubagentHost`]'s
+//! own doc already makes for fork/spawn ("the runtime that keeps the log is
+//! the only thing that may fork it", INTENT.md §7): a second implementation
+//! of this port would be a second authority over what a context path MEANS
+//! for a session, not a second way to store or route one. An embedder can
+//! decline to wire a `Tool` that calls through this port at all, but it
+//! cannot replace what composing/freezing a context path means by handing
+//! the host a different `ContextPathHost`.
+//!
+//! The [`ContextPathHandle::new`]/[`ContextPathHandle::noop`] injection
+//! points below stay exactly as ruled -- this narrows who may author a
+//! PRODUCTION implementation, not whether a fixture may substitute one.
+//! `conway_testkit`'s doubles and a test's own `ContextPathHandle::new` call
+//! already rely on both existing; removing either would be a public API
+//! removal for no gain, and a *documented* fixture point is not a broken
+//! promise (an undocumented one would be).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
