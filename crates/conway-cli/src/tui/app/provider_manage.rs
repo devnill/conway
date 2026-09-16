@@ -174,9 +174,10 @@ use super::defaults::load_default_role_lax;
 use super::App;
 use crate::first_run::{
     backend_entry_json, chain_entry, context_window_is_verified, context_window_setup_notice,
-    default_opinion_set_footprint, discover_setup_context_window, persist_context_window_at,
-    resolve_credential_plan, runway_fixed_cost_warning, CredentialPlan, CredentialSource,
-    HOSTED_CHOICES,
+    default_opinion_set_footprint, dialect_floor_window, discover_setup_context_window,
+    persist_context_window_at, resolve_credential_plan, runway_fixed_cost_warning,
+    verified_baseline_window, CredentialPlan, CredentialSource, CONTEXT_WINDOW_PROVENANCE_PROBED,
+    CONTEXT_WINDOW_PROVENANCE_VERIFIED, HOSTED_CHOICES,
 };
 use crate::tui::state::Entry;
 
@@ -310,6 +311,61 @@ fn wire_provider_into_default_chain(
     Ok(role_name)
 }
 
+/// Board item `01M23M2P79R5G28TPGG7PPJQ32`: what
+/// [`App::confirm_context_window_for_add`] resolved, collapsing
+/// `crate::first_run::resolve_context_window_for_setup`'s own three-way
+/// `(Option<u32>, &str, Option<String>)` (which THIS function mirrors
+/// exactly -- same discovery primitive, same `context_window_is_verified`
+/// gate, P-14) into the two shapes this file's own confirm surface needs: a
+/// REAL default (a successful probe or an already-verified baseline, either
+/// way something conway actually knows) or nothing but the assumed-floor
+/// number to name honestly (rule B) while asking.
+enum ResolvedContextWindowForAdd {
+    /// A successful probe or an already-verified dialect baseline --
+    /// `provenance` is one of `crate::first_run::CONTEXT_WINDOW_PROVENANCE_*`.
+    Known {
+        window: u32,
+        provenance: &'static str,
+    },
+    /// Neither found anything: `floor` names the specific number
+    /// [`crate::first_run::dialect_floor_window`] resolves for this
+    /// `kind`/`dialect` (`None` only in the "never reached in practice"
+    /// case that function's own doc names).
+    AssumedFloor { floor: Option<u32> },
+}
+
+/// The DECISION half of board item `01M23M2P79R5G28TPGG7PPJQ32` for
+/// `/settings` -> providers' own add flow. Deliberately does NOT persist
+/// anything, on any branch -- seeing what conway resolved is
+/// [`App::confirm_context_window_for_add`]'s job; writing an operator's OWN
+/// override is [`App::apply_edit_model_context_window`]'s.
+async fn resolve_context_window_for_add(
+    base_url: Option<&str>,
+    dialect: Option<&str>,
+    kind: &str,
+    model: &str,
+) -> ResolvedContextWindowForAdd {
+    if let Some(base_url) = base_url {
+        if let Some(window) = discover_setup_context_window(base_url, dialect, model).await {
+            return ResolvedContextWindowForAdd::Known {
+                window,
+                provenance: CONTEXT_WINDOW_PROVENANCE_PROBED,
+            };
+        }
+    }
+    if context_window_is_verified(kind, dialect) {
+        if let Some(window) = verified_baseline_window(kind, dialect) {
+            return ResolvedContextWindowForAdd::Known {
+                window,
+                provenance: CONTEXT_WINDOW_PROVENANCE_VERIFIED,
+            };
+        }
+    }
+    ResolvedContextWindowForAdd::AssumedFloor {
+        floor: dialect_floor_window(kind, dialect),
+    }
+}
+
 /// The five fields that identify a provider being written, travelling as
 /// one value rather than five positional parameters.
 ///
@@ -427,12 +483,12 @@ impl App {
     }
 
     /// The shared write-then-refresh tail both add paths above end in:
-    /// setup-time context-window discovery (`base_url`/`dialect`, board item
-    /// context-window declaration honesty/num_ctx -- see this function's own
-    /// body and [`crate::first_run::discover_setup_context_window`]'s own
-    /// doc for why this only ever produces a transcript notice, never a
-    /// persisted config write), [`set_backend_provider`] (USER SCOPE, per
-    /// that function's own doc), [`wire_provider_into_default_chain`] (this
+    /// setup-time context-window resolution (`base_url`/`dialect`, board
+    /// item `01M23M2P79R5G28TPGG7PPJQ32`, "confirm every branch" --
+    /// [`resolve_context_window_for_add`]'s own doc explains why NEITHER a
+    /// successful discovery NOR an already-verified baseline is written
+    /// here any more), [`set_backend_provider`] (USER SCOPE, per that
+    /// function's own doc), [`wire_provider_into_default_chain`] (this
     /// module's own top doc, "A newly added provider is wired into the
     /// routing chain, not just saved" -- board item
     /// `01M1A54RS91QHHHTY7N1PV8X0H`), a transcript notice/error, and -- on
@@ -456,38 +512,14 @@ impl App {
             model,
         } = provider;
         let key = chain_entry(id, model);
-        // Board item (setup-time context window, ASK + PERSIST): the
-        // DISCOVER half of the operator's "discover, or ask if discovery
-        // fails" setup-time ruling, via the SAME shared primitive
-        // `first_run.rs`'s guided setup calls -- never a second
-        // implementation of "try to learn this model's window before
-        // writing it" (P-14). A `base_url` of `None` (only a hosted choice
-        // with no fixed `base_url`, i.e. `anthropic`, ever reaches here
-        // with `None`) skips discovery entirely. A successful discovery is
-        // PERSISTED here too (`persist_context_window`, the same shared
-        // writer `first_run.rs`'s own entrance calls) -- `window_found`
-        // records that so the ASK step below is skipped.
-        let mut window_found = false;
-        if let Some(base_url) = base_url {
-            if let Some(window) = discover_setup_context_window(base_url, dialect, model).await {
-                window_found = true;
-                match persist_context_window_at(cwd, env, &key, window) {
-                    Ok(path) => {
-                        self.state.transcript.push(Entry::Notice {
-                            text: context_window_setup_notice(&key, window, &path),
-                        });
-                        self.push_runway_warning_if_needed(&key, window, env, cwd);
-                    }
-                    Err(e) => self.state.transcript.push(Entry::Error {
-                        text: format!(
-                            "discovered a {window}-token context window for {key} but could \
-                             not save it: {e}"
-                        ),
-                        fatal: false,
-                    }),
-                }
-            }
-        }
+        // Board item `01M23M2P79R5G28TPGG7PPJQ32`: the DECISION half of
+        // "discover, or ask if discovery fails" -- the SAME shared
+        // primitive `first_run.rs`'s guided setup calls (P-14, never a
+        // second implementation of "try to learn this model's window
+        // before writing it"). Nothing is written yet on ANY outcome here
+        // -- see [`resolve_context_window_for_add`]'s own doc for why.
+        let resolved = resolve_context_window_for_add(base_url, dialect, kind, model).await;
+
         let entry_json = entry_json.as_str();
         let Some(path) = discovery::user_config_path(env) else {
             self.state.transcript.push(Entry::Error {
@@ -520,25 +552,86 @@ impl App {
                     }
                 }
                 self.refresh_provider_entries_and_kick_off_status(env, cwd);
-                // Board item (setup-time context window, ASK + PERSIST): the
-                // ASK half, opened only when discovery found nothing AND
-                // this dialect's own baseline is not already a real, sourced
-                // figure (`context_window_is_verified`'s own doc explains
-                // why asking an Anthropic/OpenAI setup would be pure noise).
-                // Opened AFTER the backend write above settles, on either
-                // outcome -- the two writes (`backends.<id>`, `models.json`)
-                // are independent, and a window question must never block
-                // or roll back the backend entry itself.
-                if !window_found && !context_window_is_verified(kind, dialect) {
-                    self.state
-                        .begin_add_provider_context_window(key.clone(), format!("{id}: {model}"));
-                }
+                // Board item `01M23M2P79R5G28TPGG7PPJQ32`, rule A: EVERY
+                // branch confirms, opened AFTER the backend write above
+                // settles on either outcome -- the two writes
+                // (`backends.<id>`, `models.json`) are independent, and a
+                // window question must never block or roll back the
+                // backend entry itself.
+                self.confirm_context_window_for_add(&key, &format!("{id}: {model}"), resolved, env, cwd);
             }
             Err(e) => {
                 self.state.transcript.push(Entry::Error {
                     text: format!("could not add provider {id}: {e}"),
                     fatal: false,
                 });
+            }
+        }
+    }
+
+    /// The interactive-confirm half of board item `01M23M2P79R5G28TPGG7PPJQ32`
+    /// for `/settings` -> providers' own add flow -- see
+    /// [`resolve_context_window_for_add`]'s own doc for why this branches
+    /// three ways instead of the pre-item shape (silently persist a
+    /// discovery, silently do nothing for a verified baseline, ask only for
+    /// the third case).
+    ///
+    /// **Branch 3 (nothing resolved) reuses the pre-existing `Mode::
+    /// AddProviderContextWindow` card unchanged**, only enriching its
+    /// `label` with the exact assumed-floor number (rule B) -- that card's
+    /// own surrounding copy ("no context window could be established
+    /// automatically") is accurate for this branch and this branch alone.
+    ///
+    /// **Branches 1/2 (a real default) deliberately do NOT open that same
+    /// card.** Its fixed wording lives in `tui::view::mod::draw_add_
+    /// provider_context_window` -- outside this file's own fence for this
+    /// wave -- and would be actively misleading here (claiming "no context
+    /// window could be established automatically" over a pre-filled, real,
+    /// resolved number). Instead this pushes an immediate, always-visible
+    /// transcript notice naming the resolved value and its provenance, and
+    /// -- per the accept-vs-override ruling -- writes NOTHING: no keypress
+    /// is needed to "accept" it (rule C: accepting costs nothing, not merely
+    /// one keystroke), and the resolved value is still what the runway
+    /// check below runs against, so the operator sees its cost immediately
+    /// even though nothing was persisted. An operator who wants to PIN a
+    /// different number reaches [`Self::apply_edit_model_context_window`]
+    /// (`models.json` `Override`, surviving any later probe) -- see that
+    /// method's own doc for why its own UI entry point is this wave's own
+    /// disclosed gap, not a silent omission.
+    fn confirm_context_window_for_add(
+        &mut self,
+        key: &str,
+        label: &str,
+        resolved: ResolvedContextWindowForAdd,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+    ) {
+        match resolved {
+            ResolvedContextWindowForAdd::Known { window, provenance } => {
+                self.state.transcript.push(Entry::Notice {
+                    text: format!(
+                        "{key}: context window resolves to {window} tokens ({provenance}) -- \
+                         not written to models.json, so it stays live and a later probe or a \
+                         corrected baseline can still refine it. Use the edit-window primitive \
+                         to pin a different number instead."
+                    ),
+                });
+                self.push_runway_warning_if_needed(key, window, env, cwd);
+            }
+            ResolvedContextWindowForAdd::AssumedFloor { floor } => {
+                // The pre-existing ASK card, unchanged -- only its `label`
+                // (a free `String` this file already controls, unlike the
+                // card's own fixed surrounding copy in `tui::view::mod`) is
+                // enriched with the exact number rule B requires be named.
+                let label = match floor {
+                    Some(floor) => format!(
+                        "{label} -- would otherwise default to a {floor}-token floor: an \
+                         ASSUMED, unsourced placeholder, not a measurement"
+                    ),
+                    None => label.to_string(),
+                };
+                self.state
+                    .begin_add_provider_context_window(key.to_string(), label);
             }
         }
     }
@@ -582,6 +675,46 @@ impl App {
                     fatal: false,
                 }),
             },
+        }
+    }
+
+    /// Board item `01M23M2P79R5G28TPGG7PPJQ32`, acceptance 5 -- the WRITE
+    /// half of "an already-configured model's window can be changed from
+    /// `/settings` -> providers, without editing JSON". Reuses the
+    /// identical persist path [`Self::apply_provider_context_window`]'s own
+    /// typed-answer branch already calls (`persist_context_window_at`, P-14
+    /// -- no second writer), so an edited value lands as an `Override`
+    /// exactly like a freshly-typed add-time answer does, per rule D ("the
+    /// operator can always type a different number, at any point, and it
+    /// wins").
+    ///
+    /// **The UI entry point for this is this wave's own disclosed gap, not
+    /// a silent omission.** A per-model, selectable, editable row in the
+    /// providers list needs a new row/selection concept in `tui::view::mod`
+    /// (rendering) and a new keybinding in `tui::input` -- both outside this
+    /// file's own fence for this wave (only `first_run.rs` and THIS file are
+    /// this lane's to edit). This method is the primitive whichever surface
+    /// eventually owns that row calls; today nothing in this crate calls it
+    /// yet.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn apply_edit_model_context_window(
+        &mut self,
+        model_key: &str,
+        window: u32,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+    ) {
+        match persist_context_window_at(cwd, env, model_key, window) {
+            Ok(path) => {
+                self.state.transcript.push(Entry::Notice {
+                    text: context_window_setup_notice(model_key, window, &path),
+                });
+                self.push_runway_warning_if_needed(model_key, window, env, cwd);
+            }
+            Err(e) => self.state.transcript.push(Entry::Error {
+                text: format!("could not save {model_key}'s context window: {e}"),
+                fatal: false,
+            }),
         }
     }
 
@@ -1309,8 +1442,14 @@ mod tests {
     // substitution.
     // ---------------------------------------------------------------
 
+    /// Board item `01M23M2P79R5G28TPGG7PPJQ32`: a successful discovery no
+    /// longer writes `models.json` immediately -- it produces an
+    /// always-visible confirm notice naming the resolved value and its
+    /// `probed` provenance, and writes NOTHING, so a later, better probe
+    /// can still improve it (the accept-vs-override ruling: accepting must
+    /// never freeze a number the operator merely glanced at).
     #[tokio::test]
-    async fn adding_an_ollama_provider_discovers_its_context_window_and_notifies() {
+    async fn adding_an_ollama_provider_discovers_its_context_window_and_confirms_without_writing() {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/api/show"))
@@ -1358,21 +1497,35 @@ mod tests {
         assert!(
             app.state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Notice { text } if text.contains("glm-5.2") && text.contains("1048576")
+                Entry::Notice { text } if text.contains("mock_ollama/glm-5.2")
+                    && text.contains("1048576")
+                    && text.contains("probed")
             )),
-            "a successful discovery must produce a transcript notice naming the model and the \
-             discovered window: {:?}",
+            "a successful discovery must produce a transcript notice naming the model, the \
+             discovered window, and its provenance: {:?}",
             app.state.transcript
+        );
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "a real, resolved default must never open a blocking card: {:?}",
+            app.state.mode
+        );
+        let models_path = cwd.path().join(".conway").join("models.json");
+        assert!(
+            !models_path.exists(),
+            "a successful discovery must never be auto-persisted -- accepting it must not \
+             freeze it as an Override"
         );
     }
 
-    /// The negative case: a dialect with no known discovery endpoint (here,
-    /// `"openai"`) never even attempts discovery, so no notice appears --
-    /// silence is exactly the point for the common case (guided setup's
-    /// own appetite: no fourth question / no surprise output when there is
-    /// nothing to report).
+    /// Board item `01M23M2P79R5G28TPGG7PPJQ32`: an already-verified dialect
+    /// baseline (`"openai"`'s 128,000 -- discovery is never even attempted,
+    /// per `context_window_is_verified`) now ALSO confirms -- before this
+    /// item, this branch resolved and returned in total silence. Renamed
+    /// from `..._produces_no_discovery_notice`: that silence was exactly
+    /// the gap rule A ("every branch confirms") closes.
     #[tokio::test]
-    async fn adding_a_non_ollama_provider_produces_no_discovery_notice() {
+    async fn adding_a_verified_dialect_provider_confirms_its_baseline_without_probing() {
         let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
@@ -1406,14 +1559,26 @@ mod tests {
                 .transcript
                 .iter()
                 .any(|e| matches!(e, Entry::Notice { text } if text.contains("discovered"))),
-            "a provider with no base_url/dialect to discover against must never produce a \
-             discovery notice: {:?}",
+            "a provider with no base_url/dialect to discover against must never claim a \
+             discovery happened: {:?}",
             app.state.transcript
         );
-        // Board item (setup-time context window, ASK + PERSIST): `anthropic`
-        // has a real, sourced baseline window (`context_window_is_verified`)
-        // -- the ASK card must not open just because there was nothing to
-        // discover.
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("mock_anthropic/claude-sonnet-5")
+                    && text.contains("200000")
+                    && text.contains("verified")
+            )),
+            "a verified baseline must still be confirmed, naming the number and its provenance: \
+             {:?}",
+            app.state.transcript
+        );
+        // Board item `01M23M2P79R5G28TPGG7PPJQ32`: a real, already-known
+        // default is confirmed via an immediate notice, never a blocking
+        // card -- see `App::confirm_context_window_for_add`'s own doc for
+        // why (the pre-existing card's fixed copy would be actively
+        // misleading here).
         assert!(
             matches!(app.state.mode, Mode::Normal),
             "a verified dialect must never open the context-window ASK card: {:?}",
@@ -1471,6 +1636,21 @@ mod tests {
                 assert!(
                     w.label.contains("mock_ollama_unreachable") && w.label.contains("glm-5.2"),
                     "the card's own label must name the provider and model: {}",
+                    w.label
+                );
+                // Board item `01M23M2P79R5G28TPGG7PPJQ32`, rule B: the
+                // label must name the SPECIFIC number conway would
+                // otherwise silently assume, and say plainly that it is a
+                // guess -- not a vague "no window found".
+                assert!(
+                    w.label.contains("32768"),
+                    "must name ollama's actual dialect floor: {}",
+                    w.label
+                );
+                assert!(
+                    w.label.to_ascii_lowercase().contains("assumed")
+                        || w.label.to_ascii_lowercase().contains("guess"),
+                    "must read as a guess, per rule B: {}",
                     w.label
                 );
             }
@@ -1600,6 +1780,47 @@ mod tests {
             "a window that easily carries the default install must not produce a runway \
              warning: {:?}",
             app.state.transcript
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Board item `01M23M2P79R5G28TPGG7PPJQ32`, acceptance 5: the WRITE
+    // primitive an already-configured model's own edit surface will call
+    // (this wave's disclosed gap is the UI entry point, not this method --
+    // see `App::apply_edit_model_context_window`'s own doc).
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn apply_edit_model_context_window_persists_an_override_for_an_already_configured_model()
+    {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.apply_edit_model_context_window("ollama_cloud/glm-5.3", 1_000_000, &env, cwd.path());
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("ollama_cloud/glm-5.3")
+                    && text.contains("1000000")
+            )),
+            "an edit must be confirmed in the transcript: {:?}",
+            app.state.transcript
+        );
+        let models_path = cwd.path().join(".conway").join("models.json");
+        let text =
+            std::fs::read_to_string(&models_path).expect("models.json must have been written");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            parsed["models"]["ollama_cloud/glm-5.3"]["max_context_tokens"],
+            1_000_000,
+            "an edited window must land as a real models.json entry, an Override on the next \
+             read, exactly like a freshly-typed add-time answer"
         );
     }
 }

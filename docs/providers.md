@@ -916,26 +916,83 @@ the real window — or let provider setup do it for you, next.
 
 ### Establishing the window at setup
 
-**The operator's ruling (2026-08-30): at provider setup, conway attempts to
-discover the real window; if discovery fails or the dialect has none, it
-asks; either way, the answer is recorded.** Both places a provider gets
-configured — guided first-run setup and `/settings` → providers → add —
-run the identical DISCOVER-then-ASK-then-PERSIST sequence through one
-shared set of primitives (`conway_plugin_backends::probe::
-discover_context_window` for DISCOVER;
-`conway_cli::first_run::ask_and_persist_context_window`/the settings TUI's
-own `Mode::AddProviderContextWindow` card for ASK;
+**The operator's ruling, revised 2026-09-16 (board item
+`01M23M2P79R5G28TPGG7PPJQ32`): at provider setup, conway attempts to
+discover the real window, then CONFIRMS whatever it resolved — a live
+probe, an already-verified dialect baseline, or nothing at all — before
+that value governs, in an interactive context.** The 2026-08-30 ruling this
+replaces asked only when discovery had already failed AND the dialect had
+no verified baseline; the other two branches (a successful probe, an
+already-verified baseline) persisted or resolved in total silence. That
+silence is what let `ollama_cloud/glm-5.3` run an entire session on an
+ASSUMED 32,768-token floor against a real 1,000,000-token ceiling with the
+operator never having seen a number: Ollama Cloud's own `/v1/models`
+listing carries no `context_length`/`max_model_len` field for any model,
+and its hosted origin does not answer Ollama's native `POST /api/show`
+either, so discovery can never succeed for this provider — every add of an
+Ollama Cloud model reaches the one branch that, before this revision, still
+never named the specific number an operator declining it would silently
+get.
+
+Both places a provider gets configured — guided first-run setup and
+`/settings` → providers → add — run the identical DISCOVER-then-CONFIRM
+sequence through one shared set of primitives
+(`conway_plugin_backends::probe::discover_context_window` for DISCOVER;
+`conway_cli::first_run::confirm_and_persist_context_window`/the settings
+TUI's own `Mode::AddProviderContextWindow` card, or an immediate confirm
+notice for a real default — see below — for CONFIRM;
 `conway_cli::first_run::persist_context_window`/`persist_context_window_at`
 → `conway::config::metadata_path_for` → `conway::config::
-set_context_window` for PERSIST), never two separate implementations of
-any of the three (a fix applied to only one of two config entrances shipped
-as a real defect earlier in this same item's own history, caught within
-minutes). **Both entrances write for EVERY model they add to a chain, not
-only the first/verified one:** guided setup calls the DISCOVER-then-ASK-
-then-PERSIST sequence once per backend added across an "add another" loop
-(`crates/conway-cli/src/first_run.rs`'s `run_backend_setup`, and its own
-retried-credential path, `retry_credential_and_finish`), and `/settings` →
-providers → add runs it for the one model each add-flow configures.
+set_context_window` for the one persisted channel any of them can write
+to), never two separate implementations of any of the three (a fix applied
+to only one of two config entrances shipped as a real defect earlier in
+this same item's own history, caught within minutes). **Both entrances
+confirm for EVERY model they add to a chain, not only the unverified one:**
+guided setup calls the DISCOVER-then-CONFIRM sequence once per backend
+added across an "add another" loop (`crates/conway-cli/src/first_run.rs`'s
+`run_backend_setup`, and its own retried-credential path,
+`retry_credential_and_finish`), and `/settings` → providers → add runs it
+for the one model each add-flow configures.
+
+**Accepting a resolved default is not the same as overriding it.** A
+`models.json` entry is the ONLY persisted channel this codebase has for a
+per-model window (["Where a context ceiling comes
+from"](#where-a-context-ceiling-comes-from) above) — writing one always
+resolves `ContextTokensSource::Override` on the next read, the
+highest-precedence source there is. That makes writing one the right
+outcome for a number the operator TYPED (they have said conway's own
+answer was wrong, or that they know better, and conway does not get to
+un-hear that — a typed number is always persisted, and never silently
+replaced by a later probe or discovery), and the WRONG outcome for a
+number the operator merely glanced at and accepted: freezing a correct
+probe as an `Override` would stop a LATER, better probe from ever
+correcting it again (the exact case a provider raising a model's ceiling,
+or fixing a wrong report, needs). So:
+
+- **Accepting** a probed or already-verified default (a bare `Enter` in
+  guided setup's own confirm prompt; an immediate, un-editable confirm
+  notice in `/settings` → providers — see below) writes NOTHING. The
+  value's source is left exactly as it was — `Probed` stays `Probed`,
+  the dialect's own verified baseline stays what it was — so a later,
+  better probe can still improve it.
+- **Typing a different number** — at either entrance, or later via
+  `.conway/models.json` by hand — always persists it, unconditionally, as
+  an `Override`.
+- **The one branch with nothing real to offer** (no successful probe, no
+  verified baseline — Ollama Cloud's own case) still asks, exactly as the
+  2026-08-30 ruling did, but now names the SPECIFIC number conway would
+  otherwise silently assume ("32768 — an ASSUMED, unsourced placeholder,
+  not a measurement") rather than a vague "no window found": an assumed
+  value must never be presentable as if it were an answer.
+
+`/settings` → providers' own confirm surface for a real, resolved default
+(a successful probe or a verified baseline) is deliberately NOT the same
+blocking card the no-default branch opens — that card's own fixed copy
+("no context window could be established automatically") would be actively
+misleading over a real, resolved number. Instead it is an immediate,
+always-visible transcript notice naming the value and its provenance, which
+writes nothing (the accept case above) unless the operator later types an
+override.
 
 For `ollama`, discovery tries native `POST /api/show` first (below); every
 OpenAI-compatible dialect — including one with no dialect-specific step —
@@ -977,14 +1034,14 @@ alternative is built here; both are recorded so a future reader does not
 rebuild on them unverified. See `conway::config::merge::metadata_path_for`'s
 own doc for the full account.
 
-A successful discovery, or a typed answer, is confirmed with an
-operator-facing notice naming the model, the window, and the exact file it
-was written to — the same "refuse and name what changed" convention this
-doc's own non-interactive-guidance messages use. Declining the ASK prompt
-(pressing Enter with nothing typed, or `Esc`) is treated as a real, honest
-answer, never an error: the model's window simply stays unrecorded, and the
-notice says so plainly rather than silently re-prompting or falling back to
-a guessed number.
+Every resolution is confirmed with an operator-facing notice naming the
+model, the window, and its provenance. A TYPED override additionally names
+the exact file it was written to — the same "refuse and name what changed"
+convention this doc's own non-interactive-guidance messages use. Declining
+the assumed-floor prompt (pressing Enter with nothing typed, or `Esc`) is
+treated as a real, honest answer, never an error: the model's window simply
+stays unrecorded, and the notice says so plainly rather than silently
+re-prompting or falling back to a guessed number without saying so.
 
 **This is a setup-time step, not a CLI configuration surface.** There is no
 `/settings` row, no slash command, and no flag for triggering or reading

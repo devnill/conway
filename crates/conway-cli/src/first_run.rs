@@ -74,7 +74,7 @@
 //! only compile-time-embedded profile data, the latter touches disk (via
 //! `conway::config::metadata_path_for`/`set_context_window`) but no
 //! terminal or network, so both are covered directly, no pty needed.
-//! `ask_and_persist_context_window` (the setup-time ASK half of "discover,
+//! `confirm_and_persist_context_window` (the setup-time ASK half of "discover,
 //! or ask if discovery fails") is the one new function in THIS pair that
 //! DOES touch a terminal (`read_plain_line`) -- it joins [`run_guided_setup`]
 //! in the untestable-without-a-pty bucket; [`validate_context_window_input`]
@@ -87,7 +87,7 @@
 //! built DISCOVER only and disclosed the rest rather than faking it (see
 //! [`discover_setup_context_window`]'s own doc, "Deliberately does NOT
 //! persist the result itself"). This item closes both gaps:
-//! `ask_and_persist_context_window` (this file) / `tui::app::
+//! `confirm_and_persist_context_window` (this file) / `tui::app::
 //! provider_manage`'s `Mode::AddProviderContextWindow` (the TUI's own
 //! equivalent surface, since a raw-terminal read here would fight
 //! ratatui's screen control) is ASK; PERSIST is shared by both a
@@ -102,7 +102,7 @@
 //! metadata_path` override -- see `metadata_path_for`'s own doc for the
 //! two alternatives it rejected. Guided setup itself (this file's own
 //! `run_backend_setup`/`retry_credential_and_finish`, reached via
-//! `ask_and_persist_context_window`/`handle_context_window_at_setup`)
+//! `confirm_and_persist_context_window`/`handle_context_window_at_setup`)
 //! instead calls `persist_context_window_beside_settings` -> `conway::
 //! config::set_context_window` directly: a real bug (see that function's
 //! own doc, and board item `01M2M68XYD5FSCNSH2Z1BMQ399`'s reproduction)
@@ -145,6 +145,44 @@
 //! `String` directly, since [`run_guided_setup`] (now via its own
 //! `offer_opinion_set_and_shell` step) is still the one caller no
 //! automated test can drive end to end.
+//!
+//! # 2026-09-16 addendum: confirm every branch, not just the one with
+//! # nothing to offer (board item `01M23M2P79R5G28TPGG7PPJQ32`)
+//!
+//! **The `01M2M68XYD5FSCNSH2Z1BMQ399` fix directly above (guided setup's
+//! `models.json` now lands beside `settings.json`, always) closed the
+//! specific reproduction that motivated it, but not the broader gap it sits
+//! beside.** That item's own reproduction showed a discovered window
+//! silently failing to round-trip from a different `cwd` -- this item's own
+//! reproduction (`ollama_cloud/glm-5.3`, 2026-09-09) is a DIFFERENT failure
+//! mode of the identical shape: `ContextTokensSource::Unverified`'s
+//! `32768`-token floor governing a real `1,000,000`-token model with no
+//! operator ever having seen a number, a provenance, or a chance to
+//! disagree. Investigating this item's own premise (its branch-analysis
+//! section is a starting hypothesis, not a finding, by that section's own
+//! admission) turned up TWO compounding causes, not one: `ollama_cloud`'s
+//! `/v1/models` response carries no `context_length`/`max_model_len` field
+//! for any model (measured directly -- only `id`/`object`/`created`/
+//! `owned_by`) and its hosted origin does not answer the native `POST
+//! /api/show` `conway_plugin_backends::probe::discover_context_window`
+//! tries first for an `"ollama"`-dialect profile either, so
+//! [`discover_setup_context_window`] (branch 1)
+//! can NEVER succeed for this provider; and, separately, [`HOSTED_CHOICES`]
+//! pins Ollama Cloud's guided-setup entry to exactly one model
+//! (`"glm-5.2"`) -- a model referenced any OTHER way (a chain edit, a
+//! roster move to `"glm-5.3"`, a hand-authored `backends`/`roles` entry)
+//! never reaches [`handle_context_window_at_setup`] at all, add-time or
+//! otherwise, and resolves silently through the ordinary runtime precedence
+//! chain (`conway_plugin_backends::capabilities::max_context_tokens_
+//! source`) with no operator-facing surface anywhere in this crate. Before
+//! this item, even the ONE branch that reliably fires for Ollama Cloud
+//! (branch 3, nothing to discover, nothing verified) never named the
+//! specific number (`32768`) an operator declining it would silently get --
+//! the request below this addendum ([`confirm_and_persist_context_window`],
+//! now called from every branch, not just the third) is this file's own
+//! half of the fix; `tui::app::provider_manage`'s equivalent surface and a
+//! confirm-vs-inform split forced by that file's own rendering fence are
+//! covered in ITS module doc, not repeated here.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -343,7 +381,7 @@ pub fn validate_credential_input(raw: &str) -> Result<String, &'static str> {
 }
 
 /// Pure: parses the setup-time context-window ASK prompt's raw typed line
-/// (both TTY entrances share this — see `ask_and_persist_context_window`
+/// (both TTY entrances share this — see `confirm_and_persist_context_window`
 /// and the TUI's `input::handle_add_provider_context_window_key`).
 ///
 /// Empty/whitespace-only means "skip" (`Ok(None)`) -- the operator declines
@@ -436,7 +474,7 @@ pub fn local_offer_entry_json(offer: &LocalOffer) -> String {
 
 /// The DISCOVER half of the operator's "discover, or ask if discovery
 /// fails" setup-time ruling. The ASK half is
-/// `ask_and_persist_context_window`; the PERSIST half (shared by both
+/// `confirm_and_persist_context_window`; the PERSIST half (shared by both
 /// DISCOVER's successful result and ASK's typed answer) is
 /// [`persist_context_window`]; `handle_context_window_at_setup` is the one
 /// orchestrator that calls all three in the right order, from both setup
@@ -513,7 +551,7 @@ pub fn context_window_is_verified(kind: &str, dialect: Option<&str>) -> bool {
 /// against `std::env::current_dir()`, the right answer for a caller
 /// already working against a real, discovered project. **No caller in this
 /// crate uses this bare wrapper today** -- guided setup's own two entrances
-/// (`ask_and_persist_context_window`/`handle_context_window_at_setup`) call
+/// (`confirm_and_persist_context_window`/`handle_context_window_at_setup`) call
 /// `persist_context_window_beside_settings` instead (board item
 /// `01M2M68XYD5FSCNSH2Z1BMQ399`: this function's `std::env::current_dir()`
 /// resolved a DIFFERENT location than wherever `settings.json` itself had
@@ -606,7 +644,7 @@ pub(crate) fn persist_context_window_at(
 /// 1,048,576-token model.
 ///
 /// **The fix: one decision, one destination.** `settings_path` is the exact
-/// path [`finish_setup`] (or [`ask_and_persist_context_window`]'s own
+/// path [`finish_setup`] (or `confirm_and_persist_context_window`'s own
 /// caller) just wrote `settings.json` to -- this writes `models.json` as a
 /// plain sibling file in that SAME directory, never a nested `.conway/`
 /// under it (that directory already IS the resolved layer, whether it's a
@@ -1055,7 +1093,7 @@ fn read_secret_line() -> Option<String> {
 
 /// [`read_secret_line`]'s un-masked sibling -- echoes each typed character
 /// verbatim rather than a `*`. Used only for the setup-time context-window
-/// number prompt (`ask_and_persist_context_window`): a token count is not
+/// number prompt (`confirm_and_persist_context_window`): a token count is not
 /// a credential and has no reason to be hidden. `None` on `Esc` or a
 /// terminal error, both treated as "skip" by every caller here, mirroring
 /// [`read_secret_line`]'s own contract for its own two failure paths.
@@ -1422,7 +1460,14 @@ fn warn_about_runway_if_needed(
 /// resolves to nothing at all (never reached in practice: every caller only
 /// asks after `context_window_is_verified` already returned `true` for the
 /// identical pair).
-fn verified_baseline_window(kind: &str, dialect: Option<&str>) -> Option<u32> {
+///
+/// `pub(crate)`, not private -- board item `01M23M2P79R5G28TPGG7PPJQ32`
+/// ("confirm, don't just inform"): `tui::app::provider_manage`'s own
+/// add-provider write path needs the SAME verified-baseline number this
+/// function already resolves, to pre-fill and label its own confirm
+/// surface. One resolver, called from both entrances (P-14), never a second
+/// copy of this lookup in that file.
+pub(crate) fn verified_baseline_window(kind: &str, dialect: Option<&str>) -> Option<u32> {
     if kind == "anthropic" {
         return Some(conway_plugin_backends::capabilities::anthropic_defaults().max_context_tokens);
     }
@@ -1435,60 +1480,261 @@ fn verified_baseline_window(kind: &str, dialect: Option<&str>) -> Option<u32> {
         .ok()
 }
 
-/// The ASK half of the operator's "discover, or ask if discovery fails"
-/// setup-time ruling, for the pre-TUI guided-setup entrance (`run_
-/// backend_setup`/`retry_credential_and_finish`, via [`handle_context_
-/// window_at_setup`]) -- the TUI's `/settings` → providers → add entrance
-/// has its own equivalent surface (`tui::app::provider_manage`'s `Mode::
-/// AddProviderContextWindow`), since a raw-terminal keypress read here would
-/// fight ratatui's own screen control; both share every PURE decision this
-/// module makes ([`validate_context_window_input`],
-/// [`context_window_is_verified`]) and differ only in how the keystrokes
-/// themselves are collected (P-14 applied to everything except the
-/// terminal I/O itself, which cannot be shared across a raw-mode read and a
-/// ratatui widget) -- and, since board item `01M2M68XYD5FSCNSH2Z1BMQ399`,
-/// in WHERE they persist a typed answer too: this pre-TUI entrance calls
-/// `persist_context_window_beside_settings`, never
-/// [`persist_context_window`] -- see that function's own doc for why guided
-/// setup's own PERSIST decision differs from the TUI's.
-///
-/// `Esc` (via [`read_plain_line`] returning `None`) is treated exactly like
-/// an empty `Enter` -- both mean "skip", never an error: declining costs
-/// the operator nothing beyond leaving this ONE model's window unrecorded,
-/// which already has an honest name for the resulting state --
-/// `conway_plugin_backends::capabilities::ContextTokensSource::Unverified`
-/// -- rather than a silently invented number.
-///
-/// `settings_path` is only threaded through to [`warn_about_runway_if_
-/// needed`] (board item `01M1YS0B0NYTMWM1M5C7250FFT`) on the `Ok(Some(window))` branch -- a typed
-/// window is just as real a setup-time resolution as a discovered or
-/// already-verified one, and skipping the check here would have left
-/// exactly this path uncovered for no reason a caller could see.
-fn ask_and_persist_context_window(env: &HashMap<String, String>, settings_path: &Path, key: &str) {
-    println!();
-    println!(
-        "conway could not determine {key}'s context window automatically -- this profile has \
-         no known discovery endpoint, or the server did not answer."
-    );
-    println!("Enter it in tokens (e.g. 131072), or press Enter to leave it unverified for now:");
-    print!("> ");
-    let _ = std::io::stdout().flush();
-    let raw = read_plain_line().unwrap_or_default();
-    match validate_context_window_input(&raw) {
-        Ok(None) => {
-            println!(
+/// `kind`/`dialect`'s own baseline `max_context_tokens`, REGARDLESS of
+/// whether [`context_window_is_verified`] is `true` for it -- unlike
+/// [`verified_baseline_window`] (only ever meaningful once a caller already
+/// knows the baseline is a sourced fact), this answers the identical
+/// question for the UNVERIFIED case too: the number `conway_plugin_backends`
+/// would silently fall back to for a dialect like `"ollama"` (`32768`,
+/// `default_max_context_tokens`'s own doc), which is exactly the number
+/// board item `01M23M2P79R5G28TPGG7PPJQ32`'s own rule B requires be named,
+/// not just implied, wherever conway is about to offer -- or silently use --
+/// an assumed floor. `None` only for `kind == "anthropic"` (its baseline is
+/// always verified, so this branch is never reached in practice -- see
+/// [`verified_baseline_window`]'s own doc for the identical caveat) or an
+/// unrecognized `dialect`.
+pub(crate) fn dialect_floor_window(kind: &str, dialect: Option<&str>) -> Option<u32> {
+    if kind == "anthropic" {
+        return None;
+    }
+    conway_plugin_backends::profile::ProfileStore::built_ins()
+        .resolve(dialect?)
+        .map(|p| p.max_context_tokens)
+        .ok()
+}
+
+/// The provenance vocabulary `conway routes explain` already renders
+/// (`crates/conway-cli/src/commands/routes.rs`'s own private
+/// `render_context_window_source`) -- reused here as literal strings rather
+/// than a fresh label set an operator would have to learn twice. Not a
+/// shared `const` with that function: `routes.rs` is outside this item's own
+/// file fence (board item `01M23M2P79R5G28TPGG7PPJQ32`), so the WORDING is
+/// kept in sync by hand, the same way `context_window_setup_notice` and
+/// `routes.rs`'s own rendering already independently describe the identical
+/// underlying `ContextTokensSource` without importing one function from the
+/// other.
+pub(crate) const CONTEXT_WINDOW_PROVENANCE_PROBED: &str = "probed";
+pub(crate) const CONTEXT_WINDOW_PROVENANCE_VERIFIED: &str = "verified";
+pub(crate) const CONTEXT_WINDOW_PROVENANCE_ASSUMED: &str = "floor (assumed)";
+
+/// Rule B's own honesty sentence (board item `01M23M2P79R5G28TPGG7PPJQ32`):
+/// wherever conway is about to offer -- or silently fall back to -- an
+/// UNSOURCED per-dialect floor (`ContextTokensSource::Unverified`), the
+/// operator is told the EXACT number ([`dialect_floor_window`]) and that it
+/// is a guess, not a vague "a small default" that leaves them unable to
+/// weigh it against what they actually expect this model's window to be.
+/// `None` only when `dialect_floor_window` itself has nothing to name
+/// (never reached in practice for this branch -- see that function's own
+/// doc).
+fn assumed_floor_honesty_note(kind: &str, dialect: Option<&str>) -> Option<String> {
+    let floor = dialect_floor_window(kind, dialect)?;
+    Some(format!(
+        "If left blank, conway will use a {floor}-token floor for this model -- that is an \
+         ASSUMED, unsourced placeholder, not a measurement, and this model's real window is \
+         very likely larger."
+    ))
+}
+
+/// The DECISION half of [`handle_context_window_at_setup`] -- computes WHAT
+/// to confirm (the resolved `default`, its provenance label, and, for the
+/// one branch with nothing real to offer, rule B's own honesty note) without
+/// touching a terminal, so a test can drive every branch directly against a
+/// mock discovery server -- the same testability split this module's own
+/// top doc establishes for every other network-touching, terminal-free
+/// function here. `handle_context_window_at_setup` itself is now a thin
+/// wrapper: call this, then hand the result to
+/// [`confirm_and_persist_context_window`].
+async fn resolve_context_window_for_setup(
+    base_url: Option<&str>,
+    dialect: Option<&str>,
+    kind: &str,
+    model: &str,
+) -> (Option<u32>, &'static str, Option<String>) {
+    if let Some(base_url) = base_url {
+        if let Some(window) = discover_setup_context_window(base_url, dialect, model).await {
+            return (Some(window), CONTEXT_WINDOW_PROVENANCE_PROBED, None);
+        }
+    }
+    if context_window_is_verified(kind, dialect) {
+        return (
+            verified_baseline_window(kind, dialect),
+            CONTEXT_WINDOW_PROVENANCE_VERIFIED,
+            None,
+        );
+    }
+    (
+        None,
+        CONTEXT_WINDOW_PROVENANCE_ASSUMED,
+        assumed_floor_honesty_note(kind, dialect),
+    )
+}
+
+/// The three-way outcome of asking the operator to confirm a resolved
+/// context window (board item `01M23M2P79R5G28TPGG7PPJQ32`, "confirm every
+/// branch, don't just inform" -- see this module's own top doc addendum).
+/// `default` is `None` only for the one branch with nothing real to offer
+/// (no successful probe, no verified dialect baseline); every other branch
+/// always has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextWindowAnswer {
+    /// A bare `Enter` against a REAL `default` -- conway's own resolved
+    /// value, unchanged. Per the operator's own accept-vs-override ruling,
+    /// this must NOT be written to `models.json`: writing it would resolve
+    /// as `ContextTokensSource::Override` (the only PERSISTED channel this
+    /// codebase has for a per-model window -- see that enum's own doc, and
+    /// `crates/conway/src/builder.rs::models_overrides_for`, which is what
+    /// actually projects a written `models.json` entry into `ModelOverrides`
+    /// at build time), permanently outranking a later, better probe. This
+    /// codebase has no separate "confirmed, but still live" persistence
+    /// tier, so leaving it unwritten is the only faithful way to implement
+    /// "stays Probed" / "stays the dialect's verified baseline".
+    Accepted(u32),
+    /// A typed number -- always persisted, and never silently replaced by a
+    /// later probe or discovery.
+    Override(u32),
+    /// A bare `Enter`/`Esc` with no `default` to fall back to -- the
+    /// pre-existing "leave it unverified" outcome, unchanged.
+    Skipped,
+}
+
+/// Pure: turns a raw typed line plus the branch's own `default` into a
+/// [`ContextWindowAnswer`], reusing [`validate_context_window_input`]
+/// rather than re-deriving its parsing rules (P-14) -- the empty-input case
+/// that function already treats as `Ok(None)` is what tells "accept/skip"
+/// apart from "type a number" here; this function's only job is deciding
+/// WHICH of those two an empty answer means, given `default`.
+pub(crate) fn resolve_context_window_answer(
+    raw: &str,
+    default: Option<u32>,
+) -> Result<ContextWindowAnswer, &'static str> {
+    Ok(match validate_context_window_input(raw)? {
+        Some(window) => ContextWindowAnswer::Override(window),
+        None => match default {
+            Some(window) => ContextWindowAnswer::Accepted(window),
+            None => ContextWindowAnswer::Skipped,
+        },
+    })
+}
+
+/// Pure: the confirm prompt's own body text -- shared by every branch of
+/// [`handle_context_window_at_setup`]. `default`/`provenance` name what
+/// conway resolved (`None` only for the assumed-floor branch, which has
+/// nothing real to offer); `honesty_note` carries
+/// [`assumed_floor_honesty_note`]'s own sentence for that ONE branch, per
+/// rule B -- every other branch passes `None`.
+pub(crate) fn context_window_confirm_prompt(
+    key: &str,
+    default: Option<u32>,
+    provenance: &str,
+    honesty_note: Option<&str>,
+) -> String {
+    let mut lines = Vec::new();
+    match default {
+        Some(window) => {
+            lines.push(format!(
+                "{key}'s context window resolves to {window} tokens ({provenance})."
+            ));
+            if let Some(note) = honesty_note {
+                lines.push(note.to_string());
+            }
+            lines.push(
+                "Press Enter to accept it, or type a different number (tokens) to override it:"
+                    .to_string(),
+            );
+        }
+        None => {
+            lines.push(format!(
+                "conway could not determine {key}'s context window automatically -- this \
+                 profile has no known discovery endpoint, or the server did not answer."
+            ));
+            if let Some(note) = honesty_note {
+                lines.push(note.to_string());
+            }
+            lines.push(
+                "Enter it in tokens (e.g. 131072), or press Enter to leave it unverified for \
+                 now:"
+                    .to_string(),
+            );
+        }
+    }
+    lines.join("\n")
+}
+
+/// The PERSIST half of a [`ContextWindowAnswer`], separated from the
+/// terminal read that produces one (mirrors this module's own testability
+/// split -- see the top doc) so a test can drive every outcome directly,
+/// without a pty: [`ContextWindowAnswer::Override`] is the ONLY arm that
+/// writes anything (via `persist_context_window_beside_settings`, guided
+/// setup's own write-location decision -- see that function's own doc);
+/// [`ContextWindowAnswer::Accepted`] deliberately writes nothing at all (see
+/// that variant's own doc for why). Returns the resolved window (for the
+/// caller's own [`warn_about_runway_if_needed`] call, on any branch that
+/// actually resolved one) alongside the message to print.
+fn apply_context_window_answer(
+    settings_path: &Path,
+    key: &str,
+    provenance: &str,
+    answer: ContextWindowAnswer,
+) -> (Option<u32>, String) {
+    match answer {
+        ContextWindowAnswer::Accepted(window) => (
+            Some(window),
+            format!(
+                "Using the {provenance} {window}-token window for {key} -- not written to \
+                 models.json, so a later probe or a corrected baseline can still refine it."
+            ),
+        ),
+        ContextWindowAnswer::Override(window) => {
+            match persist_context_window_beside_settings(settings_path, key, window) {
+                Ok(path) => (Some(window), context_window_setup_notice(key, window, &path)),
+                Err(e) => (None, format!("Could not save {key}'s context window: {e}")),
+            }
+        }
+        ContextWindowAnswer::Skipped => (
+            None,
+            format!(
                 "Skipped -- {key}'s context window remains unverified; conway will not send a \
                  num_ctx hint and admission uses the dialect's conservative floor until you set \
                  one (docs/providers.md)."
-            );
-        }
-        Ok(Some(window)) => {
-            match persist_context_window_beside_settings(settings_path, key, window) {
-                Ok(path) => {
-                    println!("{}", context_window_setup_notice(key, window, &path));
-                    warn_about_runway_if_needed(env, settings_path, key, window);
-                }
-                Err(e) => println!("Could not save {key}'s context window: {e}"),
+            ),
+        ),
+    }
+}
+
+/// The ONE confirm surface every branch of [`handle_context_window_at_
+/// setup`] now opens (board item `01M23M2P79R5G28TPGG7PPJQ32`, rule A:
+/// "every branch confirms" -- before this item, only the no-default branch
+/// asked anything; a successful probe or an already-verified baseline
+/// persisted, or resolved, silently). Prints [`context_window_confirm_
+/// prompt`], reads one line, and hands it to [`resolve_context_window_
+/// answer`] -> [`apply_context_window_answer`] -- the read is the one piece
+/// of this that cannot be shared with `tui::app::provider_manage`'s own
+/// equivalent surface (a raw-terminal read here would fight ratatui's own
+/// screen control), exactly the same split this module's top doc already
+/// establishes for [`validate_context_window_input`]/`read_secret_line`.
+fn confirm_and_persist_context_window(
+    env: &HashMap<String, String>,
+    settings_path: &Path,
+    key: &str,
+    default: Option<u32>,
+    provenance: &str,
+    honesty_note: Option<&str>,
+) {
+    println!();
+    println!(
+        "{}",
+        context_window_confirm_prompt(key, default, provenance, honesty_note)
+    );
+    print!("> ");
+    let _ = std::io::stdout().flush();
+    let raw = read_plain_line().unwrap_or_default();
+    match resolve_context_window_answer(&raw, default) {
+        Ok(answer) => {
+            let (window, message) =
+                apply_context_window_answer(settings_path, key, provenance, answer);
+            println!("{message}");
+            if let Some(window) = window {
+                warn_about_runway_if_needed(env, settings_path, key, window);
             }
         }
         Err(msg) => println!("{msg} -- {key}'s context window remains unverified."),
@@ -1497,29 +1743,19 @@ fn ask_and_persist_context_window(env: &HashMap<String, String>, settings_path: 
 
 /// The one orchestrator every setup-time call site (`run_backend_setup`'s
 /// local-offer and hosted-choice branches, and `retry_credential_and_
-/// finish`) calls instead of hand-rolling the discover-then-maybe-ask
-/// sequence itself (P-14) -- see this module's own top doc for the full
-/// three-function split this composes:
-/// [`discover_setup_context_window`] (network), [`context_window_is_
-/// verified`] (decide whether asking is even warranted),
-/// `persist_context_window_beside_settings` (the shared write --
-/// guided setup's OWN persist decision, not [`persist_context_window`]'s;
-/// see that function's own doc for why), `ask_and_persist_context_window`
-/// (this entrance's own TTY read).
-///
-/// `base_url` is `None` only for the one hosted choice with no fixed base
-/// URL at all (`anthropic`) -- discovery is skipped entirely in that case
-/// (there is no server to ask), and since `anthropic`'s own baseline is
-/// verified (`context_window_is_verified("anthropic", None) == true`),
-/// nothing is asked either: the fall-through below reaches the `if
-/// context_window_is_verified(...) { return; }` guard exactly as if
-/// discovery had been attempted and found nothing.
-///
-/// `settings_path` is board item `01M1YS0B0NYTMWM1M5C7250FFT`'s own addition -- forwarded to
-/// [`warn_about_runway_if_needed`] on every branch that resolves a real
-/// `window` (a fresh discovery, an already-verified baseline, or an
-/// operator's own typed answer via [`ask_and_persist_context_window`]), so
-/// every entrance to a known window gets the identical fixed-cost check.
+/// finish`) calls instead of hand-rolling the discover-then-confirm
+/// sequence itself (P-14): [`resolve_context_window_for_setup`] decides
+/// WHAT to confirm (network discovery, `context_window_is_verified`, and
+/// rule B's own honesty note, none of which touch a terminal), and
+/// [`confirm_and_persist_context_window`] is the ONE surface that shows it
+/// to the operator and persists their answer -- every branch, always, per
+/// board item `01M23M2P79R5G28TPGG7PPJQ32`'s own rule A. Before that item,
+/// this function's three branches diverged sharply here: a successful probe
+/// persisted immediately, an already-verified baseline resolved and
+/// returned without ever printing a line, and only the third branch (no
+/// default at all) asked anything -- see this module's own top doc addendum
+/// for why that asymmetry is exactly the gap the item's own reproduction
+/// (`ollama_cloud/glm-5.3`, 2026-09-09) exposed.
 async fn handle_context_window_at_setup(
     env: &HashMap<String, String>,
     settings_path: &Path,
@@ -1529,32 +1765,16 @@ async fn handle_context_window_at_setup(
     kind: &str,
     model: &str,
 ) {
-    if let Some(base_url) = base_url {
-        if let Some(window) = discover_setup_context_window(base_url, dialect, model).await {
-            println!();
-            match persist_context_window_beside_settings(settings_path, key, window) {
-                Ok(path) => println!("{}", context_window_setup_notice(key, window, &path)),
-                Err(e) => println!(
-                    "conway discovered a {window}-token context window for {key} but could not \
-                     save it: {e}"
-                ),
-            }
-            warn_about_runway_if_needed(env, settings_path, key, window);
-            return;
-        }
-    }
-    if context_window_is_verified(kind, dialect) {
-        // The dialect's own baseline is a real, sourced figure (Anthropic's
-        // 200k, OpenAI's 128k) -- nothing to ask, and asking anyway would
-        // be exactly the noise the operator's own ruling (a setup-time
-        // question is warranted only to avoid an UNSOURCED placeholder,
-        // never to double-check a fact conway already has) argues against.
-        if let Some(window) = verified_baseline_window(kind, dialect) {
-            warn_about_runway_if_needed(env, settings_path, key, window);
-        }
-        return;
-    }
-    ask_and_persist_context_window(env, settings_path, key);
+    let (default, provenance, honesty_note) =
+        resolve_context_window_for_setup(base_url, dialect, kind, model).await;
+    confirm_and_persist_context_window(
+        env,
+        settings_path,
+        key,
+        default,
+        provenance,
+        honesty_note.as_deref(),
+    );
 }
 
 /// The interactive flow itself: detect, offer, verify, offer to add
@@ -2364,6 +2584,314 @@ mod tests {
         ));
     }
 
+    // ---- resolve_context_window_for_setup / confirm every branch (board ----
+    // ---- item `01M23M2P79R5G28TPGG7PPJQ32`) ----
+
+    /// **THE MOTIVATING CASE.** The measured real shape of `ollama_cloud`'s
+    /// `/v1/models` response -- `id`/`object`/`created`/`owned_by`, no
+    /// `context_length`/`max_model_len` anywhere -- against a mock server
+    /// with no `/api/show` mounted either (an Ollama Cloud origin does not
+    /// answer that native endpoint): discovery (branch 1) must find
+    /// nothing, `context_window_is_verified("openai-compat", Some("ollama"))`
+    /// is `false` (branch 2 never verified for this dialect), so this must
+    /// reach branch 3 -- no default to offer, and the provenance label is
+    /// the "assumed floor" one, never a bare "verified"/"probed" that would
+    /// let a guess pass as an answer (rule B). Paired with the "successful
+    /// probe" test immediately below: without the pair, an implementation
+    /// that always offers the floor would pass this test alone, and one
+    /// that only ever handles a probed provider would pass that one alone.
+    #[tokio::test]
+    async fn resolve_context_window_for_setup_labels_a_provider_with_no_context_length_field_as_assumed(
+    ) {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/models"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {"id": "glm-5.3", "object": "model", "created": 1_700_000_000, "owned_by": "ollama"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let (default, provenance, honesty_note) = resolve_context_window_for_setup(
+            Some(server.uri().as_str()),
+            Some("ollama"),
+            "openai-compat",
+            "glm-5.3",
+        )
+        .await;
+
+        assert_eq!(
+            default, None,
+            "a provider reporting no context-length field anywhere must never manufacture a \
+             default"
+        );
+        assert_eq!(provenance, CONTEXT_WINDOW_PROVENANCE_ASSUMED);
+        let note = honesty_note.expect(
+            "the assumed-floor branch must name the specific number it would otherwise silently \
+             fall back to",
+        );
+        assert!(
+            note.contains("32768"),
+            "must name ollama's actual dialect floor, not a vague placeholder: {note}"
+        );
+        assert!(
+            note.to_ascii_lowercase().contains("guess")
+                || note.to_ascii_lowercase().contains("assumed"),
+            "must read as a guess, per rule B: {note}"
+        );
+    }
+
+    /// **The paired "successful probe" case.** The SAME kind of call, but
+    /// against a mock that answers `/api/show` (Ollama's native discovery
+    /// endpoint) with a real number: the offered default must be that
+    /// number, labelled `probed`, with no honesty note (nothing here is a
+    /// guess).
+    #[tokio::test]
+    async fn resolve_context_window_for_setup_offers_a_successful_probe_as_the_default() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/show"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "model_info": {
+                        "general.architecture": "glm5",
+                        "glm5.context_length": 1_000_000
+                    }
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let (default, provenance, honesty_note) = resolve_context_window_for_setup(
+            Some(server.uri().as_str()),
+            Some("ollama"),
+            "openai-compat",
+            "glm-5.3",
+        )
+        .await;
+
+        assert_eq!(default, Some(1_000_000));
+        assert_eq!(provenance, CONTEXT_WINDOW_PROVENANCE_PROBED);
+        assert_eq!(honesty_note, None, "a real, probed number is not a guess");
+    }
+
+    /// A verified dialect (`openai`) reaches branch 2 even with a
+    /// `base_url` present: discovery is never attempted for a dialect whose
+    /// baseline is already sourced ([`discover_context_window`]'s own doc),
+    /// and the baseline itself -- 128,000 -- is offered as the default,
+    /// labelled `verified`.
+    #[tokio::test]
+    async fn resolve_context_window_for_setup_offers_a_verified_baseline_as_the_default() {
+        // No mock registered at all: proves discovery is never attempted.
+        let server = wiremock::MockServer::start().await;
+
+        let (default, provenance, honesty_note) = resolve_context_window_for_setup(
+            Some(server.uri().as_str()),
+            Some("openai"),
+            "openai-compat",
+            "gpt-4o-mini",
+        )
+        .await;
+
+        assert_eq!(default, Some(128_000));
+        assert_eq!(provenance, CONTEXT_WINDOW_PROVENANCE_VERIFIED);
+        assert_eq!(honesty_note, None);
+    }
+
+    // ---- resolve_context_window_answer (accept vs. type-to-override) ----
+
+    #[test]
+    fn resolve_context_window_answer_treats_a_blank_line_against_a_real_default_as_accepted() {
+        assert_eq!(
+            resolve_context_window_answer("", Some(1_048_576)),
+            Ok(ContextWindowAnswer::Accepted(1_048_576))
+        );
+        assert_eq!(
+            resolve_context_window_answer("   ", Some(128_000)),
+            Ok(ContextWindowAnswer::Accepted(128_000))
+        );
+    }
+
+    #[test]
+    fn resolve_context_window_answer_treats_a_blank_line_against_no_default_as_skipped() {
+        assert_eq!(
+            resolve_context_window_answer("", None),
+            Ok(ContextWindowAnswer::Skipped)
+        );
+    }
+
+    #[test]
+    fn resolve_context_window_answer_treats_any_typed_number_as_an_override_even_matching_the_default(
+    ) {
+        // Typing the SAME number the default already offers is still an
+        // explicit act -- the operator chose to type it, so it is recorded
+        // exactly like any other typed answer (an `Override`), matching
+        // `ContextWindowAnswer::Override`'s own contract: "always
+        // persisted, never silently replaced by a later probe."
+        assert_eq!(
+            resolve_context_window_answer("1048576", Some(1_048_576)),
+            Ok(ContextWindowAnswer::Override(1_048_576))
+        );
+        assert_eq!(
+            resolve_context_window_answer("500000", Some(1_048_576)),
+            Ok(ContextWindowAnswer::Override(500_000))
+        );
+        assert_eq!(
+            resolve_context_window_answer("500000", None),
+            Ok(ContextWindowAnswer::Override(500_000))
+        );
+    }
+
+    #[test]
+    fn resolve_context_window_answer_rejects_the_same_inputs_validate_context_window_input_does() {
+        assert!(resolve_context_window_answer("not a number", Some(128_000)).is_err());
+        assert!(resolve_context_window_answer("0", None).is_err());
+    }
+
+    // ---- apply_context_window_answer: accept never writes, override ----
+    // ---- always does, and a skip never invents a number ----
+
+    #[test]
+    fn apply_context_window_answer_persists_an_override_as_a_real_models_json_entry() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let settings_path = config_dir.path().join("settings.json");
+        std::fs::write(&settings_path, "{}").unwrap();
+
+        let (window, message) = apply_context_window_answer(
+            &settings_path,
+            "ollama_cloud/glm-5.3",
+            CONTEXT_WINDOW_PROVENANCE_PROBED,
+            ContextWindowAnswer::Override(1_000_000),
+        );
+        assert_eq!(window, Some(1_000_000));
+        assert!(message.contains("1000000") || message.contains("1,000,000"));
+
+        let models_path = config_dir.path().join("models.json");
+        let text = std::fs::read_to_string(&models_path)
+            .expect("an Override answer must write models.json");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            parsed["models"]["ollama_cloud/glm-5.3"]["max_context_tokens"],
+            1_000_000
+        );
+    }
+
+    /// **PAIRED with the test above.** Accepting a resolved default -- a
+    /// successful probe OR an already-verified baseline -- must NEVER write
+    /// `models.json`: writing it would resolve as `ContextTokensSource::
+    /// Override` on the next read (the only persisted channel this
+    /// codebase has), permanently outranking a later, better probe. Either
+    /// test alone would pass an implementation that always writes (this one
+    /// would fail) or one that never writes at all (the sibling above would
+    /// fail) -- only the pair pins the actual accept-vs-override rule.
+    #[test]
+    fn apply_context_window_answer_never_writes_anything_for_an_accepted_default() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let settings_path = config_dir.path().join("settings.json");
+        std::fs::write(&settings_path, "{}").unwrap();
+
+        let (window, message) = apply_context_window_answer(
+            &settings_path,
+            "ollama_cloud/glm-5.3",
+            CONTEXT_WINDOW_PROVENANCE_PROBED,
+            ContextWindowAnswer::Accepted(1_000_000),
+        );
+        assert_eq!(
+            window,
+            Some(1_000_000),
+            "the accepted value is still real and still used for the runway check"
+        );
+        assert!(message.contains("not written"));
+
+        let models_path = config_dir.path().join("models.json");
+        assert!(
+            !models_path.exists(),
+            "accepting a default must never create models.json at all"
+        );
+    }
+
+    #[test]
+    fn apply_context_window_answer_skip_writes_nothing_and_invents_no_number() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let settings_path = config_dir.path().join("settings.json");
+        std::fs::write(&settings_path, "{}").unwrap();
+
+        let (window, message) = apply_context_window_answer(
+            &settings_path,
+            "ollama_cloud/glm-5.3",
+            CONTEXT_WINDOW_PROVENANCE_ASSUMED,
+            ContextWindowAnswer::Skipped,
+        );
+        assert_eq!(window, None);
+        assert!(message.contains("Skipped") && message.contains("unverified"));
+        assert!(!config_dir.path().join("models.json").exists());
+    }
+
+    /// **The full accept-vs-override pairing, one layer down.** Proves the
+    /// PRACTICAL consequence `apply_context_window_answer`'s own two tests
+    /// above only assert at the file-write level: an `Override` really does
+    /// survive a later, disagreeing probe, and an `Accepted` (nothing
+    /// written) really does let one through -- reusing
+    /// `conway_plugin_backends::capabilities::max_context_tokens_source`'s
+    /// own, already-established precedence (P-14: not re-derived here,
+    /// only exercised) rather than trusting the file-write tests alone to
+    /// imply it.
+    #[test]
+    fn accept_vs_override_matches_the_operators_own_accept_vs_override_ruling() {
+        use conway_plugin_backends::capabilities::{
+            build_capabilities, max_context_tokens_source, ollama_defaults, CapabilityInputs,
+            ContextTokensSource,
+        };
+        use conway_plugin_backends::config::ModelOverrides;
+
+        // ACCEPT: nothing persisted, mirroring `ContextWindowAnswer::
+        // Accepted`'s own "write nothing" behavior -- a later, better probe
+        // is free to win.
+        let accepted_then_reprobed = CapabilityInputs {
+            dialect_defaults: ollama_defaults(),
+            metadata: None,
+            overrides: None,
+            probed_max_context_tokens: Some(1_048_576),
+        };
+        assert_eq!(
+            max_context_tokens_source(&accepted_then_reprobed),
+            ContextTokensSource::Probed
+        );
+        assert_eq!(
+            build_capabilities(accepted_then_reprobed).max_context_tokens,
+            1_048_576,
+            "accepting a probed default must never freeze it -- a later, bigger probe wins"
+        );
+
+        // OVERRIDE: persisted, mirroring `ContextWindowAnswer::Override`'s
+        // own write -- the SAME later, even-bigger probe must NOT replace
+        // it.
+        let overrides = ModelOverrides {
+            stream_tools: None,
+            max_context_tokens: Some(128_000),
+            reliability_tier: None,
+            parallel_tool_calls: None,
+            min_headroom_tokens: None,
+        };
+        let overridden_then_reprobed = CapabilityInputs {
+            dialect_defaults: ollama_defaults(),
+            metadata: None,
+            overrides: Some(&overrides),
+            probed_max_context_tokens: Some(9_999_999),
+        };
+        assert_eq!(
+            max_context_tokens_source(&overridden_then_reprobed),
+            ContextTokensSource::Override
+        );
+        assert_eq!(
+            build_capabilities(overridden_then_reprobed).max_context_tokens,
+            128_000,
+            "a typed override must survive a later probe that disagrees with it"
+        );
+    }
+
     // ---- persist_context_window (board item: setup-time context window, ----
     // ---- ASK + PERSIST) ----
 
@@ -2481,7 +3009,7 @@ mod tests {
     /// (`persist_context_window_beside_settings`) takes no `cwd` at all,
     /// so it cannot reproduce that divergence -- this test fails against
     /// the pre-fix call (`persist_context_window_at`, used from
-    /// `ask_and_persist_context_window`/`handle_context_window_at_setup`
+    /// `confirm_and_persist_context_window`/`handle_context_window_at_setup`
     /// before this item) and passes against the one guided setup now uses.
     #[test]
     fn guided_setup_persist_no_longer_depends_on_the_invocation_cwd_unlike_the_general_path() {
