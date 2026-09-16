@@ -260,6 +260,21 @@ pub enum Action {
     /// so the operator can keep browsing (or still press `Enter` afterward
     /// to also switch this session to it).
     MakeModelDefault(String),
+    /// Board item `01M22DA3JRGN22QRWMCPK8RANR`: bare `/resume`'s own picker
+    /// -- the all-projects toggle. `Tab`, fired ONLY while [`AppState::
+    /// session_picker_active`] is set (mirrors [`Action::MakeModelDefault`]'s
+    /// own `model_picker_active` guard exactly: a REAL model-called
+    /// `ask_question` never sets this flag either, so the key stays inert,
+    /// swallowed, on that surface). Carries no payload -- unlike
+    /// `MakeModelDefault`, there is no "which row" to name; this widens the
+    /// LISTING itself. The app loop runs `Conway::
+    /// discover_sessions_all_projects` directly (the same "never goes
+    /// through `commands::execute`" direct-dispatch door `MakeModelDefault`'s
+    /// own doc already opened -- `input::handle_ui_form_key` fires this
+    /// directly, so it needs the identical door, not a second mechanism) and
+    /// merges the result into the open picker via `AppState::
+    /// add_ui_form_options`.
+    ExpandSessionPickerAllProjects,
 }
 
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
@@ -810,17 +825,39 @@ fn handle_trust_preview_key(state: &mut AppState, key: KeyEvent) -> Action {
 /// (mutated directly here, exactly like `handle_settings_key`'s own
 /// navigation -- no `Action` needed for a pure local-state move), `Enter`
 /// answers with whichever option is currently highlighted, and `Esc`
-/// cancels. Everything else is SWALLOWED, mirroring
-/// [`handle_trust_preview_key`]'s shape exactly: the input line is inert,
-/// `/agents` is neither visible nor available, and the quit keys
-/// (`Ctrl-C`/`Ctrl-D`) still pass through as `Action::CtrlC`/`Action::Quit`
-/// -- quitting with the question open drops it on the floor (`shutdown.rs`'s
-/// quit path), which fails the blocked tool call closed rather than hanging
-/// it (see `AppState::take_pending_ui_form`'s own doc).
+/// cancels. Every OTHER character key is SWALLOWED for a real model-raised
+/// question or the `/model` picker, mirroring [`handle_trust_preview_key`]'s
+/// shape exactly: the input line is inert, `/agents` is neither visible nor
+/// available, and the quit keys (`Ctrl-C`/`Ctrl-D`) still pass through as
+/// `Action::CtrlC`/`Action::Quit` -- quitting with the question open drops
+/// it on the floor (`shutdown.rs`'s quit path), which fails the blocked
+/// tool call closed rather than hanging it (see `AppState::
+/// take_pending_ui_form`'s own doc).
+///
+/// **Board item `01M22DA3JRGN22QRWMCPK8RANR` narrows that "swallowed"
+/// blanket for exactly one surface: bare `/resume`'s own picker.** While
+/// [`AppState::session_picker_active`] is set, an ordinary character key
+/// (including `d`, `/model`'s own designated key -- the two flags are
+/// mutually exclusive, so there is no overlap) narrows the open list instead
+/// of being swallowed (`AppState::push_ui_form_filter_char`), `Backspace`
+/// widens it back out (`AppState::pop_ui_form_filter_char`), and `Tab`
+/// widens the LISTING itself to every project's sessions
+/// (`Action::ExpandSessionPickerAllProjects`, see that variant's own doc).
+/// **`/resume <text>` typed at the command line is a completely separate
+/// code path (`commands::execute`'s own `SlashCommand::Resume` arm,
+/// `Host::resolve_session_ref`) that this narrowing does not touch at all**
+/// -- the operator ruling board item `01M22DA3JRGN22QRWMCPK8RANR` was built
+/// against (2026-09-16) is explicit that filtering happens ONLY inside an
+/// already-open picker, never
+/// by pre-filtering an unresolvable typed argument (see `commands.rs`'s own
+/// `resume_with_an_unresolvable_name_errors_naming_sessions_list`, unedited
+/// by this change, for the contract that ruling keeps).
 ///
 /// `Up`/`Down`/decision keys only fire on a bare keypress -- a held
 /// modifier is NOT a navigation or decision key, the same B5 M2 guard every
-/// other modal-bearing surface's key handler applies.
+/// other modal-bearing surface's key handler applies. The filter/toggle keys
+/// share that same bare-keypress guard (checked once, ahead of every arm
+/// below, exactly as it always has been).
 fn handle_ui_form_key(state: &mut AppState, key: KeyEvent) -> Action {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
@@ -852,13 +889,29 @@ fn handle_ui_form_key(state: &mut AppState, key: KeyEvent) -> Action {
             state.move_ui_form_selection(1);
             Action::None
         }
-        KeyCode::Enter => Action::UiFormDecision(UiFormDecision::Answer),
+        KeyCode::Enter => {
+            // Board item `01M22DA3JRGN22QRWMCPK8RANR`: a filter that
+            // currently hides every option (the operator typed something
+            // nothing matches) must never answer with a `selected` the
+            // filter has since hidden -- see `AppState::
+            // ui_form_selection_is_visible`'s own doc. Always `true` for
+            // every surface that never types into `filter` at all (a real
+            // `ask_question`, the `/model` picker), so this is a no-op guard
+            // for them, unchanged from before this guard existed.
+            if !state.ui_form_selection_is_visible() {
+                return Action::None;
+            }
+            Action::UiFormDecision(UiFormDecision::Answer)
+        }
         KeyCode::Esc => Action::UiFormDecision(UiFormDecision::Cancel),
         // The `/model` picker's own "make default" key -- see
         // `Action::MakeModelDefault`'s own doc. Guarded on `AppState::
         // model_picker_active` so a REAL model-called `ask_question`
         // (which never sets that flag) still swallows a bare `d` exactly
-        // as it always has, falling through to the wildcard arm below.
+        // as it always has, falling through to the session-picker/wildcard
+        // arms below. `model_picker_active`/`session_picker_active` are
+        // mutually exclusive (`state.rs`'s own doc), so this arm and the
+        // filter-typing arm below never both apply to the same keypress.
         KeyCode::Char('d') if state.model_picker_active => {
             let Mode::UiForm(form) = &state.mode else {
                 // Unreachable in practice (`handle_key`'s own `mode` match
@@ -868,6 +921,27 @@ fn handle_ui_form_key(state: &mut AppState, key: KeyEvent) -> Action {
                 return Action::None;
             };
             Action::MakeModelDefault(form.ask.request.options[form.selected].clone())
+        }
+        // Board item `01M22DA3JRGN22QRWMCPK8RANR`: the all-projects toggle
+        // -- widens the LISTING itself, not merely which of the CURRENT
+        // options are shown (that is the filter arms immediately below).
+        // See `Action::ExpandSessionPickerAllProjects`'s own doc for why
+        // this is a direct-dispatch `Action` (needs real I/O through
+        // `Conway`) rather than a local `AppState` mutation the way the
+        // filter keys are.
+        KeyCode::Tab if state.session_picker_active => Action::ExpandSessionPickerAllProjects,
+        // Narrows the open picker's own list -- see this function's own doc
+        // for why this is scoped to `session_picker_active` alone (bare
+        // `/resume`'s picker), never the model picker or a real
+        // `ask_question`, and never `/resume <text>`'s own separate,
+        // unedited resolution path.
+        KeyCode::Char(c) if state.session_picker_active => {
+            state.push_ui_form_filter_char(c);
+            Action::None
+        }
+        KeyCode::Backspace if state.session_picker_active => {
+            state.pop_ui_form_filter_char();
+            Action::None
         }
         _ => Action::None,
     }
@@ -4758,7 +4832,11 @@ mod tests {
                 prompt: "select a model".to_string(),
                 options: options.iter().map(|s| s.to_string()).collect(),
             });
-        state.mode = Mode::UiForm(crate::tui::state::UiFormState { ask, selected });
+        state.mode = Mode::UiForm(crate::tui::state::UiFormState {
+            ask,
+            selected,
+            filter: String::new(),
+        });
         state.model_picker_active = true;
         state
     }
@@ -4814,5 +4892,172 @@ mod tests {
             !matches!(action, Action::MakeModelDefault(_)),
             "only the designated key may fire MakeModelDefault, got {action:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M22DA3JRGN22QRWMCPK8RANR`: bare `/resume`'s own picker
+    // -- typing narrows the open list, and the all-projects toggle.
+    // -----------------------------------------------------------------
+
+    fn session_picker_state(options: &[&str], selected: usize) -> AppState {
+        let mut state = AppState::new(AgentId::new());
+        let (ask, _reply_rx) =
+            crate::tui::form::PendingFormAsk::new_for_test(conway_plugin_ui::AskSelectRequest {
+                prompt: "resume which session?".to_string(),
+                options: options.iter().map(|s| s.to_string()).collect(),
+            });
+        state.mode = Mode::UiForm(crate::tui::state::UiFormState {
+            ask,
+            selected,
+            filter: String::new(),
+        });
+        state.session_picker_active = true;
+        state
+    }
+
+    /// **VERIFICATION ANCHOR, P-15(a).** A typed character, while the OPEN
+    /// picker IS bare `/resume`'s own (`session_picker_active`), narrows the
+    /// list -- proven here at the `handle_key` dispatch level (mirrors
+    /// `make_default_key_returns_the_highlighted_model_when_the_picker_is_
+    /// the_model_picker`'s own shape): asserted on `AppState::filter`'s own
+    /// stored text, not merely that "some action" fired.
+    #[test]
+    fn typing_while_the_session_picker_is_open_narrows_the_list() {
+        let mut state = session_picker_state(&["daily standup", "release retro"], 0);
+
+        let action = handle_key(&mut state, key(KeyCode::Char('r')));
+
+        assert_eq!(
+            action,
+            Action::None,
+            "narrowing is a local AppState mutation, not a dispatched Action"
+        );
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(form.filter, "r");
+        assert_eq!(
+            form.visible_indices(),
+            vec![1],
+            "\"release retro\" contains an 'r'; \"daily standup\" does not"
+        );
+    }
+
+    /// PAIRING 1: the IDENTICAL key, on the IDENTICAL `Mode::UiForm`
+    /// surface, but `session_picker_active` is `false` (a REAL
+    /// model-called `ask_question`, never the picker) -- swallowed exactly
+    /// as it always has been, and `filter` is never touched (it does not
+    /// even exist as a concept for that surface).
+    #[test]
+    fn typing_is_swallowed_when_not_the_session_picker() {
+        let mut state = session_picker_state(&["yes", "no"], 0);
+        state.session_picker_active = false;
+
+        let action = handle_key(&mut state, key(KeyCode::Char('y')));
+
+        assert_eq!(action, Action::None);
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("must still be open");
+        };
+        assert_eq!(
+            form.filter, "",
+            "a real ask_question's own modal must not be disturbed by this key"
+        );
+    }
+
+    /// Narrowing to a specific substring only present in one option proves
+    /// the filter is a real substring test, not merely "something changed."
+    #[test]
+    fn typing_narrows_to_only_the_matching_option() {
+        let mut state = session_picker_state(&["daily standup", "release retro"], 0);
+
+        for c in "release".chars() {
+            handle_key(&mut state, key(KeyCode::Char(c)));
+        }
+
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(form.visible_indices(), vec![1]);
+    }
+
+    /// `Backspace` undoes a typed character, widening the list back out.
+    #[test]
+    fn backspace_while_the_session_picker_is_open_widens_the_list_back_out() {
+        let mut state = session_picker_state(&["daily standup", "release retro"], 0);
+        handle_key(&mut state, key(KeyCode::Char('r')));
+
+        let action = handle_key(&mut state, key(KeyCode::Backspace));
+
+        assert_eq!(action, Action::None);
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(form.filter, "");
+        assert_eq!(form.visible_indices(), vec![0, 1]);
+    }
+
+    /// `Enter` while the filter currently hides every option must not
+    /// answer -- the guard `AppState::ui_form_selection_is_visible` backs.
+    #[test]
+    fn enter_is_swallowed_when_the_filter_matches_nothing() {
+        let mut state = session_picker_state(&["daily standup", "release retro"], 0);
+        for c in "xyz-nothing-matches".chars() {
+            handle_key(&mut state, key(KeyCode::Char(c)));
+        }
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(
+            action,
+            Action::None,
+            "Enter must never answer with a row the filter is hiding"
+        );
+        assert!(
+            matches!(state.mode, Mode::UiForm(_)),
+            "the picker stays open"
+        );
+    }
+
+    /// `Enter` still answers normally once the filter narrows onto exactly
+    /// one option -- the ordinary "success" path is unaffected by the new
+    /// guard.
+    #[test]
+    fn enter_still_answers_when_the_filter_matches_something() {
+        let mut state = session_picker_state(&["daily standup", "release retro"], 0);
+        for c in "release".chars() {
+            handle_key(&mut state, key(KeyCode::Char(c)));
+        }
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(action, Action::UiFormDecision(UiFormDecision::Answer));
+    }
+
+    /// **VERIFICATION ANCHOR, P-15(b) (key-routing half).** `Tab`, while the
+    /// session picker is open, fires the all-projects toggle's own `Action`
+    /// -- never a local mutation (unlike the filter keys), since widening
+    /// the LISTING itself needs real I/O through `Conway`.
+    #[test]
+    fn tab_while_the_session_picker_is_open_fires_the_all_projects_toggle() {
+        let mut state = session_picker_state(&["daily standup"], 0);
+
+        let action = handle_key(&mut state, key(KeyCode::Tab));
+
+        assert_eq!(action, Action::ExpandSessionPickerAllProjects);
+    }
+
+    /// PAIRING: the IDENTICAL key, on the IDENTICAL surface, but NOT the
+    /// session picker -- swallowed, exactly like any other unbound key
+    /// there (mirrors `make_default_key_is_swallowed_when_not_the_model_
+    /// picker`'s own shape).
+    #[test]
+    fn tab_is_swallowed_when_not_the_session_picker() {
+        let mut state = session_picker_state(&["yes", "no"], 0);
+        state.session_picker_active = false;
+
+        let action = handle_key(&mut state, key(KeyCode::Tab));
+
+        assert_eq!(action, Action::None);
     }
 }

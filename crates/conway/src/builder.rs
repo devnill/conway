@@ -1721,6 +1721,14 @@ impl ConwayBuilder {
                 discovery_project_key,
                 discovery_central_root,
             ));
+        // Board item `01M22DA3JRGN22QRWMCPK8RANR` (the session picker's
+        // all-projects toggle): a clone kept for `Conway::new` below, mirroring
+        // `capability_index_for_conway`'s own reasoning immediately above --
+        // `session_discovery` itself is moved into `RuntimeDeps` a few lines
+        // down (consumed by `ToolCtx::session_discovery`'s own build path), so
+        // without this clone `Conway::discover_sessions_all_projects` would
+        // have nothing to reach once `RuntimeDeps` took the original.
+        let session_discovery_for_conway = session_discovery.clone();
         // 8b. Path store: injected, else `FsPathStore::open`, co-located as
         //     a SIBLING of the effective session root the session store
         //     just resolved against -- see `build_default_path_store`'s own
@@ -2644,6 +2652,7 @@ impl ConwayBuilder {
             root,
             plugin_status_contributions,
             live_plugins,
+            session_discovery_for_conway,
         ))
     }
 }

@@ -197,6 +197,16 @@ pub struct Conway {
     /// app/run.rs`) is responsible for honoring; this field and its one
     /// reader impose no cadence of their own.
     live_plugins: Vec<Arc<dyn conway_core::ports::Plugin>>,
+    /// Board item `01M22DA3JRGN22QRWMCPK8RANR` (the session picker's
+    /// all-projects toggle): the SAME `Arc<dyn SessionDiscoveryHost>`
+    /// `ConwayBuilder::build` wires into `RuntimeDeps::session_discovery` (and
+    /// from there, `ToolCtx::session_discovery`, the `conway.discover` tool's
+    /// own reach) -- cloned before the original moves into `RuntimeDeps`, the
+    /// same "the router/runtime needs one, the facade needs to keep reading
+    /// it too" split `capability_index`'s own field doc already explains.
+    /// Reached only through [`Self::discover_sessions_all_projects`]; nothing
+    /// else on this facade calls it.
+    session_discovery: Arc<dyn conway_core::ports::SessionDiscoveryHost>,
 }
 
 impl Conway {
@@ -216,6 +226,7 @@ impl Conway {
         root: Option<std::path::PathBuf>,
         plugin_status_contributions: Vec<conway_core::ports::PluginStatusContribution>,
         live_plugins: Vec<Arc<dyn conway_core::ports::Plugin>>,
+        session_discovery: Arc<dyn conway_core::ports::SessionDiscoveryHost>,
     ) -> Self {
         Self {
             rt,
@@ -228,6 +239,7 @@ impl Conway {
             root,
             plugin_status_contributions,
             live_plugins,
+            session_discovery,
         }
     }
 
@@ -1425,6 +1437,45 @@ impl Conway {
     /// beyond what `filter` itself already expresses.
     pub async fn sessions(&self, filter: SessionFilter) -> Result<Vec<SessionMeta>> {
         Ok(self.store.list(filter).await?)
+    }
+
+    /// Board item `01M22DA3JRGN22QRWMCPK8RANR`: [`Self::sessions`]'s own
+    /// sibling, widened past this project's own store -- every project
+    /// directory found under the central sessions root, via the SAME
+    /// `SessionDiscoveryHost` the `conway.discover` tool already reaches
+    /// through `ToolCtx::session_discovery` (this crate's `discovery_host`
+    /// module is the one production implementation; see that module's own
+    /// doc). Closes the one gap `Self::sessions`/`Self::resume` cannot: a
+    /// session created before the project key moved to the git root still
+    /// lives under its OLD, pre-move key -- reachable by id, and by
+    /// resuming from that old directory, but invisible to this project's own
+    /// `store.list`, which only ever sees the CURRENT key's own directory.
+    ///
+    /// Metadata only -- `SessionSearchQuery::text` stays `None`, so this
+    /// never reads a single session's records, exactly like [`Self::
+    /// sessions`] itself. `max_sessions` is the caller's own cost bound
+    /// (clamped into `1..=100` by every `SessionDiscoveryHost`
+    /// implementation, never trusted verbatim -- see `conway_core::ports::
+    /// SessionSearchQuery::max_sessions`'s own doc), never widened here.
+    ///
+    /// A [`conway_core::ports::SessionMatch`] is NOT a [`SessionMeta`]: it
+    /// carries the fields discovery can answer without opening a store this
+    /// project does not own (`project_key`, `cwd`, `created`, `agent_def`,
+    /// `labels`), not the full header. A caller that needs a title still
+    /// goes through `commands::sessions::display_title` (the one function
+    /// that decides a session's name, everywhere) -- this method hands back
+    /// exactly what discovery costs nothing extra to know, nothing more.
+    pub async fn discover_sessions_all_projects(
+        &self,
+        max_sessions: usize,
+    ) -> Result<Vec<conway_core::ports::SessionMatch>> {
+        let query = conway_core::ports::SessionSearchQuery {
+            scope: conway_core::ports::SessionSearchScope::AllProjects,
+            max_sessions,
+            ..Default::default()
+        };
+        let result = self.session_discovery.search(query).await?;
+        Ok(result.matches)
     }
 
     /// A session's own local record count -- `SessionStore::head`, the same

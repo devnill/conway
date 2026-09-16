@@ -206,7 +206,14 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // the fifth surface in the SAME never-stack family every branch above
     // this one belongs to.
     if let Mode::UiForm(form) = &state.mode {
-        draw_ui_form(frame, areas.transcript, form, state.modal_scroll, theme);
+        draw_ui_form(
+            frame,
+            areas.transcript,
+            form,
+            state.session_picker_active,
+            state.modal_scroll,
+            theme,
+        );
     }
 
     // T7: the `/help` keybinding overlay is NOT a `Mode` variant (see
@@ -1062,25 +1069,50 @@ const UI_FORM_FOOTER_ROWS: u16 = 2;
 /// `ask_question`'s own modal (board item `01M19NH39AE2D5AMJK0RZRQY86`):
 /// bottom-anchored, content-sized, capped, via the shared [`modal`]
 /// primitive (V1) -- following [`draw_trust_preview`]'s precedent exactly.
-/// Shows the question's `prompt`, then every option in
-/// `form.ask.request.options`, with the currently-`selected` one
-/// highlighted (`theme.selected`) and marked with a leading `> ` so the
-/// highlight survives a monochrome terminal too -- never color alone.
+/// Shows the question's `prompt`, then every option `form.visible_indices()`
+/// admits (see that method's own doc -- with an untouched `filter`, EVERY
+/// option, unchanged from before board item `01M22DA3JRGN22QRWMCPK8RANR`),
+/// with the currently-`selected` one highlighted (`theme.selected`) and
+/// marked with a leading `> ` so the highlight survives a monochrome
+/// terminal too -- never color alone.
+///
+/// `is_session_picker` (`AppState::session_picker_active`) gates the two
+/// pieces of furniture that ONLY apply to bare `/resume`'s own picker: the
+/// typed filter text (shown right under the prompt, only once the operator
+/// has typed something) and the footer's own `[tab]`/type-to-filter hints.
+/// A real model-raised `ask_question`/the `/model` picker never sets this
+/// flag, so for them this function renders BYTE-IDENTICAL to before this
+/// gating existed -- see `form.filter`'s own doc for why that is
+/// guaranteed, not merely typical (that field is never populated for those
+/// surfaces at all).
 fn draw_ui_form(
     frame: &mut Frame,
     transcript_area: Rect,
     form: &UiFormState,
+    is_session_picker: bool,
     scroll: u16,
     theme: &Theme,
 ) {
-    let mut body_lines = vec![
-        Line::from(Span::styled(
-            form.ask.request.prompt.clone(),
-            theme.emphasized,
-        )),
-        Line::from(""),
-    ];
-    for (i, option) in form.ask.request.options.iter().enumerate() {
+    let mut body_lines = vec![Line::from(Span::styled(
+        form.ask.request.prompt.clone(),
+        theme.emphasized,
+    ))];
+    if is_session_picker && !form.filter.is_empty() {
+        body_lines.push(Line::from(Span::styled(
+            format!("filter: {}", form.filter),
+            theme.dim,
+        )));
+    }
+    body_lines.push(Line::from(""));
+    let visible = form.visible_indices();
+    if visible.is_empty() {
+        body_lines.push(Line::from(Span::styled(
+            "(no sessions match this filter)",
+            theme.dim,
+        )));
+    }
+    for i in visible {
+        let option = &form.ask.request.options[i];
         let (marker, style) = if i == form.selected {
             ("> ", theme.selected)
         } else {
@@ -1107,10 +1139,16 @@ fn draw_ui_form(
     let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
     frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
 
-    let hint = if body_max_scroll > 0 {
-        "[up/down] choose  [enter] answer  [esc] cancel  [PageUp/PageDown] scroll"
-    } else {
-        "[up/down] choose  [enter] answer  [esc] cancel"
+    let hint = match (is_session_picker, body_max_scroll > 0) {
+        (true, true) => {
+            "[up/down] choose  [enter] answer  [esc] cancel  [type] filter  [tab] all projects  \
+             [PageUp/PageDown] scroll"
+        }
+        (true, false) => {
+            "[up/down] choose  [enter] answer  [esc] cancel  [type] filter  [tab] all projects"
+        }
+        (false, true) => "[up/down] choose  [enter] answer  [esc] cancel  [PageUp/PageDown] scroll",
+        (false, false) => "[up/down] choose  [enter] answer  [esc] cancel",
     };
     let footer_lines = vec![Line::from(hint), Line::from("")];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
@@ -1513,6 +1551,56 @@ mod tests {
         assert!(
             text.contains("answer") && text.contains("cancel"),
             "the footer must name the decision keys: {text}"
+        );
+        assert!(
+            !text.contains("all projects"),
+            "a real ask_question is not the session picker -- no toggle hint: {text}"
+        );
+    }
+
+    /// Board item `01M22DA3JRGN22QRWMCPK8RANR`, rendering half: with the
+    /// open picker's own `session_picker_active` set AND a typed filter
+    /// that narrows past one option, the hidden option must not render at
+    /// all -- driven through the REAL `draw` render pass, mirroring
+    /// `draw_ui_form_shows_the_prompt_and_the_highlighted_option`'s own
+    /// shape exactly.
+    #[test]
+    fn draw_ui_form_hides_options_the_filter_narrows_past() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let (ask, _reply_rx) =
+            crate::tui::form::PendingFormAsk::new_for_test(conway_plugin_ui::AskSelectRequest {
+                prompt: "resume which session?".to_string(),
+                options: vec!["daily standup".to_string(), "release retro".to_string()],
+            });
+        state.offer_ui_form(ask);
+        state.session_picker_active = true;
+        for c in "release".chars() {
+            state.push_ui_form_filter_char(c);
+        }
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(&state, f, &Theme::default()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            text.contains("release retro"),
+            "the matching option must still render: {text}"
+        );
+        assert!(
+            !text.contains("daily standup"),
+            "the filtered-out option must not render: {text}"
+        );
+        assert!(
+            text.contains("filter: release"),
+            "the typed filter text itself must be shown: {text}"
+        );
+        assert!(
+            text.contains("all projects"),
+            "the session picker's own footer must name the toggle: {text}"
         );
     }
 

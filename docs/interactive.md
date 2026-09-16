@@ -624,17 +624,44 @@ opening an empty picker.
 This reuses the exact same modal `/model`'s own bare-argument picker
 (above) does, and, like that picker, needs no plugin installed.
 
-**Not yet built: a live filter box inside the open picker, and a key that
-widens the listing to sessions under a different project's own session-root
-key.** Unlike `/model`, retyping `/resume <narrower text>` does not
-re-open the picker pre-filtered either — an id or a name that does not
-resolve stays a plain, immediate error naming `conway sessions list` (see
-the table above), so a typed `/resume` argument keeps meaning exactly one
-thing: "reattach to precisely this session." A session sitting under an
-old subdirectory key (see
+**Typing inside the open picker narrows the list.** Once the picker is
+showing, any ordinary character narrows the visible rows to the ones whose
+line (title, first prompt, activity, labels, id) contains what you typed,
+case-insensitively; `Backspace` widens it back out one character at a time.
+`Up`/`Down` and `Enter` only ever move to or answer with a row you can
+currently see — a filter that matches nothing leaves the list empty rather
+than letting `Enter` resume a row that is no longer shown. This is
+**unlike `/model`**, which has no equivalent: `/model <narrower text>`
+still means "close this picker and open a new one over the results," not
+"filter the currently-open one" — the two commands are not required to
+behave alike (see the next paragraph for why).
+
+**A key that widens the listing to sessions under a different project's own
+session-root key.** `Tab`, while the picker is open, additionally fetches
+and merges in sessions found under every OTHER project directory this
+machine knows about (the same central-root scan `conway.discover`'s
+cross-project search already performs) — closing the one gap the base
+picker above still has: a session sitting under an old subdirectory key
+(see
 [`sessions.md`](sessions.md#if-you-already-have-subdirectory-keyed-sessions))
-is reachable only by typing its id or name directly; the picker itself
-lists only this project's own session-root key.
+is otherwise reachable only by typing its id or name directly, never listed
+alongside this project's own sessions. Merged rows are metadata only (no
+first prompt, no last-activity figure — reading every candidate session's
+own transcript across every project would be unbounded I/O this toggle
+deliberately does not pay for) and are marked with the project key they
+came from, so they read as clearly distinct from this project's own rows.
+
+**`/resume <text>` typed at the command line keeps its exact existing
+contract — neither affordance above changes it.** An id or a name that does
+not resolve stays a plain, immediate error naming `conway sessions list`
+(see the table above): a typed `/resume` argument still means exactly one
+thing, "reattach to precisely this session," never "open the picker
+pre-filtered by this text." That is a deliberate difference from `/model`,
+not an oversight: landing in the WRONG session is costlier than landing on
+the wrong model, so a mistyped `/resume` argument gets a fast, specific
+refusal instead of a silent guess at which session you meant. Filtering by
+typed text is available only once you can already see the candidates —
+inside the open picker, as described above.
 
 ### Plugin-declared commands
 

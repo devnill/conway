@@ -118,6 +118,51 @@ pub struct UiFormState {
     /// list before it ever reaches a surface), moved by `up`/`down` in
     /// `input::handle_ui_form_key`.
     pub selected: usize,
+    /// Board item `01M22DA3JRGN22QRWMCPK8RANR`: the typed-so-far filter
+    /// text narrowing which of `ask.request.options` are currently visible
+    /// (case-insensitive substring, `ui_form_filter_matches`) -- starts
+    /// empty, which matches EVERY option (see that function's own doc), so
+    /// every surface that reuses this same furniture and never types into
+    /// it (a real model-raised `ask_question`, the `/model` picker) behaves
+    /// exactly as it did before this field existed. Mutated only by
+    /// [`AppState::push_ui_form_filter_char`]/[`AppState::
+    /// pop_ui_form_filter_char`], both gated in `input::handle_ui_form_key`
+    /// on [`AppState::session_picker_active`] -- the ONE surface that reuses
+    /// `Mode::UiForm` this feature is scoped to (see `input.rs`'s own doc on
+    /// why `/model`'s own precedent does not transfer).
+    pub filter: String,
+}
+
+/// Board item `01M22DA3JRGN22QRWMCPK8RANR`: whether `option` is visible
+/// under `filter` -- an empty `filter` matches EVERYTHING (the "narrowing
+/// has not started yet" state, and the permanent state for every `Mode::
+/// UiForm` surface OTHER than the session picker, which never populates
+/// `UiFormState::filter` at all), otherwise a case-insensitive substring
+/// test against the option's own full formatted text (title, prompt,
+/// activity, labels, id -- everything `session_picker::format_row` puts on
+/// the line), so typing a word from ANY of those fields narrows the list,
+/// not just the title.
+fn ui_form_filter_matches(option: &str, filter: &str) -> bool {
+    filter.is_empty() || option.to_lowercase().contains(&filter.to_lowercase())
+}
+
+impl UiFormState {
+    /// Board item `01M22DA3JRGN22QRWMCPK8RANR`: the indices into `ask.
+    /// request.options` `ui_form_filter_matches` currently admits under
+    /// `self.filter` -- in order, never re-sorted. With an empty `filter`
+    /// (every `Mode::UiForm` surface but the session picker, always) this is
+    /// every index, `0..options.len()`, in order -- byte-identical to
+    /// "every option" for a caller that iterates it, so the model picker/a
+    /// real `ask_question` render and navigate exactly as they did before
+    /// this method existed. `view::draw_ui_form` reads this to decide which
+    /// rows to actually paint; [`AppState::move_ui_form_selection`]/
+    /// `AppState::clamp_ui_form_selection_to_filter` (private) read it to
+    /// decide which rows the highlight may land on.
+    pub fn visible_indices(&self) -> Vec<usize> {
+        (0..self.ask.request.options.len())
+            .filter(|&i| ui_form_filter_matches(&self.ask.request.options[i], &self.filter))
+            .collect()
+    }
 }
 
 /// `Mode::UiForm`'s two ways out -- there is no third: quitting with the
@@ -608,7 +653,11 @@ impl AppState {
             return;
         }
         if let Some(ask) = self.pending_ui_form.take() {
-            self.mode = Mode::UiForm(UiFormState { ask, selected: 0 });
+            self.mode = Mode::UiForm(UiFormState {
+                ask,
+                selected: 0,
+                filter: String::new(),
+            });
             self.modal_scroll = 0;
         }
     }
@@ -619,7 +668,11 @@ impl AppState {
     /// exactly, the lowest-priority slot in `Self::promote_next_surface`.
     pub fn offer_ui_form(&mut self, ask: PendingFormAsk) {
         if matches!(self.mode, Mode::Normal) {
-            self.mode = Mode::UiForm(UiFormState { ask, selected: 0 });
+            self.mode = Mode::UiForm(UiFormState {
+                ask,
+                selected: 0,
+                filter: String::new(),
+            });
             self.modal_scroll = 0;
         } else {
             self.pending_ui_form = Some(ask);
@@ -643,21 +696,126 @@ impl AppState {
     /// Moves the highlighted option by `delta` (wrapping), while
     /// `Mode::UiForm` is open. A no-op otherwise. `delta` is typically `1`
     /// (down) or `-1` (up) -- `input::handle_ui_form_key`'s own callers.
+    ///
+    /// Board item `01M22DA3JRGN22QRWMCPK8RANR`: wraps only among the options
+    /// `ui_form_filter_matches` currently admits under `form.filter`, not
+    /// every option in `ask.request.options` -- so `up`/`down` can never
+    /// land the highlight on a row the filter is currently hiding. With an
+    /// empty filter (every surface but the session picker, always) this is
+    /// EXACTLY the old unconditional modulo-wrap: every index matches, so
+    /// the "matches" list below is just `0..len` in order, byte-identical
+    /// to the arithmetic this method used before the field existed.
     pub fn move_ui_form_selection(&mut self, delta: isize) {
         let Mode::UiForm(form) = &mut self.mode else {
             return;
         };
-        let len = form.ask.request.options.len() as isize;
-        if len == 0 {
-            // Unreachable in practice (an empty-options request is refused
-            // before it ever reaches a surface -- see `conway_plugin_ui`'s
-            // own `ask` function), but never a divide-by-zero if it somehow
-            // were.
+        let matches = form.visible_indices();
+        if matches.is_empty() {
+            // Either genuinely no options (unreachable in practice -- see
+            // below) or the filter currently hides every one of them;
+            // either way there is nothing to move the highlight TO.
             return;
         }
-        let current = form.selected as isize;
-        let next = (current + delta).rem_euclid(len);
-        form.selected = next as usize;
+        let len = matches.len() as isize;
+        let current_pos = matches
+            .iter()
+            .position(|&i| i == form.selected)
+            .unwrap_or(0) as isize;
+        let next_pos = (current_pos + delta).rem_euclid(len) as usize;
+        form.selected = matches[next_pos];
+    }
+
+    /// Board item `01M22DA3JRGN22QRWMCPK8RANR`: appends `c` to the open
+    /// session picker's own filter text and re-clamps the highlight onto a
+    /// still-visible option (see `Self::clamp_ui_form_selection_to_filter`).
+    /// A no-op while no `Mode::UiForm` is open -- `input::
+    /// handle_ui_form_key`'s own caller already gates this on
+    /// [`Self::session_picker_active`], so in practice this is only ever
+    /// reached while the picker is showing, but the guard here is what
+    /// keeps this method safe to call unconditionally regardless.
+    pub fn push_ui_form_filter_char(&mut self, c: char) {
+        let Mode::UiForm(form) = &mut self.mode else {
+            return;
+        };
+        form.filter.push(c);
+        self.clamp_ui_form_selection_to_filter();
+    }
+
+    /// [`Self::push_ui_form_filter_char`]'s own undo -- `Backspace` inside
+    /// the open session picker. A no-op both while no `Mode::UiForm` is open
+    /// AND while the filter is already empty (nothing to pop).
+    pub fn pop_ui_form_filter_char(&mut self) {
+        let Mode::UiForm(form) = &mut self.mode else {
+            return;
+        };
+        if form.filter.pop().is_some() {
+            self.clamp_ui_form_selection_to_filter();
+        }
+    }
+
+    /// After `filter` changes, the previously-highlighted option may now be
+    /// hidden -- this snaps `selected` to the first still-visible option
+    /// when that happens, and leaves it alone otherwise (never moves the
+    /// highlight off an option the operator can still see, just because
+    /// SOME other option also still matches). A no-op when no option
+    /// matches at all -- `selected` is left wherever it was; `input::
+    /// handle_ui_form_key`'s own `Enter` arm checks [`Self::
+    /// ui_form_selection_is_visible`] before ever dispatching an answer, so
+    /// a stale, hidden `selected` here can never be sent back as a choice
+    /// the operator never actually saw.
+    fn clamp_ui_form_selection_to_filter(&mut self) {
+        let Mode::UiForm(form) = &mut self.mode else {
+            return;
+        };
+        let matches = form.visible_indices();
+        if matches.is_empty() {
+            return;
+        }
+        if !matches.contains(&form.selected) {
+            form.selected = matches[0];
+        }
+    }
+
+    /// Whether the currently-highlighted option is one `ui_form_filter_matches`
+    /// admits under the open form's own `filter` -- `true` whenever no
+    /// `Mode::UiForm` is open at all (nothing to hide behind a filter, so
+    /// the check simply does not apply -- callers that also check `mode`
+    /// themselves are unaffected either way). `input::handle_ui_form_key`'s
+    /// `Enter` arm consults this before dispatching
+    /// [`crate::tui::input::Action::UiFormDecision`]: a filter that hides
+    /// every option (the operator typed something nothing matches) must
+    /// never let `Enter` answer with whatever `selected` happens to still
+    /// hold from before the filter narrowed past it.
+    pub fn ui_form_selection_is_visible(&self) -> bool {
+        let Mode::UiForm(form) = &self.mode else {
+            return true;
+        };
+        ui_form_filter_matches(&form.ask.request.options[form.selected], &form.filter)
+    }
+
+    /// Board item `01M22DA3JRGN22QRWMCPK8RANR`: appends every option in
+    /// `extra` NOT already present (byte-for-byte, via `session_picker::
+    /// format_row`'s own `ID_MARKER`-suffixed text -- two rows for the SAME
+    /// session format identically, so this is also the dedup key) to the
+    /// open session picker's own option list -- the all-projects toggle's
+    /// own write path, called once per press from `app/run.rs`'s direct
+    /// dispatch of `Action::ExpandSessionPickerAllProjects` (mirroring
+    /// `Action::MakeModelDefault`'s own "never goes through `commands::
+    /// execute`" precedent -- see that action's own doc). A no-op while no
+    /// `Mode::UiForm` is open. Idempotent: pressing the toggle again after
+    /// nothing changed appends nothing new, rather than duplicating every
+    /// row already merged in by an earlier press.
+    pub fn add_ui_form_options(&mut self, extra: Vec<String>) {
+        let Mode::UiForm(form) = &mut self.mode else {
+            return;
+        };
+        let existing: std::collections::HashSet<String> =
+            form.ask.request.options.iter().cloned().collect();
+        for option in extra {
+            if !existing.contains(&option) {
+                form.ask.request.options.push(option);
+            }
+        }
     }
 
     /// Carries out `ask_question`'s decision (board item
@@ -1047,6 +1205,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::session_picker;
     use conway::ToolName;
 
     fn ask_modal(question: &str) -> AskModal {
@@ -1862,5 +2021,222 @@ mod tests {
         let mut state = AppState::new(AgentId::new());
         state.resolve_ui_form(UiFormDecision::Cancel);
         assert!(matches!(state.mode, Mode::Normal));
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M22DA3JRGN22QRWMCPK8RANR`: the session picker's own
+    // in-picker filter and its all-projects toggle -- P-15(a)/(b)'s
+    // state-level proof (the TUI-visible half; `input::handle_ui_form_key`'s
+    // own tests prove the key-routing half, and `session_picker::
+    // row_from_match`'s own tests prove the pure row-conversion half).
+    // -----------------------------------------------------------------
+
+    fn session_picker_ask(titles: &[&str]) -> PendingFormAsk {
+        let (ask, _reply_rx) = PendingFormAsk::new_for_test(conway_plugin_ui::AskSelectRequest {
+            prompt: "resume which session?".to_string(),
+            options: titles.iter().map(|t| t.to_string()).collect(),
+        });
+        ask
+    }
+
+    /// **VERIFICATION ANCHOR, P-15(a).** Typing narrows which options
+    /// `visible_indices` admits, and the highlight only ever lands on a
+    /// still-visible one.
+    #[test]
+    fn typing_into_the_open_picker_narrows_the_visible_options() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ui_form(session_picker_ask(&[
+            "daily standup",
+            "release retro",
+            "daily planning",
+        ]));
+        state.session_picker_active = true;
+
+        for c in "daily".chars() {
+            state.push_ui_form_filter_char(c);
+        }
+
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(form.filter, "daily");
+        assert_eq!(
+            form.visible_indices(),
+            vec![0, 2],
+            "only the two rows containing \"daily\" stay visible, in order"
+        );
+    }
+
+    /// Backspace widens the list back out -- the exact undo of the previous
+    /// test, proving the filter is not a one-way narrowing.
+    #[test]
+    fn backspacing_the_filter_widens_the_visible_options_back_out() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ui_form(session_picker_ask(&["daily standup", "release retro"]));
+        state.session_picker_active = true;
+        for c in "release".chars() {
+            state.push_ui_form_filter_char(c);
+        }
+        let Mode::UiForm(narrowed) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(narrowed.visible_indices(), vec![1]);
+
+        for _ in 0.."release".len() {
+            state.pop_ui_form_filter_char();
+        }
+
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(form.filter, "");
+        assert_eq!(
+            form.visible_indices(),
+            vec![0, 1],
+            "an empty filter admits every row again"
+        );
+    }
+
+    /// A filter narrowed onto a DIFFERENT row than the one previously
+    /// highlighted must move the highlight onto a still-visible option
+    /// itself, never leave it stranded on a hidden one.
+    #[test]
+    fn filtering_past_the_highlighted_option_snaps_the_highlight_to_a_visible_one() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ui_form(session_picker_ask(&["daily standup", "release retro"]));
+        state.session_picker_active = true;
+        // Highlight is on row 0 ("daily standup") by default.
+        assert!(matches!(&state.mode, Mode::UiForm(f) if f.selected == 0));
+
+        for c in "release".chars() {
+            state.push_ui_form_filter_char(c);
+        }
+
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(
+            form.selected, 1,
+            "the highlight must move onto the only still-visible row"
+        );
+        assert!(state.ui_form_selection_is_visible());
+    }
+
+    /// A filter matching nothing leaves `selected` wherever it was (there is
+    /// nothing visible to snap it to), but `ui_form_selection_is_visible`
+    /// reports it as unanswerable -- the guard `input::handle_ui_form_key`'s
+    /// `Enter` arm relies on so a filter matching zero rows can never answer
+    /// with a row the operator cannot see.
+    #[test]
+    fn a_filter_matching_nothing_makes_the_selection_unanswerable() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ui_form(session_picker_ask(&["daily standup", "release retro"]));
+        state.session_picker_active = true;
+
+        for c in "xyz-nothing-matches".chars() {
+            state.push_ui_form_filter_char(c);
+        }
+
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert!(form.visible_indices().is_empty());
+        assert!(!state.ui_form_selection_is_visible());
+    }
+
+    /// A real model-raised `ask_question` (or the `/model` picker) never
+    /// types into `filter` at all -- it stays empty, so `visible_indices`
+    /// keeps returning every option in order, exactly as `move_ui_form_
+    /// selection`'s own wrap-around arithmetic always has.
+    #[test]
+    fn an_untouched_filter_admits_every_option_unchanged() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ui_form(ui_form_ask("q")); // two options: yes, no -- NOT the session picker
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("must be open");
+        };
+        assert_eq!(form.visible_indices(), vec![0, 1]);
+        assert!(state.ui_form_selection_is_visible());
+    }
+
+    /// **VERIFICATION ANCHOR, P-15(b).** The all-projects toggle's own
+    /// write path (`AppState::add_ui_form_options`, called from `app/run.rs`'s
+    /// direct dispatch of `Action::ExpandSessionPickerAllProjects`): merging
+    /// in a row built from a cross-project `SessionMatch`
+    /// (`session_picker::row_from_match`) surfaces it in the SAME list,
+    /// distinguishable by its `project:<key>` label -- the row shape
+    /// `format_row` already renders for any row whose `labels` carry one.
+    #[test]
+    fn expanding_to_all_projects_surfaces_a_session_under_a_different_project_key() {
+        let mut state = AppState::new(AgentId::new());
+        let current_project_row = session_picker::ResumableSessionRow {
+            id: conway::SessionId::new(),
+            title: Some("this project's session".to_string()),
+            first_prompt: None,
+            last_activity: None,
+            seq_count: 0,
+            labels: Vec::new(),
+        };
+        // Built through the SAME `format_rows` helper `commands::
+        // open_session_picker` actually uses for the picker's real starting
+        // options (mirrored here rather than imported directly, since this
+        // test lives outside `commands.rs`'s own file).
+        state.offer_ui_form(session_picker_ask(&[]));
+        if let Mode::UiForm(form) = &mut state.mode {
+            form.ask.request.options = session_picker::format_rows(&[current_project_row]);
+        }
+        state.session_picker_active = true;
+
+        let other_match = conway::SessionMatch {
+            session: conway::SessionId::new(),
+            project_key: "-Users-dan-other-checkout".to_string(),
+            cwd: std::path::PathBuf::from("/tmp/other-checkout"),
+            created: chrono::Utc::now(),
+            agent_def: None,
+            labels: Vec::new(),
+            matched_records: Vec::new(),
+        };
+        let other_row =
+            session_picker::row_from_match(&other_match, Some("an older session".to_string()));
+
+        state.add_ui_form_options(vec![session_picker::format_row(&other_row)]);
+
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(form.ask.request.options.len(), 2, "both rows are present");
+        assert!(
+            form.ask.request.options[0].contains("this project's session"),
+            "the current-project row must be untouched: {:?}",
+            form.ask.request.options
+        );
+        assert!(
+            form.ask.request.options[1].contains("project:-Users-dan-other-checkout"),
+            "the merged row must name the OTHER project key it came from: {:?}",
+            form.ask.request.options
+        );
+    }
+
+    /// Pressing the toggle a second time with the SAME result must not
+    /// duplicate the row it already merged in.
+    #[test]
+    fn expanding_to_all_projects_twice_does_not_duplicate_rows() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ui_form(session_picker_ask(&["daily standup"]));
+        state.session_picker_active = true;
+
+        let extra = vec!["release retro -- id: 01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()];
+        state.add_ui_form_options(extra.clone());
+        state.add_ui_form_options(extra);
+
+        let Mode::UiForm(form) = &state.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(
+            form.ask.request.options.len(),
+            2,
+            "the second press must not duplicate the row the first press already merged in: {:?}",
+            form.ask.request.options
+        );
     }
 }
