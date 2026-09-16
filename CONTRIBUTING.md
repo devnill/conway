@@ -518,6 +518,20 @@ prevent, in the place it costs the most.
 a host application and ships as a single-binary CLI. Other-language SDKs are
 thin clients added later, never an alternative implementation of core logic.
 
+**A project `settings.json` is yours, not the team's.** If you write
+`.conway/settings.json` in this working tree — to set a `default_role`, add a
+backend, whatever — it is not tracked, and `.gitignore`'s `.conway/`
+allowlist is written so a new one never becomes trackable by accident: it can
+carry a `backends.<id>.api_key` inline, so committing it is a credential
+leak waiting to happen. Put your own defaults in `~/.conway/settings.json`
+instead. conway's config walk merges user config in below project config
+(`default < user < project < env < CLI-overrides`, see
+[`docs/embedding.md`](docs/embedding.md#loading-config-without-the-ambient-user-layer)),
+so a project `settings.json` sitting in your working tree still wins locally
+over your `~/.conway/settings.json` without either file needing to be
+shared. `.conway/permissions.json` and `.conway/instructions.md` are the two
+`.conway/` files actually meant to be tracked, and stay that way.
+
 **Release-ready from the start.** conway is developed privately and intended for
 open-source release, so code hygiene, licensing, and dependencies must be
 release-ready throughout, with no proprietary or unlicensable dependencies.

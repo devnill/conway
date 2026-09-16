@@ -12,9 +12,23 @@
 # content-addressed blobs in seven crate directories with nothing to announce
 # it. An allowlist ignores a newly-invented generated directory by default;
 # a denylist tracks it by default. Board item 01M0QK9GRM8HSNWRAR414TCX42.
+#
+# A filename earns a line here only if it passes BOTH tests: it is identical
+# for every contributor, AND it cannot hold a credential. `settings.json`
+# used to have a line and failed both — its `backends`/`roles` tables are
+# machine- and account-specific, and `BackendEntry.api_key` accepts a
+# literal key inline, so admitting it pre-committed a plausible leak. It was
+# never actually tracked (`git log --all -- .conway/settings.json` is
+# empty), and the line was only ever a landmine for the next `.conway/
+# settings.json` someone wrote locally. `agents/` was checked against the
+# same two tests and kept: an agent definition is markdown with a YAML
+# frontmatter block (`name`, `role`, `tools`, `model`, `max_steps`,
+# `result_contract`, `skills` — see `crates/conway/src/agents.rs`), a
+# project-shared persona definition with `#[serde(deny_unknown_fields)]`
+# rejecting anything outside that schema, and nothing in it can carry a
+# credential.
 **/.conway/*
 !**/.conway/permissions.json
-!**/.conway/settings.json
 !**/.conway/agents/
 !**/.conway/instructions.md
 
