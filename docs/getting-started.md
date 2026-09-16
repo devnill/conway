@@ -74,6 +74,30 @@ discovered and still wins over the `$CONWAY_CONFIG_DIR`-relocated layer,
 exactly as project always outranks user. Only the one file that would
 *otherwise* double as your global settings is excluded.
 
+**That exclusion holds even when `HOME` itself is overridden, not just
+`$CONWAY_CONFIG_DIR`** (board item `01M2M5EM73GA15NMQ1H87TTEDP`). Your
+actual account's `~/.conway/settings.json` is excluded from the *project*
+walk using your account's own home directory as your operating system's
+account database records it — not whatever `HOME` currently says — so an
+isolated `HOME` exported for one command (or one test) cannot make that
+file leak back in as a *project* layer for a working directory that still
+sits beneath your real home.
+
+**A project `settings.json` reached by the walk is not applied until you
+trust it.** Unlike `.conway/permissions.json` (see `docs/permissions.md`'s
+own "Trust" section), an untrusted project `settings.json` does not merely
+contribute nothing and let the session start anyway — conway refuses to
+start at all, naming the file and what trusting it requires. The reason is
+sharper than permissions: `settings.json` can set `backends.<id>.base_url`
+and `backends.<id>.api_key`, so a cloned repository's config can redirect
+your traffic and your credentials to an endpoint you never typed, not just
+widen what an agent may call. Your own user-scope `settings.json`
+(`~/.conway/settings.json`, or `$CONWAY_CONFIG_DIR/settings.json`) is never
+gated — it is your own file — and `--config <path>` bypasses the walk
+(and this gate) entirely, exactly as it always has. See
+`docs/permissions.md`'s "Project `settings.json` trust" section for the
+full mechanism, including non-interactive behavior.
+
 That is enough to run. **A second file, `.conway/models.json`, is optional
 on a default build and worth adding anyway** — it declares each
 `"backend/model"` pair's capabilities (the file is named by

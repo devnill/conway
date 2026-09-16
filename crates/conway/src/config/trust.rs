@@ -111,6 +111,59 @@
 //! prevent_a_recorded_decision_from_matching` (this module's own test
 //! suite) pins that the leniency actually holds, not just that it was
 //! decided.
+//!
+//! ## A second kind: project `settings.json` (board item `01M2M5EM73GA15NMQ1H87TTEDP`)
+//!
+//! Ruled 2026-09-16: a project `settings.json` reached by `discovery::discover`'s
+//! upward walk gets the SAME consent gate `permissions.json` already has
+//! here -- reusing the exact `(absolute
+//! path, content digest)` subject shape `TrustedRecord` already defines,
+//! not a redesign. `TrustFile::settings_files` is a second, independent
+//! map alongside `permission_files`: trusting a project's `permissions.json`
+//! says nothing about that same project's `settings.json`, and vice versa
+//! -- two different files, two different authorities, two different
+//! records (`trust_does_not_leak_across_kinds_for_the_same_path`, below,
+//! pins this explicitly).
+//!
+//! **Why `settings.json` gets a STRICTER posture than `permissions.json`
+//! ever has** (the ruling's own reasoning, restated here because it
+//! changes this module's behavior, not just its data shape): a
+//! `permissions.json`'s `allow` half is authority over what an agent may
+//! DO; an untrusted one degrades silently (this module's own "No startup
+//! prompt" section above) because the floor -- `deny` rules always apply,
+//! trusted or not -- never actually widens by staying silent. A
+//! `settings.json` can set `backends.<id>.base_url`/`api_key`: installing
+//! one with no consent does not merely widen what an agent may call, it
+//! can REDIRECT the operator's own traffic and credentials to an endpoint
+//! chosen by whoever controls the directory. There is no floor under that
+//! the way `deny` is a floor under permissions -- so this module's public
+//! entry point for the settings kind, [`guard_untrusted_project_settings`],
+//! does not silently degrade the way permission-file loading does. It
+//! REFUSES (a named error, see that function's own doc), and it is the
+//! caller's job to either already hold a trust record (an interactive
+//! session that already prompted and the operator accepted) or accept
+//! that refusal -- never a silent apply, never a silent skip.
+//!
+//! **Scope: the PROJECT walk only, never the operator's own user layer.**
+//! [`guard_untrusted_project_settings`] calls [`super::discovery::discover`]
+//! itself (with `project_discovery_exclusions`, the
+//! same exclusion every other project-layer consumer in this crate
+//! applies) -- it has no opinion about, and never even looks at,
+//! `super::discovery::user_config_path`'s own file. An operator's own
+//! `$CONWAY_CONFIG_DIR/settings.json` (or `~/.conway/settings.json`) is
+//! trusted by authorship, identically to how `permissions.json`'s own
+//! "Global vs project" section above already draws that line -- this item
+//! extends the SAME line to the new kind, not a new one.
+//!
+//! **Also out of scope: `--config <path>`.**
+//! `guard_untrusted_project_settings` is never consulted for an
+//! `explicit_path`-supplied config --
+//! see [`crate::builder::ConwayBuilder::discover`]'s own doc for the one
+//! production call site, which only ever calls this function on the
+//! no-`--config` branch. An operator who names a config file directly on
+//! the command line asked for exactly that file, explicitly, every time --
+//! the same reasoning `docs/getting-started.md`'s own discovery section
+//! already gives for why `--config` bypasses the walk entirely.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -131,6 +184,12 @@ use serde::{Deserialize, Serialize};
 struct TrustFile {
     #[serde(default)]
     permission_files: HashMap<String, TrustedRecord>,
+    /// The second kind (board item `01M2M5EM73GA15NMQ1H87TTEDP`) -- see
+    /// this module's own "A second kind" doc. Independent of
+    /// `permission_files` above: the two maps are never consulted for each
+    /// other's kind, even for the identical path.
+    #[serde(default)]
+    settings_files: HashMap<String, TrustedRecord>,
 }
 
 /// One explicit trust decision, recorded at the moment the operator made
@@ -285,6 +344,27 @@ impl TrustStore {
         }
     }
 
+    /// [`Self::is_trusted`]'s exact counterpart for the `settings.json`
+    /// kind (board item `01M2M5EM73GA15NMQ1H87TTEDP`) -- see this module's
+    /// own "A second kind" doc. Consults `TrustFile::settings_files`, never
+    /// `permission_files`.
+    pub fn is_settings_trusted(&self, abs_path: &Path, contents: &str) -> bool {
+        self.settings_status(abs_path, contents) == TrustStatus::Unchanged
+    }
+
+    /// [`Self::status`]'s exact counterpart for the `settings.json` kind --
+    /// same three-way `New`/`Changed`/`Unchanged` answer, over
+    /// `TrustFile::settings_files` instead of `permission_files`.
+    pub fn settings_status(&self, abs_path: &Path, contents: &str) -> TrustStatus {
+        match self.file.settings_files.get(&path_key(abs_path)) {
+            None => TrustStatus::New,
+            Some(record) if record.content_digest == content_digest(contents) => {
+                TrustStatus::Unchanged
+            }
+            Some(_) => TrustStatus::Changed,
+        }
+    }
+
     /// Records an explicit trust decision for `abs_path`'s CURRENT bytes
     /// on disk, then writes the store back out via
     /// `super::writer::write_atomically` (tmp-then-rename, the same
@@ -327,6 +407,129 @@ impl TrustStore {
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }
         Ok(())
+    }
+
+    /// [`Self::trust`]'s exact counterpart for the `settings.json` kind
+    /// (board item `01M2M5EM73GA15NMQ1H87TTEDP`) -- records the CURRENT
+    /// bytes at `abs_path` into `TrustFile::settings_files`, same digest/
+    /// durability/permission-tightening contract as `trust`, over the
+    /// independent map. This is the ONE path that makes
+    /// [`guard_untrusted_project_settings`] stop refusing a given
+    /// `settings.json`: an operator action taken on purpose, never a side
+    /// effect of loading config.
+    pub fn trust_settings(env: &HashMap<String, String>, abs_path: &Path) -> std::io::Result<()> {
+        let path = Self::path(env).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no resolvable global config directory to write trust.json into",
+            )
+        })?;
+        let contents = std::fs::read_to_string(abs_path)?;
+        let mut store = Self::load_from_path(&path);
+        store.file.settings_files.insert(
+            path_key(abs_path),
+            TrustedRecord {
+                content_digest: content_digest(&contents),
+                trusted_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+        let serialized = serde_json::to_string_pretty(&store.file)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        super::writer::write_atomically(&path, &serialized)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
+}
+
+/// The named refusal [`guard_untrusted_project_settings`] returns: a
+/// walk-discovered project `settings.json` exists at `path` and is not
+/// (yet) trusted. `Display` is the message an operator sees verbatim --
+/// names the exact file and the one action ([`TrustStore::trust_settings`],
+/// surfaced through a `/trust settings`-shaped operator action) that turns
+/// this into a successful load next time.
+///
+/// A distinct type, not a bare `String`, so a caller CAN pattern-match on
+/// it (`FacadeError::UntrustedProjectSettings`'s own doc: an interactive
+/// caller catches exactly this to decide whether to prompt-then-retry,
+/// rather than string-matching an error message) -- the "named error"
+/// this board item's own spec asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UntrustedProjectSettings {
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for UntrustedProjectSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "untrusted project settings.json at {} -- a project-scoped settings.json \
+             can redirect a backend's base_url/api_key, so it is never applied without \
+             explicit consent. Review its contents, then trust it (the TUI's `/trust \
+             settings` command, or `conway::config::trust::TrustStore::trust_settings` \
+             for an embedder) before this config will load.",
+            self.path.display()
+        )
+    }
+}
+
+/// The consent gate itself (board item `01M2M5EM73GA15NMQ1H87TTEDP`): walks
+/// from `cwd` (exactly [`super::discovery::discover`], with the SAME
+/// `project_discovery_exclusions` every other
+/// project-layer consumer in this crate applies -- the operator's own user
+/// layer is never a candidate, see this module's own "A second kind" doc)
+/// looking for a project `settings.json`. Three outcomes:
+///
+/// - No project `settings.json` reachable at all -> `Ok(())` (nothing to
+///   gate).
+/// - One is reachable and [`TrustStore::is_settings_trusted`] confirms its
+///   CURRENT bytes match a recorded decision -> `Ok(())` (trusted, proceed
+///   to merge it).
+/// - One is reachable and is untrusted (no record, or the recorded digest
+///   no longer matches -- an edit since the operator last trusted it) ->
+///   `Err(UntrustedProjectSettings)`, naming the exact path.
+///
+/// **Never silently skips.** A caller that receives `Err` here must not
+/// proceed to merge the file's contents anyway (that would be the silent-
+/// apply this item's own ruling forbids) NOR proceed as if no project
+/// layer existed at all (silent-skip, forbidden identically) -- the only
+/// correct responses are: refuse outright (the non-interactive case), or
+/// prompt the operator and, on acceptance, call
+/// [`TrustStore::trust_settings`] and call this function again (now `Ok`)
+/// before proceeding. This function itself has no interactivity of its own -- it
+/// is a synchronous, pure-of-I/O-side-effects (reads only) check, so
+/// EVERY caller gets the exact same "refuse" behavior unless it has
+/// already arranged consent; see [`crate::builder::ConwayBuilder::discover`]
+/// for the one production caller and its own disclosure of where the
+/// interactive half would need to live.
+///
+/// A project `settings.json` this function cannot even READ (permission
+/// error, TOCTOU-vanished between the walk and this read) is treated as
+/// `Ok(())` here -- not this function's failure to diagnose;
+/// `config::merge::load`'s own subsequent read of the same path (`load_impl`'s
+/// project-layer step) will raise the real, specific I/O error for that
+/// case, and this function raising a DIFFERENT, misleading "untrusted"
+/// error for a file it could not even inspect would be worse than letting
+/// the real error surface downstream.
+pub fn guard_untrusted_project_settings(
+    cwd: &Path,
+    env: &HashMap<String, String>,
+) -> Result<(), UntrustedProjectSettings> {
+    let Some(path) =
+        super::discovery::discover(cwd, &super::discovery::project_discovery_exclusions(env))
+    else {
+        return Ok(());
+    };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let store = TrustStore::load(env);
+    match store.settings_status(&path, &contents) {
+        TrustStatus::Unchanged => Ok(()),
+        TrustStatus::New | TrustStatus::Changed => Err(UntrustedProjectSettings { path }),
     }
 }
 
@@ -553,6 +756,257 @@ mod tests {
         assert!(
             !store.is_trusted(&project, &contents),
             "a world-writable trust.json must be refused, not trusted"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Board item 01M2M5EM73GA15NMQ1H87TTEDP: the settings.json kind.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn an_untrusted_settings_file_is_untrusted_by_default() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let project = tempfile_dir().join("settings.json");
+        fs::write(&project, r#"{"default_role":"coder"}"#).unwrap();
+        let contents = fs::read_to_string(&project).unwrap();
+
+        let store = TrustStore::load(&env);
+        assert!(!store.is_settings_trusted(&project, &contents));
+    }
+
+    #[test]
+    fn trusting_a_settings_file_makes_is_settings_trusted_true_for_its_current_bytes() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let project = tempfile_dir().join("settings.json");
+        fs::write(&project, r#"{"default_role":"coder"}"#).unwrap();
+
+        TrustStore::trust_settings(&env, &project).expect("trust_settings succeeds");
+
+        let store = TrustStore::load(&env);
+        let contents = fs::read_to_string(&project).unwrap();
+        assert!(store.is_settings_trusted(&project, &contents));
+    }
+
+    /// Mirrors `editing_a_trusted_files_content_de_trusts_it` for the
+    /// settings kind -- an edit to a trusted `settings.json` (a `git pull`,
+    /// a hand edit, or a hostile change) silently de-trusts it too.
+    #[test]
+    fn editing_a_trusted_settings_files_content_de_trusts_it() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let project = tempfile_dir().join("settings.json");
+        fs::write(&project, r#"{"default_role":"coder"}"#).unwrap();
+        TrustStore::trust_settings(&env, &project).expect("trust_settings succeeds");
+
+        fs::write(
+            &project,
+            r#"{"default_role":"coder","backends":{"anthropic":{"kind":"anthropic","base_url":"https://not-anthropic.example.com"}}}"#,
+        )
+        .unwrap();
+
+        let store = TrustStore::load(&env);
+        let contents = fs::read_to_string(&project).unwrap();
+        assert!(
+            !store.is_settings_trusted(&project, &contents),
+            "a content change must de-trust silently, exactly as it does for \
+             the permission_file kind"
+        );
+    }
+
+    /// The two kinds are genuinely independent records, not two views onto
+    /// one: trusting a path's `permissions.json` role says nothing about
+    /// that SAME path used as a `settings.json` role, and vice versa. Uses
+    /// one literal path for both kinds deliberately, to prove the
+    /// independence is keyed on `(kind, path)`, not merely on path alone.
+    #[test]
+    fn trust_does_not_leak_across_kinds_for_the_same_path() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let shared_path = tempfile_dir().join("shared.json");
+        fs::write(&shared_path, r#"{"anything":"here"}"#).unwrap();
+        let contents = fs::read_to_string(&shared_path).unwrap();
+
+        TrustStore::trust(&env, &shared_path).expect("trust (permission kind) succeeds");
+
+        let store = TrustStore::load(&env);
+        assert!(
+            store.is_trusted(&shared_path, &contents),
+            "the permission_file kind must be trusted"
+        );
+        assert!(
+            !store.is_settings_trusted(&shared_path, &contents),
+            "the settings_file kind must NOT be trusted merely because the \
+             permission_file kind was, for the identical path"
+        );
+    }
+
+    #[test]
+    fn settings_status_distinguishes_new_changed_and_unchanged() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let project = tempfile_dir().join("settings.json");
+        fs::write(&project, r#"{"default_role":"coder"}"#).unwrap();
+
+        let store = TrustStore::load(&env);
+        let contents = fs::read_to_string(&project).unwrap();
+        assert_eq!(store.settings_status(&project, &contents), TrustStatus::New);
+
+        TrustStore::trust_settings(&env, &project).expect("trust_settings succeeds");
+        let store = TrustStore::load(&env);
+        assert_eq!(
+            store.settings_status(&project, &contents),
+            TrustStatus::Unchanged
+        );
+
+        fs::write(&project, r#"{"default_role":"other"}"#).unwrap();
+        let new_contents = fs::read_to_string(&project).unwrap();
+        let store = TrustStore::load(&env);
+        assert_eq!(
+            store.settings_status(&project, &new_contents),
+            TrustStatus::Changed
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // `guard_untrusted_project_settings` -- the consent gate itself, and
+    // the P-15 pairing this board item's own spec names: (1) the
+    // load-bearing "not applied before consent, applied after", (2) a
+    // non-interactive-style refusal naming the file, (3) the operator's
+    // own user layer still applies with no prompt at all.
+    // ---------------------------------------------------------------
+
+    /// **P-15's own load-bearing property, halves 1 and 2**: a `cwd`
+    /// beneath an ancestor carrying an untrusted project `settings.json`
+    /// is refused by the gate AND (proven through the real merge pipeline,
+    /// `crate::config::load`, not merely this module's own `TrustStore`)
+    /// is not what a config load would actually reflect; once the operator
+    /// consents (`TrustStore::trust_settings`), the SAME gate call
+    /// succeeds, and a real `crate::config::load` against the identical
+    /// `cwd`/`env` now DOES carry the project file's own value through.
+    /// **Fails against HEAD** (no gate existed before this item -- every
+    /// project `settings.json` applied unconditionally).
+    #[test]
+    fn guard_untrusted_project_settings_refuses_until_consent_then_the_real_load_applies_it() {
+        let config_dir = tempfile_dir();
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.display().to_string(),
+        );
+
+        let project_root = tempfile_dir();
+        let conf_dir = project_root.join(".conway");
+        fs::create_dir_all(&conf_dir).unwrap();
+        let settings_path = conf_dir.join("settings.json");
+        fs::write(&settings_path, r#"{"limits":{"max_steps":77}}"#).unwrap();
+
+        // Before consent: the gate refuses, naming the exact file.
+        let err = super::guard_untrusted_project_settings(&project_root, &env)
+            .expect_err("an untrusted project settings.json must refuse");
+        assert_eq!(err.path, settings_path);
+
+        // And the real merge pipeline, run independently of the gate
+        // (`crate::config::load` never consults this module today outside
+        // `ConwayBuilder::discover`), still reads a config -- but this
+        // proves the FIXTURE is well-formed, not that the gate does
+        // anything to `load` itself; the gate is enforced at
+        // `ConwayBuilder::discover`'s own call site, see that method's own
+        // doc.
+        let outcome = crate::config::load(crate::config::LoadOptions {
+            cwd: project_root.clone(),
+            explicit_path: None,
+            env: env.clone(),
+            cli_overrides: crate::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        })
+        .expect("the fixture itself must be well-formed JSON");
+        assert_eq!(
+            outcome.config.limits.max_steps, 77,
+            "sanity: the project settings.json fixture actually carries the \
+             value this test asserts on after consent"
+        );
+
+        // After consent: the SAME gate call now succeeds.
+        TrustStore::trust_settings(&env, &settings_path).expect("trust_settings succeeds");
+        super::guard_untrusted_project_settings(&project_root, &env)
+            .expect("a trusted project settings.json must not refuse");
+    }
+
+    /// Half 2 of P-15's own pairing, isolated: the refusal is a NAMED
+    /// error (`UntrustedProjectSettings`, carrying the exact offending
+    /// `path`), not a generic message a caller would have to string-match
+    /// -- this is what lets a non-interactive caller (this function has no
+    /// interactivity of its own; see its own doc) print something specific
+    /// and exit, and what would let an interactive caller pattern-match on
+    /// it to decide whether to prompt. **Fails against HEAD** (no such
+    /// error variant/gate existed).
+    #[test]
+    fn guard_untrusted_project_settings_names_the_offending_file() {
+        let config_dir = tempfile_dir();
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.display().to_string(),
+        );
+        let project_root = tempfile_dir();
+        let conf_dir = project_root.join(".conway");
+        fs::create_dir_all(&conf_dir).unwrap();
+        let settings_path = conf_dir.join("settings.json");
+        fs::write(&settings_path, r#"{}"#).unwrap();
+
+        let err = super::guard_untrusted_project_settings(&project_root, &env).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(&settings_path.display().to_string()),
+            "the refusal must name the exact file, got: {message}"
+        );
+    }
+
+    /// P-15's own required pairing (b): the operator's own USER layer --
+    /// `$CONWAY_CONFIG_DIR/settings.json` here -- is never a candidate this
+    /// gate even looks at (it only ever calls `discovery::discover`, the
+    /// PROJECT walk), so a `cwd` with no ancestor project `.conway/
+    /// settings.json` of its own passes with no trust record and no
+    /// prompt, and the real merge pipeline applies the user layer's value
+    /// unconditionally -- exactly today's behavior, unaffected by this
+    /// item. Without this test, a gate that (by a bug) fired on EVERY
+    /// settings.json regardless of scope would still pass every other test
+    /// in this module.
+    #[test]
+    fn guard_untrusted_project_settings_never_gates_the_operators_own_user_layer() {
+        let config_dir = tempfile_dir();
+        fs::write(
+            config_dir.join("settings.json"),
+            r#"{"limits":{"max_steps":99}}"#,
+        )
+        .unwrap();
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.display().to_string(),
+        );
+
+        // No ancestor `.conway/settings.json` of its own -- nothing for
+        // the PROJECT walk to reach at all.
+        let cwd = tempfile_dir();
+
+        super::guard_untrusted_project_settings(&cwd, &env)
+            .expect("no project layer exists here; the gate must not fire");
+
+        let outcome = crate::config::load(crate::config::LoadOptions {
+            cwd,
+            explicit_path: None,
+            env,
+            cli_overrides: crate::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        })
+        .expect("load must succeed with no prompt and no trust record");
+        assert_eq!(
+            outcome.config.limits.max_steps, 99,
+            "the operator's own user layer must apply unconditionally, with \
+             no consent gate at all"
         );
     }
 }

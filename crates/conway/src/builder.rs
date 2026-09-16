@@ -409,8 +409,42 @@ impl ConwayBuilder {
     /// Loads config via the standard five-source discovery/precedence chain
     /// (`config::load` with `LoadOptions::default()`, whose own `cwd`
     /// defaults to `std::env::current_dir()`).
+    ///
+    /// **The one production call site for the project-`settings.json`
+    /// consent gate** (board item `01M2M5EM73GA15NMQ1H87TTEDP`): before
+    /// ever calling `config::load`, this checks
+    /// `config::trust::guard_untrusted_project_settings` against the exact
+    /// same `cwd`/`env` `LoadOptions::default()` resolves — an untrusted,
+    /// walk-discovered project `settings.json` fails this method outright
+    /// with `FacadeError::UntrustedProjectSettings`, naming the file and
+    /// how to consent, rather than merging it or silently proceeding
+    /// without it. See `guard_untrusted_project_settings`'s own doc for the
+    /// full three-outcome contract and why this function itself has no
+    /// interactivity of its own: the SAME refusal fires whether a caller is
+    /// running interactively or not, because this method cannot prompt
+    /// anyone. `conway-cli`'s `main.rs` is the one caller today (`--config`
+    /// absent) — it decides interactive-vs-not and, on this specific
+    /// error, is where an interactive prompt-then-retry (call
+    /// `config::trust::TrustStore::trust_settings`, then call this method
+    /// again) would be wired; that retry loop is not built by this item
+    /// (it lives outside this crate's own file lane).
+    ///
+    /// **Never fires for `--config <path>`** — [`Self::from_config`] never
+    /// calls this method at all, and never will: its own
+    /// `LoadOptions.explicit_path` bypasses `discovery::discover`'s ancestor walk
+    /// entirely, which is exactly what `guard_untrusted_project_settings`
+    /// itself also walks with — an operator who names a file directly on
+    /// the command line is unaffected, by construction, not by a special
+    /// case here.
     pub fn discover() -> Result<Self> {
-        let outcome = config::load(LoadOptions::default())?;
+        let options = LoadOptions::default();
+        config::trust::guard_untrusted_project_settings(&options.cwd, &options.env).map_err(
+            |e| FacadeError::UntrustedProjectSettings {
+                path: e.path.clone(),
+                message: e.to_string(),
+            },
+        )?;
+        let outcome = config::load(options)?;
         Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
     }
 

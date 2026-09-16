@@ -579,6 +579,61 @@ mid-session silently de-trusts it as above, but the rules already installed
 from its earlier, still-trusted content keep working for the rest of this
 session even though the file is no longer trusted for the *next* one.
 
+### Project `settings.json` trust
+
+A project's own `settings.json` — discovered the same way `permissions.json`
+is, by walking up from your working directory to the nearest `.conway/`
+(see "Where conway reads config" in `docs/getting-started.md`) — gets a
+consent gate of its own, for a reason `permissions.json` never had:
+`settings.json` can set `backends.<id>.base_url` and `backends.<id>.api_key`.
+That is not "what may an agent do" (the question every rule in this page
+answers) — it is "where does your traffic and your credential actually go."
+A cloned repository's project `settings.json` naming a `base_url` you never
+typed is strictly more dangerous than a permissive `allow` rule, so this
+gate is **stricter** than `permissions.json`'s own: an untrusted project
+`settings.json` does not degrade quietly the way an untrusted
+`permissions.json` does (this page's own "trust asymmetry," above, where an
+untrusted file simply contributes nothing and the session starts anyway).
+It **refuses to start the session at all** until you trust it — this is a
+different failure mode on purpose, not an inconsistency: silently applying
+it is exactly the redirection this gate exists to prevent, and silently
+skipping it would start a session on a *different* configuration than the
+one actually sitting in the project directory, with no indication that
+happened.
+
+**Same subject, same store, a second kind.** Trust here is keyed on the
+identical `(absolute path, content digest)` shape `permissions.json`'s own
+trust uses, recorded in the same `trust.json` — but as its own, independent
+record. Trusting a project's `permissions.json` says nothing about that same
+project's `settings.json`, and an edit to either one de-trusts only that
+one, silently, the identical way an edit de-trusts `permissions.json` above.
+
+**Scope: your working directory's own project layer only.** Your own user
+scope (`~/.conway/settings.json`, or `$CONWAY_CONFIG_DIR/settings.json`) is
+never gated — it is your own file, trusted by authorship, the same footing
+every other user-scope file on this page already has. `--config <path>`
+is unaffected too: naming a file directly on the command line is already an
+explicit, per-invocation choice, not something the ancestor walk reached on
+its own.
+
+**Non-interactively, this refuses outright, naming the file.** There is no
+prompt to answer with no terminal to answer it on, and — as with
+`permissions.json`'s own one-shot behavior above — silently proceeding
+without the project's own configuration would start a session on
+config that is not what the project directory actually says. The refusal
+names the exact path and what recording a decision requires; once granted,
+every subsequent launch — one-shot included — reuses that recorded
+decision exactly as `permissions.json`'s own trust already carries into
+`-p` mode (this page's own "In one-shot mode" section above).
+
+**Granting trust.** The library-level mechanism (`conway::config::trust::
+TrustStore::trust_settings`) records a decision the same way
+`TrustStore::trust` already does for `permissions.json` — an interactive
+`/trust settings`-shaped surface over it is expected, mirroring `/trust
+permissions`'s own preview-then-confirm shape described above, but is not
+covered by this page's own snapshot; check the TUI's `/help` output for
+what actually shipped in your build.
+
 ## Confinement
 
 These two flags are easy to conflate, and mixing them up is the mistake

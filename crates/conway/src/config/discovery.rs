@@ -54,6 +54,30 @@
 //! **Extends to `permission_file_paths`/`provider_profile_file_paths` too**
 //! (both call `discover` for the same reason and shared the same
 //! collision): each passes `project_discovery_exclusions` through.
+//!
+//! ## HOME blindness (board item `01M2M5EM73GA15NMQ1H87TTEDP`)
+//!
+//! The exclusion above has a gap the item name captures exactly: every
+//! entry `project_discovery_exclusions` built, before this item, was
+//! computed by asking [`user_config_path`]/[`home_settings_path`] "where
+//! does the user layer resolve *right now*" -- and both of those follow
+//! `HOME` (via `directories::BaseDirs::home_dir`, which -- on Unix --
+//! reads `env::var("HOME")` before ever touching the account database).
+//! That is exactly correct for what the USER layer itself should read
+//! (an operator who genuinely relocates `$HOME` wants `~/.conway` to
+//! follow), but it means the exclusion computed from those same functions
+//! ALSO follows `HOME`: with `HOME` overridden to some isolated directory
+//! and `CONWAY_CONFIG_DIR` unset, both entries point at the ISOLATED
+//! path, and the genuine, un-overridden `<real $HOME>/.conway/
+//! settings.json` -- which has not moved, and is not what either function
+//! now names -- is no longer in the exclude list at all. A `cwd` that
+//! still sits beneath the real `$HOME` (an ordinary shell session with an
+//! isolated `HOME` exported for one command, or a test process that
+//! forgot `CONWAY_CONFIG_DIR`) reaches that real file through the walk and
+//! it applies as a *project* layer, unnoticed. This cost two reviewers
+//! their debugging budget before it was named as its own defect (see this
+//! module's own `os_account_home_dir` and `os_account_settings_path` doc
+//! for the fix).
 
 use std::collections::HashMap;
 use std::fs;
@@ -149,7 +173,77 @@ pub(crate) fn project_discovery_exclusions(env: &HashMap<String, String>) -> Vec
             exclude.push(path);
         }
     }
+    // Board item `01M2M5EM73GA15NMQ1H87TTEDP`: the HOME-blindness closure.
+    // Unlike the two entries above -- both of which deliberately FOLLOW
+    // `HOME` (`home_settings_path`'s own `directories::BaseDirs::home_dir`
+    // call reads `env::var("HOME")` first on Unix, and that is correct for
+    // what the user layer itself should resolve to) -- this third entry
+    // deliberately does NOT: `os_account_settings_path` is computed from
+    // the platform account database (`getpwuid_r`), never from any `HOME`
+    // value, real or overridden. That is what keeps the genuine,
+    // un-overridden `<real $HOME>/.conway/settings.json` excluded even
+    // when the two entries above have followed an overridden `HOME`
+    // somewhere else entirely -- see this module's own "HOME blindness"
+    // doc for the collision this closes.
+    if let Some(path) = os_account_settings_path() {
+        if !exclude.contains(&path) {
+            exclude.push(path);
+        }
+    }
     exclude
+}
+
+/// The OS account's home directory exactly as the platform's account
+/// database records it (`getpwuid_r` on Unix) -- deliberately NOT
+/// `env::var("HOME")`, which is what [`home_settings_path`]/
+/// [`user_config_path`]'s fallback branch consult (via `directories::
+/// BaseDirs::home_dir`, itself backed by `dirs_sys::home_dir`, which reads
+/// `HOME` before ever touching the account database on Unix). That
+/// difference is the entire point: this function's value cannot be moved
+/// by exporting `HOME`, so [`os_account_settings_path`] -- built from
+/// this -- stays a reliable exclusion candidate for [`discover`] even when
+/// `HOME` has been overridden for isolation (a test fixture, a `docker run
+/// -e HOME=...`, a shell session with `HOME` exported for one command) and
+/// `home_settings_path`'s own value has moved along with it. See this
+/// module's own "HOME blindness" doc for the full account of the defect
+/// this closes.
+///
+/// `#[cfg(unix)]`: `nix::unistd::User::from_uid` wraps `getpwuid_r`
+/// directly, a POSIX call with no Windows equivalent this crate reaches
+/// for (`directories`/`dirs-sys`'s own Windows branch has no `HOME`-first
+/// fallback to begin with -- `SHGetKnownFolderPath` alone -- so the
+/// blindness this function exists to fix is a Unix-only defect; see
+/// `crates/conway-cli/tests/config_isolation_binary.rs`'s own module doc,
+/// "Windows: two of the three tests below are `#[cfg(unix)]`-gated", for
+/// the precedent of disclosing rather than papering over that gap).
+#[cfg(unix)]
+fn os_account_home_dir() -> Option<PathBuf> {
+    nix::unistd::User::from_uid(nix::unistd::Uid::current())
+        .ok()
+        .flatten()
+        .map(|user| user.dir)
+}
+
+/// No POSIX account database to consult on a non-Unix target -- `None`,
+/// matching every other "no resolvable value on this platform" fallback in
+/// this module ([`home_settings_path`]'s own doc for its identical
+/// `directories::BaseDirs::new()` failure case).
+/// `project_discovery_exclusions`'s third entry is simply absent when this
+/// returns `None`; the first two entries (still `HOME`-following, via
+/// `directories`) are unaffected.
+#[cfg(not(unix))]
+fn os_account_home_dir() -> Option<PathBuf> {
+    None
+}
+
+/// The literal `<os account home>/.conway/settings.json` path -- immune to
+/// any `HOME` override, real or injected -- that `project_discovery_exclusions`
+/// adds as its third, `HOME`-independent exclusion entry. See this crate's
+/// own `os_account_home_dir` (private to this module) for why this differs
+/// from [`home_settings_path`], which this function otherwise mirrors
+/// exactly in shape (same `.conway/settings.json` join).
+pub fn os_account_settings_path() -> Option<PathBuf> {
+    os_account_home_dir().map(|home| home.join(".conway").join("settings.json"))
 }
 
 /// The literal `~/.conway/settings.json` path, regardless of whether
@@ -674,6 +768,110 @@ mod tests {
                  identical ones"
             );
         }
+    }
+
+    /// Board item `01M2M5EM73GA15NMQ1H87TTEDP`: the third, `HOME`-
+    /// independent exclusion entry is genuinely present alongside the two
+    /// `CONWAY_CONFIG_DIR`-relocated/raw-home entries `project_discovery_
+    /// exclusions_includes_both_the_relocated_and_the_raw_home_path` above
+    /// already pins -- not merely coincidentally absorbed by that test's
+    /// own `len() == 2` dedup assertion (which holds regardless, since
+    /// nothing in THIS process has actually diverged `HOME` from the
+    /// account database).
+    #[test]
+    fn project_discovery_exclusions_includes_the_os_account_settings_path() {
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/custom/config_dir".to_string(),
+        );
+        let exclude = project_discovery_exclusions(&env);
+        if let Some(os_account) = os_account_settings_path() {
+            assert!(
+                exclude.contains(&os_account),
+                "the OS-account settings path must always be excluded, \
+                 independent of CONWAY_CONFIG_DIR or any HOME override"
+            );
+        }
+    }
+
+    /// **The HOME-blindness load-bearing test** (board item
+    /// `01M2M5EM73GA15NMQ1H87TTEDP`): a `cwd` nested under the REAL OS
+    /// account home -- with no `.conway/settings.json` of its own, so the
+    /// walk's only possible match is the account's own `<home>/.conway/
+    /// settings.json` -- must never surface that file as a *project*
+    /// layer, even when `env` carries a `HOME` entry that claims the
+    /// operator's home lives somewhere else entirely (standing in for an
+    /// isolation attempt that overrides `HOME` but forgets
+    /// `CONWAY_CONFIG_DIR` -- exactly the gap this item's own evidence
+    /// reproduced: `conway tools list` from a real cwd under `$HOME`,
+    /// isolated `HOME` exported, still read the real `~/.conway/
+    /// settings.json`).
+    ///
+    /// **Never reads, writes, moves, or deletes the real `<home>/.conway/
+    /// settings.json`** -- this test only ever `.is_file()`-stats it (via
+    /// `discover`'s own existence check) and compares the resulting
+    /// `Option<PathBuf>` by path, never opening it. The one directory it
+    /// DOES create under the real home is a `tempfile::TempDir`, so it is
+    /// removed automatically (`Drop`, even on panic/early return) rather
+    /// than left behind as debris in the operator's actual home directory.
+    /// Skipped, not failed, on a platform/environment where the account
+    /// database is unavailable or where this specific machine's account
+    /// happens to carry no `.conway/settings.json` at all -- this test
+    /// cannot prove the exclusion actually FIRED without a real file for
+    /// the walk to have reached in the first place, matching this file's
+    /// own established precedent for an environment-dependent assertion
+    /// (the symlink test above).
+    #[test]
+    fn discover_never_returns_the_os_account_settings_json_as_a_project_layer_from_beneath_the_real_home(
+    ) {
+        let Some(os_account_home) = os_account_home_dir() else {
+            eprintln!("skipping: no OS account home directory resolvable here");
+            return;
+        };
+        let os_account_settings = os_account_home.join(".conway").join("settings.json");
+        if !os_account_settings.is_file() {
+            eprintln!(
+                "skipping: {} does not exist on this machine -- nothing for the \
+                 walk to have (incorrectly) reached",
+                os_account_settings.display()
+            );
+            return;
+        }
+
+        let Ok(owned_tmp) = tempfile::Builder::new()
+            .prefix("conway-f4-hometest-")
+            .tempdir_in(&os_account_home)
+        else {
+            eprintln!("skipping: cannot create a tempdir under the real home here");
+            return;
+        };
+        let nested = owned_tmp.path().join("work").join("project");
+        fs::create_dir_all(&nested).unwrap();
+
+        // Stands in for an isolation attempt that overrides `HOME` but
+        // never sets `CONWAY_CONFIG_DIR` -- `home_settings_path`/
+        // `user_config_path`'s fallback branch do not consult this map at
+        // all (they read the REAL process `HOME` via `directories`,
+        // unmodified here), so this key is deliberately inert for those
+        // two functions; its only role is documenting the scenario this
+        // test reproduces. `os_account_settings_path`, the fix under
+        // test, ignores it entirely by construction.
+        let mut env = HashMap::new();
+        env.insert(
+            "HOME".to_string(),
+            "/some/isolated/directory/nobody/lives/in".to_string(),
+        );
+
+        let found = discover(&nested, &project_discovery_exclusions(&env));
+        assert_ne!(
+            found,
+            Some(os_account_settings.clone()),
+            "the real OS account's own {} must never be returned as a project \
+             layer, even with an (inert-to-this-function) HOME override present \
+             in env",
+            os_account_settings.display()
+        );
     }
 
     #[test]
