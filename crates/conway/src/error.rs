@@ -101,6 +101,21 @@ pub enum FacadeError {
     /// doc for the full policy).
     #[error("intent classification failed: {message}")]
     IntentClassification { message: String },
+
+    /// Board item `01M2M5EM73GA15NMQ1H87TTEDP`: `ConwayBuilder::discover`
+    /// found a project-scoped `settings.json` (via the ancestor walk, never
+    /// `--config <path>`) that is not — or is no longer, since an edit
+    /// de-trusts — a recorded trust decision. Refused outright rather than
+    /// silently applied or silently skipped; see
+    /// `crate::config::trust::guard_untrusted_project_settings`'s own doc
+    /// for the full gate this variant reports the outcome of, and
+    /// `crate::config::trust::TrustStore::trust_settings` for the one path
+    /// that turns this into a successful load. A distinct, named variant
+    /// (not folded into `Config`) so an interactive caller can match on it
+    /// specifically to decide whether to prompt-then-retry, rather than
+    /// string-matching `message`.
+    #[error("{message}")]
+    UntrustedProjectSettings { path: PathBuf, message: String },
 }
 
 /// Alias for `std::result::Result<T, FacadeError>`, exported from the crate

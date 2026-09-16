@@ -83,6 +83,18 @@ chrono = { workspace = true }
 # is a THIRD consumer of the same pinned crate, not a new dependency
 # (C-04).
 blake3 = { workspace = true }
+# Board item 01M2M5EM73GA15NMQ1H87TTEDP: `config::discovery::os_account_home_dir`
+# resolves the OS account's home directory the way `getpwuid_r` records it --
+# deliberately NOT `env::var("HOME")` (what `directories`/`dirs-sys` reads
+# FIRST on Unix), so the value stays fixed even when `HOME` is overridden for
+# isolation. `nix::unistd::User::from_uid` is a safe wrapper over exactly that
+# syscall. Already a pinned workspace dependency (`conway-cli`,
+# `conway-plugin-mcp`, `conway-plugin-subprocess`, `conway-tools` all carry it
+# for unrelated process-management reasons) -- this is a new dependency EDGE
+# for this crate, not a new dependency in the tree (C-04). Unix-only feature
+# ("user"); `discovery.rs`'s own `#[cfg(not(unix))]` fallback never calls into
+# it, so no non-unix target links the extra surface for nothing.
+nix = { workspace = true, features = ["user"] }
 
 [dev-dependencies]
 # Board item 01KZVYMMZJPPTFNQT3AEMJMEFH: `tests/architecture_invariants.rs`
