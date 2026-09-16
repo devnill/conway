@@ -41,6 +41,30 @@
 mod common;
 
 use common::{run_conway, write_fixture_with, Fixture};
+use conway_cli::first_run::GUIDED_SETUP_MARKER;
+
+/// A fixture with `"backends": {}` and an empty role chain -- the canonical
+/// `NoBackendsConfigured` case `tests/first_run.rs::write_no_backends_
+/// fixture` pins (byte-identical copy; each `tests/*.rs` file compiles
+/// `common` fresh as its own independent crate, matching this directory's
+/// existing duplicated-small-helper convention). Board item
+/// `01M250BXW12HVMKZBCFPKG3704`: `conway tools list` must produce a real
+/// listing against exactly this fixture, with no provider ever configured.
+fn write_no_backends_fixture() -> Fixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config_path = dir.path().join("conway.json");
+    std::fs::write(
+        &config_path,
+        serde_json::json!({
+            "default_role": "default",
+            "backends": {},
+            "roles": { "default": { "chain": [] } },
+        })
+        .to_string(),
+    )
+    .expect("write conway.json");
+    Fixture { dir, config_path }
+}
 
 /// Mirrors `tests/subcommands.rs::static_fixture` exactly: `tools list`
 /// never dials a backend, so these tests skip `MockBackend` entirely.
@@ -260,5 +284,57 @@ fn tools_list_under_root_prints_the_same_list_plus_a_confinable_footnote() {
     assert!(
         footnote.contains("read") || footnote.contains("write") || footnote.contains("edit"),
         "footnote must name at least one path-confinable tool: {footnote:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Board item `01M250BXW12HVMKZBCFPKG3704`: `conway tools list` must not
+// need a working provider -- it never proposes a turn.
+// ---------------------------------------------------------------------
+
+/// Acceptance 1: against a config with zero backends declared, `conway
+/// tools list` still prints the real registered tool set and exits 0 --
+/// this would fail against HEAD, which refuses with the guided-setup
+/// provider error before `commands::tools::run` ever runs.
+#[test]
+fn tools_list_succeeds_with_no_backends_configured() {
+    let fixture = write_no_backends_fixture();
+
+    let out = run_conway(&["tools", "list"], &fixture);
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains(GUIDED_SETUP_MARKER),
+        "tools list must never hit the provider gate: {stderr:?}"
+    );
+    let text = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(
+        has_tool_row(&text, "bash"),
+        "expected the real registered tool set, got stdout:\n{text}"
+    );
+}
+
+/// Acceptance 2: on the SAME zero-backend config, `-p` still fails with the
+/// unchanged provider error -- proves the gate itself was narrowed to the
+/// two listing commands, not removed for every dispatch target.
+#[test]
+fn print_mode_still_refuses_with_no_backends_configured() {
+    let fixture = write_no_backends_fixture();
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+
+    assert!(
+        !out.status.success(),
+        "no provider is configured -- one-shot mode must still refuse"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(GUIDED_SETUP_MARKER),
+        "expected the unchanged guided-setup provider error, got stderr: {stderr:?}"
     );
 }

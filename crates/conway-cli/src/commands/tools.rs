@@ -12,6 +12,13 @@
 //! filtering, and it does not simulate `--root` confinement (module doc on
 //! `list`'s `root` parameter, below, has the full disclosure for why the
 //! list itself never shrinks under `--root`).
+//!
+//! **Nor the startup provider gate.** Board item `01M250BXW12HVMKZBCFPKG3704`:
+//! `list` never dials a model, so `main.rs`'s `command_needs_provider`
+//! exempts `Command::Tools(ToolsAction::List { .. })` from the first-run
+//! guided-setup trigger that every other dispatch target still clears --
+//! this subcommand runs, and prints a real listing, against a config
+//! directory with zero backends declared.
 
 use std::path::Path;
 

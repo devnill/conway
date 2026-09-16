@@ -1,0 +1,3 @@
+### Fixed
+
+- **`conway plugin list` and `conway tools list` no longer require a working model provider** — board item `01M250BXW12HVMKZBCFPKG3704`. Both commands are pure introspection over the compiled-in plugin bundle and the registered tool set; neither one ever dials a model, but both used to be refused by the same startup guided-setup gate that `-p`, the TUI, `conway sessions`, and `conway routes` need. `conway plugin list`/`conway tools list` now print a real listing and exit 0 against a config directory with zero backends declared, so an operator can see what conway has before deciding what to turn on. Every other dispatch target, `conway plugin install`/`remove` included, keeps clearing the provider gate exactly as before.

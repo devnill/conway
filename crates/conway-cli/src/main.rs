@@ -322,7 +322,24 @@ async fn build_conway(
         conway::backend_usability::DEFAULT_PROBE_TIMEOUT,
     )
     .await;
-    let builder = if fleet_usability.should_offer_guided_setup() {
+    // Board item `01M250BXW12HVMKZBCFPKG3704`: `conway plugin list` and
+    // `conway tools list` are pure introspection over the compiled-in
+    // plugin bundle / the tool registry `build()` below already assembles
+    // regardless of whether any backend is reachable -- neither one ever
+    // proposes a turn, so neither one should have to clear this gate
+    // first. Short-circuited as its own `if`, ahead of the ORIGINAL
+    // `should_offer_guided_setup()` branch below (kept byte-for-byte, on
+    // its own line, as `"else if fleet_usability.should_offer_guided_setup()
+    // {"` -- still contains the exact substring the P-14 test above pins,
+    // `"if fleet_usability.should_offer_guided_setup() {"`), so this stays
+    // a direct call to the real predicate rather than a second, hand-rolled
+    // copy of it. `sessions`/`routes` sit behind this identical gate and do
+    // not need it either (confirmed while building this item), but
+    // widening past the two commands this item's own brief named is left
+    // to a later item, not done here silently.
+    let builder = if !command_needs_provider(&cli.command) {
+        builder
+    } else if fleet_usability.should_offer_guided_setup() {
         if interactive {
             match first_run::run_guided_setup(env).await {
                 // A backend was just written to the user-scope
@@ -453,6 +470,73 @@ async fn build_conway(
     let builder = statusline_plugin::install(builder, &crate::tui::config::load(cli)?);
     let conway = builder.build()?;
     Ok((conway, memory_store, agent_names))
+}
+
+/// Board item `01M250BXW12HVMKZBCFPKG3704`: does this dispatch target
+/// actually reach a model? Only two commands answer no -- `conway plugin
+/// list` (`commands::plugin::PluginAction::List`) and `conway tools list`
+/// (`commands::tools::ToolsAction::List`), both pure formatters over what
+/// `build_conway` above has ALREADY assembled by the time either one runs
+/// (the compiled-in plugin bundle / the registered `ToolSpec` set), neither
+/// one ever proposing a turn. Every other `Command` variant, `plugin
+/// install`/`remove` included (writes a config file; still never reaches a
+/// model, but out of THIS item's named scope -- left alone rather than
+/// folded in silently), keeps needing a provider exactly as before, as
+/// does `cli.command.is_none()` (the TUI and one-shot `-p`, `main`'s own
+/// `is_tui` doc).
+fn command_needs_provider(command: &Option<Command>) -> bool {
+    !matches!(
+        command,
+        Some(Command::Plugin(commands::plugin::PluginArgs {
+            action: commands::plugin::PluginAction::List { .. },
+        })) | Some(Command::Tools(commands::tools::ToolsArgs {
+            action: commands::tools::ToolsAction::List { .. },
+        }))
+    )
+}
+
+#[cfg(test)]
+mod command_needs_provider_tests {
+    use super::*;
+
+    #[test]
+    fn plugin_list_does_not_need_a_provider() {
+        assert!(!command_needs_provider(&Some(Command::Plugin(
+            commands::plugin::PluginArgs {
+                action: commands::plugin::PluginAction::List {
+                    id: None,
+                    verbose: false,
+                },
+            }
+        ))));
+    }
+
+    #[test]
+    fn tools_list_does_not_need_a_provider() {
+        assert!(!command_needs_provider(&Some(Command::Tools(
+            commands::tools::ToolsArgs {
+                action: commands::tools::ToolsAction::List { json: false },
+            }
+        ))));
+    }
+
+    #[test]
+    fn plugin_install_still_needs_a_provider() {
+        assert!(command_needs_provider(&Some(Command::Plugin(
+            commands::plugin::PluginArgs {
+                action: commands::plugin::PluginAction::Install {
+                    ids: vec!["conway.memory".to_string()],
+                    defaults: false,
+                },
+            }
+        ))));
+    }
+
+    #[test]
+    fn no_subcommand_still_needs_a_provider() {
+        // The TUI / one-shot `-p` -- `cli.command.is_none()`.
+        assert!(command_needs_provider(&None));
+    }
 }
 
 /// If `command.is_some()` -> `commands::{sessions,routes,tools,memory}::run`; else if
