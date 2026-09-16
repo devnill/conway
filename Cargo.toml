@@ -76,6 +76,28 @@ httparse = "1"
 # no new entry to the lock, only a direct dependency edge onto one that was
 # already there.
 semver = "1"
+# Board item `01M2M6NR49FYQSRS00B95PTAZT`: the compiled-binary TUI test
+# harness (`crates/conway-cli/tests/common/pty.rs`) spawns `conway` attached
+# to a REAL pseudo-terminal with an explicit window size, the one thing
+# `std::process::Command`'s piped `Stdio` (every other suite in that
+# directory) cannot give a subprocess -- `main.rs`'s own `IsTerminal` check
+# is exactly why the interactive guided-setup flow, `/model`, `/role`, and
+# permission-mode cycling were untestable against the real binary before
+# this. `portable-pty` (the wezterm project's own pty-allocation crate) over
+# `expectrl`: both are Unix-only-adequate for this repo's actual CI/dev
+# footprint (Linux + macOS, no Windows job -- `.github/workflows/ci.yml`'s
+# own `windows-latest` comment), but `portable-pty` is the actively
+# maintained one (versioned and released alongside wezterm itself, still
+# shipping), while `expectrl`'s last activity is comparatively stale.
+# Neither ships a "wait for text" primitive tuned to a full-screen ratatui
+# app (both assume a line-oriented `expect`-style program); `pty.rs` writes
+# its own `wait_for_any`, deliberately kept to substring/pattern matching
+# over the ANSI-stripped output stream rather than a real VT100 grid (see
+# that module's own doc for why a full terminal emulator is unneeded and
+# was rejected as a SECOND new dependency this item's budget does not
+# allow). Dev-only, `conway-cli`'s own `[dev-dependencies]`: nothing in any
+# `src/` may name it.
+portable-pty = "0.8"
 
 # ---------------------------------------------------------------- profiles ----
 #

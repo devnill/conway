@@ -427,6 +427,81 @@ The procedure:
   each command, so the local and CI invocations cannot drift apart the way
   this incident's absence did. See [`README.md`](README.md#development).
 
+### TUI tests: the compiled-binary pty harness
+
+`crates/conway-cli/tests/common/pty.rs` (board item `01M2M6NR49FYQSRS00B95PTAZT`)
+drives the real, compiled `conway` binary attached to an actual
+pseudo-terminal -- the one way to exercise anything that checks
+`IsTerminal` (the interactive guided-setup flow, a permission-mode keypress,
+a slash command typed into a live session). Every OTHER compiled-binary
+suite in that directory (`common::command`/`run_conway`) pipes stdin/stdout
+through `Stdio`, which is never a terminal -- fine, even necessary, for a
+one-shot (`-p`) or `sessions`/`routes` test, and unusable for anything this
+harness exists to cover.
+
+**When to reach for it.** Only for a claim that genuinely needs a real
+terminal: something gated on `IsTerminal`, or a `ratatui` frame a test
+needs to read text off of. Everything else belongs in the ordinary
+`common::command`/`run_conway` harness, which is simpler and does not pay a
+pty's overhead.
+
+**Adding a test:**
+
+1. Build a `Fixture` the usual way (`common::write_fixture`, or a hand-built
+   one for an unconfigured/env-only scenario -- see
+   `tests/tui_model_and_role.rs`'s `write_env_only_fixture` for the
+   `CONWAY_BACKENDS__*`-env, no-file-chain shape).
+2. Build the pty-flavored command: `common::pty_command(args, &fixture)`
+   returns a `portable_pty::CommandBuilder` with the same
+   `CONWAY_CONFIG_DIR`/`CONWAY_LOCAL_PROBE_BASE_URL`/`--config` isolation
+   `common::command` gives every other suite -- add more `.env(...)` calls
+   on top for anything a specific test needs to override (e.g. pointing
+   `CONWAY_LOCAL_PROBE_BASE_URL` at a `common::mock_backend::MockBackend`
+   fixture instead of the default unreachable address).
+3. Spawn it: `PtySession::spawn(cmd, cols, rows)`. **Always pass an
+   explicit, generous window size** (this suite's own tests use
+   120-200x40-50) -- an unsized pty silently wraps at 80 columns, which
+   breaks any assertion expecting a longer rendered line intact on one row.
+4. Drive it with `session.send(text)` (raw bytes; `send_enter`/
+   `send_shift_tab` name the two non-obvious raw-mode key encodings this
+   suite needs -- add another named helper here, do not hand-roll an escape
+   sequence inline at a call site, if a future test needs a third one) and
+   `session.wait_for(pattern, timeout)` / `wait_for_since(pattern, since,
+   timeout)` (for asserting ORDER -- see `tui_guided_setup.rs`'s
+   "verifies before landing" test) / `wait_for_any(patterns, since,
+   timeout)` (branching on which of several possible prompts appeared,
+   e.g. a machine with or without an OS containment primitive -- see that
+   same file's `accept_local_offer_and_land`).
+5. Assert on `session.screen()` (or the offsets `wait_for*` already
+   returned) for anything beyond "this text eventually appeared" --
+   `pty.rs`'s own module doc explains exactly what `screen()` does and does
+   not model (an ANSI-stripped emission-order transcript, not a live
+   cursor-addressed grid) before you rely on it for something more precise.
+6. **Assert on a specific line or substring that carries the claim, never
+   a whole-screen snapshot.** Rendered TUI output changes for cosmetic
+   reasons (a theme tweak, a column shifting by one cell); a snapshot test
+   breaks on every one of those and teaches everyone to eyeball-approve the
+   diff, which is the same failure mode [the declaration
+   rule](#2-nothing-may-claim-to-be-reached-that-isnt) already names for
+   coverage claims.
+7. `PtySession`'s `Drop` kills the child unconditionally, including on a
+   panicking assertion -- no explicit teardown call is needed or wanted.
+
+**Running one locally:** `cargo test -p conway-cli --test <file_name>` --
+these are ordinary `#[test]`/`#[tokio::test]` functions in
+`crates/conway-cli/tests/`, picked up by `cargo test --workspace
+--all-features` (CI's own `test` job) exactly like every other compiled-
+binary suite in that directory; nothing about the pty machinery needs a
+separate invocation or a different CI job.
+
+**No fixed `sleep` as a synchronisation primitive.** Every `wait_for*` call
+already polls with its own bounded timeout and panics loudly (naming the
+captured screen) if the timeout elapses -- that IS the primitive a fixed
+sleep would otherwise stand in for, badly: a sleep long enough to be
+reliable on a loaded CI runner is needlessly slow everywhere else, and one
+short enough to be fast is exactly the kind of test that passes for months
+and then flakes the day the runner is busy.
+
 ---
 
 ## 4. Measure before you optimize
