@@ -228,12 +228,30 @@ pub(crate) async fn read_file(ctx: &ToolCtx, candidate: &Path) -> Result<ReadOut
 /// directories created as needed), enforcing this agent's `conway.fs` root
 /// as ONE step with the write when a root is configured. Mirrors
 /// `crate::fs::write::atomic_write`'s shape (sibling temp file, `flush` +
-/// `sync_all`, rename over the target, best-effort temp cleanup on failure)
-/// but every step -- `create_dir_all`, `create` the temp file, `rename` --
-/// goes through the SAME [`cap_std::fs::Dir`], so a symlink swapped into any
-/// intermediate directory between steps is refused at the point it would be
-/// used, not merely at an earlier check. Returns the number of bytes
-/// written.
+/// `sync_all`, rename over the target, `sync_all` the parent directory
+/// after the rename, best-effort temp cleanup on failure) but every step --
+/// `create_dir_all`, `create` the temp file, `rename`, and now the
+/// post-rename parent-directory sync -- goes through the SAME
+/// [`cap_std::fs::Dir`], so a symlink swapped into any intermediate
+/// directory between steps is refused at the point it would be used, not
+/// merely at an earlier check. Returns the number of bytes written.
+///
+/// Board item `01M2M5KVC9J7MWY56DQK5YPXNR` consolidated the unconfined
+/// atomic-write protocol (`crate::fs::write::atomic_write`) and added that
+/// parent-directory `sync_all` after rename, but deliberately did not fold
+/// this confined path in (see this module's own doc for why the two stay
+/// separate). That left this path with the WEAKER of the two durability
+/// guarantees -- a rename whose own directory-entry update could still be
+/// lost to a crash even though the renamed file's bytes were themselves
+/// flushed -- for no reason connected to confinement itself. Board item
+/// `01M2M8TG3YCVHJKM6PJ4S5PYKE` closed that gap: `write_file_atomic_confined`
+/// (this function's own confined branch, below) now performs the identical
+/// post-rename sync, expressed through `cap_std` (see
+/// `sync_confined_parent_dir`, further below) rather than through
+/// `write.rs`'s private `DurableSync` seam, which is not `pub` and could
+/// not be reused across the crate-module boundary even if the two
+/// implementations were otherwise mergeable (they are not -- see module
+/// doc). The two paths' durability guarantees are now equal.
 pub(crate) async fn write_file_atomic(
     ctx: &ToolCtx,
     candidate: &Path,
@@ -257,12 +275,38 @@ pub(crate) async fn write_file_atomic(
 
 /// The synchronous, `Dir`-relative body of [`write_file_atomic`]'s confined
 /// branch -- split out so it can run inside `spawn_blocking` without a
-/// nested closure duplicating the temp-name/cleanup logic.
+/// nested closure duplicating the temp-name/cleanup logic. Delegates to
+/// [`write_file_atomic_confined_with`], production's real
+/// [`sync_confined_parent_dir`] plugged in as the post-rename sync step --
+/// see that function's own doc for why the sync step is a parameter at all
+/// (a test seam, not a production knob).
 fn write_file_atomic_confined(
     root: &CanonicalRoot,
     relative: &Path,
     candidate: &Path,
     content: &str,
+) -> Result<u64, ToolError> {
+    write_file_atomic_confined_with(root, relative, candidate, content, sync_confined_parent_dir)
+}
+
+/// [`write_file_atomic_confined`]'s real body, generic over the post-rename
+/// parent-directory sync step so `tests` can substitute a wrapper that
+/// records when it runs (and whether the rename has already landed by
+/// then) -- the confined-path mirror of `write.rs`'s own
+/// `atomic_write_with`/`DurableSync` seam. It cannot literally reuse that
+/// seam: `write.rs`'s `DurableSync` trait is `trait` (module-private, not
+/// `pub`), and even if it were `pub`, its production impl is for
+/// `std::fs::File` opened via a bare `fs::File::open(dir_path)` -- exactly
+/// the ambient, non-`Dir`-relative open this module's whole reason for
+/// existing (see module doc) refuses to do for anything reachable from a
+/// `candidate` path. `sync_parent` here is instead threaded through
+/// `cap_std::fs::Dir`, unlike `write.rs`'s directory open.
+fn write_file_atomic_confined_with(
+    root: &CanonicalRoot,
+    relative: &Path,
+    candidate: &Path,
+    content: &str,
+    sync_parent: impl FnOnce(&Dir, &Path) -> io::Result<()>,
 ) -> Result<u64, ToolError> {
     use std::io::Write;
 
@@ -311,7 +355,59 @@ fn write_file_atomic_confined(
         };
     }
 
+    // The durability half `write.rs::atomic_write`'s own doc names: the
+    // rename alone only guarantees the directory-entry update is VISIBLE
+    // to other processes on this machine, not that it has itself reached
+    // the underlying device. Nothing here needs cleaning up on failure --
+    // the rename already committed, so `candidate` already has the right
+    // content; only the crash-survival guarantee for that fact is what
+    // this step establishes. See `tests::parent_directory_synced_after_rename`
+    // for mechanical proof of the ordering (call order only -- forcing an
+    // actual crash from user space is not portably falsifiable at all).
+    if let Err(err) = sync_parent(&dir, relative) {
+        return Err(ToolError::Io {
+            detail: format!(
+                "wrote {} but failed to sync its parent directory: {err}",
+                candidate.display()
+            ),
+        });
+    }
+
     Ok(bytes)
+}
+
+/// Production `sync_parent` for [`write_file_atomic_confined_with`]:
+/// durably flushes `relative`'s PARENT directory, still entirely through
+/// `dir` (the already-opened, TOCTOU-safe [`cap_std::fs::Dir`] capability
+/// for this agent's confinement root) -- never a fresh ambient open.
+///
+/// `cap_std::fs::Dir` has no `sync_all`/`sync_data` method of its own (it
+/// is not `std::fs::File` and does not implement `std::io::Write`), but it
+/// does not need one: `cap_std`'s own `Dir` is, at the representation
+/// level, a thin wrapper around exactly one `std::fs::File` (that crate's
+/// `fs::dir::Dir { std_file: fs::File }`), and `Dir::into_std_file` hands
+/// that same underlying OS handle back out as a plain `std::fs::File`,
+/// which has always supported `sync_all` on a directory fd on every
+/// platform this workspace targets (POSIX `fsync(2)` accepts a directory
+/// fd; `write.rs::atomic_write` already relies on the identical fact via a
+/// bare `fs::File::open` on a directory path). So `cap_std` CAN express
+/// this durability step, just not as an inherent method: the capability
+/// crosses into `std::fs::File` first, then durability is
+/// `std::fs::File::sync_all`, same as `write.rs`'s own
+/// `DurableWrite`/`DurableSync` impls for `std::fs::File`.
+///
+/// `relative`'s parent is usually a subdirectory reached via
+/// `dir.open_dir` (itself symlink-refusing, same as every other `Dir`
+/// call in this module); when `relative` has no parent (the write target
+/// sits directly under the confinement root), the "parent" IS `dir`
+/// itself, so this clones the capability (`Dir::try_clone`, a cheap `dup`
+/// of the underlying fd, not a fresh ambient open) rather than reopening
+/// anything.
+fn sync_confined_parent_dir(dir: &Dir, relative: &Path) -> io::Result<()> {
+    match relative.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(parent) => dir.open_dir(parent)?.into_std_file().sync_all(),
+        None => dir.try_clone()?.into_std_file().sync_all(),
+    }
 }
 
 /// The outcome of [`confined_metadata`]: `cd` needs to distinguish all
@@ -716,6 +812,100 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".conway.tmp"))
             .collect();
         assert!(leftover.is_empty(), "leftover tmp files: {leftover:?}");
+    }
+
+    /// Board item `01M2M8TG3YCVHJKM6PJ4S5PYKE`'s own verification anchor:
+    /// the confined path's mirror of `write.rs::tests::
+    /// parent_directory_synced_after_rename` and `sync_all_happens_before_
+    /// rename`, sharing this name deliberately (same property, same
+    /// module-doc-mandated label).
+    ///
+    /// `cap_std::fs::Dir` gives no injectable `sync_all` seam the way
+    /// `std::fs::File` does (there is no trait to implement a recording
+    /// wrapper against -- `sync_confined_parent_dir` calls the INHERENT
+    /// `std::fs::File::sync_all` after converting), so this instead drives
+    /// `write_file_atomic_confined_with` directly and substitutes its
+    /// `sync_parent` PARAMETER with a hook that (a) asserts, via a SEPARATE
+    /// `Dir` capability opened purely to observe (never to write), that the
+    /// destination already exists at the moment it runs -- proving the
+    /// rename has already landed -- and (b) performs the real sync itself
+    /// (delegating to `sync_confined_parent_dir`), so `write_file_atomic_
+    /// confined_with` cannot return `Ok` without this hook having run.
+    /// Together those two facts pin "parent-directory sync happens after
+    /// rename and before return" as an observed CALL, not an inference.
+    ///
+    /// This PINS CALL ORDER ONLY. It does not and cannot prove survival
+    /// across an actual crash/power-loss -- forcing that from user space is
+    /// not portably falsifiable at all, exactly the caveat `write.rs`'s own
+    /// two same-named tests carry.
+    #[test]
+    fn parent_directory_synced_after_rename() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = CanonicalRoot::new(tmp.path()).unwrap();
+        let relative = PathBuf::from("sub/f.txt");
+        let candidate = tmp.path().join("sub/f.txt");
+
+        let observer = Dir::open_ambient_dir(tmp.path(), ambient_authority()).unwrap();
+        let hook_ran = std::sync::atomic::AtomicBool::new(false);
+
+        let bytes = write_file_atomic_confined_with(
+            &root,
+            &relative,
+            &candidate,
+            "hello",
+            |dir, relative| {
+                assert!(
+                    observer.exists(relative),
+                    "parent-directory sync ran before the destination existed -- \
+                     rename has not happened yet"
+                );
+                hook_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                sync_confined_parent_dir(dir, relative)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(bytes, 5);
+        assert!(
+            hook_ran.load(std::sync::atomic::Ordering::SeqCst),
+            "sync_parent hook never ran -- write_file_atomic_confined_with \
+             returned Ok without syncing the parent directory"
+        );
+        assert_eq!(std::fs::read_to_string(&candidate).unwrap(), "hello");
+    }
+
+    /// The root-level companion to the test above: when the write target
+    /// sits directly under the confinement root (no intermediate parent to
+    /// `open_dir`), `sync_confined_parent_dir` clones `dir` itself
+    /// (`Dir::try_clone`) rather than opening a subdirectory -- exercised
+    /// here so that branch is not left uncovered by the nested-path case
+    /// above.
+    #[test]
+    fn parent_directory_synced_after_rename_at_confinement_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = CanonicalRoot::new(tmp.path()).unwrap();
+        let relative = PathBuf::from("f.txt");
+        let candidate = tmp.path().join("f.txt");
+
+        let observer = Dir::open_ambient_dir(tmp.path(), ambient_authority()).unwrap();
+        let hook_ran = std::sync::atomic::AtomicBool::new(false);
+
+        write_file_atomic_confined_with(&root, &relative, &candidate, "hi", |dir, relative| {
+            assert!(
+                observer.exists(relative),
+                "parent-directory sync ran before the destination existed -- \
+                 rename has not happened yet"
+            );
+            hook_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            sync_confined_parent_dir(dir, relative)
+        })
+        .unwrap();
+
+        assert!(
+            hook_ran.load(std::sync::atomic::Ordering::SeqCst),
+            "sync_parent hook never ran"
+        );
+        assert_eq!(std::fs::read_to_string(&candidate).unwrap(), "hi");
     }
 
     // ---- confined_metadata ----
