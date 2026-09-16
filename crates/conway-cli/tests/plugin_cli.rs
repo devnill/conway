@@ -430,3 +430,94 @@ fn print_mode_still_refuses_with_no_backends_configured() {
         "expected the unchanged guided-setup provider error, got stderr: {stderr:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// Board item `01M250HW1186RKZRNS3DQAMFYW`: a plugin's declared hook
+// events (`conway_core::ports::EventDecl`, `Plugin::events`) reach
+// `conway plugin list --verbose` by name and summary.
+// ---------------------------------------------------------------------
+
+/// Isolates one plugin's own printed block out of a `conway plugin list
+/// --verbose` listing: from that id's own `[x]`/`[ ]` row up to (not
+/// including) the next row, or EOF. Without this, a test asserting text
+/// IS or IS NOT present could pass or fail for the wrong reason -- a
+/// DIFFERENT plugin's block containing (or lacking) the same text, not
+/// the one under test.
+fn block_for<'a>(stdout: &'a str, id: &str) -> String {
+    let marker = format!("] {id} ");
+    let mut lines = stdout.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.starts_with('[') && line.contains(&marker) {
+            let mut block = vec![line.to_string()];
+            while let Some(next) = lines.peek() {
+                if next.starts_with('[') {
+                    break;
+                }
+                block.push(lines.next().expect("peeked line must exist").to_string());
+            }
+            return block.join("\n");
+        }
+    }
+    panic!("no row found for {id} in stdout:\n{stdout}");
+}
+
+/// P-15's load-bearing test: the skeleton plugin's own `pong_dispatched`
+/// event (`conway_plugin_skeleton::SkeletonPlugin::events`) is named, with
+/// its one-line summary, under its own row in `conway plugin list
+/// --verbose` -- this fails against HEAD, where `EventDecl::summary`
+/// reached no `conway-cli` surface at all (`conway_core::ports::plugin::
+/// EventDecl`'s own field doc, before this item: "nothing in `conway-cli`
+/// reads this field ... for display").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_list_verbose_names_the_skeleton_plugins_pong_dispatched_event() {
+    let mock = MockBackend::start(Script(vec![])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = command(&["plugin", "list", "--verbose"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let block = block_for(&stdout, conway_plugin_skeleton::PLUGIN_ID);
+    assert!(
+        block.contains(conway_plugin_skeleton::PONG_DISPATCHED_EVENT),
+        "expected the skeleton plugin's own declared event name under its row, got block:\n{block}"
+    );
+    assert!(
+        block.contains("fires once per skeleton_ping call"),
+        "expected the event's own one-line summary, not just its bare name, got block:\n{block}"
+    );
+}
+
+/// BREAK-THE-GUARD, pairing the test above (this item's own P-15 note):
+/// `conway.memory` declares no events at all (`Plugin::events`'s own
+/// default, an empty `Vec` -- `conway_plugin_memory`'s `Plugin` impl never
+/// overrides it). Its block must carry no `events` section whatsoever --
+/// without this, a change that printed a stray `events` header for every
+/// row, empty or not, would still pass the test above.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_with_no_declared_events_gets_no_events_section() {
+    let mock = MockBackend::start(Script(vec![])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = command(&["plugin", "list", "--verbose"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let block = block_for(&stdout, conway_plugin_memory::PLUGIN_ID);
+    assert!(
+        !block.contains("events"),
+        "conway.memory declares no events -- expected no events section at all, got block:\n{block}"
+    );
+}

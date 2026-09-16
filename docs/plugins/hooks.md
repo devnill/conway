@@ -726,7 +726,7 @@ a second listing that could drift from it.
 | On garbage | At *registration* (`ConwayBuilder::build`), a malformed declaration (an empty bare name, or two events landing on the identical namespaced full name — from the same plugin or two different ones) is a **named, build-time error**, mirroring point 15's identical registration-time refusal for a malformed `CommandSpec::name` |
 | When absent | No `Plugin::events()` override means no declared events (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. A `hooks.rules[].event` naming no installed plugin's declared event parses, validates, and is silently never dispatched — the SAME tolerance a typo'd core event name has always had |
 | Ordering | Every hook subscribed to the SAME namespaced event name runs, in configured order, exactly like point 13's five observation events (this is literally the same dispatch table, unioned) — a failure never stops a later hook from running |
-| Status | **Implemented.** `conway_core::ports::{EventDecl, PluginEventEmitter, PluginEventHandle}` and `Plugin::events()`'s default (`crates/conway-core/src/ports/plugin.rs`); `conway_runtime::hook_dispatch::declared_plugin_events` (namespacing/validation) and `impl PluginEventEmitter for HookDispatcher` (dispatch, reusing point 13's own fan-out); `ConwayBuilder::build` unions the result into the SAME dispatch table `hooks.rules[]` already feeds. `conway-plugin-skeleton`'s `pong_dispatched` event is the worked example: `SkeletonPlugin::events()` declares it, `SkeletonPingTool::invoke` fires it unconditionally on every call, and `conway-plugin-skeleton/tests/skeleton_end_to_end.rs`'s `a_configured_hook_fires_when_the_skeletons_declared_event_is_dispatched` proves a real configured `hooks.rules[]` entry actually receives it. |
+| Status | **Implemented.** `conway_core::ports::{EventDecl, PluginEventEmitter, PluginEventHandle}` and `Plugin::events()`'s default (`crates/conway-core/src/ports/plugin.rs`); `conway_runtime::hook_dispatch::declared_plugin_events` (namespacing/validation) and `impl PluginEventEmitter for HookDispatcher` (dispatch, reusing point 13's own fan-out); `ConwayBuilder::build` unions the result into the SAME dispatch table `hooks.rules[]` already feeds. `conway-plugin-skeleton`'s `pong_dispatched` event is the worked example: `SkeletonPlugin::events()` declares it, `SkeletonPingTool::invoke` fires it unconditionally on every call, and `conway-plugin-skeleton/tests/skeleton_end_to_end.rs`'s `a_configured_hook_fires_when_the_skeletons_declared_event_is_dispatched` proves a real configured `hooks.rules[]` entry actually receives it. `conway plugin list --verbose` names every installed plugin's own declared events, by name and summary, under its row (board item `01M250HW1186RKZRNS3DQAMFYW`) — see "Discovery" below. |
 
 **The declaration/firing split, and why an undeclared-but-fired (or
 declared-but-never-fired) event is a defect, not a shrug.** `PHILOSOPHY.md`
@@ -775,10 +775,22 @@ plugin event's full namespaced name, one-line `summary`, and
 `carries_tool_name`. `ConwayBuilder::build` calls this SAME function to
 decide what `hooks.rules[]` may actually dispatch — one implementation,
 not a parallel "validate" path and a separate "enumerate" path that could
-drift apart. No `conway-cli` surface lists this yet (mirroring point 13's
-own disclosed gap for `hooks.rules[]` visibility) — the mechanism exists
-and is reachable; a TUI/settings presentation of it is later, additive
-work.
+drift apart.
+
+**An operator-facing surface: `conway plugin list --verbose`.** Every
+installed plugin's own declared events are named there, by bare name and
+one-line `summary`, under that plugin's own row — the SAME "you get / you
+lose / costs" breakdown the command already prints, with an `events`
+section appended when (and only when) that plugin declares at least one
+(`crates/conway-cli/src/commands/plugin.rs`'s `print_row`/
+`plugin_events_by_id`). This calls `Plugin::events()` directly, per
+installed candidate, rather than through `declared_plugin_events` above —
+a listing wants each event under its OWN plugin's row, not the
+`plugin_id.bare_name` form that function namespaces to for `hooks.
+rules[].event`; an operator who wants the fully-qualified form for a rule
+gets it by prefixing `<id>.` themselves. A TUI/settings presentation of
+the same data is still later, additive work — this closes the `conway-cli`
+gap this section used to disclose, not that one.
 
 **`match` on a plugin event.** A rule's `match` (point 13) narrows which
 occurrences of an event fire a hook, and only makes sense against a payload
