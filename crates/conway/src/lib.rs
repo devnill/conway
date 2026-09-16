@@ -598,13 +598,27 @@ pub mod plugin {
     /// collapses (`NotificationRoute`'s two variants).
     ///
     /// Each crate's own public error enum (`McpPluginError`/
-    /// `SubprocessPluginError`) is UNCHANGED by this -- same variants, same
-    /// `Display` text -- by implementing [`ChildSessionError`] as a thin,
-    /// one-line-per-variant mapping onto its own type.
+    /// `SubprocessPluginError`) is observably UNCHANGED by this -- same
+    /// variants, same `Display` text -- by implementing [`ChildSessionError`]
+    /// as a thin, one-line-per-variant mapping onto its own type. Their
+    /// `Spawn`/`TimedOut` variant DEFINITIONS (fields, doc comments) are no
+    /// longer hand-duplicated either -- see `child_session_error_taxonomy`'s
+    /// own doc immediately below (item `01M250FJFWHD5FV5JFBYZN1W2C`).
     #[cfg(all(unix, feature = "builtin-tools"))]
     pub use conway_tools::process::child_session::{
         ChildSession, ChildSessionError, NotificationRoute, PendingGuard,
     };
+
+    /// Generates a [`ChildSessionError`] implementor's whole public error
+    /// enum, `Spawn`/`TimedOut` defined once (item
+    /// `01M250FJFWHD5FV5JFBYZN1W2C`) -- see
+    /// `conway_tools::process::child_session::child_session_error_taxonomy`'s
+    /// own doc for why a macro, not an embedded type. `#[macro_export]`
+    /// places this at `conway_tools`' crate root rather than under
+    /// `process::child_session` the way its sibling re-exports are, so it
+    /// is re-exported here by that root path, not the module path.
+    #[cfg(all(unix, feature = "builtin-tools"))]
+    pub use conway_tools::child_session_error_taxonomy;
 
     /// The `bash` tool's own run loop -- streamed stdout/stderr, process-
     /// group cancellation/timeout, truncation -- reused verbatim by a
