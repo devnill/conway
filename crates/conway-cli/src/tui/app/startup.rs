@@ -202,9 +202,12 @@ impl App {
     /// own `--fork-from` arm (same `--cwd` refusal, same seq-less ->
     /// current-head resolution via `Conway::session_head`), narrowed to
     /// what the TUI's flag-free path already supports: `--role-override`
-    /// wires through; `--agent`/`--output-schema`/tool-selector flags do
-    /// not (see `Self::resolve_handle`'s own guard block for `--agent`,
-    /// and this crate's own one-shot-only stance on `--allowed-tools`/
+    /// and `--model` wire through (the latter parsed via the SAME
+    /// `crate::model_pin::parse_model_pin` every sibling arm uses, so a
+    /// malformed value fails identically here as it does on `--resume`);
+    /// `--agent`/`--output-schema`/tool-selector flags do not (see
+    /// `Self::resolve_handle`'s own guard block for `--agent`, and this
+    /// crate's own one-shot-only stance on `--allowed-tools`/
     /// `--deny-tools`/`--permission-mode`, neither of which the TUI's
     /// flag-free path reads either).
     async fn fork_from_ref(cli: &Cli, conway: &Conway, r: &str) -> conway::Result<SessionHandle> {
@@ -214,6 +217,21 @@ impl App {
                  parent session's cwd",
             ));
         }
+        // `--model` is deliberately NOT refused here alongside `--cwd`
+        // (and unlike `--agent`, refused a few lines up in
+        // `Self::resolve_handle`'s own continuity guard): `--cwd`/`--agent`
+        // are SESSION IDENTITY choices -- which directory a session runs
+        // in, which persona/tool profile it carries -- and a forked child
+        // inherits both from its parent by construction, so overriding
+        // either here would be incoherent. A model pin is different in
+        // kind: it is a ROUTING choice, which backend/model serves the
+        // child's own future turns, with no bearing on the transcript it
+        // forks from. `--resume` already accepts `--model` for exactly
+        // this reason (`Self::resume_sid`, just above) -- a fork is a new
+        // lineage node that happens to start from an existing transcript,
+        // so there is no more reason to freeze its routing to the parent's
+        // than there is for a resumed session's.
+        let model = crate::model_pin::parse_model_pin(cli)?;
         let names =
             crate::session_names::NamesStore::load(&crate::session_names::session_root(conway))
                 .map_err(|e| crate::model_pin::usage_error(e.to_string()))?;
@@ -229,6 +247,9 @@ impl App {
         let mut spec = ForkSpec::new(String::new());
         if let Some(role) = cli.role_override.clone().map(RoleAlias::new) {
             spec = spec.role(role);
+        }
+        if let Some(model) = model {
+            spec = spec.model(model);
         }
         // Same "pure and light" tool profile `Self::session_spec` gives
         // every fresh TUI session (see that field's own comment there) --
@@ -331,18 +352,17 @@ impl App {
         // session route correctly from its very first prompt, but a
         // `ModelDecision` only arrives once that prompt has actually run).
         // A parse failure here degrades to `None` (`.ok().flatten()`)
-        // rather than propagating: `Self::resolve_handle` (just above)
-        // already ran the identical parse on the flag-free/`--resume`/
-        // `--continue` paths and would have returned this same `Err`
-        // first, so those three never reach this line with a malformed
-        // value at all. `--fork-from` is the one arm that does not
-        // validate `--model` (`Self::fork_from_ref`'s own doc: that flag
-        // simply is not wired onto a forked child today, a pre-existing
-        // gap board item `01M24ZJ9ABPP0DGVAA2PS3XVDD` does not widen) --
-        // degrading rather than erroring here keeps that combination
-        // exactly as permissive as it already was, instead of this
-        // display-only field newly refusing a launch `resolve_handle`
-        // itself let through.
+        // rather than propagating, but that degradation is never actually
+        // reachable: `Self::resolve_handle` (just above) already ran the
+        // identical parse on EVERY arm -- flag-free, `--resume`,
+        // `--fork-from` (board item `01M2MNP9H9Q52W84X3QMBC3PKM`: the one
+        // remaining arm that used to accept `--model` and never validate
+        // or wire it now does both, via `Self::fork_from_ref`'s own
+        // `parse_model_pin(cli)?`), and `--continue` -- and would have
+        // returned this same `Err` first in every case. The `.ok()
+        // .flatten()` here is kept only as a defensive no-op consistent
+        // with this field's display-only role, not because a malformed
+        // value can genuinely reach it.
         state.model_pin = crate::model_pin::parse_model_pin(cli)
             .ok()
             .flatten()
@@ -1366,6 +1386,147 @@ mod tests {
                 .any(|e| matches!(e, Entry::Assistant { text, .. } if text == "hello there")),
             "the resumed session's own assistant reply must be backfilled too, got: {:?}",
             app.state.transcript
+        );
+    }
+
+    /// Board item `01M2MNP9H9Q52W84X3QMBC3PKM`: `--fork-from <ref> --model
+    /// <m>` must actually route the forked child's own first turn to `<m>`,
+    /// not merely accept and silently drop the flag. Proven the same
+    /// "pin-aware router" way `crates/conway/tests/resume.rs`'s own
+    /// `resume_with_a_model_override_routes_the_next_turn_to_the_pinned_
+    /// model` proves the identical claim for `--resume`: a REAL
+    /// `conway_core::routing::MinimalRouter` (deliberately not
+    /// `FakeRouter`, which returns the same fixed route regardless of any
+    /// pin and so could never tell "the role chain's own default" apart
+    /// from "the `--model` pin") whose `"default"` role resolves to
+    /// `default_model`, with `pinned_model` reachable ONLY via an explicit
+    /// pin -- so a passing assertion on `calls[0].model` is possible only
+    /// if `Self::fork_from_ref`'s own `--model` parse genuinely reached
+    /// `ForkSpec::model` and then `Conway::fork_from`/
+    /// `ForkChildRequest::model`/`fork_child::fork_child`'s
+    /// `ResumeSpec::model` all the way through to the routing request
+    /// itself, not merely round-tripped through an intermediate field.
+    ///
+    /// **Fails against HEAD, for a named reason**: before this item,
+    /// `Self::fork_from_ref` never called `crate::model_pin::
+    /// parse_model_pin` at all, so `ForkSpec::model` was always left
+    /// `None` regardless of `cli.model` -- the forked child would have
+    /// routed to `default_model` (the `"default"` role's own chain, the
+    /// SAME resolution an unpinned fork already gets) exactly as if
+    /// `--model` had never been given, failing this test's own
+    /// `assert_eq!` on `calls[0].model` (expected `pinned-model`, HEAD
+    /// produces `default-model`).
+    #[tokio::test]
+    async fn fork_from_ref_with_a_model_pin_routes_the_childs_first_turn_to_the_pin() {
+        let default_model = conway::ModelRef {
+            backend: BackendId::new("fake"),
+            model: ModelId::new("default-model"),
+        };
+        let pinned_model = conway::ModelRef {
+            backend: BackendId::new("fake"),
+            model: ModelId::new("pinned-model"),
+        };
+
+        let mut roles = std::collections::BTreeMap::new();
+        roles.insert(
+            "default".to_string(),
+            conway_core::routing::RoleConfig {
+                chain: vec![default_model.clone()],
+                required: conway_core::capabilities::RequiredCaps::default(),
+                params: conway_core::content::SamplingParams::default(),
+                headroom_tokens: None,
+            },
+        );
+        let router: Arc<dyn conway::Router> = Arc::new(conway_core::routing::MinimalRouter::new(
+            conway_core::routing::RoutingConfig {
+                roles,
+                health: conway_core::routing::HealthConfig::default(),
+                default_headroom_tokens: 4096,
+            },
+        ));
+
+        let scripted = Arc::new(
+            ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("child reply"))])
+                .with_id(BackendId::new("fake")),
+        );
+
+        let conway = conway::test_support::test_builder_without_router(base_config())
+            .with_router(router)
+            .with_backend(scripted.clone())
+            .build()
+            .expect("build should succeed with a pin-aware router and a scripted backend");
+
+        let parent = conway
+            .new_session(conway::SessionSpec::default())
+            .await
+            .expect("new_session should succeed");
+        let parent_id = parent.id();
+
+        let mut cli = minimal_cli();
+        cli.model = Some(pinned_model.to_string());
+        cli.fork_from = Some(parent_id.to_string());
+
+        let child = App::fork_from_ref(&cli, &conway, &parent_id.to_string())
+            .await
+            .expect("fork_from_ref with a valid --model pin must succeed");
+        child
+            .prompt("hi child")
+            .await
+            .expect("prompt on the fork_from child must succeed")
+            .text()
+            .await
+            .expect("the child's own turn should complete");
+
+        let calls = scripted.calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "expected exactly the child's own one turn, calls: {calls:?}"
+        );
+        assert_eq!(
+            calls[0].model,
+            pinned_model.model,
+            "the forked child's first turn must route to the --model pin ({:?}), not the role \
+             chain's own default ({:?}) -- got {:?}",
+            pinned_model.model,
+            default_model.model,
+            calls[0].model
+        );
+    }
+
+    /// A malformed `--model` combined with `--fork-from` must fail the SAME
+    /// way it does on `--resume` (`resume_sid`'s own `parse_model_pin(cli)?`)
+    /// -- a usage error at launch, before any store/route call, rather than
+    /// the pre-this-item behavior of silently accepting the malformed value
+    /// (it was never read at all, so it could never fail). Mirrors
+    /// `tests/tui_model_pin.rs`'s own `malformed_model_fails_identically_
+    /// in_both_modes`, narrowed to this one arm and driven directly against
+    /// `Self::fork_from_ref` rather than through `App::new`, since the
+    /// fixture here needs no live session to resolve `r` against at all --
+    /// the malformed `--model` must be refused before `r` is even looked
+    /// up.
+    #[tokio::test]
+    async fn fork_from_ref_with_a_malformed_model_is_a_usage_error() {
+        let conway = echo_conway();
+        let mut cli = minimal_cli();
+        cli.model = Some("not-a-valid-ref".to_string());
+        cli.fork_from = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string());
+
+        let err = match App::fork_from_ref(&cli, &conway, "01ARZ3NDEKTSV4RRFFQ69G5FAV").await {
+            Ok(_) => panic!("a malformed --model must be refused, not silently accepted"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            crate::exit::ExitCode::from_error(&err),
+            crate::exit::ExitCode::Usage,
+            "a malformed --model paired with --fork-from must classify as a usage error (exit \
+             2), matching --resume's own contract"
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("--model not-a-valid-ref:"),
+            "the refusal must name the malformed flag/value, matching tests/tui_model_pin.rs's \
+             own needle, got: {text:?}"
         );
     }
 
