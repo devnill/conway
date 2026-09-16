@@ -476,13 +476,32 @@ model's own context window passes 50%, 75%, or 90% full. This is a
 one-way, informational note only: it changes nothing about when a budget
 actually trips (still exactly the numbers in this table), and it costs a
 caller nothing to opt into — there is no flag for it. `--output-format
-jsonl` carries it like any other event; a `text`/`json` run sees the note
-folded into whatever the model does with it (e.g. wrapping up early), not
-as a separate line of its own.
+jsonl` carries it like any other event (`budget_warning`). `text` mode
+prints the identical sentence verbatim as a `conway: warning: …` line on
+**stderr**, the instant it crosses — not just its indirect effect on
+whatever the model does with it. `--output-format json` does not print it
+at all: that format withholds every incremental envelope until the
+terminal `AgentResult` (see above), by design, so the crossing is visible
+there only through its effect on the model's own behavior, never as a
+line of its own. (Board item `01M2MGPF52NHFYN1AKBPR9FDK6`: `text` used to
+drop this notice entirely, on every output format that isn't `jsonl`.)
 
 ```console
 conway -p "summarize this log" --max-turns 3 --max-seconds 30 < build.log
 ```
+
+**A turn that exhausts its output token budget without saying anything is
+also reported, the same way.** If a turn ends `stop: max_tokens` having
+produced neither reply text nor a tool call — the model spent its whole
+output budget reasoning and never got to answer — conway names that too,
+rather than leaving an exit-0 run with empty output and no explanation
+(`Event::AgentProgress`/`LogRecord::SystemNote { reason:
+"max_tokens_silent", .. }`, board item `01M23JRDAM480SRXFGM46GBVA6`). A
+turn that hit the same cap after already saying something gets separate,
+distinguishing wording (`"max_tokens_truncated"`, "cut off mid-answer")
+instead. Same visibility rule as the runway note above: `jsonl` carries it
+as an `agent_progress` line, `text` prints it to stderr, `json` does not
+print it at all.
 
 **`[limits].tool_timeout_secs` is a fourth dimension with no CLI flag of its
 own** — a per-tool-call ceiling enforced by the tool runner itself, not a

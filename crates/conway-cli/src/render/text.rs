@@ -1,9 +1,14 @@
 //! `--output-format text` (the default): stdout carries only the
 //! assistant's raw text, verbatim, flushed after every delta, so
 //! `conway -p "…" > out.txt` yields clean content. Everything else --
-//! tool-call activity, permission denials, backend health, routing detail --
-//! is a one-line stderr note (or, for `ModelDecision`, suppressed unless
-//! `--verbose`), never mixed into stdout.
+//! tool-call activity, permission denials, backend health, routing detail,
+//! progress notes (`AgentProgress`, e.g. the max_tokens silent-turn notice,
+//! board item `01M23JRDAM480SRXFGM46GBVA6`), and runway/budget-crossing
+//! notices (`BudgetWarning`, board item A5.6) -- is a one-line stderr note
+//! (or, for `ModelDecision`, suppressed unless `--verbose`), never mixed
+//! into stdout. Board item `01M2MGPF52NHFYN1AKBPR9FDK6`: `AgentProgress`/
+//! `BudgetWarning` used to fall into the wildcard arm below and be dropped
+//! entirely -- see that arm's own comment.
 //!
 //! Permission denials are classified by matching the facade-re-exported
 //! `PermissionDecisionKind` directly (`Denied`/`DeniedWithFeedback` -- the
@@ -164,6 +169,58 @@ impl Renderer for TextRenderer {
                     self.ensure_trailing_newline()?;
                 }
             }
+            // Board item `01M2MGPF52NHFYN1AKBPR9FDK6`: previously fell into
+            // the wildcard arm below and was silently dropped -- the ONLY
+            // renderer this happened to. The TUI's own `tui/state.rs`
+            // already pushes every `AgentProgress` note as an unconditional
+            // `Entry::Notice` (never gated behind focus or `--verbose`); a
+            // plain `conway -p` run deserves the same visibility, not less.
+            // This carries a wide range of free-text notes -- steering,
+            // replay-synthesized `SystemNote`s, and, since board item
+            // `01M23JRDAM480SRXFGM46GBVA6`, the live twin of the
+            // `max_tokens_silent`/`max_tokens_truncated` notice -- and every
+            // one of them is exactly the kind of thing SILENCE would make
+            // indistinguishable from a hang, a crash, or a bug in conway
+            // itself (that board item's own motivating incident). `diag::
+            // warn`, unconditional, never `diag::info` (which `--verbose`
+            // would hide by default): stderr only, never stdout, so the
+            // one-shot stdout contract (`docs/scripting.md`) is untouched.
+            Event::AgentProgress { note } => diag::warn(note),
+            // Board item `01M2MGPF52NHFYN1AKBPR9FDK6`: same gap, for the
+            // runway/budget-crossing notice (board item A5.6,
+            // `conway_runtime::runway`). `text` is already the exact
+            // model-facing sentence that event's own doc says it carries
+            // (e.g. `runway: 4 of 5 max_steps used this session
+            // (max_steps=5). Wrap up or report now.`) -- no second
+            // formatting pass needed, mirroring `Event::AgentProgress`
+            // immediately above.
+            Event::BudgetWarning { text, .. } => diag::warn(text),
+            // `Event` is `#[non_exhaustive]` (`conway-core`'s `event.rs`)
+            // and this match lives in a different crate, so rustc requires
+            // a wildcard arm here NO MATTER how many variants above are
+            // named explicitly -- enumerating the remaining ones (
+            // `AgentSpawned`, `UserTurn`, `TurnStarted`, `ToolArgumentCoerced`,
+            // `PermissionRequested`, `PermissionDecision`, `ToolProgress`,
+            // `ContextSegmentAdded`, `MessageSent`, `SteerQueued`,
+            // `SteerDropped`, `AgentPromoted`, `Lagged`, `Error { fatal:
+            // false, .. }`) would not remove this arm or make a FUTURE
+            // (28th) variant fail to compile here -- it would just add
+            // churn without closing the actual gap `AgentProgress`/
+            // `BudgetWarning` just closed. So this arm is deliberately left
+            // catching the rest, silently, exactly as it always has.
+            // What WOULD catch a future silent drop: `conway-core::event`'s
+            // own `every_variant_constructs_and_round_trips_with_exact_tag`
+            // test already pins the variant count (27) and fails the moment
+            // a 28th is added -- that is a real trip-wire an author adding
+            // one will hit, but it does not by itself point back at this
+            // file. A cheap next step, out of this item's own file fence
+            // (`crates/conway-core/src/event.rs`): extend that test's own
+            // doc comment (or `Event`'s own module doc) to say explicitly
+            // "a new variant needs an explicit look at every `Renderer`
+            // (`conway-cli`'s `render/{text,json,jsonl}.rs`) and the TUI's
+            // `tui/state.rs::apply`, not just this file" -- turning a count
+            // mismatch into a checklist instead of leaving it a silent
+            // no-op by default.
             _ => {}
         }
         Ok(())
@@ -409,5 +466,58 @@ mod tests {
         let mut renderer = TextRenderer::new(Box::new(writer.clone()));
         renderer.finish(None).unwrap();
         assert_eq!(writer.contents(), b"");
+    }
+
+    /// Board item `01M2MGPF52NHFYN1AKBPR9FDK6`: `AgentProgress`/
+    /// `BudgetWarning` now render to stderr via `diag::warn` (see
+    /// `on_event`'s own arms), which this in-process unit test cannot
+    /// observe -- `diag` always writes to the real process stderr, never
+    /// through this renderer's own `out` handle (`stream_restarted_writes_a_
+    /// newline_to_stdout`'s own comment states the same limitation for
+    /// `StreamRestarted`'s diagnostic half). What IS observable here, and
+    /// is the other half of this item's own acceptance criterion, is that
+    /// neither event writes a single byte to STDOUT -- the one-shot
+    /// stdout contract (`docs/scripting.md`) stays untouched. The
+    /// stderr-visible half is asserted by the compiled-binary integration
+    /// test `crates/conway-cli/tests/oneshot_notice_stderr.rs`.
+    #[test]
+    fn agent_progress_and_budget_warning_never_touch_stdout() {
+        let writer = RecordingWriter::default();
+        let mut renderer = TextRenderer::new(Box::new(writer.clone()));
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        renderer
+            .on_event(&envelope(
+                session,
+                agent,
+                Event::AgentProgress {
+                    note: "the model exhausted its output token budget (stop: max_tokens) \
+                           while still reasoning, and produced no visible answer -- no text, \
+                           no tool call."
+                        .into(),
+                },
+            ))
+            .unwrap();
+        renderer
+            .on_event(&envelope(
+                session,
+                agent,
+                Event::BudgetWarning {
+                    agent_id: agent,
+                    limit: "max_steps=5".into(),
+                    text: "runway: 4 of 5 max_steps used this session (max_steps=5). Wrap up \
+                           or report now."
+                        .into(),
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(
+            writer.contents(),
+            b"",
+            "neither notice may write anything to this renderer's stdout handle"
+        );
+        assert_eq!(writer.flush_count(), 0);
     }
 }
