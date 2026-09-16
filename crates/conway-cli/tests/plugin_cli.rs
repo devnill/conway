@@ -443,7 +443,7 @@ fn print_mode_still_refuses_with_no_backends_configured() {
 /// IS or IS NOT present could pass or fail for the wrong reason -- a
 /// DIFFERENT plugin's block containing (or lacking) the same text, not
 /// the one under test.
-fn block_for<'a>(stdout: &'a str, id: &str) -> String {
+fn block_for(stdout: &str, id: &str) -> String {
     let marker = format!("] {id} ");
     let mut lines = stdout.lines().peekable();
     while let Some(line) = lines.next() {
