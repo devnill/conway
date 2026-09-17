@@ -1099,38 +1099,6 @@ mod tests {
         );
     }
 
-    /// Board item `01M2PGS1GGNDNSA0A6E074G4VF`, the other half of the switch
-    /// notice's staging design. The notice deliberately SURVIVES any number
-    /// of `focus_agent` clears, so that a switch driving more than one focus
-    /// transition still shows it -- which means something else has to end its
-    /// life, or it would resurface in a later, unrelated focus change.
-    ///
-    /// A real user turn is that boundary. This pins the guarantee the old
-    /// consume-once `take()` in `try_focus_agent` used to provide, at the
-    /// seam that provides it now.
-    #[test]
-    fn a_user_turn_drops_the_staged_switch_notice() {
-        let session = SessionId::new();
-        let agent = AgentId::new();
-        let mut state = AppState::new(agent);
-        state.pending_focus_notice = Some("switched model to mock/model-b".to_string());
-
-        state.apply(&envelope(
-            session,
-            agent,
-            Event::UserTurn {
-                text: "hi".to_string(),
-                prov: conway::Provenance::UserPrompt,
-            },
-        ));
-
-        assert_eq!(
-            state.pending_focus_notice, None,
-            "a real user turn ends the switch's life -- the staged notice must \
-             not survive to be re-pushed by some later, unrelated focus change"
-        );
-    }
-
     #[test]
     fn a_single_user_turn_event_appears_in_the_transcript_exactly_once() {
         // The regression the local-push removal (`app.rs`'s `submit`/

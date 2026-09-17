@@ -1886,12 +1886,6 @@ impl AppState {
             // agent's own stream (`SessionHandle::agent_events`/`events()`),
             // so `env.agent` is already the right agent by construction.
             Event::UserTurn { text, .. } => {
-                // The staged switch notice (board item
-                // `01M2PGS1GGNDNSA0A6E074G4VF`) belongs to the switch that
-                // produced it, not to everything that follows. A real user
-                // turn is the end of that switch's life: from here on a
-                // later focus change must not resurrect it.
-                self.pending_focus_notice = None;
                 self.transcript.push(Entry::User(text.clone()));
             }
             Event::ThinkingDelta { text } => {

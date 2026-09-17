@@ -241,6 +241,15 @@ impl App {
     /// through `commands::apply_ask_fate`, driven by `Action::AskFate` in
     /// `run.rs`, a completely separate call site from `submit`.
     async fn submit(&mut self, text: String) -> conway::Result<SubmitOutcome> {
+        // Board item `01M2PGS1GGNDNSA0A6E074G4VF`: a staged switch notice
+        // belongs to the switch that produced it. Dropping it here -- on a
+        // REAL keystroke-driven submit -- bounds its life without depending
+        // on event traffic. It deliberately does NOT hang off
+        // `Event::UserTurn`: focusing a child REPLAYS that agent's history,
+        // so a replayed `UserTurn` would clear a notice staged by the very
+        // switch that just focused it, and the operator would see nothing.
+        // `submit` runs once per actual submission and never on replay.
+        self.state.pending_focus_notice = None;
         // T8: every submitted line (prompt or slash command) is recorded into
         // the history FIFO before dispatch, so a slash command that changes
         // `self.handle`/exits the loop still recorded exactly what the user
@@ -743,6 +752,33 @@ mod tests {
             text.contains("guard: qwen2.5-3b"),
             "the plugin's status contribution must still reach the rendered status line after \
              /resume: {text}"
+        );
+    }
+
+    /// Board item `01M2PGS1GGNDNSA0A6E074G4VF`: a real submit drops any
+    /// staged switch notice, bounding it to the switch that produced it.
+    ///
+    /// This lives on `submit` rather than on `Event::UserTurn` for a reason
+    /// that cost a debugging round: focusing a child REPLAYS that agent's
+    /// history, so a replayed `UserTurn` would clear a notice staged by the
+    /// very switch that just focused it -- and the operator would see
+    /// nothing at all, which is the exact symptom this item is about.
+    #[tokio::test]
+    async fn a_real_submit_drops_the_staged_switch_notice() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        app.state.pending_focus_notice = Some("switched model to echo/echo-model".to_string());
+
+        app.submit("hello".to_string())
+            .await
+            .expect("submit should not error");
+
+        assert_eq!(
+            app.state.pending_focus_notice, None,
+            "a real submit ends the staged notice's life"
         );
     }
 
