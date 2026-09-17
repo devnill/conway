@@ -1993,8 +1993,7 @@ async fn switch_session<H: Host>(
 ) -> Effect {
     match host.fork(focused, spec).await {
         Ok(child) => {
-            state.pending_focus_notice =
-                Some(format!("{}: {focused} -> {child}", describe.into()));
+            state.pending_focus_notice = Some(format!("{}: {focused} -> {child}", describe.into()));
             // Board item A1d ("say why a turn fell back"), the "switch-forks
             // do not pile up" half: this IS the one call site that knows
             // `child` exists purely because of a `/model`/`/role` switch off
@@ -8120,9 +8119,18 @@ mod tests {
             Some(ToolSelector::Except(vec!["report".into()])),
             "/model's fork, like a bare /fork, must exclude `report`"
         );
+        // Board item `01M2PGS1GGNDNSA0A6E074G4VF`: the notice is STAGED in
+        // `pending_focus_notice`, not pushed straight onto `transcript`.
+        // `Effect::FocusNewSession` is handled in this same synchronous
+        // tick by `app/focus.rs::try_focus_agent`, whose `focus_agent` call
+        // clears the transcript before the run loop's single `if dirty`
+        // redraw -- so a direct push here was destroyed before it was ever
+        // drawn, and `/model` gave the operator no feedback at all.
+        // `try_focus_agent` takes this back out and re-pushes it after the
+        // clear; that half is pinned by `focus.rs`'s own unit tests.
         assert!(matches!(
-            state.transcript.last(),
-            Some(Entry::Notice { text })
+            state.pending_focus_notice.as_deref(),
+            Some(text)
                 if text.contains("anthropic/claude-haiku") && text.contains(&child_focus.to_string())
         ));
         // Board item A1d ("switch-forks do not pile up"): `switch_session`
@@ -8391,9 +8399,11 @@ mod tests {
             .expect("fork should have been called");
         assert!(spec.knobs.keep_alive, "/role's fork must be keep_alive");
         assert_eq!(spec.knobs.role, Some(RoleAlias::new("planner")));
+        // Staged, not pushed -- see the `/model` sibling above and board
+        // item `01M2PGS1GGNDNSA0A6E074G4VF`.
         assert!(matches!(
-            state.transcript.last(),
-            Some(Entry::Notice { text }) if text.contains("planner")
+            state.pending_focus_notice.as_deref(),
+            Some(text) if text.contains("planner")
         ));
     }
 

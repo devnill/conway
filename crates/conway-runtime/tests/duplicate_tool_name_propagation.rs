@@ -38,7 +38,8 @@ impl Tool for StubTool {
         ToolSpec {
             name: self.0.clone(),
             description: "stub".into(),
-            schema: serde_json::json!({"type": "object"}),
+            schema: serde_json::from_value(serde_json::json!({"type": "object"}))
+                .expect("valid RootSchema JSON"),
             category: ToolCategory::Read,
             permission: PermissionClass::Safe,
         }

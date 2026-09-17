@@ -143,7 +143,10 @@ fn two_mcp_servers_with_the_same_tool_name_exit_cleanly_instead_of_panicking() {
         "expected the collision to be named as a duplicate TOOL (not just \
          re-using the duplicate PLUGIN id wording), got: {stderr:?}"
     );
-    assert!(stderr.contains("sleep"), "expected the colliding tool's own name: {stderr:?}");
+    assert!(
+        stderr.contains("sleep"),
+        "expected the colliding tool's own name: {stderr:?}"
+    );
     assert!(
         stderr.contains("mcp.dogfood-mcp-0") && stderr.contains("mcp.dogfood-mcp-1"),
         "expected BOTH colliding plugins' own derived ids (`mcp.<serverInfo.name>`) named, got: \

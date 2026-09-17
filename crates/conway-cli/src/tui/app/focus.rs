@@ -830,18 +830,21 @@ mod tests {
              focus switch"
         );
         assert!(
-            !app.state.transcript.iter().any(
-                |e| matches!(e, Entry::Notice { text } if text.contains("stale notice"))
-            ),
+            !app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text.contains("stale notice"))),
             "focus_agent's own V5 clear must still drop whatever the \
              PREVIOUSLY focused agent's transcript held -- this fix must not \
              relax that guarantee. Transcript: {:?}",
             app.state.transcript
         );
         assert_eq!(
-            app.state.transcript.iter().filter(
-                |e| matches!(e, Entry::Notice { text } if text == &switch_text)
-            ).count(),
+            app.state
+                .transcript
+                .iter()
+                .filter(|e| matches!(e, Entry::Notice { text } if text == &switch_text))
+                .count(),
             1,
             "the switch notice must survive focus_agent's clear exactly \
              once -- neither destroyed nor duplicated. Transcript: {:?}",
@@ -882,9 +885,10 @@ mod tests {
              would leak into a LATER, unrelated focus switch"
         );
         assert!(
-            app.state.transcript.iter().any(
-                |e| matches!(e, Entry::Notice { text } if text == &switch_text)
-            ),
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text == &switch_text)),
             "the switch notice must still surface even though this \
              resubscribe failed -- the switch itself already succeeded. \
              Transcript: {:?}",

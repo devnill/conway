@@ -372,8 +372,7 @@ impl Runtime {
     /// configuration problems, both now surface as a named `conway: error:
     /// ...` line and a clean, non-panicking exit, never a Rust panic.
     pub fn new(deps: RuntimeDeps) -> Arc<Runtime> {
-        Self::try_new(deps)
-            .expect("RuntimeDeps.plugins must register without duplicate tool names")
+        Self::try_new(deps).expect("RuntimeDeps.plugins must register without duplicate tool names")
     }
 
     /// The fallible counterpart to [`Self::new`] -- identical construction,
