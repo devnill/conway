@@ -160,6 +160,75 @@
 //! current `/settings` surface (it has never supported authoring a
 //! non-default role's chain at all), not a defect introduced here or
 //! silently papered over.
+//!
+//! # Acceptance 5's own remainder: the edit-row entry point, and a ruling on `Action::SubmitProviderContextWindow`
+//!
+//! Board item `01M23M2P79R5G28TPGG7PPJQ32` landed
+//! [`App::apply_edit_model_context_window`] (the write) but deliberately
+//! left it uncalled: reaching it needed a selectable, editable per-model row
+//! in `/settings` -> providers, which needed `tui::input`/`tui::state::
+//! modal`/`tui::view::mod` -- all outside that lane's own fence. Board item
+//! `01M2N2HDV9YAFQP5S1ZJKPWE5V` is that remainder: `tui::input::
+//! edit_selected_provider_context_window` (a hard-coded `w`/`W` key on a
+//! configured-provider row -- see that function's own doc for why it
+//! bypasses the configurable `Context::Settings` keybinding table, which
+//! sits outside this wave's fence too) opens the IDENTICAL context-window
+//! card the add-flow's own `AssumedFloor` branch already uses
+//! (`Mode::AddProviderContextWindow`), pre-filled with the model's CURRENT
+//! resolved value and provenance when one is known
+//! (`AddProviderContextWindowState::current`) rather than a second card.
+//!
+//! **The ruling this item named as open: should `Action::
+//! SubmitProviderContextWindow(String, Option<u32>)` carry an explicit
+//! field distinguishing "accepted the shown value" from "typed the same
+//! number back"?**
+//!
+//! **Ruling: no.** The distinction is real -- this codebase already has a
+//! name for it (`first_run::ContextWindowAnswer::Accepted` vs `::Override`,
+//! guided setup's own CLI-side confirm) -- but it is a WRITE decision, and
+//! the write decision here is not actually in question: an empty `Enter`
+//! never writes, on either origin, and a typed number always writes as an
+//! `Override`, on either origin. `Option<u32>` already carries exactly and
+//! only that: `None` never writes, `Some` always does. A third field would
+//! carry zero additional information the write path needs -- it would only
+//! ever affect a NOTICE's wording, never `models.json`'s bytes. Concretely,
+//! for the WRITE half, "accepted a shown default" and "typed nothing at
+//! all" behave identically (nothing is written either way) on THIS item's
+//! own edit-row surface: a shown current value is left alone precisely
+//! because nothing is submitted for it, the same way the add-flow's own
+//! `AssumedFloor` branch has always left an unanswered card unwritten. There
+//! is no reachable case where an operator needs to say "yes, that number,
+//! and pin it" without simply typing it -- typing it IS pinning it, by this
+//! item's own "typed values enter as `Override`; settled" constraint.
+//!
+//! What DOES need the distinction is the CONFIRMATION WORDING -- saying
+//! "remains unverified" to an operator editing a model that already has a
+//! real, `Probed`/`Metadata`/`Override` window would be actively dishonest
+//! (GP-14). [`App::apply_provider_context_window`] resolves this itself, on
+//! the RECEIVING end, by re-checking `AppState::model_max_context_source`
+//! for the `model_key` in hand -- already-resolved, in-memory, no second
+//! lookup -- rather than by the `Action` carrying a flag forward from the
+//! UI layer that opened the card. This mirrors how `resolve_context_
+//! window_for_add`/`confirm_context_window_for_add` already keep their own
+//! THREE-way distinction (probed / verified / assumed-floor) entirely
+//! inside this file and never push it into the `Action` layer either --
+//! this item's ruling generalizes that same existing pattern to a second
+//! call site rather than inventing a new one.
+//!
+//! **Rejected: adding the field anyway, to unify the add-flow's two confirm
+//! surfaces into one** (today: a silent notice for `Known` branches, this
+//! modal only for `AssumedFloor` -- see `confirm_context_window_for_add`'s
+//! own doc). The parent item's own workaround -- never opening the modal
+//! for a `Known` branch -- is landed, tested behavior this item's own "do
+//! not weaken or duplicate the confirm behaviour the parent item landed"
+//! constraint forbids touching. If a future item DOES want that
+//! unification, the seam is already visible: give `resolve_context_
+//! window_for_add`'s `Known` branch a `current` too and route it through
+//! `begin_edit_model_context_window` instead of a bare transcript notice --
+//! a STATE-shape change (one more `AddProviderContextWindowState`
+//! construction site), not an `Action`-shape change. This item does not
+//! make that change; it only leaves the seam named rather than silently
+//! walked past.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -644,14 +713,30 @@ impl App {
 
     /// `Action::SubmitProviderContextWindow` (board item: setup-time
     /// context window, ASK + PERSIST) -- the context-window ASK card's own
-    /// `Enter`/`Esc`. `window` is `None` for a skip (both keys can produce
-    /// that -- see `input::handle_add_provider_context_window_key`'s own
-    /// doc), in which case this only reports the honest outcome (still
-    /// unverified) rather than writing anything; `Some(tokens)` writes via
-    /// [`crate::first_run::persist_context_window`] -- the SAME shared
-    /// writer `write_provider_entry_and_refresh`'s own DISCOVER branch, and
-    /// the pre-TUI `first_run.rs` entrance, both already call (P-14: one
-    /// write path for every origin a window can come from).
+    /// `Enter`/`Esc`, from EITHER of its two origins (see
+    /// `AddProviderContextWindowState::current`'s own doc): the add-flow's
+    /// `AssumedFloor` branch, and -- board item `01M2N2HDV9YAFQP5S1ZJKPWE5V`
+    /// -- the settings providers row's own edit card. `window` is `None`
+    /// for a skip (both keys can produce that -- see
+    /// `input::handle_add_provider_context_window_key`'s own doc), in which
+    /// case nothing is EVER written on either origin (P-14: one write
+    /// decision, not two) -- only the wording differs, since the two
+    /// origins do not mean the same thing by "nothing typed": the add-flow
+    /// origin genuinely has nothing to fall back to, while the edit-row
+    /// origin usually does (the model was already configured). This
+    /// re-checks `AppState::model_max_context_source` for `model_key` (T3's
+    /// own per-model provenance map -- already resolved, in memory, no
+    /// second lookup of its own) to tell the two apart, rather than
+    /// threading the distinction through the `Action` itself: see this
+    /// file's own top doc, "the operator's own accept-vs-override ruling,"
+    /// for why the `Action`'s `Option<u32>` shape is left exactly as it is.
+    ///
+    /// `Some(tokens)` delegates outright to
+    /// [`Self::apply_edit_model_context_window`] -- the SAME write this
+    /// method used to perform inline before board item
+    /// `01M2N2HDV9YAFQP5S1ZJKPWE5V` gave that method a second caller; moving
+    /// the body there (rather than leaving two copies) is P-14 applied to
+    /// this file's own two entry points, not only to the ones outside it.
     pub(super) fn apply_provider_context_window(
         &mut self,
         model_key: &str,
@@ -661,48 +746,38 @@ impl App {
     ) {
         match window {
             None => {
-                self.state.transcript.push(Entry::Notice {
-                    text: format!(
+                let text = match self.state.model_max_context_source.get(model_key).copied() {
+                    Some(source) if source != conway::ContextTokensSource::Unverified => format!(
+                        "{model_key}: kept as-is ({}) -- models.json unchanged, so a later \
+                         probe or a corrected baseline can still refine it.",
+                        crate::tui::state::context_window_source_word(source)
+                    ),
+                    _ => format!(
                         "Skipped -- {model_key}'s context window remains unverified; conway \
                          will not send a num_ctx hint and admission uses the dialect's \
                          conservative floor until you set one (docs/providers.md)."
                     ),
-                });
+                };
+                self.state.transcript.push(Entry::Notice { text });
             }
-            Some(window) => match persist_context_window_at(cwd, env, model_key, window) {
-                Ok(path) => {
-                    self.state.transcript.push(Entry::Notice {
-                        text: context_window_setup_notice(model_key, window, &path),
-                    });
-                    self.push_runway_warning_if_needed(model_key, window, env, cwd);
-                }
-                Err(e) => self.state.transcript.push(Entry::Error {
-                    text: format!("could not save {model_key}'s context window: {e}"),
-                    fatal: false,
-                }),
-            },
+            Some(window) => self.apply_edit_model_context_window(model_key, window, env, cwd),
         }
     }
 
     /// Board item `01M23M2P79R5G28TPGG7PPJQ32`, acceptance 5 -- the WRITE
     /// half of "an already-configured model's window can be changed from
-    /// `/settings` -> providers, without editing JSON". Reuses the
-    /// identical persist path [`Self::apply_provider_context_window`]'s own
-    /// typed-answer branch already calls (`persist_context_window_at`, P-14
-    /// -- no second writer), so an edited value lands as an `Override`
-    /// exactly like a freshly-typed add-time answer does, per rule D ("the
-    /// operator can always type a different number, at any point, and it
-    /// wins").
+    /// `/settings` -> providers, without editing JSON". Reuses
+    /// `persist_context_window_at` directly (P-14 -- no second writer), so
+    /// an edited value lands as an `Override` exactly like a freshly-typed
+    /// add-time answer does, per rule D ("the operator can always type a
+    /// different number, at any point, and it wins").
     ///
-    /// **The UI entry point for this is this wave's own disclosed gap, not
-    /// a silent omission.** A per-model, selectable, editable row in the
-    /// providers list needs a new row/selection concept in `tui::view::mod`
-    /// (rendering) and a new keybinding in `tui::input` -- both outside this
-    /// file's own fence for this wave (only `first_run.rs` and THIS file are
-    /// this lane's to edit). This method is the primitive whichever surface
-    /// eventually owns that row calls; today nothing in this crate calls it
-    /// yet.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// **The UI entry point board item `01M2N2HDV9YAFQP5S1ZJKPWE5V`
+    /// supplies:** `tui::input::edit_selected_provider_context_window` opens
+    /// `Mode::AddProviderContextWindow` for an already-configured model's
+    /// row, and this method is what its `Enter` ultimately reaches -- via
+    /// [`Self::apply_provider_context_window`]'s own `Some` branch, which
+    /// now delegates here rather than duplicating this body a second time.
     pub(super) fn apply_edit_model_context_window(
         &mut self,
         model_key: &str,
@@ -1791,9 +1866,9 @@ mod tests {
 
     // ---------------------------------------------------------------
     // Board item `01M23M2P79R5G28TPGG7PPJQ32`, acceptance 5: the WRITE
-    // primitive an already-configured model's own edit surface will call
-    // (this wave's disclosed gap is the UI entry point, not this method --
-    // see `App::apply_edit_model_context_window`'s own doc).
+    // primitive an already-configured model's own edit surface calls
+    // (board item `01M2N2HDV9YAFQP5S1ZJKPWE5V` supplies the UI entry point
+    // -- see `App::apply_edit_model_context_window`'s own doc).
     // ---------------------------------------------------------------
 
     #[tokio::test]
@@ -1826,6 +1901,159 @@ mod tests {
             parsed["models"]["ollama_cloud/glm-5.3"]["max_context_tokens"], 1_000_000,
             "an edited window must land as a real models.json entry, an Override on the next \
              read, exactly like a freshly-typed add-time answer"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V`: the load-bearing, end-to-end
+    // proof (P-15) -- select the row, open the edit card, type a new
+    // number, submit, and confirm the WRITE lands as a real `models.json`
+    // `Override` that a later, disagreeing probe cannot undo. Drives the
+    // REAL key-handling pipeline (`crate::tui::input::handle_key`), not
+    // `App`'s methods directly, so a regression in the settings-row
+    // selection/keybinding/mode-transition wiring itself (not merely in
+    // the write primitive `apply_edit_model_context_window_persists_an_
+    // override_for_an_already_configured_model` above already covers)
+    // would fail this test too. Cannot live under `crates/conway-cli/
+    // tests/` (a separate crate): `App`'s fields are private outside
+    // `tui::app` and its submodules -- see `tests/settings_providers.rs`'s
+    // own module doc for the identical constraint and why THAT file drives
+    // the real compiled binary instead.
+    #[tokio::test]
+    async fn selecting_editing_and_submitting_a_configured_models_row_persists_an_override_that_survives_a_later_probe(
+    ) {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        fn key(code: KeyCode) -> KeyEvent {
+            KeyEvent::new(code, KeyModifiers::NONE)
+        }
+
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        // An already-configured provider whose model conway has already
+        // resolved a REAL, sourced window for (`Probed`) -- the shape GP-14
+        // requires the row distinguish from an assumed floor, and the shape
+        // this item's own accept-vs-override ruling requires the card
+        // honestly describe (not "no context window could be established
+        // automatically", which would be false here).
+        app.state.provider_entries.insert(
+            "ollama_cloud".to_string(),
+            conway::config::schema::BackendEntry {
+                kind: "openai-compat".to_string(),
+                ..Default::default()
+            },
+        );
+        app.state
+            .model_max_context
+            .insert("ollama_cloud/glm-5.3".to_string(), 32_768);
+        app.state.model_max_context_source.insert(
+            "ollama_cloud/glm-5.3".to_string(),
+            conway::ContextTokensSource::Probed,
+        );
+
+        app.state.open_settings();
+        let provider_row_idx = crate::tui::view::settings::build_tree(&app.state)
+            .rows()
+            .iter()
+            .position(|r| {
+                matches!(&r.kind, crate::tui::view::menu::MenuRowKind::Leaf { id }
+                    if id == &format!(
+                        "{}ollama_cloud",
+                        crate::tui::view::settings::LEAF_REMOVE_PROVIDER_PREFIX
+                    ))
+            })
+            .expect("the configured provider must have a selectable row");
+        app.state.settings_selected = provider_row_idx;
+
+        // SELECT + open the edit card (the hard-coded `w` key --
+        // `edit_selected_provider_context_window`'s own doc).
+        crate::tui::input::handle_key(&mut app.state, key(KeyCode::Char('w')));
+        match &app.state.mode {
+            Mode::AddProviderContextWindow(w) => {
+                assert_eq!(w.model_key, "ollama_cloud/glm-5.3");
+                assert_eq!(
+                    w.current,
+                    Some((32_768, "probed")),
+                    "the card must open pre-filled with the CURRENT resolved value and its \
+                     provenance, not blank -- GP-14"
+                );
+            }
+            other => panic!("expected the edit card to open, got {other:?}"),
+        }
+
+        // EDIT: type a new number, overriding the model's real, probed
+        // window with the operator's own typed answer.
+        for ch in "1000000".chars() {
+            crate::tui::input::handle_key(&mut app.state, key(KeyCode::Char(ch)));
+        }
+
+        // SUBMIT.
+        let action = crate::tui::input::handle_key(&mut app.state, key(KeyCode::Enter));
+        let crate::tui::input::Action::SubmitProviderContextWindow(model_key, window) = action
+        else {
+            panic!("expected a submit action, got {action:?}");
+        };
+        assert_eq!(model_key, "ollama_cloud/glm-5.3");
+        assert_eq!(window, Some(1_000_000));
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "submitting must close the card"
+        );
+
+        // The write: the SAME call `Action::SubmitProviderContextWindow`'s
+        // own dispatch arm in `app/run.rs` makes.
+        app.apply_provider_context_window(&model_key, window, &env, cwd.path());
+
+        let models_path = cwd.path().join(".conway").join("models.json");
+        let text =
+            std::fs::read_to_string(&models_path).expect("models.json must have been written");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            parsed["models"]["ollama_cloud/glm-5.3"]["max_context_tokens"],
+            1_000_000
+        );
+
+        // P-15: assert on the RESOLVED SOURCE, not merely the file's bytes
+        // -- and that an `Override` really does survive a later,
+        // disagreeing probe, reusing `conway_plugin_backends::capabilities`'
+        // own, already-established precedence (P-14: not re-derived here),
+        // mirroring `first_run.rs`'s own `accept_vs_override_matches_the_
+        // operators_own_accept_vs_override_ruling` test.
+        use conway_plugin_backends::capabilities::{
+            build_capabilities, max_context_tokens_source, ollama_defaults, CapabilityInputs,
+        };
+        use conway_plugin_backends::config::ModelOverrides;
+        let overrides = ModelOverrides {
+            stream_tools: None,
+            max_context_tokens: Some(1_000_000),
+            reliability_tier: None,
+            parallel_tool_calls: None,
+            min_headroom_tokens: None,
+        };
+        let inputs = CapabilityInputs {
+            dialect_defaults: ollama_defaults(),
+            metadata: None,
+            overrides: Some(&overrides),
+            // A later probe disagreeing with the operator's own typed
+            // answer -- the exact scenario the 2026-09-09 incident this
+            // item's own spec cites was about.
+            probed_max_context_tokens: Some(32_768),
+        };
+        assert_eq!(
+            max_context_tokens_source(&inputs),
+            conway::ContextTokensSource::Override,
+            "an edited-row answer must resolve as an Override, not merely be written to disk"
+        );
+        assert_eq!(
+            build_capabilities(inputs).max_context_tokens,
+            1_000_000,
+            "an edited-row Override must survive a later, disagreeing probe"
         );
     }
 }

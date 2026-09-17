@@ -414,6 +414,16 @@ fn handle_settings_key(state: &mut AppState, key: KeyEvent) -> Action {
         if let Some(action) = activate_settings_selection(state) {
             return action;
         }
+    } else if key.modifiers.is_empty()
+        && matches!(key.code, KeyCode::Char('w') | KeyCode::Char('W'))
+    {
+        // Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V`: a HARD-CODED key, not a
+        // `Context::Settings` entry in `tui::keybindings::ACTION_SPECS` --
+        // that table lives outside this wave's own fence, and this key is
+        // additive/narrow enough (only ever does anything on a
+        // configured-provider row) not to need it re-opened for one entry.
+        // See `edit_selected_provider_context_window`'s own doc.
+        return edit_selected_provider_context_window(state);
     } else if state
         .keybindings
         .matches(Context::Settings, "step_left", key)
@@ -585,6 +595,88 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
         }
     }
     None
+}
+
+/// Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V` (acceptance 5's own remainder):
+/// the `w`/`W` key on the settings menu, `handle_settings_key`'s own
+/// bespoke branch. Opens the context-window edit card
+/// (`AppState::begin_edit_model_context_window`) for the model resolved to
+/// the CURRENTLY SELECTED row, when that row is a configured provider
+/// (`view::settings::LEAF_REMOVE_PROVIDER_PREFIX`'s own leaf shape --
+/// mirrors `activate_settings_selection`'s own `RemoveProvider` arm's
+/// row-to-id resolution, never re-derived a second way). A no-op --
+/// `Action::None`, no card opens, nothing pushed to the transcript --
+/// on every other row (a boolean/group/static leaf has no model to edit a
+/// window for at all); see [`model_key_for_provider_row`]'s own doc for the
+/// one case where the row IS a provider but nothing is opened anyway (a
+/// disclosed transcript notice explains why).
+fn edit_selected_provider_context_window(state: &mut AppState) -> Action {
+    let menu = super::view::settings::build_tree(state);
+    let Some(row) = menu.selected_row() else {
+        return Action::None;
+    };
+    let super::view::menu::MenuRowKind::Leaf { id } = row.kind else {
+        return Action::None;
+    };
+    let Some(provider_id) = id.strip_prefix(super::view::settings::LEAF_REMOVE_PROVIDER_PREFIX)
+    else {
+        return Action::None;
+    };
+    let Some(model_key) = model_key_for_provider_row(state, provider_id) else {
+        state.transcript.push(super::state::Entry::Notice {
+            text: format!(
+                "{provider_id}: no capability-indexed model to edit a context window for yet -- \
+                 set one directly in models.json (docs/providers.md)."
+            ),
+        });
+        return Action::None;
+    };
+    let current = state
+        .model_max_context
+        .get(&model_key)
+        .copied()
+        .zip(state.model_max_context_source.get(&model_key).copied())
+        .map(|(value, source)| (value, super::state::context_window_source_word(source)));
+    let label = model_key.clone();
+    state.begin_edit_model_context_window(model_key, label, current);
+    Action::None
+}
+
+/// Resolves the ONE `"backend/model"` pair [`edit_selected_provider_
+/// context_window`]'s card should open for a provider row: the row this
+/// codebase's settings menu shows per PROVIDER
+/// (`view::settings::LEAF_REMOVE_PROVIDER_PREFIX`, one row per
+/// `backends.<id>` entry, `AppState::provider_entries`) has no model
+/// attached to it directly -- `conway::config::schema::BackendEntry` names a
+/// kind/credential/base_url, never a model -- so this reads one back out of
+/// `AppState::model_max_context`/`model_max_context_source` (T3's own
+/// per-model provenance maps, `app/startup.rs`, `Conway::
+/// capability_index()`'s in-memory projection -- already resolved, no fresh
+/// read of anything), filtered to keys whose backend half is this provider.
+///
+/// **Known, disclosed narrow scope, matching this crate's own established
+/// posture for a structurally similar gap** (`app/provider_manage.rs`'s own
+/// top doc, "Known imprecision, disclosed rather than silently accepted"):
+/// every model THIS app's own write paths ever wire a provider to is
+/// exactly one (`write_provider_entry_and_refresh`'s own "one model per
+/// add" shape) -- a provider genuinely serving more than one model only
+/// arises from a hand-edited config, and for that rare case this picks the
+/// alphabetically-first matching key rather than building a second
+/// model-selector UI for it. `None` when NOTHING is indexed for this
+/// provider at all (e.g. a hand-typed model conway's own capability index
+/// never resolved) -- the caller reports this rather than opening an editor
+/// with nothing real to key the write against.
+fn model_key_for_provider_row(state: &AppState, provider_id: &str) -> Option<String> {
+    let prefix = format!("{provider_id}/");
+    let mut keys: Vec<&String> = state
+        .model_max_context_source
+        .keys()
+        .chain(state.model_max_context.keys())
+        .filter(|k| k.starts_with(&prefix))
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys.into_iter().next().cloned()
 }
 
 /// `Left`/`Right` on the settings menu (V4): the numeric stepper for the

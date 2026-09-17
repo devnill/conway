@@ -1312,21 +1312,37 @@ const ADD_PROVIDER_CONTEXT_WINDOW_FOOTER_ROWS: u16 = 2;
 /// secret. Renders `w.error`, when set, as its own styled line, the
 /// identical "a rejected attempt is shown, never silently re-prompted"
 /// contract [`draw_add_provider_credential`] already keeps.
+///
+/// **Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V`: `w.current` picks one of two
+/// fixed wordings (GP-14 -- the card states provenance, not just a
+/// number).** `None` is the pre-existing add-flow wording, byte-for-byte
+/// unchanged from before this field existed. `Some((value, provenance))` is
+/// the settings-row edit origin: naming the CURRENT resolved value and its
+/// provenance word (`tui::state::context_window_source_word`'s own
+/// vocabulary -- the same `"models.json"`/`"verified"`/`"probed"`/`"floor
+/// (assumed)"` words `conway routes explain` prints) rather than falsely
+/// claiming nothing could be established, and explaining that an empty
+/// `Enter` keeps it rather than erasing it.
 fn draw_add_provider_context_window(
     frame: &mut Frame,
     transcript_area: Rect,
     w: &AddProviderContextWindowState,
     theme: &Theme,
 ) {
+    let header = match w.current {
+        Some((value, provenance)) => format!(
+            "{} -- current: {value} tokens ({provenance}). Press Enter to keep it, or type a \
+             new number (tokens) to override it:",
+            w.label
+        ),
+        None => format!(
+            "{} -- no context window could be established automatically. Enter it in tokens, \
+             or leave blank to skip:",
+            w.label
+        ),
+    };
     let mut body_lines = vec![
-        Line::from(Span::styled(
-            format!(
-                "{} -- no context window could be established automatically. Enter it in \
-                 tokens, or leave blank to skip:",
-                w.label
-            ),
-            theme.emphasized,
-        )),
+        Line::from(Span::styled(header, theme.emphasized)),
         Line::from(""),
         Line::from(w.input.as_str()),
     ];
@@ -1350,10 +1366,17 @@ fn draw_add_provider_context_window(
     );
     frame.render_widget(body, frame_areas.body_area);
 
-    let footer_lines = vec![
-        Line::from("[enter] save  [esc] skip -- leaves the window unverified"),
-        Line::from(""),
-    ];
+    let footer_lines = if w.current.is_some() {
+        vec![
+            Line::from("[enter] save  [esc] cancel -- keeps the current value unchanged"),
+            Line::from(""),
+        ]
+    } else {
+        vec![
+            Line::from("[enter] save  [esc] skip -- leaves the window unverified"),
+            Line::from(""),
+        ]
+    };
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, frame_areas.footer_area);
 }
