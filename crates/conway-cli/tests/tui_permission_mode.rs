@@ -126,7 +126,17 @@ fn two_bash_round_trips() -> Script {
         vec![
             Chunk::ToolCall {
                 name: "bash",
-                args: serde_json::json!({ "command": "echo plan-mode-should-never-run-this" }),
+                // The token is SPLIT BY SHELL QUOTES so the command string and
+                // its own stdout are different strings. conway renders a
+                // proposed call's arguments before any permission decision,
+                // so an assertion on a token that appears verbatim in the
+                // command is satisfied by a call that was merely PROPOSED
+                // and then refused -- measured 2026-09-17, when exactly that
+                // produced a false failure while the transcript alongside it
+                // read `denied`. `echo PLAN''RAN''TOKEN` renders as
+                // `PLAN''RAN''TOKEN` and prints `PLANRANTOKEN`, so the
+                // printed form appears only if the shell actually ran.
+                args: serde_json::json!({ "command": "echo PLAN''RAN''TOKEN" }),
             },
             Chunk::Finish("tool_calls"),
         ],
@@ -137,7 +147,9 @@ fn two_bash_round_trips() -> Script {
         vec![
             Chunk::ToolCall {
                 name: "bash",
-                args: serde_json::json!({ "command": "echo auto-allow-ran-it" }),
+                // Same quote-split trick: renders as `ALLOW''RAN''TOKEN`,
+                // prints `ALLOWRANTOKEN`.
+                args: serde_json::json!({ "command": "echo ALLOW''RAN''TOKEN" }),
             },
             Chunk::Finish("tool_calls"),
         ],
@@ -192,11 +204,8 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
     // `call_1` is deterministic, not guessed: `MockBackend`'s own
     // `call_id_counter` starts at 1 and this plan-mode `bash` call is the
     // very first `Chunk::ToolCall` `two_bash_round_trips` ever scripts.
-    let denial_note = session.wait_for_since(
-        "tool call call_1 denied",
-        in_plan,
-        Duration::from_secs(15),
-    );
+    let denial_note =
+        session.wait_for_since("tool call call_1 denied", in_plan, Duration::from_secs(15));
     // The model's own acknowledgement, chained AFTER the structural denial
     // note above -- proving the ORDER too: the broker resolves and records
     // the refusal before the tool result ever reaches the model for its
@@ -219,9 +228,10 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
     // wording -- that text could change without the guarantee changing.
     let screen = session.screen();
     assert!(
-        !screen.contains("plan-mode-should-never-run-this"),
-        "plan mode must refuse the bash call outright -- its output must never appear. \
-         Screen:\n{screen}"
+        !screen.contains("PLANRANTOKEN"),
+        "plan mode must refuse the bash call outright -- the shell's own output, which \
+         appears NOWHERE in the rendered command string, must never appear. Screen:
+{screen}"
     );
 
     // Plan -> AutoAllow: a second Shift-Tab.
@@ -248,7 +258,7 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
     // own precedent for asserting directly on real shell stdout
     // (`dogfood_routes_and_status.rs`'s `wait_for("AAAAA", ..)`/
     // `wait_for("BBBBB", ..)`, off a real `bash echo`).
-    let ran = session.wait_for_since("auto-allow-ran-it", in_auto_allow, Duration::from_secs(15));
+    let ran = session.wait_for_since("ALLOWRANTOKEN", in_auto_allow, Duration::from_secs(15));
 
     // Reaching this point at all is FURTHER evidence, chained after the
     // real output above: a permission-prompt overlay (`prompt` mode's own
