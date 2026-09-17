@@ -63,6 +63,84 @@ use conway::{SessionFilter, SessionId};
 
 const LANDED: &str = "Type a message, or / for commands";
 
+/// As [`common::write_fixture`], except `tools.builtin_plugins` also names
+/// `"conway.shell"` -- the one opt-in the TUI test below needs for its own
+/// scripted `bash` calls to reach the runtime at all.
+///
+/// **Why only the TUI test needs this, when its siblings call `bash`
+/// freely.** Board item `01M2NSJ0ADSTADK536GHQ7BTB6` was filed believing a
+/// SPAWNED CHILD could not call `bash` where the root could. It can; there
+/// is no spawn asymmetry. The real split is the ENTRY POINT:
+/// `main.rs::build_conway`'s `is_tui` branch never widens to
+/// `PluginSelection::All`, deliberately mirroring a real TUI install's
+/// shipped default (`ToolsConfig::default()` -- every builtin EXCEPT
+/// `conway.shell`), while every non-interactive target does widen. Every
+/// other `bash` call in this file runs through `run_conway` (one-shot, so
+/// widened); the one below runs through `PtySession` (the TUI path, so
+/// not). Root and child alike are refused there, and the diagnostic now
+/// says so plainly -- `tool `bash` is not among the 12 tool(s) available
+/// to this turn`, that item's own fix.
+///
+/// **Deliberately NOT a change to `fixtures/conway.json.tmpl`**, for the
+/// reason `tui_permission_mode.rs::write_fixture_with_bash` -- this
+/// helper's direct model, down to naming all four built-ins rather than
+/// only `conway.shell` -- gives at length: the template's no-bash default
+/// is CORRECT, many suites share it precisely because it is, and widening
+/// it would widen every one of their tool surfaces too.
+fn write_fixture_with_bash(
+    mock: &common::mock_backend::MockHandle,
+    max_steps: u32,
+) -> common::Fixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = serde_json::json!({
+        "default_role": "default",
+        "limits": { "max_steps": max_steps },
+        "backends": {
+            "mock": { "kind": "openai-compat", "base_url": mock.base_url, "dialect": "openai" }
+        },
+        "roles": {
+            "default": { "chain": [format!("mock/{}", mock.model)] },
+            "coder": { "chain": [format!("mock/{}", mock.model)] }
+        },
+        "tools": {
+            "builtin_plugins": [
+                "conway.fs",
+                "conway.subagent",
+                "conway.report",
+                "conway.shell"
+            ]
+        }
+    });
+    let config_path = dir.path().join("conway.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_vec(&config).expect("serialize conway.json"),
+    )
+    .expect("write conway.json");
+
+    // Same `.conway/models.json` requirement as `common::write_fixture` --
+    // see its own comment for why the router needs it.
+    let models_dir = dir.path().join(".conway");
+    std::fs::create_dir_all(&models_dir).expect("create .conway dir");
+    let models_json = serde_json::json!({
+        "models": {
+            format!("mock/{}", mock.model): {
+                "max_context_tokens": 128_000,
+                "tool_calling": "streaming_validated",
+                "reasoning": false,
+                "reliability_tier": "verified",
+            }
+        }
+    });
+    std::fs::write(
+        models_dir.join("models.json"),
+        serde_json::to_vec(&models_json).expect("serialize models.json"),
+    )
+    .expect("write models.json");
+
+    common::Fixture { dir, config_path }
+}
+
 // ---------------------------------------------------------------------
 // Gate 7 -- children get their budget warning
 // ---------------------------------------------------------------------
@@ -81,26 +159,23 @@ const LANDED: &str = "Type a message, or / for commands";
 /// of the root's `[limits].max_steps` (set generously large here so only
 /// the CHILD's budget is ever in play).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2NSJ0ADSTADK536GHQ7BTB6: a spawned child cannot call `bash` in this fixture even with no tools selector, so it dies on step 1 and never reaches 80% of max_steps. The root CAN call bash in the same fixture family (tui_permission_mode.rs). This test is the reproduction -- remove when that item lands."]
+#[ignore = "blocked on board item 01M2RFDSTZPQF5VCNFCTSGQR92: the child now runs and dies correctly (`budget_exceeded`, `max_steps=5`) since this test got its own bash-enabled fixture, but the 80% wrap-up notice never reaches the ROOT's live transcript. A child's crossing emits `Event::BudgetWarning` on the CHILD's own event stream and sends `AgentMessage::BudgetNotice` to the parent's mailbox, which `mailbox.rs` persists as a `LogRecord::SystemNote` read back on the parent's NEXT turn -- neither is a live event on the stream a root-focused TUI subscribes to. Un-ignoring this IS that item's acceptance test."]
 async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
-    // No `tools` selector on the spawn args, corrected from an earlier
-    // version that passed `"tools": ["bash"]`. `SpawnArgs.tools` maps onto
+    // No `tools` selector on the spawn args. `SpawnArgs.tools` maps onto
     // `ToolSelector::Only([...])` (`crates/conway-tools/src/subagent/
-    // tools.rs`'s `start_and_maybe_await`), which restricts the child's
-    // OWN announced tool set to exactly that allow-list. With that
-    // selector present the child's first scripted `bash` call was
-    // rejected client-side ("tool call parse failure: unknown tool
-    // `bash`") before ever reaching the runtime's dispatcher, killing the
-    // child on step 1 -- long before 80% of `max_steps=5`, defeating the
-    // whole point of this test. `bash` itself is registered and working in
-    // this exact fixture (every other test in this suite calls it
-    // successfully at the ROOT), so the failure was specific to routing
-    // that name through an explicit `Only([...])` selector on a spawned
-    // child with no `agent_def` of its own -- not investigated further,
-    // since omitting `tools` entirely (`None`, the documented "inherits
-    // this agent's own role/model" default on both `ForkArgs`/`SpawnArgs`)
-    // sidesteps the question altogether: the child gets the SAME full,
-    // already-proven-working toolset the root has.
+    // tools.rs`'s `start_and_maybe_await`), restricting the child's own
+    // announced set to exactly that allow-list; omitting it is the
+    // documented "inherits this agent's own role/model" default, which is
+    // what this test wants -- the child should get the same toolset the
+    // root has.
+    //
+    // The fixture is `write_fixture_with_bash` (above), not
+    // `common::write_fixture`. Board item `01M2NSJ0ADSTADK536GHQ7BTB6`
+    // was filed against this test believing a spawned CHILD was refused
+    // `bash` where the root was allowed it. That was wrong: the TUI never
+    // registers `conway.shell` for anyone, root or child, and this is the
+    // only test in this file that reaches the runtime through the TUI
+    // rather than through one-shot. See that helper's own doc.
     let mut turns = vec![vec![
         Chunk::ToolCall {
             name: "conway_spawn",
@@ -132,7 +207,7 @@ async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
     turns.push(vec![Chunk::Text("done"), Chunk::Finish("stop")]);
 
     let mock = MockBackend::start(Script(turns)).await;
-    let fixture = common::write_fixture(&mock, 40);
+    let fixture = write_fixture_with_bash(&mock, 40);
 
     // `--allowed-tools` is a ONE-SHOT-only gate (`conway-cli/src/oneshot.rs`
     // reads `cli.allowed_tools`; the interactive TUI path never does) --

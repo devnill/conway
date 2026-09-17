@@ -92,54 +92,37 @@ fn ok_script() -> Script {
 /// A backend that never sends a `usage` object at all (`common::
 /// mock_backend`'s own SSE/JSON writers, unconditionally, this suite's own
 /// shared harness -- see `common/mock_backend.rs`'s module doc) must never
-/// render `0% cached`: `crates/conway-cli/src/tui/usage_format.rs`'s own
-/// `CacheAccounting::NotReported` arm renders no percentage at all, only
-/// `(cache: not reported by <backend>)`. Proven on the REAL turn-end
-/// summary line (T4, `turn_summary.rs`), not just the status line, since
-/// that is the surface `sessions show`'s raw counts (the second half of
-/// this test) is compared against.
+/// render a cache PERCENTAGE: `crates/conway-cli/src/tui/usage_format.rs`'s
+/// own `CacheAccounting::NotReported` arm renders a bare wording and no
+/// number at all. Proven on the REAL turn-end summary line (T4,
+/// `turn_summary.rs`), not the status line, since that is the surface
+/// `sessions show`'s raw counts are compared against.
 ///
-/// **The finding**: the fixture's dialect is `"openai"`, and
-/// `OpenAiCompatBackend::cache_reporting` (`conway-plugin-backends/src/
-/// openai_compat/mod.rs`) declares `CacheReporting::Reported` for that
-/// dialect (`Profile::reports_cache_usage`) -- `conway routes explain`
-/// prints `cache: reported` for this exact model. Yet the SAME session's
-/// live turn, on the SAME model, renders `(cache: not reported by mock)`
-/// once a turn happens not to carry the field -- word-for-word what an
-/// Ollama-shaped backend that can NEVER report cache (`CacheReporting::
-/// NotReported`, statically) would also render. `cache_suffix` cannot
-/// distinguish the two: its own signature takes a `Usage` and a bare
-/// `Option<&str>` backend id, never a `CacheReporting`. The gate's own
-/// text calls exactly this collapse the defect -- reported here as a
-/// finding, not fixed (this file's own top doc).
+/// **What this covers that `usage_format.rs`'s own unit tests do not.**
+/// Those call `cache_suffix` directly and pin all three wordings and their
+/// pairwise distinctness (`the_three_not_reported_wordings_are_pairwise_
+/// distinct`). This one proves the end-to-end claim they cannot: that a
+/// real turn, through the real compiled binary, against a backend that sent
+/// no `usage`, puts no percentage on the rendered summary. A `0% cached`
+/// here would be an affirmative lie about a number nobody reported.
+///
+/// **History, so it is not re-derived.** This test was formerly
+/// `not_reported_wording_is_identical_regardless_of_backend_capability` and
+/// asserted the DEFECT board item `01M2NS0996E139VN5R8W4PGD8V` names: that
+/// "cannot report, ever" and "can report, said nothing this turn" rendered
+/// identical text. That item has landed -- `cache_suffix` now takes a
+/// `CacheReporting` and there are three distinct wordings -- so the
+/// assertion is gone and the name with it. It also carried an unprovable
+/// precondition (`routes explain` declaring the backend `reported`), which
+/// is what had it `#[ignore]`d against `01M2NRS3FRZNXF138Q0B6RGHXT`: a
+/// default install runs on MinimalRouter, where every capability field
+/// reads `unknown`. Nothing below needs that precondition, so it is gone
+/// too and the test runs again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2NRS3FRZNXF138Q0B6RGHXT: this test's precondition is that the fixture backend reads `reported` at the routing layer, but a default install runs on MinimalRouter and every capability field reads `unknown`, so the precondition cannot be established. The cache-wording defect it targets is filed separately as 01M2NS0996E139VN5R8W4PGD8V and was confirmed by reading cache_suffix's signature, not by this test."]
-async fn not_reported_wording_is_identical_regardless_of_backend_capability() {
+async fn a_turn_with_no_usage_field_never_renders_a_cache_percentage() {
     let mock = MockBackend::start(ok_script()).await;
     let fixture = write_fixture(&mock, 10);
 
-    // First: `routes explain` on the same fixture/model declares this
-    // backend CAPABLE of reporting cache (dialect "openai").
-    let explain = run_conway(&["routes", "explain", "default", "--json"], &fixture);
-    assert!(
-        explain.status.success(),
-        "routes explain must succeed: {}",
-        String::from_utf8_lossy(&explain.stderr)
-    );
-    let explain_stdout = String::from_utf8_lossy(&explain.stdout);
-    let explain_json: serde_json::Value =
-        serde_json::from_str(explain_stdout.trim()).expect("routes explain --json parses");
-    let cache_reporting = explain_json["chain"][0]["cache_reporting"]
-        .as_str()
-        .expect("chain[0].cache_reporting is a string");
-    assert_eq!(
-        cache_reporting, "reported",
-        "this fixture's backend (dialect openai) must be declared reported-capable at the \
-         routing layer -- got: {explain_stdout}"
-    );
-
-    // Second: a real turn on that SAME backend/model, whose mocked response
-    // carries no `usage` field, renders the per-turn wording.
     let cmd = common::pty_command(&[], &fixture);
     let mut session = PtySession::spawn(cmd, 160, 45);
     let landed = session.wait_for(LANDED, Duration::from_secs(15));
@@ -157,20 +140,6 @@ async fn not_reported_wording_is_identical_regardless_of_backend_capability() {
         !screen.contains("% cached)"),
         "no percentage of any kind belongs on a turn with no usage field at all. \
          Screen:\n{screen}"
-    );
-    // The finding, made concrete: the wording this backend actually shows
-    // ("not reported by mock") is IDENTICAL, character for character, to
-    // `usage_format::not_reported_falls_back_to_the_generic_form_without_a_
-    // focused_model`'s own `"(cache: not reported)"` shape used for a
-    // backend this crate has NEVER declared capable of anything -- the two
-    // facts ("this backend cannot report, ever" vs. "this backend can
-    // report, and just didn't say so this turn") produce indistinguishable
-    // text. There is no "not supported" string anywhere in this binary for
-    // an operator to see the difference.
-    assert!(
-        screen.contains("(cache: not reported by mock)"),
-        "expected the exact not-reported wording this crate actually has -- there is no \
-         second, 'not supported' wording to compare it against. Screen:\n{screen}"
     );
 }
 
