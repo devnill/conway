@@ -486,7 +486,7 @@ async fn fallback_notice_and_why_name_the_skipped_candidate_with_its_numbers() {
 /// machinery the cited unit test exercises by hand; that is what this test
 /// proves instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PARTIALLY fixed under board item 01M2PGS1GGNDNSA0A6E074G4VF: the first /model switch now renders its notice (the staging fix works), but the SECOND produces none and leaves the transcript cleared -- a second focus transition appears to wipe the re-pushed notice. All four Effect::FocusNewSession sites in run.rs were verified to route through try_focus_agent, so this is not a bypassed arm. See the item for the full trace."]
+#[ignore = "blocked on board item 01M2PGS1GGNDNSA0A6E074G4VF: the notice mechanism is now robust -- focus_agent re-pushes the staged notice after EVERY clear -- and switch #1 renders correctly, but switch #2 still produces nothing at all. Since a full turn runs successfully between them, input and switching both work; the cause is upstream of the notice, in why a SECOND /model produces no switch at all. See the item."]
 async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
     let mock = MockBackend::start(Script(vec![
         vec![Chunk::Text("on-a"), Chunk::Finish("stop")],

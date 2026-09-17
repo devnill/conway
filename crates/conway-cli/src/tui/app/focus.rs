@@ -94,18 +94,15 @@ impl App {
         // survive to a frame. Taken out unconditionally, before either arm
         // runs, so it can never leak into some LATER, unrelated focus
         // switch if this one takes the `Err` arm below instead.
-        let pending_notice = self.state.pending_focus_notice.take();
+        // NOT taken here. `focus_agent` re-pushes the staged notice
+        // itself, after its own clear, and does so on EVERY clear --
+        // board item `01M2PGS1GGNDNSA0A6E074G4VF`. Consuming it at this
+        // call site survived exactly one clear, and a single switch can
+        // drive more than one focus transition. The `Err` arm below,
+        // which never reaches `focus_agent`, takes it explicitly.
         match self.handle.agent_events(agent).await {
             Ok(stream) => {
                 self.state.focus_agent(agent);
-                // Re-push the switch notice AFTER the clear above, not
-                // before -- see `pending_focus_notice`'s own doc. `None`
-                // for every focus switch that is not a `/model`/`/role`
-                // switch (bare `/fork`, `/spawn`, `/resume`, plain
-                // re-focus), so this is a no-op for them.
-                if let Some(text) = pending_notice {
-                    self.state.transcript.push(Entry::Notice { text });
-                }
                 // Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: `focus_agent` just
                 // reset `turn_started_at` to `None` -- correct for the
                 // common case (a freshly focused agent with no turn in
@@ -183,7 +180,7 @@ impl App {
                 // would be exactly the kind of silent loss `on_fail_extra`'s
                 // own doc already guards against for a pending first
                 // message.
-                if let Some(text) = pending_notice {
+                if let Some(text) = self.state.pending_focus_notice.take() {
                     self.state.transcript.push(Entry::Notice { text });
                 }
                 let mut text = format!("could not focus agent: {e}");
@@ -823,11 +820,26 @@ mod tests {
             .await
             .expect("focusing a known child must succeed");
 
+        // Deliberately still `Some` after the focus. Board item
+        // `01M2PGS1GGNDNSA0A6E074G4VF`: a single switch can drive MORE THAN
+        // ONE focus transition, and a consume-once take here survived only
+        // the first -- measured 2026-09-17, where switch #1 rendered its
+        // notice and switch #2 left the transcript cleared and empty. The
+        // notice now stays staged so `focus_agent` can re-push it after
+        // EVERY clear.
+        //
+        // The leak this assertion used to guard against -- the text
+        // surfacing in a LATER, unrelated focus switch -- is still
+        // guarded, just at a different seam: `Event::UserTurn`'s own arm
+        // in `state.rs` drops it, because a real user turn ends the life
+        // of the switch that produced it. `a_user_turn_drops_the_staged_
+        // switch_notice` below pins that half.
         assert_eq!(
-            app.state.pending_focus_notice, None,
-            "try_focus_agent must take the pending notice, not merely read it \
-             -- leaving it Some would risk it leaking into a LATER, unrelated \
-             focus switch"
+            app.state.pending_focus_notice,
+            Some(switch_text.clone()),
+            "the staged notice must survive the focus so `focus_agent` can \
+             re-push it after any further clear; `Event::UserTurn` is what \
+             ends its life"
         );
         assert!(
             !app.state

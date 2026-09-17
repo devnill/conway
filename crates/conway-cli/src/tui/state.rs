@@ -1605,6 +1605,19 @@ impl AppState {
     pub fn focus_agent(&mut self, agent: AgentId) {
         self.focused_agent = agent;
         self.transcript.clear();
+        // Board item `01M2PGS1GGNDNSA0A6E074G4VF`: re-push the staged switch
+        // notice after EVERY clear, and do not consume it here. A single
+        // switch can drive more than one focus transition -- measured
+        // 2026-09-17, where the first `/model` switch rendered its notice and
+        // the second did not, leaving the transcript cleared and empty. A
+        // consume-once re-push at the `try_focus_agent` call site survives
+        // exactly one clear; re-pushing from inside `focus_agent` survives
+        // however many actually occur, because this is the only function that
+        // clears. `Entry::UserTurn`'s own arm drops the staged text, so it
+        // cannot leak into a later, unrelated focus change.
+        if let Some(text) = self.pending_focus_notice.clone() {
+            self.transcript.push(Entry::Notice { text });
+        }
         self.scroll = 0;
         self.follow_tail = true;
         // The activity/usage indicators are about whichever agent is
@@ -1873,6 +1886,12 @@ impl AppState {
             // agent's own stream (`SessionHandle::agent_events`/`events()`),
             // so `env.agent` is already the right agent by construction.
             Event::UserTurn { text, .. } => {
+                // The staged switch notice (board item
+                // `01M2PGS1GGNDNSA0A6E074G4VF`) belongs to the switch that
+                // produced it, not to everything that follows. A real user
+                // turn is the end of that switch's life: from here on a
+                // later focus change must not resurrect it.
+                self.pending_focus_notice = None;
                 self.transcript.push(Entry::User(text.clone()));
             }
             Event::ThinkingDelta { text } => {
