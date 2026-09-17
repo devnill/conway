@@ -226,7 +226,11 @@ mod tests {
     fn not_supported_names_the_backend_when_structurally_incapable() {
         let u = usage(0, CacheAccounting::NotReported);
         assert_eq!(
-            cache_suffix(&u, Some("ollama/gemma4:e4b"), Some(CacheReporting::NotReported)),
+            cache_suffix(
+                &u,
+                Some("ollama/gemma4:e4b"),
+                Some(CacheReporting::NotReported)
+            ),
             " (cache: not supported by ollama)"
         );
     }
