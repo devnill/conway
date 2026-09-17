@@ -8063,6 +8063,71 @@ mod tests {
         );
     }
 
+    /// Board item `01M2PGS1GGNDNSA0A6E074G4VF`: a SECOND `/model` switch,
+    /// taken off the child the FIRST one produced, must fork and stage its
+    /// own notice exactly like the first. Measured 2026-09-17 in the pty:
+    /// switch #1 rendered its notice and switch #2 produced nothing at all
+    /// -- no notice, no error -- while a full turn ran successfully between
+    /// them. This isolates the command layer from the TUI run loop: if this
+    /// passes, the second switch IS being built correctly and the loss is
+    /// downstream.
+    #[tokio::test]
+    async fn a_second_model_switch_off_the_first_switchs_child_also_forks_and_stages_a_notice() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+
+        let first_child = AgentId::new();
+        host.fork_child = Some(first_child);
+        let first = execute(
+            SlashCommand::Model {
+                model: Some("anthropic/claude-haiku".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+        assert!(
+            matches!(first, Effect::FocusNewSession { .. }),
+            "first switch must fork"
+        );
+        assert!(
+            state.pending_focus_notice.is_some(),
+            "first switch must stage its notice"
+        );
+
+        // What the run loop would do next: focus the child, which clears the
+        // transcript and (since `aab9604`) re-pushes the staged notice.
+        state.focus_agent(first_child);
+        // And the user's next real turn ends that switch's life.
+        state.pending_focus_notice = None;
+
+        let second_child = AgentId::new();
+        host.fork_child = Some(second_child);
+        let second = execute(
+            SlashCommand::Model {
+                model: Some("anthropic/claude-sonnet-5".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(
+            matches!(second, Effect::FocusNewSession { .. }),
+            "a SECOND switch, off the first switch's own child, must also fork"
+        );
+        assert!(
+            state.pending_focus_notice.is_some(),
+            "the second switch must stage its own notice too"
+        );
+        assert_eq!(
+            host.calls(),
+            vec!["fork", "fork"],
+            "both switches must reach host.fork"
+        );
+    }
+
     #[tokio::test]
     async fn model_forks_the_focused_agent_with_a_pinned_model_and_focuses_the_child() {
         let root = AgentId::new();
