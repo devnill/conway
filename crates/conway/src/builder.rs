@@ -2415,7 +2415,19 @@ impl ConwayBuilder {
                 );
             }
         }
-        let rt = Runtime::new(RuntimeDeps {
+        // Board item `01M2PJM777FFSZW8GZWD46X49B`: `try_new`, not `new` --
+        // two configured MCP plugins registering the same tool name (or any
+        // other `PluginRegistry::from_plugins` failure) used to panic the
+        // whole process here, past the point `PluginRegistry::from_plugins`
+        // itself already built a correctly-named error. `map_err` into
+        // `FacadeError::Build` gives it the IDENTICAL shape and reporting
+        // path the "duplicate plugin id" check a few dozen lines above this
+        // one already uses (`conway_runtime::runtime::Runtime::try_new`'s
+        // own doc has the full argument for why both are the same class of
+        // static, startup-time configuration problem) -- an operator hitting
+        // either collision sees a named `conway: error: ...` line and a
+        // clean, non-panicking exit, never a Rust panic.
+        let rt = Runtime::try_new(RuntimeDeps {
             store: store.clone(),
             path_store,
             router,
@@ -2432,7 +2444,10 @@ impl ConwayBuilder {
             session_discovery,
             capabilities: Arc::new(capability_registry)
                 as Arc<dyn conway_core::ports::CapabilityHost>,
-        });
+        })
+        .map_err(|err| FacadeError::Build {
+            message: err.to_string(),
+        })?;
         // `RuntimeDeps` has no `context_hook` field (out of that
         // item's file scope to add -- see `conway_runtime::runtime`'s
         // module doc), so registration happens post-construction via this

@@ -58,6 +58,25 @@ A discovery failure (spawn, timeout, a refused handshake, or a malformed
 `tools/list` answer) fails the **whole build**, naming the offending entry's
 own `id` — never silently skipped.
 
+**One exception, board item `01M2PJCT90G2010KGCJ4YSFREM`: an introspection
+command degrades instead of refusing.** `routes explain`, `sessions`, `tools
+list`, and `plugin list`/`install`/`remove` never start an agent and never
+call a tool, so a crashing `[plugins].mcp[]` entry no longer stops any of
+them from running — each one still prints a `conway: warning:` line naming
+the offending entry and starts without that entry's tools. The TUI, one-shot
+`-p`, and every plugin-contributed command keep the hard-fail posture above
+unchanged: a session that might actually propose a tool call still refuses
+to start rather than silently omit one you declared.
+
+**A tool name collision ACROSS two different plugins — an MCP server and a
+first-party plugin, or two MCP servers — is a separate condition, always
+fatal, regardless of which command you ran.** conway does not guess which
+`search` (or any other colliding name) the model should get; it refuses the
+whole build with a named error — `` duplicate tool `<name>`: registered by
+plugin `<a>` and plugin `<b>` `` — and stops, the same way a duplicate
+plugin `id` already refuses. Rename or remove one of the colliding entries
+in `settings.json` to continue.
+
 ### Three timeout tiers, plus a bounded grace before any kill
 
 A single flat per-call deadline has no room for a server that answers a
