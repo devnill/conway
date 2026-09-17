@@ -481,7 +481,24 @@ async fn build_conway(
     // it async before `build()`; attaches via `with_plugin`), different wire
     // protocol (JSON-RPC 2.0, MCP). Awaited for the identical reason
     // `subprocess_plugins::install` is -- the handshake spawns a real process.
-    let builder = mcp_plugins::install(builder).await?;
+    //
+    // Board item `01M2PJCT90G2010KGCJ4YSFREM`: which of `mcp_plugins`'s two
+    // install functions runs is decided HERE, by
+    // `command_tolerates_mcp_startup_failures` (below), never inside
+    // `mcp_plugins` itself -- a crashing MCP plugin used to fail this WHOLE
+    // function for every dispatch target alike, including `routes explain`,
+    // `sessions`, `tools list`, and `plugin list`/`install`/`remove`, none
+    // of which ever starts an agent or calls a tool. Those six get
+    // `install_tolerant` (degrade and announce -- see its own doc); every
+    // other target (the TUI, one-shot `-p`, `Command::External`) keeps the
+    // existing `install`, which still fails the whole build loud, because a
+    // session that might actually call a tool must not silently start
+    // without one an operator declared.
+    let builder = if command_tolerates_mcp_startup_failures(&cli.command) {
+        mcp_plugins::install_tolerant(builder).await
+    } else {
+        mcp_plugins::install(builder).await?
+    };
     // The Claude Code plugin directory compatibility tier (board item
     // 01M0VR89FB1F3Q4FQ8852K2A5E): a FOURTH, sibling choke point -- see
     // `claude_compat_plugins`'s own module doc for why this is distinct
@@ -638,6 +655,128 @@ mod command_needs_provider_tests {
     fn no_subcommand_still_needs_a_provider() {
         // The TUI / one-shot `-p` -- `cli.command.is_none()`.
         assert!(command_needs_provider(&None));
+    }
+}
+
+/// Board item `01M2PJCT90G2010KGCJ4YSFREM`: answers "may `build_conway`
+/// degrade a crashing `[plugins].mcp[]` entry rather than refuse to start
+/// over it, for this dispatch target?" -- a DELIBERATELY SEPARATE test from
+/// [`command_needs_provider`], even though the two happen to admit the
+/// identical six-command set today (`sessions`, `routes`, `tools list`,
+/// `plugin list`/`install`/`remove`). "Needs a working model" and "may
+/// tolerate a missing plugin" are different questions that happen to share
+/// an answer FOR NOW because every command that never proposes a turn also
+/// never calls a tool -- but a future command could need one without the
+/// other (a hypothetical read-only command that inspects a plugin's own
+/// declared tools without calling either a model or a tool would need
+/// neither gate; a command that formats a canned reply through a plugin
+/// hook without ever routing could need this one alone) -- so extending
+/// `command_needs_provider` itself, as the board item's own brief warned,
+/// would conflate "needs a provider" with "needs plugins" and make a future
+/// change to either one silently redefine the other's set. Restating the
+/// same match arms here, rather than delegating to `!command_needs_
+/// provider(command)`, is deliberate for the identical reason: delegating
+/// would make this predicate's own set track `command_needs_provider`'s by
+/// construction, silently, rather than by two independent judgement calls
+/// that currently happen to agree.
+///
+/// `main.rs`'s own `build_conway` is the one caller: `true` selects
+/// `mcp_plugins::install_tolerant` (degrade and announce); `false` keeps
+/// `mcp_plugins::install` (hard-fail the whole build) -- see that call
+/// site's own comment.
+fn command_tolerates_mcp_startup_failures(command: &Option<Command>) -> bool {
+    matches!(
+        command,
+        Some(Command::Plugin(_))
+            | Some(Command::Tools(commands::tools::ToolsArgs {
+                action: commands::tools::ToolsAction::List { .. },
+            }))
+            | Some(Command::Sessions(_))
+            | Some(Command::Routes(_))
+    )
+}
+
+#[cfg(test)]
+mod command_tolerates_mcp_startup_failures_tests {
+    use super::*;
+
+    #[test]
+    fn plugin_list_tolerates_a_crashing_mcp_entry() {
+        assert!(command_tolerates_mcp_startup_failures(&Some(
+            Command::Plugin(commands::plugin::PluginArgs {
+                action: commands::plugin::PluginAction::List {
+                    id: None,
+                    verbose: false,
+                },
+            })
+        )));
+    }
+
+    #[test]
+    fn tools_list_tolerates_a_crashing_mcp_entry() {
+        assert!(command_tolerates_mcp_startup_failures(&Some(
+            Command::Tools(commands::tools::ToolsArgs {
+                action: commands::tools::ToolsAction::List { json: false },
+            })
+        )));
+    }
+
+    #[test]
+    fn plugin_install_tolerates_a_crashing_mcp_entry() {
+        assert!(command_tolerates_mcp_startup_failures(&Some(
+            Command::Plugin(commands::plugin::PluginArgs {
+                action: commands::plugin::PluginAction::Install {
+                    ids: vec!["conway.memory".to_string()],
+                    defaults: false,
+                },
+            })
+        )));
+    }
+
+    #[test]
+    fn plugin_remove_tolerates_a_crashing_mcp_entry() {
+        assert!(command_tolerates_mcp_startup_failures(&Some(
+            Command::Plugin(commands::plugin::PluginArgs {
+                action: commands::plugin::PluginAction::Remove {
+                    ids: vec!["conway.memory".to_string()],
+                },
+            })
+        )));
+    }
+
+    #[test]
+    fn sessions_tolerates_a_crashing_mcp_entry() {
+        assert!(command_tolerates_mcp_startup_failures(&Some(
+            Command::Sessions(commands::sessions::SessionsArgs {
+                action: commands::sessions::SessionsAction::List {
+                    limit: None,
+                    label: None,
+                    json: false,
+                },
+            })
+        )));
+    }
+
+    #[test]
+    fn routes_tolerates_a_crashing_mcp_entry() {
+        assert!(command_tolerates_mcp_startup_failures(&Some(
+            Command::Routes(commands::routes::RoutesArgs {
+                action: commands::routes::RoutesAction::Explain {
+                    role: "default".to_string(),
+                    json: false,
+                },
+            })
+        )));
+    }
+
+    /// **The pairing test the item's own P-15 asks for.** The TUI /
+    /// one-shot `-p` (`cli.command.is_none()`) is exactly the case that must
+    /// NOT tolerate a crashing MCP entry: a turn-taking invocation that
+    /// silently started without a tool an operator declared would be a
+    /// worse failure than the loud one it replaces.
+    #[test]
+    fn no_subcommand_does_not_tolerate_a_crashing_mcp_entry() {
+        assert!(!command_tolerates_mcp_startup_failures(&None));
     }
 }
 

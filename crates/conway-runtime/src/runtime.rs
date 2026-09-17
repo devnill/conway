@@ -343,12 +343,54 @@ pub struct Runtime {
 const TRANSCRIPT_CACHE_CAPACITY: usize = 512;
 
 impl Runtime {
-    /// Builds a runtime from injected ports. Panics if `deps.plugins`
-    /// contains a duplicate tool name across plugins — a malformed plugin
-    /// set is a registration bug, not a runtime condition (matches
-    /// `PluginRegistry::from_plugins`'s own construction-time-error
-    /// contract; `Runtime::new`'s binding signature is infallible, so this
-    /// is the only place the check can surface).
+    /// Builds a runtime from injected ports. **Panics** if `deps.plugins`
+    /// contains a duplicate tool name across plugins -- kept for every
+    /// existing caller that already treats a malformed injected plugin set
+    /// as a registration bug worth aborting on (this crate's own test
+    /// suite, `conway-session`'s, `conway`'s), so none of them had to
+    /// change when [`Self::try_new`] (below) was added. A thin wrapper: all
+    /// the actual construction logic, including the fallible plugin-registry
+    /// check, lives there now.
+    ///
+    /// **Prefer [`Self::try_new`] for any caller that can propagate an
+    /// `Err` to an operator instead of aborting the process** -- board item
+    /// `01M2PJM777FFSZW8GZWD46X49B`: this exact panic, reached through
+    /// `conway::ConwayBuilder::build`, used to turn an operator-caused,
+    /// operator-fixable condition (two configured MCP plugins that happen to
+    /// register a tool with the same name) into a process abort with a raw
+    /// Rust panic message, even though `PluginRegistry::from_plugins`
+    /// already built the correct, named error
+    /// (`RuntimeError::Tool(ToolError::Internal { detail })`, naming the
+    /// tool and both colliding plugins) -- this function's own `.expect()`
+    /// threw it away. `conway::ConwayBuilder::build` (the one production
+    /// caller that reaches this from an operator's own `[plugins].mcp[]`/
+    /// `[plugins].subprocess[]`/`[plugins].claude_compat[]` configuration)
+    /// now calls `try_new` instead, and maps its `Err` to a
+    /// `FacadeError::Build`, the identical shape and reporting path
+    /// `build()`'s own neighbouring "duplicate plugin id" check already
+    /// uses a few dozen lines above -- both are static, startup-time
+    /// configuration problems, both now surface as a named `conway: error:
+    /// ...` line and a clean, non-panicking exit, never a Rust panic.
+    pub fn new(deps: RuntimeDeps) -> Arc<Runtime> {
+        Self::try_new(deps)
+            .expect("RuntimeDeps.plugins must register without duplicate tool names")
+    }
+
+    /// The fallible counterpart to [`Self::new`] -- identical construction,
+    /// except a duplicate tool name across `deps.plugins` (or any other
+    /// `PluginRegistry::from_plugins` failure) returns `Err` instead of
+    /// panicking. See [`Self::new`]'s own doc for why both exist and which
+    /// callers should prefer this one.
+    ///
+    /// Safe to make fallible without touching [`Arc::new_cyclic`]'s own
+    /// closure (which cannot itself return a `Result` -- the closure must
+    /// hand back a `Runtime` unconditionally, since the `Weak<Runtime>` it
+    /// receives has to point at *something*): every fallible step here,
+    /// `PluginRegistry::from_plugins` included, already ran BEFORE the
+    /// `Arc::new_cyclic` call at the bottom of this function, even in the
+    /// panicking `new` this replaces -- so the only change this function
+    /// makes is `?` in place of `.expect()`, plus wrapping the final
+    /// `Arc::new_cyclic(..)` in `Ok(..)`.
     ///
     /// ## Reconciliation: self-referential `subagents`
     ///
@@ -365,7 +407,7 @@ impl Runtime {
     /// delegator -- see its own doc) wraps and upgrades on every call. This
     /// is the "self-referential `Arc<Runtime>` or equivalent" the work item
     /// anticipates; `WeakRuntimeHost` is the "or equivalent".
-    pub fn new(deps: RuntimeDeps) -> Arc<Runtime> {
+    pub fn try_new(deps: RuntimeDeps) -> Result<Arc<Runtime>, RuntimeError> {
         let RuntimeDeps {
             store,
             path_store,
@@ -405,10 +447,7 @@ impl Runtime {
             })
             .collect();
 
-        let registry = Arc::new(
-            PluginRegistry::from_plugins(plugins)
-                .expect("RuntimeDeps.plugins must register without duplicate tool names"),
-        );
+        let registry = Arc::new(PluginRegistry::from_plugins(plugins)?);
         let broker = Arc::new(PermissionBroker::new(gate, event_bus.clone()));
         // Without this, the permission-decision record is fully built and
         // tested but INERT in production: `decide()` would resolve every
@@ -448,7 +487,7 @@ impl Runtime {
                 path_store.clone(),
                 resolver.clone(),
             ));
-        Arc::new_cyclic(|weak: &std::sync::Weak<Runtime>| {
+        Ok(Arc::new_cyclic(|weak: &std::sync::Weak<Runtime>| {
             let loop_deps = Arc::new(
                 LoopDeps::new(
                     store.clone(),
@@ -508,7 +547,7 @@ impl Runtime {
                 tree,
                 resolver,
             }
-        })
+        }))
     }
 
     /// Everything `subagent.rs`'s `impl SubagentHost for Runtime`
