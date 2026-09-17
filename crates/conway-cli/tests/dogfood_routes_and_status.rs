@@ -50,6 +50,13 @@
 #[allow(dead_code)]
 mod common;
 
+// A sibling top-level module, not nested inside `common` (`common/mod.rs`
+// is out of this writer's fence) -- see `mcp_fixtures`'s own top doc, and
+// `fixture_with_unverified_floor`'s own doc below for why this file needs
+// it.
+#[path = "common/mcp_fixtures.rs"]
+mod mcp_fixtures;
+
 use std::time::Duration;
 
 use common::mock_backend::{MockBackend, Script};
@@ -117,12 +124,56 @@ fn selected_line(text: &str) -> &str {
 /// even at zero measured tool-schema tokens, `command_prompt_allowance`
 /// alone is a fixed 14,000, and `3 * 5,100 = 15,300` on top of that
 /// already exceeds half of the 32,768-token floor (16,384) with room to
-/// spare.
+/// spare. **That arithmetic is a flat per-CONFIGURED-ENTRY allowance,
+/// counted off `conway.config().plugins.mcp.len()` alone (`first_run::
+/// default_opinion_set_footprint`'s own signature takes a bare `usize`
+/// count, never a live `tools/list` response) -- so each entry only needs
+/// to survive `ConwayBuilder::build`'s own install-time handshake, not
+/// declare any particular number of tools.** Each entry is therefore
+/// `mcp_fixtures::SLEEP_SERVER` (this crate's own established gate-8
+/// fixture -- `write_script`/`warm`, reused verbatim rather than a second
+/// fixture idiom): a real stdio MCP server that completes `initialize`/
+/// `notifications/initialized`/`tools/list` and then idles on stdin,
+/// `tools/call` never reached by this test. `["true"]` (an earlier version
+/// of this fixture) exits immediately with no stdout at all, so the
+/// install step saw every configured server die mid-handshake (`session
+/// died: closed stdout (EOF) mid-session`) and failed the whole build --
+/// `conway routes explain` never even started.
 fn fixture_with_unverified_floor(mcp_server_count: usize) -> common::Fixture {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mcp: Vec<serde_json::Value> = (0..mcp_server_count)
-        .map(|i| serde_json::json!({"id": format!("dogfood-mcp-{i}"), "command": ["true"]}))
-        .collect();
+    let mcp: Vec<serde_json::Value> = if mcp_server_count == 0 {
+        Vec::new()
+    } else {
+        // A throwaway current-thread-or-multi runtime, scoped to this
+        // function alone: `mcp_fixtures::warm` is async (`tokio::process::
+        // Command`), but every caller of THIS function that passes a
+        // nonzero count is a plain, non-`tokio` `#[test]` -- bridging here,
+        // once, is cheaper than converting that test (and its unrelated
+        // `mcp_server_count=0` siblings, which never reach this branch at
+        // all) to `#[tokio::test]` just to await one warmup call.
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime for MCP script warmup");
+        (0..mcp_server_count)
+            .map(|i| {
+                let id = format!("dogfood-mcp-{i}");
+                let script_path = mcp_fixtures::write_script(
+                    dir.path(),
+                    &format!("{id}.py"),
+                    mcp_fixtures::SLEEP_SERVER,
+                );
+                // Board item 01M09MPZ9C188AHNBKWEJ3CEQA: a freshly-written
+                // script's FIRST exec on this OS can block for seconds at
+                // ~0% CPU before its own code ever runs -- warmed once,
+                // discarded, before `conway`'s own timed install-time
+                // handshake below, the identical precedent every other
+                // `mcp_fixtures` consumer in this crate already follows.
+                rt.block_on(mcp_fixtures::warm(&script_path));
+                serde_json::json!({
+                    "id": id,
+                    "command": [script_path.display().to_string()],
+                })
+            })
+            .collect()
+    };
     let config = serde_json::json!({
         "default_role": "default",
         "limits": { "max_steps": 5 },
