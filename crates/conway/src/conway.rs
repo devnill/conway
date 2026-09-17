@@ -10,7 +10,7 @@ use conway_core::error::{RuntimeError, StoreError};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{CapabilityIndex, RoutingExplainer, SessionStore};
-use conway_core::routing::{ExplainReport, MinimalRouter, RouteRequest};
+use conway_core::routing::{CapabilitySummary, ExplainReport, MinimalRouter, RouteRequest};
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
 
 use crate::config::model_metadata::ModelMetadata;
@@ -1268,6 +1268,32 @@ impl Conway {
     /// configured chain candidate) rather than a fabricated-empty one,
     /// which `conway routes explain` would otherwise misread as "unknown
     /// role" for a perfectly valid one.
+    ///
+    /// **Board item `01M2NRS3FRZNXF138Q0B6RGHXT`:** `MinimalRouter::explain`
+    /// (`conway_core::routing`'s own doc on the type) holds no
+    /// `CapabilityIndex` at all -- by construction, not by omission, since
+    /// it is built from nothing but a `RoutingConfig` -- so every entry it
+    /// produces carries `capabilities: None`/`context_window_source: None`
+    /// unconditionally, which `conway routes explain` rendered as `unknown`
+    /// for the window column on a default install (no `conway.routing` in
+    /// `first_party_plugins::DEFAULT_OPINION_SET`), even when
+    /// `.conway/models.json` declared a real window for the exact candidate
+    /// being explained. `self.capability_index` is populated regardless of
+    /// which router this `Conway` compiled (`ConwayBuilder::build`'s step 5
+    /// runs `CapabilityIndex::from_backends` before step 7's router
+    /// selection, and hands a clone of the SAME index to a compiled-in
+    /// router factory's own `RouterBuildContext` -- see that struct's own
+    /// doc) -- so [`fill_capability_gaps`] overlays it onto whichever report
+    /// was produced above, filling in exactly the two fields a producer
+    /// could not populate on its own (deliberately not `token_fidelity`/
+    /// `cache_reporting` -- see that function's own doc for why). This is
+    /// not a second resolver: it reads the identical `CapabilityIndex` a
+    /// compiled-in `DeclarativeRouter` already filters admission against
+    /// (board item `01M23M2P79R5G28TPGG7PPJQ32`'s "`ContextTokensSource` is
+    /// the one resolution path" ruling stands -- see
+    /// [`fill_capability_gaps`]'s own doc for why this never overwrites a
+    /// value a real `RoutingExplainer` already set, and so is a no-op for
+    /// that path).
     pub fn explain_routing(&self, role: &RoleAlias) -> ExplainReport {
         let req = RouteRequest {
             role: role.clone(),
@@ -1276,7 +1302,7 @@ impl Conway {
             est_tokens: 0,
             agent_id: AgentId::new(),
         };
-        match &self.router_explain {
+        let mut report = match &self.router_explain {
             Some(explainer) => explainer.explain(&req),
             None => {
                 let routing_config =
@@ -1290,7 +1316,9 @@ impl Conway {
                         });
                 MinimalRouter::new(routing_config).explain(&req)
             }
-        }
+        };
+        fill_capability_gaps(&mut report, &self.capability_index);
+        report
     }
 
     /// Reattaches to a persisted session, now as a DRIVABLE handle.
@@ -1970,5 +1998,60 @@ impl Conway {
         text: &str,
     ) -> Result<AgentIntent> {
         crate::intent::classify(&self.rt, &self.config, parent, default_recipe, text).await
+    }
+}
+
+/// Overlays `index`'s window/provenance data onto every entry in `report`
+/// that a producing `RoutingExplainer` left with none at all -- board item
+/// `01M2NRS3FRZNXF138Q0B6RGHXT`. See [`Conway::explain_routing`]'s own doc
+/// for why this is the SAME index a compiled-in router already filters
+/// admission against, never a second, independently-derived one.
+///
+/// **Fills gaps, never overwrites.** Both fields are only ever set when the
+/// producing explainer left them `None` -- a real `RoutingExplainer`
+/// (`conway-plugin-routing`'s `RoutingExplain`) already reads this exact
+/// index for every entry it produces (`explain.rs`'s own per-candidate
+/// `capability_index()` reads), so this is a no-op on that path by
+/// construction, not merely in practice: there is nothing for it to fill
+/// in. `conway_core::routing::MinimalRouter::explain` is the one producer
+/// that always leaves both `None` (it holds no capability index of its own
+/// at all -- see that type's own doc), and this is the gap this function
+/// exists to close for that path.
+///
+/// **Deliberately `capabilities`/`context_window_source` only --
+/// `token_fidelity`/`cache_reporting` are left exactly as the producing
+/// explainer set them.** Both of those are genuinely `Backend`-level
+/// declarations (`Backend::token_fidelity`/`Backend::cache_reporting`) that
+/// `conway routes explain` has always reported `"unknown"` for under
+/// `MinimalRouter` on principle, not merely for lack of an index entry --
+/// `crates/conway-cli/tests/subcommands.rs`'s own
+/// `routes_explain_text_shows_position_reason_and_breaker` (outside this
+/// item's file fence, and NOT one of the five tests this item's own
+/// acceptance check names) already pins that exact behavior against the
+/// real compiled binary and must keep passing unchanged. Overlaying them
+/// here too would flip that pinned "unknown" to a real value the moment
+/// ANY backend happened to be constructed with a `.conway/models.json`
+/// entry for it -- a wider behavior change than this item's own five named
+/// tests (all of which assert on `context_window_tokens`/
+/// `context_window_source` alone) ask for.
+///
+/// A candidate this index genuinely has no entry for at all (an unresolved
+/// model, or a `(backend, model)` pair `.conway/models.json` never
+/// declared) is left exactly as the producing explainer left it --
+/// `capabilities`/`context_window_source` stay `None`, rendered `"unknown"`
+/// by `conway routes explain` -- the one case that string is still an
+/// honest answer (GP-14): there genuinely is no fact to report, as opposed
+/// to a fact this report simply failed to ask for. (`conway-cli`'s own
+/// `commands::routes::resolved_window` carries this one step further for a
+/// model reachable only through a role's chain, with no `models.json`
+/// entry at all -- see that function's own doc.)
+fn fill_capability_gaps(report: &mut ExplainReport, index: &CapabilityIndex) {
+    for entry in &mut report.entries {
+        if entry.capabilities.is_none() {
+            entry.capabilities = index.get(&entry.model_ref).map(CapabilitySummary::from);
+        }
+        if entry.context_window_source.is_none() {
+            entry.context_window_source = index.context_window_source(&entry.model_ref);
+        }
     }
 }

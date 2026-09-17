@@ -175,7 +175,6 @@ fn add_tui_section(fixture: &common::Fixture, tui: serde_json::Value) {
 /// label is one of the four named strings" + "`--json` and text agree on
 /// both the number and the source."
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2NRS3FRZNXF138Q0B6RGHXT: every capability field reads `unknown` on a default install. This test is the reproduction AND that item's acceptance check -- remove this attribute when it lands."]
 async fn routes_explain_never_prints_unknown_and_json_and_text_agree_on_window_and_provenance() {
     let mock = MockBackend::start(Script(vec![])).await;
     // `write_fixture` always stamps a `.conway/models.json` `Override`
@@ -221,7 +220,6 @@ async fn routes_explain_never_prints_unknown_and_json_and_text_agree_on_window_a
 /// NEVER render `"verified"` -- a floored number dressed up as more
 /// certain than it is would be worse than the pre-fix `"unknown"`.
 #[test]
-#[ignore = "blocked on board item 01M2NRS3FRZNXF138Q0B6RGHXT: provenance reads `unknown`, so the label cannot be checked. This test is the reproduction AND that item's acceptance check -- remove this attribute when it lands."]
 fn routes_explain_never_labels_an_unverified_dialect_floor_as_verified() {
     let fixture = fixture_with_unverified_floor(0);
 
@@ -256,7 +254,6 @@ fn routes_explain_never_labels_an_unverified_dialect_floor_as_verified() {
 /// reading only the "over half your window" flag can never miss that the
 /// window number backing it is not even a real fact.
 #[test]
-#[ignore = "blocked on board item 01M2NRS3FRZNXF138Q0B6RGHXT: provenance reads `unknown`, so the notice cannot name it. This test is the reproduction AND that item's acceptance check -- remove this attribute when it lands."]
 fn routes_explain_runway_warning_on_an_assumed_floor_still_names_it_assumed() {
     let fixture = fixture_with_unverified_floor(3);
 
@@ -305,7 +302,6 @@ fn routes_explain_runway_warning_on_an_assumed_floor_still_names_it_assumed() {
 /// meaningful, robustly-assertable half of "agrees... on window and
 /// provenance" available from the rendered screen alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2NRS3FRZNXF138Q0B6RGHXT: the ctx field has no provenance to mark. This test is the reproduction AND that item's acceptance check -- remove this attribute when it lands."]
 async fn tui_ctx_field_marks_the_assumed_floor_exactly_when_routes_explain_does() {
     let fixture = fixture_with_unverified_floor(0);
 
@@ -326,7 +322,6 @@ async fn tui_ctx_field_marks_the_assumed_floor_exactly_when_routes_explain_does(
 /// `routes explain`'s own `"models.json"` (never `"floor (assumed)"`) for
 /// the identical fixture.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2NRS3FRZNXF138Q0B6RGHXT: the ctx field has no provenance to mark. This test is the reproduction AND that item's acceptance check -- remove this attribute when it lands."]
 async fn tui_ctx_field_never_shows_the_assumed_floor_marker_for_a_models_json_override() {
     let mock = MockBackend::start(Script(vec![])).await;
     let fixture = common::write_fixture(&mock, 5);
