@@ -118,9 +118,9 @@ pub async fn run(args: &RoutesArgs, conway: &Conway) -> conway::Result<ExitCode>
             let footprint = crate::first_run::default_opinion_set_footprint(&cwd, &env, mcp_count);
 
             if *json {
-                print_json(&report, &role_params, &footprint);
+                print_json(conway, &report, &role_params, &footprint);
             } else {
-                print_text(&report, &role_params, &footprint);
+                print_text(conway, &report, &role_params, &footprint);
             }
             Ok(ExitCode::Completed)
         }
@@ -128,6 +128,7 @@ pub async fn run(args: &RoutesArgs, conway: &Conway) -> conway::Result<ExitCode>
 }
 
 fn print_text(
+    conway: &Conway,
     report: &ExplainReport,
     role_params: &conway::config::schema::RoleParams,
     footprint: &InstallFootprint,
@@ -158,9 +159,9 @@ fn print_text(
         let model_ref = entry.model_ref.to_string();
         let breaker = render_breaker_state(&entry.breaker.state);
         let tokens = render_token_fidelity(entry.token_fidelity);
-        let window_tokens = entry.capabilities.as_ref().map(|c| c.max_context_tokens);
+        let (window_tokens, context_window_source) = resolved_window(conway, entry);
         let window = render_window(window_tokens);
-        let provenance = render_context_window_source(entry.context_window_source);
+        let provenance = render_context_window_source(context_window_source);
         let cache = render_cache_reporting(entry.cache_reporting);
         let fixed_cost = render_fixed_cost(footprint, &model_ref, window_tokens);
         println!(
@@ -173,6 +174,7 @@ fn print_text(
 }
 
 fn print_json(
+    conway: &Conway,
     report: &ExplainReport,
     role_params: &conway::config::schema::RoleParams,
     footprint: &InstallFootprint,
@@ -180,13 +182,13 @@ fn print_json(
     let chain: Vec<Value> = report
         .entries
         .iter()
-        .map(|e| entry_json(e, footprint))
+        .map(|e| entry_json(conway, e, footprint))
         .collect();
     let skipped: Vec<Value> = report
         .entries
         .iter()
         .filter(|e| matches!(e.outcome, EntryOutcome::Skipped { .. }))
-        .map(|e| entry_json(e, footprint))
+        .map(|e| entry_json(conway, e, footprint))
         .collect();
     let health: Vec<Value> = report
         .entries
@@ -212,13 +214,13 @@ fn print_json(
     );
 }
 
-fn entry_json(e: &ExplainEntry, footprint: &InstallFootprint) -> Value {
+fn entry_json(conway: &Conway, e: &ExplainEntry, footprint: &InstallFootprint) -> Value {
     let (outcome, reason) = match &e.outcome {
         EntryOutcome::Selected { reason } => ("selected", render_reason(reason)),
         EntryOutcome::Skipped { reason } => ("skipped", render_reason(reason)),
     };
     let model_ref = e.model_ref.to_string();
-    let window_tokens = e.capabilities.as_ref().map(|c| c.max_context_tokens);
+    let (window_tokens, context_window_source) = resolved_window(conway, e);
     // Computed before the `json!` literal below (rather than inline as one
     // of its values) so this never depends on the macro's field-evaluation
     // order relative to `model_ref` being moved into the `"model"` entry.
@@ -230,10 +232,59 @@ fn entry_json(e: &ExplainEntry, footprint: &InstallFootprint) -> Value {
         "reason": reason,
         "token_fidelity": render_token_fidelity(e.token_fidelity),
         "context_window_tokens": window_tokens,
-        "context_window_source": render_context_window_source(e.context_window_source),
+        "context_window_source": render_context_window_source(context_window_source),
         "cache_reporting": render_cache_reporting(e.cache_reporting),
         "fixed_cost": fixed_cost,
     })
+}
+
+/// `entry`'s own resolved window and provenance: a producer's own
+/// `capabilities`/`context_window_source` when it had them (a real
+/// `RoutingExplainer`, or `Conway::explain_routing`'s own `CapabilityIndex`
+/// overlay for a `.conway/models.json`-declared pair -- see that method's
+/// own doc) -- else the SAME dialect-default-floor computation
+/// `crate::first_run`'s own `first_turn_floor_notice` already uses for the
+/// identical question ("what would this pair run against right now, and
+/// how sure is conway of it"), for a model reachable only through a role's
+/// chain and never declared in `.conway/models.json` at all (board item
+/// `01M2NRS3FRZNXF138Q0B6RGHXT`).
+///
+/// **Not a second resolver.** `context_window_is_verified`/
+/// `verified_baseline_window`/`dialect_floor_window` all read
+/// `conway_plugin_backends`'s own compiled-in per-dialect `ProfileStore` --
+/// the identical table `Backend::capabilities()`/`Backend::
+/// context_window_source()` consult for a live request -- not a value
+/// invented here (see `crate::first_run`'s own doc on why this is not a
+/// second, independently-derived answer). `(None, None)` only when the
+/// pair's backend id names no `[backends.<id>]` entry at all -- a candidate
+/// this report could never answer for regardless of source -- or when the
+/// dialect is one this compiled binary does not recognize at all.
+fn resolved_window(
+    conway: &Conway,
+    entry: &ExplainEntry,
+) -> (Option<u32>, Option<ContextTokensSource>) {
+    if let Some(caps) = &entry.capabilities {
+        return (Some(caps.max_context_tokens), entry.context_window_source);
+    }
+    let Some(backend_entry) = conway.config().backends.get(entry.model_ref.backend.as_str())
+    else {
+        return (None, None);
+    };
+    let kind = backend_entry.kind.as_str();
+    let dialect = backend_entry.dialect.as_deref();
+    if crate::first_run::context_window_is_verified(kind, dialect) {
+        let window = crate::first_run::verified_baseline_window(kind, dialect);
+        (
+            window,
+            window.map(|_| ContextTokensSource::DialectDefaultFloor),
+        )
+    } else {
+        let window = crate::first_run::dialect_floor_window(kind, dialect);
+        (
+            window,
+            window.map(|_| ContextTokensSource::Unverified),
+        )
+    }
 }
 
 /// Renders a `RoutingReason` per the module's binding mapping. Every
