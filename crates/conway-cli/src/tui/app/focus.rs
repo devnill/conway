@@ -73,14 +73,39 @@ impl App {
     /// first message was ALSO dropped, rather than silently losing it with
     /// no trace in the transcript. `None` for the plain `Action::FocusAgent`
     /// call site, which has no message riding along.
+    ///
+    /// Board item `01M2PGS1GGNDNSA0A6E074G4VF`: also takes
+    /// `state.pending_focus_notice` (unconditionally, before either arm
+    /// below runs) and re-pushes it onto `transcript` AFTER `focus_agent`'s
+    /// clear on the `Ok` path -- see that field's own doc for why a direct
+    /// push from `switch_session` can never survive to a frame. Re-pushed
+    /// on the `Err` path too (before the failure notice), since the switch
+    /// that set it already succeeded; only this resubscribe failed.
     pub(super) async fn try_focus_agent(
         &mut self,
         agent: conway::AgentId,
         on_fail_extra: Option<&str>,
     ) -> Option<conway::EventStream> {
+        // Board item `01M2PGS1GGNDNSA0A6E074G4VF`: `switch_session`
+        // (`commands.rs`) parked its confirmation text here, rather than
+        // pushing it straight onto `transcript`, precisely because
+        // `focus_agent` below (Ok arm) unconditionally clears `transcript`
+        // in this same synchronous tick -- a direct push would never
+        // survive to a frame. Taken out unconditionally, before either arm
+        // runs, so it can never leak into some LATER, unrelated focus
+        // switch if this one takes the `Err` arm below instead.
+        let pending_notice = self.state.pending_focus_notice.take();
         match self.handle.agent_events(agent).await {
             Ok(stream) => {
                 self.state.focus_agent(agent);
+                // Re-push the switch notice AFTER the clear above, not
+                // before -- see `pending_focus_notice`'s own doc. `None`
+                // for every focus switch that is not a `/model`/`/role`
+                // switch (bare `/fork`, `/spawn`, `/resume`, plain
+                // re-focus), so this is a no-op for them.
+                if let Some(text) = pending_notice {
+                    self.state.transcript.push(Entry::Notice { text });
+                }
                 // Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: `focus_agent` just
                 // reset `turn_started_at` to `None` -- correct for the
                 // common case (a freshly focused agent with no turn in
@@ -151,6 +176,16 @@ impl App {
                 Some(stream)
             }
             Err(e) => {
+                // The fork/switch itself already succeeded (`pending_notice`
+                // is only ever set once `switch_session` has a real `child`)
+                // -- only THIS resubscribe failed, so the switch notice is
+                // still true and still worth showing; dropping it here
+                // would be exactly the kind of silent loss `on_fail_extra`'s
+                // own doc already guards against for a pending first
+                // message.
+                if let Some(text) = pending_notice {
+                    self.state.transcript.push(Entry::Notice { text });
+                }
                 let mut text = format!("could not focus agent: {e}");
                 if let Some(extra) = on_fail_extra {
                     text.push_str(extra);
@@ -730,6 +765,130 @@ mod tests {
             text.contains('▌'),
             "the rendered transcript must show the streaming cursor on the \
              live assistant line: {text}"
+        );
+    }
+
+    /// Board `01M2PGS1GGNDNSA0A6E074G4VF`'s own unit-level pin, at the
+    /// exact seam the defect lives at (P-15: a test here catches a
+    /// regression faster than a pty test spawning a compiled binary can).
+    /// `switch_session` (`commands.rs`) can no longer be called directly
+    /// from this module without a live `Host`/routing setup, so this test
+    /// reproduces its ONE relevant side effect by hand -- setting
+    /// `state.pending_focus_notice` -- rather than driving a real `/model`
+    /// switch end-to-end (that full path's own acceptance test is
+    /// `crates/conway-cli/tests/dogfood_cache_and_fallback.rs::
+    /// three_model_switches_keep_per_turn_attribution_recoverable_via_why`).
+    ///
+    /// Asserts on the `Entry::Notice` enum itself, never on rendered
+    /// output: a `contains("phrase")` check against `render_text` would be
+    /// wrap-fragile (repo history already has that failure mode), and
+    /// nothing here needs a render to prove `transcript`'s own content.
+    #[tokio::test]
+    async fn try_focus_agent_carries_the_pending_switch_notice_across_focus_agents_clear() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let child = app
+            .handle
+            .spawn(
+                app.handle.root(),
+                conway::SpawnSpec::new("").keep_alive(true),
+            )
+            .await
+            .expect("keep-alive spawn should succeed");
+
+        // A stand-in for whatever the PREVIOUSLY focused agent's transcript
+        // held -- `AppState::focus_agent`'s own V5 doc requires this be
+        // cleared on any switch (a child must never show a parent's
+        // content it never actually saw), so this test also proves the fix
+        // does NOT relax that: it must be gone afterward, same as pre-fix.
+        app.state.transcript.push(Entry::Notice {
+            text: "stale notice from whatever was focused before".to_string(),
+        });
+
+        // The one relevant side effect of `switch_session`
+        // (`commands.rs`) reaching its `Ok(child)` arm: it parks the
+        // switch's own confirmation text here instead of pushing it
+        // straight onto `transcript`, precisely because THIS call --
+        // `try_focus_agent` -- is about to clear `transcript` via
+        // `focus_agent` in the very same synchronous step.
+        let switch_text = "switched model to mock/model-b: parent -> child".to_string();
+        app.state.pending_focus_notice = Some(switch_text.clone());
+
+        let _events = app
+            .try_focus_agent(child, None)
+            .await
+            .expect("focusing a known child must succeed");
+
+        assert_eq!(
+            app.state.pending_focus_notice, None,
+            "try_focus_agent must take the pending notice, not merely read it \
+             -- leaving it Some would risk it leaking into a LATER, unrelated \
+             focus switch"
+        );
+        assert!(
+            !app.state.transcript.iter().any(
+                |e| matches!(e, Entry::Notice { text } if text.contains("stale notice"))
+            ),
+            "focus_agent's own V5 clear must still drop whatever the \
+             PREVIOUSLY focused agent's transcript held -- this fix must not \
+             relax that guarantee. Transcript: {:?}",
+            app.state.transcript
+        );
+        assert_eq!(
+            app.state.transcript.iter().filter(
+                |e| matches!(e, Entry::Notice { text } if text == &switch_text)
+            ).count(),
+            1,
+            "the switch notice must survive focus_agent's clear exactly \
+             once -- neither destroyed nor duplicated. Transcript: {:?}",
+            app.state.transcript
+        );
+    }
+
+    /// The failure-path half of the same seam: when the fork/switch
+    /// already succeeded (`pending_focus_notice` is set) but THIS
+    /// resubscribe fails, the switch notice must still surface rather than
+    /// vanish silently -- it is still a true fact (the switch really
+    /// happened) even though this particular refocus attempt did not.
+    #[tokio::test]
+    async fn try_focus_agent_still_surfaces_the_pending_notice_when_the_resubscribe_fails() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let switch_text = "switched model to mock/model-b: parent -> child".to_string();
+        app.state.pending_focus_notice = Some(switch_text.clone());
+
+        // An `AgentId` this session never spawned -- `agent_events`
+        // (`conway::SessionHandle`) cannot resolve it, so this exercises
+        // the `Err` arm without needing to fabricate a broken store.
+        let unknown = conway::AgentId::new();
+        let result = app.try_focus_agent(unknown, None).await;
+        assert!(
+            result.is_none(),
+            "focusing an unknown agent must fail, or this test is not \
+             exercising the Err arm at all"
+        );
+
+        assert_eq!(
+            app.state.pending_focus_notice, None,
+            "the pending notice must be taken even on the Err path, or it \
+             would leak into a LATER, unrelated focus switch"
+        );
+        assert!(
+            app.state.transcript.iter().any(
+                |e| matches!(e, Entry::Notice { text } if text == &switch_text)
+            ),
+            "the switch notice must still surface even though this \
+             resubscribe failed -- the switch itself already succeeded. \
+             Transcript: {:?}",
+            app.state.transcript
         );
     }
 }
