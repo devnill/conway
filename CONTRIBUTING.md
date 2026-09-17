@@ -487,6 +487,56 @@ pty's overhead.
 7. `PtySession`'s `Drop` kills the child unconditionally, including on a
    panicking assertion -- no explicit teardown call is needed or wanted.
 
+**Read the I/O journal before theorising from the screen.** Every
+`wait_for*` timeout, and `wait_for_exit`'s, prints a timestamped record of
+what actually crossed the pty -- one line per read or write, with the
+direction, the elapsed time, the bytes escaped so control characters stay
+visible, and a `(+N.Ns gap)` marker on any quiet stretch of half a second or
+more. It is printed ABOVE the captured screen deliberately: it answers three
+questions the screen cannot, and each of them has sent an investigation in
+this repository down a wrong path at least once.
+
+- *Was the keystroke even written?* A missing `TX ->` line means the test
+  never sent what it thinks it sent -- not that the product ignored it.
+- *Did the child answer, or go quiet?* A long `(+N.Ns gap)` before the
+  timeout is a real stall. Continuous `RX <-` lines are mere slowness, and
+  the fix is a longer timeout, not a product change.
+- *Did the redraw re-emit the text you are waiting for?* This is the trap,
+  and it has cost more debugging rounds here than the other two combined.
+
+**The partial-redraw trap.** A terminal re-emits only the cells that
+*changed*. `screen()` is an ANSI-stripped record of what was emitted, not a
+cursor-addressed grid, so **a string that is already partly on screen never
+appears contiguously in it again.** Switching from `mock/model-b` to
+`mock/model-c` emitted exactly this:
+
+    RX <- \e[1;30H\e[38;5;6;49mc\e[1;41H...
+
+-- a cursor move to column 30 and the single character `c`, because
+`switched model to mock/model-` was already there. The notice rendered
+correctly; `wait_for("switched model to mock/model-c")` could never match
+it, and no timeout increase would ever have helped. Two separate
+investigations diagnosed a working product as broken this way before the
+journal existed.
+
+The fix is never a longer timeout. It is to choose test data whose
+successive values **share no character in any column** -- `aaaaaa`/`bbbbbb`/
+`cccccc` rather than `model-a`/`model-b`/`model-c`, `AAAA`/`BBBB` rather
+than `on-a`/`on-b` -- so the changed run is the whole token, and then to
+await **that token alone**, never a phrase whose prefix is constant across
+occurrences. `dogfood_cache_and_fallback.rs`'s
+`three_model_switches_keep_per_turn_attribution_recoverable_via_why` and
+`dogfood_routes_and_status.rs`'s `AAAAA`/`BBBBB` status tokens both exist in
+that shape for this reason, and say so at the fixture.
+
+**Inspecting a test that passes.** Set `CONWAY_PTY_JOURNAL=1` and run with
+`--nocapture`: every `PtySession` prints its journal on drop, pass or fail.
+This is the only way to check *why* a green pty test is green without first
+editing it to fail -- worth doing for any assertion on `screen()`, which
+holds the WHOLE session's emissions, so a substring that appeared once early
+still matches long after. Bound such an assertion to the offset a
+`wait_for*` returned rather than searching the full buffer.
+
 **Running one locally:** `cargo test -p conway-cli --test <file_name>` --
 these are ordinary `#[test]`/`#[tokio::test]` functions in
 `crates/conway-cli/tests/`, picked up by `cargo test --workspace

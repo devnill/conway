@@ -90,10 +90,57 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// stdout+stderr output continuously drained into memory by a background
 /// thread. See this module's own doc for why continuous draining (never
 /// on-demand reads) is the point.
+/// One direction of one I/O event on the pty, with the moment it happened.
+///
+/// The de-ANSI'd *screen* is a lossy view: it cannot show that a keystroke
+/// was never written, that the child answered instantly and then went quiet,
+/// or that a redraw re-emitted only changed cells. Three separate
+/// investigations this week were sent down wrong paths by reading the screen
+/// alone -- a token matched because it appeared in a rendered tool-call's
+/// ARGUMENTS rather than its output; a grep matched the panic message's own
+/// quoted pattern; a status field never re-emitted its label after a partial
+/// redraw. A timestamped record of what actually crossed the pty
+/// distinguishes all three from a real product failure.
+#[derive(Clone)]
+pub struct IoEvent {
+    pub at: std::time::Duration,
+    pub tx: bool,
+    pub bytes: Vec<u8>,
+}
+
+/// Renders bytes for the I/O journal: printable ASCII verbatim, everything
+/// else as an escape. Deliberately NOT `String::from_utf8_lossy` -- the
+/// whole point of the journal is to show control bytes and escape sequences
+/// that the rendered screen swallows, so `\r`, `\n` and `ESC` must stay
+/// visible rather than becoming invisible whitespace.
+fn escape_for_journal(bytes: &[u8]) -> String {
+    const MAX: usize = 160;
+    let mut out = String::new();
+    for (i, b) in bytes.iter().enumerate() {
+        if i == MAX {
+            out.push_str(&format!("... (+{} more bytes)", bytes.len() - MAX));
+            break;
+        }
+        match b {
+            b'\r' => out.push_str("\\r"),
+            b'\n' => out.push_str("\\n"),
+            0x1b => out.push_str("\\e"),
+            0x20..=0x7e => out.push(*b as char),
+            other => out.push_str(&format!("\\x{other:02x}")),
+        }
+    }
+    out
+}
+
 pub struct PtySession {
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     output: Arc<Mutex<Vec<u8>>>,
+    /// Every read and write, in order, for failure diagnosis. Never
+    /// consulted while a test is passing; dumped alongside the screen when a
+    /// `wait_for*` times out.
+    journal: Arc<Mutex<Vec<IoEvent>>>,
+    started: Instant,
     // Kept alive for the session's whole lifetime purely so its own `Drop`
     // (whatever that closes) never runs early -- `try_clone_reader`/
     // `take_writer` already gave this session its own independent handles,
@@ -140,6 +187,9 @@ impl PtySession {
 
         let output = Arc::new(Mutex::new(Vec::new()));
         let output_for_reader = Arc::clone(&output);
+        let journal: Arc<Mutex<Vec<IoEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let journal_for_reader = Arc::clone(&journal);
+        let started = Instant::now();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
@@ -150,6 +200,14 @@ impl PtySession {
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .extend_from_slice(&buf[..n]);
+                        journal_for_reader
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(IoEvent {
+                                at: started.elapsed(),
+                                tx: false,
+                                bytes: buf[..n].to_vec(),
+                            });
                     }
                     // A pty master read after the far (slave/child) side
                     // has gone away commonly surfaces as an OS error (EIO
@@ -167,6 +225,8 @@ impl PtySession {
             child,
             writer,
             output,
+            journal,
+            started,
             _master: pair.master,
         }
     }
@@ -180,6 +240,51 @@ impl PtySession {
             .write_all(text.as_bytes())
             .expect("write to the pty");
         self.writer.flush().expect("flush the pty writer");
+        self.journal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(IoEvent {
+                at: self.started.elapsed(),
+                tx: true,
+                bytes: text.as_bytes().to_vec(),
+            });
+    }
+
+    /// The I/O journal, rendered for a failure message: one line per event,
+    /// newest last, with the elapsed time, the direction, and the bytes
+    /// escaped so control characters and partial escape sequences stay
+    /// visible.
+    ///
+    /// Read this BEFORE theorising from the screen. It answers three
+    /// questions the screen cannot: was the keystroke actually written, did
+    /// the child answer at all, and did it go quiet (a real stall) or keep
+    /// emitting (mere slowness).
+    pub fn io_journal(&self) -> String {
+        let events = self.journal.lock().unwrap_or_else(|e| e.into_inner());
+        if events.is_empty() {
+            return "  (no pty I/O recorded)".to_string();
+        }
+        let mut out = String::new();
+        let mut last: Option<std::time::Duration> = None;
+        for ev in events.iter() {
+            let gap = last.map_or(String::new(), |prev| {
+                let d = ev.at.saturating_sub(prev);
+                if d >= std::time::Duration::from_millis(500) {
+                    format!("  (+{:.1}s gap)", d.as_secs_f32())
+                } else {
+                    String::new()
+                }
+            });
+            last = Some(ev.at);
+            out.push_str(&format!(
+                "  [{:>7.3}s] {} {}{}\n",
+                ev.at.as_secs_f32(),
+                if ev.tx { "TX ->" } else { "RX <-" },
+                escape_for_journal(&ev.bytes),
+                gap
+            ));
+        }
+        out
     }
 
     /// The Enter key, alone, in raw terminal input: `CR` (`\r`), not `\n`.
@@ -213,8 +318,12 @@ impl PtySession {
             }
             if start.elapsed() > timeout {
                 panic!(
-                    "timed out after {timeout:?} waiting for the child to exit; captured screen \
-                     so far:\n{}",
+                    "timed out after {timeout:?} waiting for the child to exit.\n\n\
+                     pty I/O journal (read this FIRST -- a child that is still emitting is \
+                     merely slow; one that went quiet seconds ago is genuinely stuck, and the \
+                     screen below cannot tell those apart):\n{}\n\
+                     captured screen so far:\n{}",
+                    self.io_journal(),
                     self.screen()
                 );
             }
@@ -258,9 +367,14 @@ impl PtySession {
                 return (pattern_index, from + end);
             }
             if start.elapsed() > timeout {
+                let journal = self.io_journal();
                 panic!(
                     "timed out after {timeout:?} waiting for one of {patterns:?} (searching \
-                     from offset {since}); captured screen so far:\n{text}"
+                     from offset {since}).\n\n\
+                     pty I/O journal (read this FIRST -- it shows whether the keystroke was \
+                     written and whether the child answered; the screen below cannot):\n\
+                     {journal}\n\
+                     captured screen so far:\n{text}"
                 );
             }
             std::thread::sleep(POLL_INTERVAL);
@@ -298,6 +412,18 @@ impl Drop for PtySession {
         // after the test itself has stopped running. `Drop` still runs
         // during an unwind under this workspace's default `panic = unwind`
         // test profile, which is what makes this reachable at all.
+        // Opt-in journal dump for a test that PASSES but is suspected of
+        // passing for the wrong reason -- the case no failure message can
+        // ever cover, because no failure message is printed. Set
+        // `CONWAY_PTY_JOURNAL=1` and rerun with `--nocapture`; this is the
+        // one way to see what a green pty test actually exchanged without
+        // editing the test to make it fail first.
+        if std::env::var_os("CONWAY_PTY_JOURNAL").is_some() {
+            eprintln!(
+                "pty I/O journal (CONWAY_PTY_JOURNAL):\n{}",
+                self.io_journal()
+            );
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
