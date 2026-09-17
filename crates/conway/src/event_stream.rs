@@ -354,9 +354,39 @@ impl EventStream {
         // focused view. It carries no turn content, so the `TurnHandle`
         // safety argument above applies unchanged (`text`/`result` ignore
         // it via their wildcard arms).
+        // `BudgetWarning` (board item `01M2RFDSTZPQF5VCNFCTSGQR92`) rides
+        // the same passthrough, for the identical reason and with the
+        // identical safety argument. A child crossing its 80% runway
+        // threshold emits it under the CHILD's own freshly-minted session
+        // (`agent_loop.rs`'s `bus.emit(self.session, self.agent_id, ...)`),
+        // so a root-focused TUI -- scoped to the ROOT's session -- dropped
+        // it here and the operator saw nothing at all while a delegated
+        // child burned through its budget. That is precisely the failure
+        // the spawn/finish passthrough above exists to prevent, and the
+        // TUI side was already built for it: `state/agent_tree.rs`'s own
+        // `Event::BudgetWarning` arm asserts "a BudgetWarning must leave a
+        // Notice so an operator focused elsewhere still [sees it]", and
+        // `view/agents.rs` tags the row `!budget` off the same event. Both
+        // were unreachable for a child.
+        //
+        // The mailbox half (`AgentMessage::BudgetNotice` ->
+        // `LogRecord::SystemNote`, `runtime/src/mailbox.rs`) is NOT a
+        // substitute and is unchanged: it lands on the parent's log to be
+        // read back on the parent's next TURN, which is the right shape
+        // for an orchestrating model and the wrong one for a live UI --
+        // a child that dies before the parent takes another turn never
+        // surfaces through it at all.
+        //
+        // Carries no turn content (`agent_id`/`limit`/`text`), so the
+        // `TurnHandle` safety argument spelled out above for
+        // `AgentPromoted` applies here unchanged: `text`/`result` ignore it
+        // via their wildcard arms.
         if matches!(
             envelope.event,
-            Event::AgentSpawned { .. } | Event::AgentFinished { .. } | Event::AgentPromoted { .. }
+            Event::AgentSpawned { .. }
+                | Event::AgentFinished { .. }
+                | Event::AgentPromoted { .. }
+                | Event::BudgetWarning { .. }
         ) {
             return true;
         }
@@ -598,6 +628,8 @@ fn _event_stream_is_stream_send_unpin() {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use conway_runtime::events::EventBus;
 
@@ -833,6 +865,72 @@ mod tests {
         assert!(
             matches!(envelope.event, Event::AgentPromoted { .. }),
             "AgentPromoted must bypass the agent filter too; got {:?}",
+            envelope.event
+        );
+    }
+
+    /// Board item `01M2RFDSTZPQF5VCNFCTSGQR92`: a child crossing its budget
+    /// threshold emits `BudgetWarning` under the CHILD's own freshly-minted
+    /// session, so a root-focused TUI -- scoped to the ROOT's session --
+    /// dropped it and the operator watched a delegated child burn through
+    /// its budget in silence. Pinned here, at the filter itself, and not
+    /// only through the pty test that found it
+    /// (`dogfood_budget_and_plugins.rs::child_with_max_steps_five_gets_the_
+    /// wrap_up_notice_before_it_dies`), so a future narrowing of this
+    /// allowlist fails in milliseconds rather than in a 30-second terminal
+    /// timeout.
+    #[tokio::test]
+    async fn budget_warnings_bypass_session_and_agent_filters() {
+        let bus = EventBus::new(64);
+        let parent_session = SessionId::new();
+        let child_session = SessionId::new();
+        let parent = AgentId::new();
+        let child = AgentId::new();
+
+        let warning = || Event::BudgetWarning {
+            agent_id: child,
+            limit: "max_steps=5".into(),
+            text: "child is nearing a budget limit -- runway: 4 of 5 max_steps used".into(),
+        };
+
+        // Session-scoped (no agent filter): what the TUI's root
+        // subscription actually is.
+        let mut stream = EventStream::live(parent_session, None, bus.subscribe());
+        bus.emit(
+            child_session,
+            child,
+            Event::AgentProgress {
+                note: "unrelated".into(),
+            },
+        );
+        bus.emit(child_session, child, warning());
+        // A bounded wait, not a bare `next().await`. Without the
+        // passthrough under test, NOTHING on this stream is ever accepted
+        // -- both emits above are cross-session -- so an unbounded await
+        // hangs the whole suite instead of failing. P-15 needs this test to
+        // go RED when the allowlist loses `BudgetWarning`, not to wedge.
+        let envelope = tokio::time::timeout(Duration::from_secs(5), next(&mut stream))
+            .await
+            .expect("a BudgetWarning from another session must reach a session-scoped stream")
+            .expect("stream ended early");
+        assert!(
+            matches!(envelope.event, Event::BudgetWarning { .. }),
+            "the unrelated AgentProgress must have been dropped, not this; got {:?}",
+            envelope.event
+        );
+        assert_eq!(envelope.session, child_session);
+        assert_eq!(envelope.agent, child);
+
+        // Agent-scoped (a TurnHandle-shaped filter): same passthrough.
+        let mut stream = EventStream::live(parent_session, Some(parent), bus.subscribe());
+        bus.emit(child_session, child, warning());
+        let envelope = tokio::time::timeout(Duration::from_secs(5), next(&mut stream))
+            .await
+            .expect("a BudgetWarning must reach an agent-scoped stream too")
+            .expect("stream ended early");
+        assert!(
+            matches!(envelope.event, Event::BudgetWarning { .. }),
+            "BudgetWarning must bypass the agent filter too; got {:?}",
             envelope.event
         );
     }

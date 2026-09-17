@@ -159,7 +159,6 @@ fn write_fixture_with_bash(
 /// of the root's `[limits].max_steps` (set generously large here so only
 /// the CHILD's budget is ever in play).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2RFDSTZPQF5VCNFCTSGQR92: the child now runs and dies correctly (`budget_exceeded`, `max_steps=5`) since this test got its own bash-enabled fixture, but the 80% wrap-up notice never reaches the ROOT's live transcript. A child's crossing emits `Event::BudgetWarning` on the CHILD's own event stream and sends `AgentMessage::BudgetNotice` to the parent's mailbox, which `mailbox.rs` persists as a `LogRecord::SystemNote` read back on the parent's NEXT turn -- neither is a live event on the stream a root-focused TUI subscribes to. Un-ignoring this IS that item's acceptance test."]
 async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
     // No `tools` selector on the spawn args. `SpawnArgs.tools` maps onto
     // `ToolSelector::Only([...])` (`crates/conway-tools/src/subagent/
@@ -254,7 +253,17 @@ async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
     // there is no risk of racing the panel against the transcript still
     // streaming.
     session.send("/agents\r");
-    session.wait_for_since("agents (", notice_at, Duration::from_secs(10));
+    // Await `!budget` itself, NOT the panel title. `"agents ("` looks like
+    // the obvious "the panel opened" marker and cannot work: `"agents "` is
+    // already on screen continuously as the status line's own `/agents to
+    // view` hint, and a terminal re-emits only the cells that CHANGED, so
+    // the title's leading run is never rewritten and the string never
+    // appears contiguously in an emission-order transcript
+    // (`CONTRIBUTING.md`'s partial-redraw note). `!budget` appears nowhere
+    // else in this session, so awaiting it proves both halves at once --
+    // the panel rendered, and the child's row carries the tag.
+    let tag_at = session.wait_for_since("!budget", notice_at, Duration::from_secs(10));
+    let _ = tag_at;
     let screen = session.screen();
     assert!(
         screen.contains("!budget"),
