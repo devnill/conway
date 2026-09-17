@@ -690,6 +690,26 @@ pub struct AppState {
     /// switch. [`Self::is_switch_replaced`] and
     /// [`Self::switch_history`] are the two ways this gets read.
     pub switch_lineage: HashMap<AgentId, AgentId>,
+    /// Board item `01M2PGS1GGNDNSA0A6E074G4VF` ("every `/model`/`/role`
+    /// switch destroys its own confirmation notice before it is ever
+    /// drawn"): the switch confirmation text `switch_session`
+    /// (`commands.rs`) computed for its just-created child, held here
+    /// instead of being pushed onto `transcript` directly, because
+    /// `switch_session` returns `Effect::FocusNewSession` and THAT effect's
+    /// handling -- `app/focus.rs::try_focus_agent` calling
+    /// [`Self::focus_agent`] -- unconditionally clears `transcript` in the
+    /// very same synchronous tick (`focus_agent`'s own doc: switching to a
+    /// freshly-created child must show ONLY that child's own log, never a
+    /// parent's leftover text). A plain `notice()` push before that clear
+    /// would be wiped before the run loop's single `if dirty` redraw ever
+    /// sees it; parking the text here instead and having
+    /// `try_focus_agent` take and re-push it AFTER the clear is what keeps
+    /// it alive for that first frame. `None` for every focus switch that is
+    /// NOT a `/model`/`/role` switch (bare `/fork`, `/spawn`, `/resume`,
+    /// plain re-focus) -- those paths never set this field, so
+    /// `try_focus_agent`'s post-clear check is a no-op for them, exactly
+    /// preserving `focus_agent`'s "child's own log only" guarantee.
+    pub pending_focus_notice: Option<String>,
     /// What an operator-typed `--role`/`--model` flag on `/spawn`/`/fork`
     /// named for a child, keyed by the child's own `AgentId` --
     /// `commands::bare_fork`/`bare_spawn`'s (and the explicit-target
@@ -1491,6 +1511,7 @@ impl AppState {
             awaiting_agents: HashSet::new(),
             budget_warned_agents: HashSet::new(),
             switch_lineage: HashMap::new(),
+            pending_focus_notice: None,
             spawn_role_or_model: HashMap::new(),
             modal_scroll: 0,
             pending_intent_confirm: None,

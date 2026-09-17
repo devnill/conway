@@ -1970,11 +1970,20 @@ async fn bare_fork<H: Host>(
 /// first REAL turn, which surfaces through the ordinary event stream
 /// `App::run` already renders, exactly like any other turn's refusal.
 ///
-/// Pushes a `Notice` naming the switch and its target BEFORE returning
+/// Board item `01M2PGS1GGNDNSA0A6E074G4VF`: names the switch and its
+/// target in `state.pending_focus_notice` BEFORE returning
 /// `Effect::FocusNewSession`, so the transcript records the switch itself
 /// even though the routing decision it causes has not happened yet (that
 /// arrives later, as this child's own `Event::ModelDecision`, which `/why`
-/// then reports against the switch this notice already logged).
+/// then reports against the switch this notice already logged). NOT a
+/// direct `notice()`/`transcript` push -- `Effect::FocusNewSession` is
+/// handled in the very same synchronous tick by `app/focus.rs::
+/// try_focus_agent`, which clears `transcript` (`AppState::focus_agent`'s
+/// own doc: a freshly-focused child must show ONLY its own log) before the
+/// run loop's single `if dirty` redraw ever runs -- a direct push here
+/// would be destroyed before it is ever drawn. `try_focus_agent` takes
+/// `pending_focus_notice` back out and re-pushes it AFTER that clear; see
+/// that field's own doc.
 async fn switch_session<H: Host>(
     state: &mut AppState,
     host: &H,
@@ -1984,7 +1993,8 @@ async fn switch_session<H: Host>(
 ) -> Effect {
     match host.fork(focused, spec).await {
         Ok(child) => {
-            notice(state, format!("{}: {focused} -> {child}", describe.into()));
+            state.pending_focus_notice =
+                Some(format!("{}: {focused} -> {child}", describe.into()));
             // Board item A1d ("say why a turn fell back"), the "switch-forks
             // do not pile up" half: this IS the one call site that knows
             // `child` exists purely because of a `/model`/`/role` switch off
