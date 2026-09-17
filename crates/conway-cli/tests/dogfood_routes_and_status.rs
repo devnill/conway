@@ -57,7 +57,7 @@ mod common;
 #[path = "common/mcp_fixtures.rs"]
 mod mcp_fixtures;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::mock_backend::{MockBackend, Script};
 use common::pty::PtySession;
@@ -485,23 +485,44 @@ async fn status_line_command_output_refreshes_in_the_live_tui() {
     session.wait_for_since("BBBBB", first, Duration::from_secs(10));
 }
 
-/// A liveness-shaped wait for
-/// `status_line_command_stuck_past_its_timeout_never_blocks_the_prompt`,
-/// not a deadline-shaped one (board item `01M2PK42A4EJ523W7QTQX4VZ75`). Used
-/// by that test alone. (Plain code span, not an intra-doc link: both this
-/// function and that test are private items in a test binary, an
-/// unnecessary risk for the doc-gate to resolve when a code span says the
-/// same thing.)
+/// "A command that sleeps past its timeout: the UI never blocks -- the
+/// prompt still accepts input while it runs." Types a distinctive string
+/// into a settled TUI while a `sleep 30` status-line command is genuinely
+/// in flight, and asserts the child ANSWERED that keystroke -- emitted at
+/// least one byte after it was written.
 ///
-/// **Why this exists.** Three flat wall-clock deadlines on that test (3s,
-/// 20s, 60s) each failed once `cargo test --workspace` / `-p conway-cli
-/// --all-features` put this test binary in competition with dozens of
-/// others for CPU -- consuming the ENTIRE budget every time, never failing
-/// early. That is the signature of a wall clock racing scheduling
-/// contention, not of a genuinely blocked loop: under enough contention
-/// every finite deadline is reachable by a loop that is merely starved, not
-/// stuck. A wall-clock deadline cannot tell the two apart; this waits on
-/// PROGRESS instead, which can.
+/// **What the observable is, and why it is not the rendered text.** Board
+/// item `01M2PK42A4EJ523W7QTQX4VZ75`. Three flat wall-clock deadlines on
+/// the echoed probe (3s, 20s, 60s) each consumed their ENTIRE budget under
+/// `cargo test --workspace`, and a progress-based stall detector that
+/// replaced them still measured 18/20. Both instruments were pointed at the
+/// wrong thing, and the pty I/O journal showed why:
+///
+///     [  2.607s] TX -> dogfood-input-liveness-probe
+///     [  2.614s] RX <- \e[42;1H |input---...
+///     [ 12.615s] RX <- dogfood: timed out after 10000ms
+///     LONGEST SILENCE OVER 60s: 50.04s
+///
+/// The loop answers the keystroke in SEVEN MILLISECONDS while the `sleep
+/// 30` is still running. It then goes completely silent for the next fifty
+/// seconds -- correctly, because after the timeout notice lands nothing on
+/// screen changes again, and a terminal that has nothing to redraw writes
+/// nothing. So "no new output for 20s" was never evidence of a wedged loop;
+/// it is what THIS fixture's healthy idle loop does, and the stall detector
+/// fired on it. What delayed the rendered match in the first place was the
+/// partial-redraw trap (`CONTRIBUTING.md`): under contention the probe's 28
+/// bytes are drained in more than one read, drawn as more than one
+/// fragment, and never appear contiguously in an emission-order transcript
+/// at all.
+///
+/// `wait_for_response_to_last_send` sidesteps both. It reads no rendered
+/// text, so fragmentation cannot reach it, and its bound is derived rather
+/// than fitted: a render loop genuinely blocked on this subprocess could
+/// not answer before the command's own `timeout_ms` (10s) at the very
+/// earliest, so a ceiling below that discriminates -- and keeps
+/// discriminating under load, because that floor does not move when the
+/// machine is busy. Eight seconds against a measured 7ms is three orders of
+/// magnitude of margin.
 ///
 /// **The mechanism this leans on.** `crates/conway-cli/src/tui/app/run.rs`'s
 /// `tokio::select!` never awaits the status-line subprocess at all:
@@ -517,84 +538,16 @@ async fn status_line_command_output_refreshes_in_the_live_tui() {
 /// returns instantly," per that crate's own doc and its own
 /// `status_contributions_never_blocks_while_a_slow_run_is_in_flight` /
 /// `a_command_that_times_out_leaves_the_previous_good_value_visible_while_in_flight`
-/// unit tests. A stuck status-line command is therefore structurally
-/// unreachable from the input/render path this test exercises -- which is
-/// exactly why a load-sensitive wall clock, not a real block, is the
-/// likelier explanation for three deadlines failing only under contention
-/// and passing in isolation every time (suite alone: 2.64s).
+/// unit tests. A stuck status-line command is structurally unreachable from
+/// the input/render path this test exercises, and this test is what holds
+/// that structure in place.
 ///
-/// **What this actually checks.** A live render loop draws at least once
-/// shortly after the keystrokes below flip `dirty` -- the very next
-/// `REDRAW_TICK`, however delayed by scheduling, paints them, and (for this
-/// fixture) the status-line command's own 10s `timeout_ms` expiring is a
-/// SECOND, independent source of a redraw shortly after that. So any
-/// `max_stall`-length stretch with the pty's accumulated output byte count
-/// completely unchanged means nothing was drawn in that whole window --
-/// starvation stretches the GAPS between draws, but cannot erase the draws
-/// themselves. `overall_ceiling` is a backstop only, generous enough to
-/// never be the binding constraint for a live loop; `max_stall` is the real
-/// failure signal, and fires far sooner than any of the three retired flat
-/// deadlines did.
-///
-/// **P-15 (this must still catch a real block).** If the render loop were
-/// ever made to genuinely await the subprocess on the key/redraw path, NO
-/// further output would ever be drawn once that await started -- byte
-/// growth would stop dead, `max_stall` would elapse with zero progress, and
-/// this panics. See that test's own module-level note for the exact stub
-/// (`run.rs`'s `CEvent::Key` arm, a fake multi-second block before `dirty =
-/// true`) a build lane can apply to observe this go red, then revert.
-fn wait_for_pattern_detecting_stalls(
-    session: &PtySession,
-    pattern: &str,
-    poll_interval: Duration,
-    max_stall: Duration,
-    overall_ceiling: Duration,
-) {
-    let start = Instant::now();
-    let mut last_len = 0usize;
-    let mut last_progress = Instant::now();
-    loop {
-        let screen = session.screen();
-        if screen.contains(pattern) {
-            return;
-        }
-        if screen.len() != last_len {
-            last_len = screen.len();
-            last_progress = Instant::now();
-        } else if last_progress.elapsed() > max_stall {
-            panic!(
-                "render loop produced NO new output for {max_stall:?} (total elapsed {:?}) \
-                 while waiting for {pattern:?} -- this is a STALL, not mere slowness: a live \
-                 loop draws at least once shortly after input lands. Captured screen so \
-                 far:\n{screen}",
-                start.elapsed()
-            );
-        }
-        if start.elapsed() > overall_ceiling {
-            panic!(
-                "exceeded the {overall_ceiling:?} backstop waiting for {pattern:?}, despite \
-                 ongoing output growth (last change {:?} ago) -- captured screen so far:\n{screen}",
-                last_progress.elapsed()
-            );
-        }
-        std::thread::sleep(poll_interval);
-    }
-}
-
-/// "A command that sleeps past its timeout: the UI never blocks -- the
-/// prompt still accepts input while it runs." Types a distinctive string
-/// right after landing, while a `sleep 30` status-line command (given a
-/// generous 10s `timeout_ms`, so it is still genuinely in-flight) is
-/// running, and confirms the typed text echoes back -- proving the
-/// render/input loop was never waiting on the subprocess. Waits via
-/// `wait_for_pattern_detecting_stalls` rather than a flat deadline -- see
-/// that helper's own doc for why (board item `01M2PK42A4EJ523W7QTQX4VZ75`:
-/// three flat deadlines -- 3s, 20s, 60s -- each consumed their ENTIRE
-/// budget under contention while every code path this test exercises is
-/// non-blocking by construction; a progress-based wait is what a wall clock
-/// cannot be).
+/// **P-15 (this must still catch a real block).** Verified by stubbing one
+/// in: a `std::thread::sleep(Duration::from_secs(20))` at the top of
+/// `run.rs`'s `CEvent::Key` arm, before `dirty = true`, makes this panic
+/// with an empty post-TX journal, exactly as designed. Reverted after
+/// observing red.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2PK42A4EJ523W7QTQX4VZ75: the stall-detector rewrite is a better instrument than the old deadline and still measures 18/20 under `cargo test -p conway-cli --all-features` (20/20 in isolation). Both failures show the TUI producing ZERO new output for the full 20s stall window -- which is evidence, not noise. Do not raise max_stall; that would blunt the only instrument that has told us anything."]
 async fn status_line_command_stuck_past_its_timeout_never_blocks_the_prompt() {
     let mock = MockBackend::start(Script(vec![])).await;
     let fixture = common::write_fixture(&mock, 5);
@@ -613,18 +566,16 @@ async fn status_line_command_stuck_past_its_timeout_never_blocks_the_prompt() {
     let cmd = common::pty_command(&[], &fixture);
     let mut session = PtySession::spawn(cmd, 160, 45);
     session.wait_for(LANDED, Duration::from_secs(15));
-    // Nothing overwrites this once it lands (no competing writer), so a
-    // plain cumulative-screen `contains` check (inside the helper below) is
-    // exactly as safe as the old `wait_for_since` ordering proof -- the
-    // fixture's own `sleep 30` command produces no output at all, so this
-    // string cannot appear from anywhere else.
     session.send("dogfood-input-liveness-probe");
-    wait_for_pattern_detecting_stalls(
-        &session,
-        "dogfood-input-liveness-probe",
-        Duration::from_millis(100),
-        Duration::from_secs(20),
-        Duration::from_secs(180),
+
+    // Strictly below the fixture's own `timeout_ms` above. A loop awaiting
+    // the subprocess could not answer sooner than that, so this number is a
+    // property of the fixture, not of the machine running it.
+    let delay = session.wait_for_response_to_last_send(Duration::from_secs(8));
+    assert!(
+        delay < Duration::from_secs(8),
+        "the render loop answered the keystroke only after {delay:?}, which is not \
+         distinguishable from waiting on the status-line command"
     );
 }
 

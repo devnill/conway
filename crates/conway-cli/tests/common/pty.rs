@@ -287,6 +287,67 @@ impl PtySession {
         out
     }
 
+    /// Blocks until the child emits at least one byte STRICTLY AFTER the
+    /// most recent [`Self::send`], and returns how long that took.
+    ///
+    /// This is the liveness question asked directly: *did the child answer
+    /// the keystroke at all?* It is what [`Self::wait_for`] cannot be, for
+    /// two independent reasons that have each cost this repository a
+    /// debugging round.
+    ///
+    /// First, it never looks at rendered text, so the partial-redraw trap
+    /// cannot reach it -- a terminal re-emits only the cells that changed,
+    /// so a token already partly on screen never appears contiguously in
+    /// `screen()` again, and a multi-byte keystroke burst that the child
+    /// happens to drain in two reads is drawn as two fragments that no
+    /// `contains` will ever match.
+    ///
+    /// Second, and unlike a wall-clock deadline on rendered text, the
+    /// bound a caller needs here can be derived from the product rather
+    /// than fitted to a machine. If the render loop were genuinely blocked
+    /// on a subprocess, it could not answer until that subprocess ended,
+    /// so any `timeout` shorter than the subprocess's own floor
+    /// discriminates -- and stays discriminating under contention, because
+    /// that floor does not move when the machine is busy.
+    ///
+    /// Panics, dumping the journal, if `timeout` elapses with no answer.
+    /// Asserts rather than returns on "nothing was ever sent": a caller
+    /// asking what the child said in reply to a keystroke that does not
+    /// exist has a bug in the test, not a failure to report.
+    pub fn wait_for_response_to_last_send(&self, timeout: Duration) -> Duration {
+        let sent_at = {
+            let events = self.journal.lock().unwrap_or_else(|e| e.into_inner());
+            events
+                .iter()
+                .rev()
+                .find(|ev| ev.tx)
+                .map(|ev| ev.at)
+                .expect("wait_for_response_to_last_send needs a preceding send")
+        };
+        let start = Instant::now();
+        loop {
+            let answered = {
+                let events = self.journal.lock().unwrap_or_else(|e| e.into_inner());
+                events
+                    .iter()
+                    .find(|ev| !ev.tx && ev.at > sent_at)
+                    .map(|ev| ev.at.saturating_sub(sent_at))
+            };
+            if let Some(delay) = answered {
+                return delay;
+            }
+            if start.elapsed() > timeout {
+                panic!(
+                    "the child emitted NOTHING for {timeout:?} after the last keystroke was \
+                     written -- the render loop never answered it.\n\n\
+                     pty I/O journal:\n{}",
+                    self.io_journal()
+                );
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
     /// The Enter key, alone, in raw terminal input: `CR` (`\r`), not `\n`.
     pub fn send_enter(&mut self) {
         self.send("\r");
