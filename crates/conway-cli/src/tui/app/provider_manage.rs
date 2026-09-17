@@ -178,7 +178,7 @@
 //! resolved value and provenance when one is known
 //! (`AddProviderContextWindowState::current`) rather than a second card.
 //!
-//! **The ruling this item named as open: should `Action::
+//! **The ruling board item `01M2N2HDV9YAFQP5S1ZJKPWE5V` named as open: should `Action::
 //! SubmitProviderContextWindow(String, Option<u32>)` carry an explicit
 //! field distinguishing "accepted the shown value" from "typed the same
 //! number back"?**
@@ -212,14 +212,14 @@
 //! window_for_add`/`confirm_context_window_for_add` already keep their own
 //! THREE-way distinction (probed / verified / assumed-floor) entirely
 //! inside this file and never push it into the `Action` layer either --
-//! this item's ruling generalizes that same existing pattern to a second
+//! that item's ruling generalizes the same existing pattern to a second
 //! call site rather than inventing a new one.
 //!
 //! **Rejected: adding the field anyway, to unify the add-flow's two confirm
 //! surfaces into one** (today: a silent notice for `Known` branches, this
 //! modal only for `AssumedFloor` -- see `confirm_context_window_for_add`'s
 //! own doc). The parent item's own workaround -- never opening the modal
-//! for a `Known` branch -- is landed, tested behavior this item's own "do
+//! for a `Known` branch -- is landed, tested behavior that item's own "do
 //! not weaken or duplicate the confirm behaviour the parent item landed"
 //! constraint forbids touching. If a future item DOES want that
 //! unification, the seam is already visible: give `resolve_context_
@@ -1939,7 +1939,7 @@ mod tests {
         // An already-configured provider whose model conway has already
         // resolved a REAL, sourced window for (`Probed`) -- the shape GP-14
         // requires the row distinguish from an assumed floor, and the shape
-        // this item's own accept-vs-override ruling requires the card
+        // board item `01M2N2HDV9YAFQP5S1ZJKPWE5V`'s accept-vs-override ruling requires the card
         // honestly describe (not "no context window could be established
         // automatically", which would be false here).
         app.state.provider_entries.insert(

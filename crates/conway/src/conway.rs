@@ -1283,7 +1283,7 @@ impl Conway {
     /// runs `CapabilityIndex::from_backends` before step 7's router
     /// selection, and hands a clone of the SAME index to a compiled-in
     /// router factory's own `RouterBuildContext` -- see that struct's own
-    /// doc) -- so [`fill_capability_gaps`] overlays it onto whichever report
+    /// doc) -- so `fill_capability_gaps` overlays it onto whichever report
     /// was produced above, filling in exactly the two fields a producer
     /// could not populate on its own (deliberately not `token_fidelity`/
     /// `cache_reporting` -- see that function's own doc for why). This is
@@ -1291,7 +1291,7 @@ impl Conway {
     /// compiled-in `DeclarativeRouter` already filters admission against
     /// (board item `01M23M2P79R5G28TPGG7PPJQ32`'s "`ContextTokensSource` is
     /// the one resolution path" ruling stands -- see
-    /// [`fill_capability_gaps`]'s own doc for why this never overwrites a
+    /// `fill_capability_gaps`'s own doc for why this never overwrites a
     /// value a real `RoutingExplainer` already set, and so is a no-op for
     /// that path).
     pub fn explain_routing(&self, role: &RoleAlias) -> ExplainReport {

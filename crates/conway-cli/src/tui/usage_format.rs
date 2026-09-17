@@ -17,7 +17,7 @@
 //! supported" are different facts.** `CacheAccounting::NotReported` alone
 //! only says "this turn's response carried no cache field" -- it cannot
 //! say WHY, and collapsing every why into one wording (the pre-existing
-//! defect this item closes) makes a backend whose wire dialect
+//! defect board item `01M2NS0996E139VN5R8W4PGD8V` closes) makes a backend whose wire dialect
 //! STRUCTURALLY NEVER carries a cache field (e.g. Ollama's native
 //! `/api/chat`) look identical to a backend that is declared cache-capable
 //! (`Backend::cache_reporting() == CacheReporting::Reported`, e.g. any
