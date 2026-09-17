@@ -76,13 +76,23 @@
 //!   renders whenever the backend actually reported cache figures
 //!   (`Usage::cache_accounting == Reported`), INCLUDING a genuine `0%` --
 //!   only the denominator being 0 (no cache-relevant tokens processed at
-//!   all yet) omits the parenthetical, leaving bare `<total> tok`. When the
-//!   backend's wire format carries no cache field at all
-//!   (`NotReported` -- e.g. Ollama's native `/api/chat` endpoint), the
-//!   field instead reads `<total> tok (cache: not reported by <backend>)`
-//!   (or the generic `cache: not reported` if the backend id is not at
-//!   hand) rather than a percentage that would misrepresent an
-//!   unobserved figure as a real zero. See
+//!   all yet) omits the parenthetical, leaving bare `<total> tok`. When
+//!   this TURN carried no cache field (`Usage::cache_accounting ==
+//!   NotReported`), board item `01M2NS0996E139VN5R8W4PGD8V` distinguishes
+//!   THREE facts instead of rendering one collapsed wording for all of
+//!   them, keyed off `focused_model_cache_reporting` (the focused
+//!   backend's declared `CacheReporting`, resolved once at startup, never
+//!   re-derived here): `<total> tok (cache: not reported by <backend>)`
+//!   when the backend IS declared cache-capable but simply had a quiet
+//!   turn (transient, actionable); `<total> tok (cache: not supported by
+//!   <backend>)` when the backend's wire format structurally never carries
+//!   a cache field at all (e.g. Ollama's native `/api/chat` endpoint --
+//!   permanent, not actionable); `<total> tok (cache: reporting unknown
+//!   for <backend>)` when the capability itself is unknown to this state.
+//!   Each has a generic form (`cache: not reported`/`not supported`/
+//!   `reporting unknown`, no backend clause) when the backend id is not at
+//!   hand. None of the three is ever a percentage, which would
+//!   misrepresent an unobserved figure as a real zero. See
 //!   `crate::tui::usage_format::cache_suffix`, shared with the turn-end
 //!   summary line.
 //! - `activity` -- T2's working indicator: a braille spinner glyph plus the
@@ -954,16 +964,25 @@ fn ctx_is_assumed_floor(state: &AppState) -> bool {
 
 /// The `tokens` field's text: `<total> tok (<n%> cached)` -- ALWAYS shown,
 /// including `0% cached`, when `usage.cache_accounting` is `Reported` and
-/// the cache denominator is non-zero; `<total> tok (cache: not reported[ by
-/// <backend>])` when the backend's wire format carries no cache field at
-/// all (`NotReported`). `total` is the sum of every `Usage` field (input +
-/// output + both cache dimensions + reasoning). The suffix itself is
+/// the cache denominator is non-zero; otherwise one of THREE distinct
+/// `<total> tok (cache: ...)` wordings (board item
+/// `01M2NS0996E139VN5R8W4PGD8V`) keyed off `state.focused_model_cache_reporting`
+/// -- `not reported[ by <backend>]` (capable, quiet this turn), `not
+/// supported[ by <backend>]` (this backend's wire dialect structurally
+/// never carries a cache field), or `reporting unknown[ for <backend>]`
+/// (the capability itself is unknown to this state). `total` is the sum of
+/// every `Usage` field (input + output + both cache dimensions +
+/// reasoning). The suffix itself is
 /// [`crate::tui::usage_format::cache_suffix`] -- shared with the turn-end
 /// summary's own cache text so the two can never render this differently.
 fn tokens_label(state: &AppState) -> String {
     let usage = &state.focused_agent_usage;
     let total = spent_tokens(usage);
-    let suffix = crate::tui::usage_format::cache_suffix(usage, state.focused_model.as_deref());
+    let suffix = crate::tui::usage_format::cache_suffix(
+        usage,
+        state.focused_model.as_deref(),
+        state.focused_model_cache_reporting,
+    );
     format!("{total} tok{suffix}")
 }
 
@@ -1643,9 +1662,11 @@ mod tests {
         );
     }
 
-    /// The status-line `tokens` field's `NotReported` half: no percentage
-    /// at all, `cache: not reported by <backend>` when the focused model
-    /// is known, else the generic `cache: not reported`.
+    /// The status-line `tokens` field's `NotReported` half, the
+    /// capable-but-quiet-this-turn case: no percentage at all, `cache: not
+    /// reported by <backend>` when the focused model is known AND its
+    /// backend is declared `CacheReporting::Reported`. Board item
+    /// `01M2NS0996E139VN5R8W4PGD8V`.
     #[test]
     fn tokens_field_not_reported_renders_backend_named_text() {
         let mut state = AppState::new(AgentId::new());
@@ -1655,12 +1676,65 @@ mod tests {
             cache_accounting: conway::CacheAccounting::NotReported,
             ..Default::default()
         };
-        state.focused_model = Some("ollama/gemma4:e4b".to_string());
+        state.focused_model = Some("openai/gpt-5".to_string());
+        state.focused_model_cache_reporting = Some(conway::CacheReporting::Reported);
         let line = status_line(&state);
         assert!(
-            line.contains("150 tok (cache: not reported by ollama)"),
-            "NotReported must name the backend, not a percentage: {line}"
+            line.contains("150 tok (cache: not reported by openai)"),
+            "NotReported + capable must name the backend, not a percentage: {line}"
         );
+        assert!(!line.contains("% cached"), "{line}");
+    }
+
+    /// Sibling of the above: the SAME `NotReported` turn, but the backend
+    /// is declared `CacheReporting::NotReported` (its wire dialect
+    /// structurally never carries a cache field, e.g. Ollama's native
+    /// `/api/chat`) -- board item `01M2NS0996E139VN5R8W4PGD8V`'s own
+    /// defect: this must render a DIFFERENT, "not supported" wording, not
+    /// the transient "not reported" text above.
+    #[test]
+    fn tokens_field_not_supported_renders_distinctly_from_not_reported() {
+        let mut state = AppState::new(AgentId::new());
+        state.focused_agent_usage = conway::Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_accounting: conway::CacheAccounting::NotReported,
+            ..Default::default()
+        };
+        state.focused_model = Some("ollama/gemma4:e4b".to_string());
+        state.focused_model_cache_reporting = Some(conway::CacheReporting::NotReported);
+        let line = status_line(&state);
+        assert!(
+            line.contains("150 tok (cache: not supported by ollama)"),
+            "structurally incapable must render 'not supported', not 'not reported': {line}"
+        );
+        assert!(!line.contains("cache: not reported"), "{line}");
+        assert!(!line.contains("% cached"), "{line}");
+    }
+
+    /// Third sibling: the focused backend's `CacheReporting` is unknown to
+    /// this state (never set, e.g. no `ModelDecision` observed yet for a
+    /// configured backend) -- a THIRD, distinct wording, folded into
+    /// neither of the other two.
+    #[test]
+    fn tokens_field_unknown_capability_renders_a_third_distinct_wording() {
+        let mut state = AppState::new(AgentId::new());
+        state.focused_agent_usage = conway::Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_accounting: conway::CacheAccounting::NotReported,
+            ..Default::default()
+        };
+        state.focused_model = Some("ollama/gemma4:e4b".to_string());
+        // `focused_model_cache_reporting` left at its `AppState::new`
+        // default of `None`.
+        let line = status_line(&state);
+        assert!(
+            line.contains("150 tok (cache: reporting unknown for ollama)"),
+            "unknown capability must render a third wording: {line}"
+        );
+        assert!(!line.contains("cache: not reported"), "{line}");
+        assert!(!line.contains("cache: not supported"), "{line}");
         assert!(!line.contains("% cached"), "{line}");
     }
 

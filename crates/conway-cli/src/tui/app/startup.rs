@@ -694,6 +694,17 @@ impl App {
         let capability_index = conway.capability_index();
         let mut model_max_context = std::collections::HashMap::new();
         let mut model_max_context_source = std::collections::HashMap::new();
+        // Board item `01M2NS0996E139VN5R8W4PGD8V`: `Backend::cache_reporting`
+        // is a per-BACKEND declaration, not per-`(backend, model)` like
+        // `Capabilities` -- see `AppState::model_cache_reporting`'s own doc
+        // for why this map is keyed on the bare backend id rather than the
+        // `"backend/model"` string `model_max_context` uses. Built from the
+        // SAME `capability_index` this loop already resolved above (no
+        // second index, no probe); a backend id may be visited more than
+        // once here (once per model naming it in `models.json`) but each
+        // visit inserts the identical already-resolved value, so this is
+        // idempotent, not a second source of truth.
+        let mut model_cache_reporting = std::collections::HashMap::new();
         for key in conway.model_metadata().models.keys() {
             let Ok(model_ref) = key.parse::<ModelRef>() else {
                 continue;
@@ -704,9 +715,13 @@ impl App {
             if let Some(source) = capability_index.context_window_source(&model_ref) {
                 model_max_context_source.insert(key.clone(), source);
             }
+            if let Some(reporting) = capability_index.cache_reporting(&model_ref.backend) {
+                model_cache_reporting.insert(model_ref.backend.to_string(), reporting);
+            }
         }
         state.model_max_context = model_max_context;
         state.model_max_context_source = model_max_context_source;
+        state.model_cache_reporting = model_cache_reporting;
         // T3: read the current git branch once at startup (best-effort,
         // no polling). On any failure (not a repo, git absent, non-UTF8
         // output) -> `None`, and the status line's `git` field is omitted.

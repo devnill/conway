@@ -815,6 +815,23 @@ pub struct AppState {
     /// `focused_model_max_context` is `None`. Reset to `None` on
     /// [`Self::focus_agent`], alongside its sibling.
     pub focused_model_max_context_source: Option<conway::ContextTokensSource>,
+    /// Board item `01M2NS0996E139VN5R8W4PGD8V` (cache-suffix wording):
+    /// the focused model's backend's declared `CacheReporting` -- looked up
+    /// from [`Self::model_cache_reporting`] at the same `Event::
+    /// ModelDecision` site [`Self::focused_model_max_context_source`] is,
+    /// but keyed by BACKEND ID ALONE (`ModelRef::backend`), not the full
+    /// `"backend/model"` string -- `CacheReporting` is a `Backend`-level
+    /// declaration (`Backend::cache_reporting`'s own doc), not a
+    /// per-`(backend, model)` fact like the context window, so there is no
+    /// bare-model-id fallback here: the key is unambiguous already. `None`
+    /// when [`Self::model_cache_reporting`] has no entry for the focused
+    /// backend (its id was never configured/injected) -- distinct from,
+    /// and never collapsed into, either declared `CacheReporting` variant
+    /// (`crate::tui::usage_format::cache_suffix`'s own doc: a candidate
+    /// this state could not ask is not the same fact as one that answered
+    /// either way). Reset to `None` on [`Self::focus_agent`], alongside its
+    /// `focused_model_max_context*` siblings.
+    pub focused_model_cache_reporting: Option<conway::CacheReporting>,
     /// T3: the focused agent's cumulative context-occupancy estimate, the
     /// deduped-by-`SegmentId` sum of every
     /// `Event::ContextSegmentAdded { tokens_est }` observed on the focused
@@ -916,6 +933,18 @@ pub struct AppState {
     /// per-focused-agent projection) to decide whether to append the
     /// "floor (assumed)" marker -- see `view::status::ctx_label`'s own doc.
     pub model_max_context_source: HashMap<String, conway::ContextTokensSource>,
+    /// Board item `01M2NS0996E139VN5R8W4PGD8V`: `"backend"` (bare backend
+    /// id, NOT `"backend/model"` -- see [`Self::focused_model_cache_reporting`]'s
+    /// own doc for why the key shape differs from [`Self::model_max_context`])
+    /// -> that backend's declared [`conway::CacheReporting`], derived once
+    /// at `App::new` from `Conway::capability_index().cache_reporting`, the
+    /// SAME already-resolved index [`Self::model_max_context`] reads.
+    /// `apply`'s `ModelDecision` arm looks up the chosen model's backend id
+    /// here to set [`Self::focused_model_cache_reporting`]. Empty when the
+    /// builder found no capability index entry for a configured backend --
+    /// the status line then falls back to the "capability unknown" cache
+    /// wording rather than fabricating one.
+    pub model_cache_reporting: HashMap<String, conway::CacheReporting>,
     /// T4: whether reasoning-trace entries ([`Entry::Reasoning`]) are
     /// rendered in the transcript. Defaults `true` (reasoning EXPANDED by
     /// default) -- the user opts OUT from the `/settings` menu's "show
@@ -1474,6 +1503,7 @@ impl AppState {
             focused_model: None,
             focused_model_max_context: None,
             focused_model_max_context_source: None,
+            focused_model_cache_reporting: None,
             focused_ctx_tokens: 0,
             focused_seen_segments: HashSet::new(),
             git_branch: None,
@@ -1482,6 +1512,7 @@ impl AppState {
             tool_preview_lines: 3,
             model_max_context: HashMap::new(),
             model_max_context_source: HashMap::new(),
+            model_cache_reporting: HashMap::new(),
             show_reasoning: true,
             show_timestamps: false,
             history: VecDeque::new(),
@@ -1600,6 +1631,7 @@ impl AppState {
         self.focused_model = None;
         self.focused_model_max_context = None;
         self.focused_model_max_context_source = None;
+        self.focused_model_cache_reporting = None;
         self.focused_ctx_tokens = 0;
         self.focused_seen_segments.clear();
     }
@@ -1983,9 +2015,20 @@ impl AppState {
                                 .get(chosen.model.as_str())
                                 .copied()
                         });
+                    // Board item `01M2NS0996E139VN5R8W4PGD8V`: keyed on the
+                    // bare backend id alone (`model_cache_reporting`'s own
+                    // doc) -- no bare-model-id fallback needed, unlike
+                    // `max`/`source` above, since the key here was never
+                    // ambiguous with a `"backend/model"` string to begin
+                    // with.
+                    let cache_reporting = self
+                        .model_cache_reporting
+                        .get(chosen.backend.as_str())
+                        .copied();
                     self.focused_model = Some(name);
                     self.focused_model_max_context = max;
                     self.focused_model_max_context_source = source;
+                    self.focused_model_cache_reporting = cache_reporting;
 
                     // Board item A1d ("say why a turn fell back"): a
                     // one-line dim notice on the turn itself, not only
