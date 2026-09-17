@@ -182,14 +182,24 @@ fn finish_with_schema_invalid_arguments_names_the_failing_schema_path() {
 }
 
 #[test]
-fn finish_with_unknown_tool_name_contains_unknown_tool() {
+fn finish_with_unknown_tool_name_names_the_scope_not_nonexistence() {
     let specs = [read_tool()];
     let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     feed(&mut accumulator, &fixture_lines("unknown_tool.txt"));
     let err = accumulator.finish(StopReason::ToolUse).unwrap_err();
     match err {
         conway_core::error::BackendError::ToolParse { detail } => {
-            assert!(detail.contains("unknown tool"), "{detail}");
+            // Board item `01M2NSJ0ADSTADK536GHQ7BTB6`: `specs` is this
+            // turn's own announced set (one tool, `read`, here), not a
+            // wider registry -- the message must say the name is not
+            // among what THIS turn carried, never claim it doesn't exist
+            // anywhere (a real tool simply excluded from announcement
+            // would read identically to a genuine hallucination under the
+            // old "unknown tool" wording).
+            assert!(
+                detail.contains("not among the 1 tool(s) available to this turn"),
+                "{detail}"
+            );
         }
         other => panic!("expected ToolParse, got {other:?}"),
     }

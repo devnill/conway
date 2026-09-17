@@ -1,0 +1,3 @@
+### Fixed
+
+- **A malformed tool call naming a tool that was never announced this turn no longer says "unknown tool"** — board item `01M2NSJ0ADSTADK536GHQ7BTB6`. `conway-plugin-backends`' `ToolCallAccumulator::finish` and `SchemaValidator::validate` only ever hold the tool set the CURRENT turn's request carried, never the full registry, so they could not tell a genuine hallucination apart from a real, registered tool that simply was not offered this turn (narrowed out by a `tools` selector, a role's `[roles.<alias>.tools]` filter, or a `ContextHook`); the error now reads `tool \`{name}\` is not among the {N} tool(s) available to this turn` instead of implying the name does not exist anywhere.

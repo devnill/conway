@@ -374,8 +374,27 @@ impl ToolCallAccumulator {
             })?;
             let tool_name = ToolName::new(name.clone());
             if !specs.contains_key(&tool_name) {
+                // Deliberately NOT "unknown tool" (board item
+                // `01M2NSJ0ADSTADK536GHQ7BTB6`): `specs` is this TURN's
+                // announced set, not a registry of every tool that could
+                // ever exist -- a name absent here may be a genuine
+                // hallucination, or it may be a real, registered tool this
+                // turn simply was not offered (a narrower `AgentSpec.tools`
+                // selector, a role's `[roles.<alias>.tools]` filter, or a
+                // `ContextHook::before_request` announcement edit all
+                // legitimately shrink `specs` below the full registry).
+                // This type has no handle on that wider registry to name
+                // WHICH mechanism excluded it (`conway-runtime`'s own
+                // `PluginRegistry` never reaches this crate), so the
+                // honest claim is scope, not existence: `name` is not
+                // among the tools this turn's own request carried, full
+                // stop -- never "does not exist".
                 return Err(BackendError::ToolParse {
-                    detail: format!("unknown tool `{name}` at index {index}"),
+                    detail: format!(
+                        "tool `{name}` is not among the {} tool(s) available to this turn \
+                         (index {index})",
+                        specs.len()
+                    ),
                 });
             }
             // Computed BEFORE validation (not just before pushing the
