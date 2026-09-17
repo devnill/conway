@@ -310,10 +310,48 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
     })
 }
 
+/// Resolves when `deadline` is reached; never resolves for `None`.
+///
+/// **A deadline already in the past is a bug, and says so** (board item
+/// `01M2RDGVXFJ09DE9GM982HC23A`). `(dl - Utc::now()).to_std()` fails on a
+/// negative duration, and collapsing that to `Duration::ZERO` makes a
+/// budget that arrived *pre-expired* completely indistinguishable from one
+/// that genuinely ran out of time: both terminate the agent instantly, with
+/// the same `deadline=` result, blaming the backend for being slow when
+/// nothing ever got the chance to be slow. A rare one-shot failure was
+/// diagnosed wrongly twice for exactly that reason.
+///
+/// A budget is built as `now + limit` at the moment a run starts
+/// (`oneshot::resolve_budget`, `Conway::default_budget`), so a deadline in
+/// the past at the instant supervision BEGINS cannot be a legitimate
+/// expiry -- it means a stale or mis-derived `Budget` reached the agent.
+/// That is logged at `warn`, naming how far past it already was, so the
+/// next occurrence is attributable from a log instead of requiring the
+/// failure to be caught live under a debugger.
+///
+/// Deliberately warns rather than panicking or refusing to terminate.
+/// Panicking would convert a rare, not-yet-understood defect into a hard
+/// CI failure on a path that is otherwise behaving safely, and continuing
+/// to terminate is still the correct conservative action for a budget this
+/// process cannot vouch for -- the open half of that board item is *where
+/// the bad deadline comes from*, which this does not attempt to answer.
 async fn deadline_sleep(deadline: Option<DateTime<Utc>>) {
     match deadline {
         Some(dl) => {
-            let remaining = (dl - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+            let left = dl - Utc::now();
+            let remaining = match left.to_std() {
+                Ok(remaining) => remaining,
+                Err(_negative) => {
+                    tracing::warn!(
+                        deadline = %dl,
+                        past_by_ms = left.num_milliseconds().abs(),
+                        "agent deadline was already in the past when supervision began -- this \
+                         is a stale or mis-derived Budget, not a genuine timeout; the agent \
+                         will be terminated immediately and its result will name this deadline"
+                    );
+                    Duration::ZERO
+                }
+            };
             tokio::time::sleep(remaining).await;
         }
         None => pending::<()>().await,
