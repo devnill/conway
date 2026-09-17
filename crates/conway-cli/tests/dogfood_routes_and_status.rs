@@ -57,7 +57,7 @@ mod common;
 #[path = "common/mcp_fixtures.rs"]
 mod mcp_fixtures;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::mock_backend::{MockBackend, Script};
 use common::pty::PtySession;
@@ -485,14 +485,115 @@ async fn status_line_command_output_refreshes_in_the_live_tui() {
     session.wait_for_since("BBBBB", first, Duration::from_secs(10));
 }
 
+/// A liveness-shaped wait for
+/// `status_line_command_stuck_past_its_timeout_never_blocks_the_prompt`,
+/// not a deadline-shaped one (board item `01M2PK42A4EJ523W7QTQX4VZ75`). Used
+/// by that test alone. (Plain code span, not an intra-doc link: both this
+/// function and that test are private items in a test binary, an
+/// unnecessary risk for the doc-gate to resolve when a code span says the
+/// same thing.)
+///
+/// **Why this exists.** Three flat wall-clock deadlines on that test (3s,
+/// 20s, 60s) each failed once `cargo test --workspace` / `-p conway-cli
+/// --all-features` put this test binary in competition with dozens of
+/// others for CPU -- consuming the ENTIRE budget every time, never failing
+/// early. That is the signature of a wall clock racing scheduling
+/// contention, not of a genuinely blocked loop: under enough contention
+/// every finite deadline is reachable by a loop that is merely starved, not
+/// stuck. A wall-clock deadline cannot tell the two apart; this waits on
+/// PROGRESS instead, which can.
+///
+/// **The mechanism this leans on.** `crates/conway-cli/src/tui/app/run.rs`'s
+/// `tokio::select!` never awaits the status-line subprocess at all:
+/// `conway::Conway::poll_plugin_status_contributions` (`crates/conway/src/
+/// conway.rs`) is a `flat_map` over an uncontended `Mutex::lock` with no
+/// I/O; `tui/app/plugin_status.rs::refresh_plugin_status_contributions` is
+/// deliberately a plain (non-`async`) fn wrapping that call, called
+/// directly and synchronously inside the `select!`, never spawned or
+/// awaited; and `conway_plugin_statusline::run_once` (the crate that
+/// actually spawns and times out the configured command) runs on its OWN
+/// background task, publishing into that same mutex -- `Plugin::
+/// status_contributions` "never spawns, never blocks on the subprocess,
+/// returns instantly," per that crate's own doc and its own
+/// `status_contributions_never_blocks_while_a_slow_run_is_in_flight` /
+/// `a_command_that_times_out_leaves_the_previous_good_value_visible_while_in_flight`
+/// unit tests. A stuck status-line command is therefore structurally
+/// unreachable from the input/render path this test exercises -- which is
+/// exactly why a load-sensitive wall clock, not a real block, is the
+/// likelier explanation for three deadlines failing only under contention
+/// and passing in isolation every time (suite alone: 2.64s).
+///
+/// **What this actually checks.** A live render loop draws at least once
+/// shortly after the keystrokes below flip `dirty` -- the very next
+/// `REDRAW_TICK`, however delayed by scheduling, paints them, and (for this
+/// fixture) the status-line command's own 10s `timeout_ms` expiring is a
+/// SECOND, independent source of a redraw shortly after that. So any
+/// `max_stall`-length stretch with the pty's accumulated output byte count
+/// completely unchanged means nothing was drawn in that whole window --
+/// starvation stretches the GAPS between draws, but cannot erase the draws
+/// themselves. `overall_ceiling` is a backstop only, generous enough to
+/// never be the binding constraint for a live loop; `max_stall` is the real
+/// failure signal, and fires far sooner than any of the three retired flat
+/// deadlines did.
+///
+/// **P-15 (this must still catch a real block).** If the render loop were
+/// ever made to genuinely await the subprocess on the key/redraw path, NO
+/// further output would ever be drawn once that await started -- byte
+/// growth would stop dead, `max_stall` would elapse with zero progress, and
+/// this panics. See that test's own module-level note for the exact stub
+/// (`run.rs`'s `CEvent::Key` arm, a fake multi-second block before `dirty =
+/// true`) a build lane can apply to observe this go red, then revert.
+fn wait_for_pattern_detecting_stalls(
+    session: &PtySession,
+    pattern: &str,
+    poll_interval: Duration,
+    max_stall: Duration,
+    overall_ceiling: Duration,
+) {
+    let start = Instant::now();
+    let mut last_len = 0usize;
+    let mut last_progress = Instant::now();
+    loop {
+        let screen = session.screen();
+        if screen.contains(pattern) {
+            return;
+        }
+        if screen.len() != last_len {
+            last_len = screen.len();
+            last_progress = Instant::now();
+        } else if last_progress.elapsed() > max_stall {
+            panic!(
+                "render loop produced NO new output for {max_stall:?} (total elapsed {:?}) \
+                 while waiting for {pattern:?} -- this is a STALL, not mere slowness: a live \
+                 loop draws at least once shortly after input lands. Captured screen so \
+                 far:\n{screen}",
+                start.elapsed()
+            );
+        }
+        if start.elapsed() > overall_ceiling {
+            panic!(
+                "exceeded the {overall_ceiling:?} backstop waiting for {pattern:?}, despite \
+                 ongoing output growth (last change {:?} ago) -- captured screen so far:\n{screen}",
+                last_progress.elapsed()
+            );
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
 /// "A command that sleeps past its timeout: the UI never blocks -- the
 /// prompt still accepts input while it runs." Types a distinctive string
 /// right after landing, while a `sleep 30` status-line command (given a
 /// generous 10s `timeout_ms`, so it is still genuinely in-flight) is
-/// running, and confirms the typed text echoes back almost immediately --
-/// proving the render/input loop was never waiting on the subprocess.
+/// running, and confirms the typed text echoes back -- proving the
+/// render/input loop was never waiting on the subprocess. Waits via
+/// `wait_for_pattern_detecting_stalls` rather than a flat deadline -- see
+/// that helper's own doc for why (board item `01M2PK42A4EJ523W7QTQX4VZ75`:
+/// three flat deadlines -- 3s, 20s, 60s -- each consumed their ENTIRE
+/// budget under contention while every code path this test exercises is
+/// non-blocking by construction; a progress-based wait is what a wall clock
+/// cannot be).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2PK42A4EJ523W7QTQX4VZ75: the liveness probe has now failed at 3s, 20s and 60s, each under heavier load, while passing in isolation (suite 2.64s). Unresolved whether this is an inherently load-sensitive wall-clock assertion or the render-loop block the test exists to catch -- do not raise the deadline a fourth time."]
 async fn status_line_command_stuck_past_its_timeout_never_blocks_the_prompt() {
     let mock = MockBackend::start(Script(vec![])).await;
     let fixture = common::write_fixture(&mock, 5);
@@ -510,24 +611,19 @@ async fn status_line_command_stuck_past_its_timeout_never_blocks_the_prompt() {
 
     let cmd = common::pty_command(&[], &fixture);
     let mut session = PtySession::spawn(cmd, 160, 45);
-    let landed = session.wait_for(LANDED, Duration::from_secs(15));
-    // 20s, not the 3s this originally used. This bounds how long we wait
-    // before declaring the prompt dead; it does NOT race a competing writer,
-    // because nothing overwrites the echoed probe text once it lands. So a
-    // generous deadline cannot change the answer, only how patiently we wait
-    // for it -- unlike a timeout that arbitrates between two events, where a
-    // bigger number moves the failure threshold without removing the race.
-    // Measured 2026-09-16: 3s failed 1 run in 20 on a cold binary; 20s then
-    // failed under full-workspace parallelism, where dozens of test binaries
-    // compete for CPU and a TUI render loop is not scheduled promptly. 60s is
-    // deliberately far past any plausible healthy latency: the ONLY cost of a
-    // generous bound here is how long a genuine hang takes to report, and a
-    // hang is what this test exists to catch.
+    session.wait_for(LANDED, Duration::from_secs(15));
+    // Nothing overwrites this once it lands (no competing writer), so a
+    // plain cumulative-screen `contains` check (inside the helper below) is
+    // exactly as safe as the old `wait_for_since` ordering proof -- the
+    // fixture's own `sleep 30` command produces no output at all, so this
+    // string cannot appear from anywhere else.
     session.send("dogfood-input-liveness-probe");
-    session.wait_for_since(
+    wait_for_pattern_detecting_stalls(
+        &session,
         "dogfood-input-liveness-probe",
-        landed,
-        Duration::from_secs(60),
+        Duration::from_millis(100),
+        Duration::from_secs(20),
+        Duration::from_secs(180),
     );
 }
 
