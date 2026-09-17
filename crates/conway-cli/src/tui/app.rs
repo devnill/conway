@@ -746,6 +746,49 @@ mod tests {
         );
     }
 
+    /// Board item `01M2PGS1GGNDNSA0A6E074G4VF`: two consecutive `/model`
+    /// switches through `App::submit`, the second taken off the child the
+    /// first produced. Measured in the pty: switch #1 renders its notice and
+    /// switch #2 produces nothing at all, with a successful turn in between.
+    ///
+    /// `commands::execute` is already proven innocent
+    /// (`a_second_model_switch_off_the_first_switchs_child_also_forks_and_
+    /// stages_a_notice`). This narrows the search one layer further: if BOTH
+    /// submits here return `FocusNewSession`, the loss is in `App::run`'s
+    /// dispatch or the pty harness, not in `submit`.
+    #[tokio::test]
+    async fn two_consecutive_model_switches_both_reach_focus_new_session() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let first = app
+            .submit("/model echo/echo-model".to_string())
+            .await
+            .expect("first switch should not error");
+        let first_child = match first {
+            SubmitOutcome::FocusNewSession { child, .. } => child,
+            _ => panic!("first /model must yield FocusNewSession"),
+        };
+
+        // What `run` does next with that outcome.
+        app.try_focus_agent(first_child, None).await;
+
+        let second = app
+            .submit("/model echo/echo-model".to_string())
+            .await
+            .expect("second switch should not error");
+        assert!(
+            matches!(second, SubmitOutcome::FocusNewSession { .. }),
+            "a SECOND /model, taken off the first switch's own child, must also \
+             yield FocusNewSession -- if this fails, the loss is in `submit`; if \
+             it passes, the loss is downstream in `run`'s dispatch or the pty \
+             harness"
+        );
+    }
+
     /// This item's own end-to-end acceptance test: "a prompt appears exactly
     /// once in the transcript -- not zero, not twice" (the regression the
     /// removal of `submit`'s local `Entry::User` push risks).
