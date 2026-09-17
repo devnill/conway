@@ -761,8 +761,8 @@ mod tests {
     /// This lives on `submit` rather than on `Event::UserTurn` for a reason
     /// that cost a debugging round: focusing a child REPLAYS that agent's
     /// history, so a replayed `UserTurn` would clear a notice staged by the
-    /// very switch that just focused it -- and the operator would see
-    /// nothing at all, which is the exact symptom this item is about.
+    /// very switch that just focused it, so the operator would see nothing
+    /// at all: the exact symptom `01M2PGS1GGNDNSA0A6E074G4VF` reports.
     #[tokio::test]
     async fn a_real_submit_drops_the_staged_switch_notice() {
         let conway = echo_conway();

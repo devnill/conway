@@ -703,12 +703,16 @@ pub struct AppState {
     /// parent's leftover text). A plain `notice()` push before that clear
     /// would be wiped before the run loop's single `if dirty` redraw ever
     /// sees it; parking the text here instead and having
-    /// `try_focus_agent` take and re-push it AFTER the clear is what keeps
-    /// it alive for that first frame. `None` for every focus switch that is
-    /// NOT a `/model`/`/role` switch (bare `/fork`, `/spawn`, `/resume`,
-    /// plain re-focus) -- those paths never set this field, so
-    /// `try_focus_agent`'s post-clear check is a no-op for them, exactly
+    /// [`Self::focus_agent`] re-push it immediately after its OWN clear is
+    /// what keeps it alive for that first frame. `None` for every focus
+    /// switch that is NOT a `/model`/`/role` switch (bare `/fork`,
+    /// `/spawn`, `/resume`, plain re-focus) -- those paths never set this
+    /// field, so the post-clear re-push is a no-op for them, exactly
     /// preserving `focus_agent`'s "child's own log only" guarantee.
+    ///
+    /// Cleared by `App::submit`, not by `Event::UserTurn`: focusing a child
+    /// REPLAYS its history, so a replayed `UserTurn` would drop a notice
+    /// staged by the very switch that just focused it.
     pub pending_focus_notice: Option<String>,
     /// What an operator-typed `--role`/`--model` flag on `/spawn`/`/fork`
     /// named for a child, keyed by the child's own `AgentId` --
@@ -1607,14 +1611,12 @@ impl AppState {
         self.transcript.clear();
         // Board item `01M2PGS1GGNDNSA0A6E074G4VF`: re-push the staged switch
         // notice after EVERY clear, and do not consume it here. A single
-        // switch can drive more than one focus transition -- measured
-        // 2026-09-17, where the first `/model` switch rendered its notice and
-        // the second did not, leaving the transcript cleared and empty. A
+        // switch can drive more than one focus transition, and a
         // consume-once re-push at the `try_focus_agent` call site survives
         // exactly one clear; re-pushing from inside `focus_agent` survives
-        // however many actually occur, because this is the only function that
-        // clears. `Entry::UserTurn`'s own arm drops the staged text, so it
-        // cannot leak into a later, unrelated focus change.
+        // however many actually occur, because this is the only function
+        // that clears. `App::submit` drops the staged text, so it cannot
+        // leak into a later, unrelated focus change.
         if let Some(text) = self.pending_focus_notice.clone() {
             self.transcript.push(Entry::Notice { text });
         }

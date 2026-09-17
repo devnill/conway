@@ -486,26 +486,49 @@ async fn fallback_notice_and_why_name_the_skipped_candidate_with_its_numbers() {
 /// machinery the cited unit test exercises by hand; that is what this test
 /// proves instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2PGS1GGNDNSA0A6E074G4VF: switch #1 renders its notice, switch #2 renders nothing. commands::execute, App::submit, the notice staging, and run.rs's dispatch arm are each eliminated by test or by reading -- see the item for the full list and for two hypotheses (mid-turn refusal, replayed UserTurn) that were tried and REFUTED. The next step is observing the live child, not more reading."]
 async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
+    // Replies that share no character in any column, for the same
+    // partial-redraw reason the model names below do: `on-b` -> `on-c`
+    // would differ in exactly one cell, and a terminal re-emits only the
+    // cells that changed.
     let mock = MockBackend::start(Script(vec![
-        vec![Chunk::Text("on-a"), Chunk::Finish("stop")],
-        vec![Chunk::Text("on-b"), Chunk::Finish("stop")],
-        vec![Chunk::Text("on-c"), Chunk::Finish("stop")],
-        vec![Chunk::Text("on-d"), Chunk::Finish("stop")],
+        vec![Chunk::Text("AAAA"), Chunk::Finish("stop")],
+        vec![Chunk::Text("BBBB"), Chunk::Finish("stop")],
+        vec![Chunk::Text("CCCC"), Chunk::Finish("stop")],
+        vec![Chunk::Text("DDDD"), Chunk::Finish("stop")],
     ]))
     .await;
-    let fixture = write_multi_model_fixture(
-        &mock.base_url,
-        &["model-a", "model-b", "model-c", "model-d"],
-    );
+    // Model names that share NO characters in the same column. This is
+    // load-bearing, and the pty I/O journal is what proved it: with
+    // `model-a`/`model-b`/... the notice DOES render, but the terminal
+    // redraws only the cells that changed, so switching b -> c emits
+    // literally one byte --
+    //
+    //     RX <- \e[1;30H \e[38;5;6;49m c \e[1;41H K6XDQSHQ4MS7VMF22H ...
+    //
+    // -- a cursor move to column 30 and the single character `c`, because
+    // `switched model to mock/model-` was already on screen. The awaited
+    // string `"switched model to mock/model-c"` therefore never appears
+    // contiguously in the byte stream, and no timeout could ever have
+    // fixed that. All-different names force the whole NAME to be
+    // rewritten, exactly as `dogfood_routes_and_status.rs`'s own
+    // AAAAA/BBBBB status tokens do for the same reason.
+    //
+    // They do not, however, make the whole NOTICE contiguous: the journal
+    // showed the b -> c redraw as `\e[1;24H\e[38;5;6;49mcccccc\e[1;40H...`,
+    // i.e. the constant prefix `switched model to mock/` is still skipped
+    // because it has not changed. The bare name is therefore the longest
+    // token this harness can ever await for a repeat switch, and that is
+    // what the loop below waits on.
+    let fixture =
+        write_multi_model_fixture(&mock.base_url, &["aaaaaa", "bbbbbb", "cccccc", "dddddd"]);
 
     let cmd = common::pty_command(&[], &fixture);
     let mut session = PtySession::spawn(cmd, 160, 45);
     let mut since = session.wait_for(LANDED, Duration::from_secs(15));
 
     session.send("hi\r");
-    since = session.wait_for_since("on-a", since, Duration::from_secs(15));
+    since = session.wait_for_since("AAAA", since, Duration::from_secs(15));
     // Wait for the ACTIVITY field to return to `idle` before sending the
     // next command -- an earlier version of this test sent `/model`
     // immediately once the reply TEXT landed on screen, which races
@@ -523,24 +546,16 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
     // event it caused -- has settled.
     since = session.wait_for_since("idle", since, Duration::from_secs(15));
 
-    for (from, to) in [
-        ("model-a", "model-b"),
-        ("model-b", "model-c"),
-        ("model-c", "model-d"),
-    ] {
-        let _ = from;
+    for (to, reply) in [("bbbbbb", "BBBB"), ("cccccc", "CCCC"), ("dddddd", "DDDD")] {
         session.send(&format!("/model mock/{to}\r"));
-        since = session.wait_for_since(
-            &format!("switched model to mock/{to}"),
-            since,
-            Duration::from_secs(15),
-        );
+        // The bare name, not `switched model to mock/{to}` -- see the
+        // partial-redraw note on the fixture above. The name alone is
+        // still specific to this switch: no earlier frame can have
+        // contained it, because `to` is a model this session has not used
+        // yet.
+        since = session.wait_for_since(to, since, Duration::from_secs(15));
         session.send("hi\r");
-        since = session.wait_for_since(
-            &format!("on-{}", &to[to.len() - 1..]),
-            since,
-            Duration::from_secs(15),
-        );
+        since = session.wait_for_since(reply, since, Duration::from_secs(15));
         since = session.wait_for_since("idle", since, Duration::from_secs(15));
     }
 
@@ -548,23 +563,25 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
     // three explicit `/model` switches -- `render_why`'s `history.len() >
     // 2` branch, proven by its own distinctive count line.
     session.send("/why\r");
+    let why_from = since;
     since = session.wait_for_since(
         "routing history (4 decisions this session):",
         since,
         Duration::from_secs(10),
     );
     let _ = since;
+    // Only the bytes emitted AFTER `/why` was sent. `screen()` is the whole
+    // accumulated stream, and every one of these names has already crossed
+    // it once (each was the active model for a turn), so asserting against
+    // the full buffer would pass no matter what `/why` printed.
     let screen = session.screen();
-    for model in [
-        "mock/model-a",
-        "mock/model-b",
-        "mock/model-c",
-        "mock/model-d",
-    ] {
+    let why_output = &screen[why_from.min(screen.len())..];
+    for model in ["aaaaaa", "bbbbbb", "cccccc", "dddddd"] {
         assert!(
-            screen.contains(model),
+            why_output.contains(model),
             "/why's history must still name every model this session actually ran on, \
-             including the ones later switches replaced -- missing {model}. Screen:\n{screen}"
+             including the ones later switches replaced -- missing {model}. \
+             /why output:\n{why_output}"
         );
     }
 }

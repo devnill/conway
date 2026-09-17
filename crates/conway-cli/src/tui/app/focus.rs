@@ -74,13 +74,16 @@ impl App {
     /// no trace in the transcript. `None` for the plain `Action::FocusAgent`
     /// call site, which has no message riding along.
     ///
-    /// Board item `01M2PGS1GGNDNSA0A6E074G4VF`: also takes
-    /// `state.pending_focus_notice` (unconditionally, before either arm
-    /// below runs) and re-pushes it onto `transcript` AFTER `focus_agent`'s
-    /// clear on the `Ok` path -- see that field's own doc for why a direct
-    /// push from `switch_session` can never survive to a frame. Re-pushed
-    /// on the `Err` path too (before the failure notice), since the switch
-    /// that set it already succeeded; only this resubscribe failed.
+    /// Board item `01M2PGS1GGNDNSA0A6E074G4VF`: on the `Ok` path this does
+    /// NOTHING with `state.pending_focus_notice` -- `AppState::focus_agent`
+    /// re-pushes it itself, immediately after its own `transcript.clear()`,
+    /// so the notice survives however many clears one switch actually
+    /// causes rather than only the first. See that field's own doc for why
+    /// a direct push from `switch_session` can never survive to a frame.
+    /// The `Err` arm below still TAKES it explicitly and pushes it before
+    /// the failure notice: no clear happens on that path, so nothing else
+    /// would surface it, and the switch that set it really did succeed --
+    /// only this resubscribe failed.
     pub(super) async fn try_focus_agent(
         &mut self,
         agent: conway::AgentId,
@@ -838,8 +841,8 @@ mod tests {
             app.state.pending_focus_notice,
             Some(switch_text.clone()),
             "the staged notice must survive the focus so `focus_agent` can \
-             re-push it after any further clear; `Event::UserTurn` is what \
-             ends its life"
+             re-push it after any further clear; `App::submit` is what ends \
+             its life"
         );
         assert!(
             !app.state

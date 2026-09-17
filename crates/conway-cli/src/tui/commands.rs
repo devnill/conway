@@ -1981,9 +1981,9 @@ async fn bare_fork<H: Host>(
 /// try_focus_agent`, which clears `transcript` (`AppState::focus_agent`'s
 /// own doc: a freshly-focused child must show ONLY its own log) before the
 /// run loop's single `if dirty` redraw ever runs -- a direct push here
-/// would be destroyed before it is ever drawn. `try_focus_agent` takes
-/// `pending_focus_notice` back out and re-pushes it AFTER that clear; see
-/// that field's own doc.
+/// would be destroyed before it is ever drawn. `focus_agent` re-pushes
+/// `pending_focus_notice` itself, immediately after that clear, on every
+/// clear it performs; see that field's own doc.
 async fn switch_session<H: Host>(
     state: &mut AppState,
     host: &H,
@@ -8191,8 +8191,10 @@ mod tests {
         // clears the transcript before the run loop's single `if dirty`
         // redraw -- so a direct push here was destroyed before it was ever
         // drawn, and `/model` gave the operator no feedback at all.
-        // `try_focus_agent` takes this back out and re-pushes it after the
-        // clear; that half is pinned by `focus.rs`'s own unit tests.
+        // `focus_agent` re-pushes this after its own clear -- after EVERY
+        // clear, since one switch can drive more than one focus transition;
+        // that half is pinned by `state.rs`'s and `focus.rs`'s own unit
+        // tests.
         assert!(matches!(
             state.pending_focus_notice.as_deref(),
             Some(text)
