@@ -146,9 +146,14 @@ impl SchemaValidator {
     /// attempting the narrow coercion this module's own doc describes when
     /// validation fails. `ToolCallAccumulator::finish` already checks
     /// `name` against the known-tool set before calling this (to produce
-    /// the exact "unknown tool" message it owns); the `unknown tool` branch
-    /// below is a defensive fallback, not the primary path for that
-    /// criterion. On a failure coercion cannot repair, the error is
+    /// the exact "not among the tools available" message it owns -- see
+    /// that method's own comment, board item `01M2NSJ0ADSTADK536GHQ7BTB6`,
+    /// for why it is scoped to THIS turn's announced set rather than
+    /// claiming the name does not exist anywhere); the branch below is a
+    /// defensive fallback, not the primary path for that criterion, and
+    /// uses the identical wording for the identical reason: `self.validators`
+    /// is this turn's own compiled set, not a wider registry this type has
+    /// any way to consult. On a failure coercion cannot repair, the error is
     /// [`BackendError::ToolArgumentsInvalid`] (never the bare
     /// [`BackendError::ToolParse`]) -- it carries `arguments` and
     /// `call_id` so `AttemptEngine` (`conway-runtime`) can hand the model a
@@ -164,7 +169,10 @@ impl SchemaValidator {
             .validators
             .get(name)
             .ok_or_else(|| BackendError::ToolParse {
-                detail: format!("unknown tool `{name}`"),
+                detail: format!(
+                    "tool `{name}` is not among the {} tool(s) available to this turn",
+                    self.validators.len()
+                ),
             })?;
         let Err(err) = validator.validate(&arguments) else {
             return Ok(Validated::AsIs(arguments));
@@ -258,7 +266,14 @@ mod tests {
             .validate(&ToolName::new("nope"), "call_1", serde_json::json!({}))
             .unwrap_err();
         match err {
-            BackendError::ToolParse { detail } => assert!(detail.contains("unknown tool")),
+            // Not "unknown tool": `validators` is this turn's own compiled
+            // set (empty here), so the honest claim is scope ("not among
+            // the N available"), never a claim the name doesn't exist
+            // anywhere (board item `01M2NSJ0ADSTADK536GHQ7BTB6`).
+            BackendError::ToolParse { detail } => assert!(
+                detail.contains("not among") && detail.contains("available to this turn"),
+                "{detail}"
+            ),
             other => panic!("expected ToolParse, got {other:?}"),
         }
     }
