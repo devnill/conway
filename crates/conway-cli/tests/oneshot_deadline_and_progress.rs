@@ -120,4 +120,16 @@ async fn an_unresponsive_backend_fails_loud_within_the_bounded_deadline() {
         stderr.contains("deadline"),
         "the deadline error must say why the run stopped: {stderr:?}"
     );
+    // Board item `01M2RDGVXFJ09DE9GM982HC23A`: the message must name the
+    // DEADLINE itself, not only how long the run took. It used to print
+    // `within {elapsed}s (deadline exceeded)`, and an elapsed time well
+    // under the configured limit then reads as "the limit was that small"
+    // -- a real investigation lost time to exactly that misreading. The
+    // `deadline=` prefix is `supervisor::budget_exceeded`'s own
+    // `ResultStatus::BudgetExceeded::limit` format, carrying the instant.
+    assert!(
+        stderr.contains("deadline="),
+        "the deadline error must name the deadline it actually blew, so an elapsed time \
+         below it cannot be misread as the limit: {stderr:?}"
+    );
 }

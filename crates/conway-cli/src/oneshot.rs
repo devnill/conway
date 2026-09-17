@@ -556,8 +556,25 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
                                 let backend = chosen_backend
                                     .as_deref()
                                     .unwrap_or("the configured backend");
+                                // Name the DEADLINE as well as the elapsed
+                                // time. `{elapsed}s` alone reads as the
+                                // configured limit -- "no response ...
+                                // within 0s" says "your deadline was zero"
+                                // to every reader, when it actually means
+                                // "zero seconds went by." That misreading
+                                // sent board item
+                                // `01M2RDGVXFJ09DE9GM982HC23A`'s own
+                                // investigation at the wrong arithmetic,
+                                // and an elapsed time far below the limit
+                                // is exactly the case worth telling apart:
+                                // it means the deadline was already spent
+                                // before the turn began, not that the
+                                // backend was slow. `limit` is the
+                                // `deadline=<RFC3339>` string
+                                // `supervisor::budget_exceeded` /
+                                // `AgentLoop::check_budget` compose.
                                 diag::error(format!(
-                                    "no response from {backend} within {elapsed}s (deadline \
+                                    "no response from {backend} within {elapsed}s ({limit} \
                                      exceeded); the backend may be stuck, unreachable, or too \
                                      slow for the configured limit -- raise it with \
                                      --max-seconds or [limits].deadline_secs"
