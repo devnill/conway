@@ -1043,13 +1043,61 @@ treated as a real, honest answer, never an error: the model's window simply
 stays unrecorded, and the notice says so plainly rather than silently
 re-prompting or falling back to a guessed number without saying so.
 
-**This is a setup-time step, not a CLI configuration surface.** There is no
-`/settings` row, no slash command, and no flag for triggering or reading
-discovery directly, and none for reading or re-asking the window
-afterward — consistent with every other knob this doc's own [`Profile`
-fields](#the-profile-fields) table documents as config-file-only. A setup-
-time QUESTION is not the same thing as a config surface; this item adds the
-former, never the latter.
+**Discovery itself is still a setup-time step, not a CLI configuration
+surface.** There is no slash command and no flag for triggering discovery
+directly, or for re-running it against an already-configured model — a
+setup-time QUESTION is not the same thing as a config surface, and this item
+never added a way to re-ask it. **Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V`
+gives `/settings` → providers a way to READ and EDIT an already-configured
+model's window directly, without re-running discovery** — see ["Editing an
+already-configured model's window"](#editing-an-already-configured-models-window)
+immediately below — but that is a targeted, operator-typed correction, never
+a live re-probe; every other knob this doc's own [`Profile
+fields`](#the-profile-fields) table documents remains config-file-only.
+
+### Editing an already-configured model's window
+
+**Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V` (acceptance 5 of
+`01M23M2P79R5G28TPGG7PPJQ32`, deferred at the time that item shipped): a
+selectable, editable context-window row for an already-configured model,
+reachable from `/settings` → providers, without hand-editing
+`.conway/models.json`.** This is the affordance an operator needs the day
+they discover the number is wrong — the same day they cannot get a useful
+session out of that model; the 2026-09-09 incident this doc already cites
+([above](#establishing-the-window-at-setup)) lost an entire run to a
+32,768-token assumption against a real 1,000,000-token ceiling, with no
+in-app way to correct it short of a text editor.
+
+Select a configured provider's row in `/settings` → providers and press `w`
+to open the SAME context-window card the add flow's own assumed-floor
+branch already uses (`Mode::AddProviderContextWindow`) — pre-filled this
+time with the model's CURRENT resolved value and its provenance word
+(`models.json` / `verified` / `probed` / `floor (assumed)`, the identical
+vocabulary `conway routes explain` prints), never a bare number: an assumed
+floor reads as a guess, not a measurement. Pressing `Enter` with nothing
+typed leaves it exactly as it was (a real value stays live for a later,
+better probe to still improve; nothing is written); typing a number and
+pressing `Enter` persists it as an `.conway/models.json` `Override` — the
+SAME persist path a freshly-typed add-time answer uses
+(`persist_context_window_at`), so it resolves `ContextTokensSource::Override`
+on the next read and survives a later, disagreeing probe, exactly like every
+other typed override this doc describes above.
+
+**This reuses the add flow's own accept-vs-override rule rather than
+inventing a second one.** An empty `Enter` never writes, on either surface;
+a typed number always persists as an `Override`, on either surface. Nothing
+about `Action::SubmitProviderContextWindow`'s shape changed to build this —
+the write decision was already exactly right; only the card's own wording
+needed to stop claiming "no context window could be established
+automatically" when editing a model that already has a real, sourced one.
+
+**Known, disclosed narrow scope:** a provider row currently resolves to
+exactly one model — the one its own `backends.<id>` entry is wired to route
+via the chain this doc's [routing.md](routing.md) describes — since every
+write path this app has ever offered configures exactly one model per
+provider. A provider hand-edited into serving more than one model shows
+only the alphabetically-first one; there is no in-app selector for the rest
+today.
 
 **A config written before this item shipped — or one an operator declined
 to answer at setup — is not broken and is not silently given an invented

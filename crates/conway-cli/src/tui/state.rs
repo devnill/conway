@@ -1366,6 +1366,37 @@ pub struct AppState {
     pub(crate) tool_diffs: HashMap<String, String>,
 }
 
+/// Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V` (acceptance 5's own remainder):
+/// the EXACT wording `conway routes explain` already prints for a resolved
+/// [`conway::ContextTokensSource`]
+/// (`crates/conway-cli/src/commands/routes.rs::render_context_window_source`),
+/// reused verbatim here rather than a second phrasing -- the identical
+/// discipline `tui::view::status::CTX_ASSUMED_FLOOR_MARKER`'s own doc
+/// already names for the same constraint. **A duplicated FORMATTING
+/// function, not a second resolver:** `render_context_window_source` is
+/// private to its own module (`commands/routes.rs` is outside this lane's
+/// own fence this wave, and was never asked to export it), so this is a
+/// second copy of the same match arms, not a second decision about WHICH
+/// source a `(backend, model)` pair resolves to -- that decision is still
+/// made exactly once, by `conway_plugin_backends::capabilities::
+/// max_context_tokens_source` (via `Conway::capability_index()`), and both
+/// this function and `render_context_window_source` only ever format an
+/// already-resolved answer. `#[non_exhaustive]` on `ContextTokensSource`
+/// itself (mirrored by the wildcard arm here) is why `render_context_
+/// window_source`'s own test is named "every DECLARED variant", not "every
+/// variant" -- a future variant reads `"unknown"` on both surfaces until
+/// each is updated, never a compile error nor a panic on either one.
+pub(crate) fn context_window_source_word(source: conway::ContextTokensSource) -> &'static str {
+    match source {
+        conway::ContextTokensSource::Override => "models.json",
+        conway::ContextTokensSource::Metadata => "verified",
+        conway::ContextTokensSource::Probed => "probed",
+        conway::ContextTokensSource::DialectDefaultFloor => "verified",
+        conway::ContextTokensSource::Unverified => "floor (assumed)",
+        _ => "unknown",
+    }
+}
+
 impl AppState {
     pub fn new(root: AgentId) -> Self {
         let mut tree = AgentTreeView::default();

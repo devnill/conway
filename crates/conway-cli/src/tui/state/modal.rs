@@ -238,6 +238,24 @@ pub struct AddProviderCredentialState {
 /// `cursor`), mirroring [`AddProviderCredentialState`]'s own shape exactly
 /// -- unlike that state, this text is NOT a secret and renders in the
 /// clear (a token count, not a credential).
+///
+/// **Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V` (acceptance 5's own
+/// remainder) gives this a SECOND origin, reusing the same state/`Mode`
+/// rather than a parallel one (P-14):** [`super::AppState::begin_edit_
+/// model_context_window`] (`tui::input::edit_selected_provider_context_
+/// window`) opens this identical card for an ALREADY-configured model, with
+/// [`AddProviderContextWindowState::current`] set to the resolved value
+/// conway already has for it.
+/// The add-flow's own origin above is unchanged -- `current` stays `None`
+/// there, exactly as before this field existed -- so a bare `Enter` there
+/// still means "skip" (`crate::first_run::validate_context_window_input`'s
+/// own empty-string contract), never "accept". The two origins never
+/// disagree about what an empty `Enter` does at the WRITE layer (neither
+/// ever writes on `None` -- see `tui::app::provider_manage::App::
+/// apply_provider_context_window`'s own doc), only about how honestly the
+/// card can describe what "leave it" means: with `current: Some(_)` there
+/// IS a real value to leave alone; with `current: None` there is nothing
+/// real to fall back to at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddProviderContextWindowState {
     /// The `"backend/model"` key (`crate::first_run::chain_entry`'s own
@@ -260,6 +278,21 @@ pub struct AddProviderContextWindowState {
     /// the current `input` -- the card stays open with the reason shown,
     /// mirroring [`AddProviderCredentialState::error`]'s own contract.
     pub error: Option<String>,
+    /// `Some((value, provenance_word))` when this card was opened over an
+    /// ALREADY-configured model whose window conway already has an answer
+    /// for -- `provenance_word` is one of the `"models.json"`/`"verified"`/
+    /// `"probed"`/`"floor (assumed)"` words `conway routes explain` already
+    /// prints (`tui::state::context_window_source_word`, mirroring
+    /// `commands::routes::render_context_window_source` verbatim -- that
+    /// function is private to its own module, so this is a second,
+    /// formatting-only copy of the SAME vocabulary, not a second resolver;
+    /// see that function's own doc). `None` for the pre-existing add-flow
+    /// origin (`tui::app::provider_manage::App::confirm_context_window_
+    /// for_add`'s `AssumedFloor` branch), which never has a real default to
+    /// offer -- unchanged from before this field existed. The card's own
+    /// renderer (`tui::view::draw_add_provider_context_window`) uses this to
+    /// decide which of the two fixed wordings to show.
+    pub current: Option<(u32, &'static str)>,
 }
 
 /// The generic wording `Esc` on the permission prompt used to send
@@ -414,6 +447,17 @@ pub enum Mode {
     /// needs to consider parking behind another of the four modal-bearing
     /// surfaces on OPEN, and `Enter`/`Esc` both restore `Mode::Normal` via
     /// `AppState::promote_next_surface`.
+    ///
+    /// **Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V` gives this a SECOND
+    /// reachable origin**, alongside the one above:
+    /// `tui::input::edit_selected_provider_context_window`, reached from
+    /// `Mode::Normal` with `AppState::settings_open` and a
+    /// configured-provider row selected (a hard-coded `w`/`W` key --
+    /// `handle_settings_key`'s own doc names why this bypasses the
+    /// configurable `Context::Settings` keybinding table). Both origins
+    /// share the identical card/state/key-handling/write path; see
+    /// [`AddProviderContextWindowState::current`]'s own doc for the one
+    /// thing that tells them apart.
     AddProviderContextWindow(AddProviderContextWindowState),
     /// Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s own modal
     /// -- a model-called tool is blocked awaiting the operator's answer.
@@ -1118,6 +1162,37 @@ impl AppState {
             input: String::new(),
             cursor: 0,
             error: None,
+            current: None,
+        });
+        self.modal_scroll = 0;
+    }
+
+    /// Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V` (acceptance 5's own
+    /// remainder): [`Self::begin_add_provider_context_window`]'s own sibling
+    /// for an ALREADY-configured model -- the ONE caller,
+    /// `tui::input::edit_selected_provider_context_window`, already resolved
+    /// `current` from `AppState::model_max_context`/`model_max_context_source`
+    /// (T3's own per-model provenance maps) before calling this, so this
+    /// method itself does no lookup of its own (P-14: one resolution, not a
+    /// second). Same `Mode::Normal` guard as its sibling -- an operator's
+    /// keystroke here must never steal the floor from an unrelated pending
+    /// decision either.
+    pub fn begin_edit_model_context_window(
+        &mut self,
+        model_key: String,
+        label: String,
+        current: Option<(u32, &'static str)>,
+    ) {
+        if !matches!(self.mode, Mode::Normal) {
+            return;
+        }
+        self.mode = Mode::AddProviderContextWindow(AddProviderContextWindowState {
+            model_key,
+            label,
+            input: String::new(),
+            cursor: 0,
+            error: None,
+            current,
         });
         self.modal_scroll = 0;
     }
