@@ -155,11 +155,32 @@ fn fixture_with_unverified_floor(mcp_server_count: usize) -> common::Fixture {
         (0..mcp_server_count)
             .map(|i| {
                 let id = format!("dogfood-mcp-{i}");
-                let script_path = mcp_fixtures::write_script(
-                    dir.path(),
-                    &format!("{id}.py"),
-                    mcp_fixtures::SLEEP_SERVER,
-                );
+                // Each entry needs its own ADVERTISED server name, not just
+                // its own config `id`: conway derives a plugin's id from the
+                // name the server returns in `initialize`'s `serverInfo`, so
+                // three copies of the stock `SLEEP_SERVER` all install as
+                // `mcp.dogfood-sleep` and the third one is rejected with
+                // `duplicate plugin id`. Patching the advertised name per
+                // index keeps `mcp_fixtures::SLEEP_SERVER` itself untouched
+                // (it is shared with other suites) while giving each entry a
+                // distinct identity.
+                // Both the advertised SERVER name and the declared TOOL name
+                // must be per-index. conway derives a plugin's id from
+                // `initialize`'s `serverInfo.name`, and `PluginRegistry::
+                // from_plugins` additionally rejects two plugins declaring the
+                // same tool name -- so three stock copies collide twice over,
+                // first as `duplicate plugin id: mcp.dogfood-sleep` and then
+                // as `duplicate tool \`sleep\``. Patching both here leaves the
+                // shared `mcp_fixtures::SLEEP_SERVER` untouched for its other
+                // consumers.
+                let script_src = mcp_fixtures::SLEEP_SERVER
+                    .replace(
+                        "\"name\": \"dogfood-sleep\"",
+                        &format!("\"name\": \"{id}\""),
+                    )
+                    .replace("\"name\": \"sleep\"", &format!("\"name\": \"sleep_{i}\""));
+                let script_path =
+                    mcp_fixtures::write_script(dir.path(), &format!("{id}.py"), &script_src);
                 // Board item 01M09MPZ9C188AHNBKWEJ3CEQA: a freshly-written
                 // script's FIRST exec on this OS can block for seconds at
                 // ~0% CPU before its own code ever runs -- warmed once,
@@ -306,7 +327,16 @@ fn routes_explain_never_labels_an_unverified_dialect_floor_as_verified() {
 /// window number backing it is not even a real fact.
 #[test]
 fn routes_explain_runway_warning_on_an_assumed_floor_still_names_it_assumed() {
-    let fixture = fixture_with_unverified_floor(3);
+    // ONE server, not three. `first_run::default_opinion_set_footprint`
+    // multiplies a flat 5,100-token estimate by the COUNT of configured
+    // `[plugins].mcp` entries and never inspects what a server declares, so
+    // the threshold this test needs -- over half of the 32,768 floor -- is
+    // already cleared at one: 14,000 + 5,100 = 19,100, i.e. 58%. Three cost
+    // three real Python spawns plus three warmups, which pushed this suite
+    // past 60s and starved its own sibling
+    // `status_line_command_stuck_past_its_timeout_never_blocks_the_prompt`.
+    // Buying headroom you do not need is not free when the suite is shared.
+    let fixture = fixture_with_unverified_floor(1);
 
     let json = explain_json(&fixture, "default");
     let entry = &json["chain"][0];

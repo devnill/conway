@@ -1963,10 +1963,10 @@ mod tests {
             .iter()
             .position(|r| {
                 matches!(&r.kind, crate::tui::view::menu::MenuRowKind::Leaf { id }
-                    if id == &format!(
-                        "{}ollama_cloud",
-                        crate::tui::view::settings::LEAF_REMOVE_PROVIDER_PREFIX
-                    ))
+                if id == &format!(
+                    "{}ollama_cloud",
+                    crate::tui::view::settings::LEAF_REMOVE_PROVIDER_PREFIX
+                ))
             })
             .expect("the configured provider must have a selectable row");
         app.state.settings_selected = provider_row_idx;

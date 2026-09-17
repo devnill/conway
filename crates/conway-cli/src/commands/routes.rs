@@ -266,7 +266,10 @@ fn resolved_window(
     if let Some(caps) = &entry.capabilities {
         return (Some(caps.max_context_tokens), entry.context_window_source);
     }
-    let Some(backend_entry) = conway.config().backends.get(entry.model_ref.backend.as_str())
+    let Some(backend_entry) = conway
+        .config()
+        .backends
+        .get(entry.model_ref.backend.as_str())
     else {
         return (None, None);
     };
@@ -280,10 +283,7 @@ fn resolved_window(
         )
     } else {
         let window = crate::first_run::dialect_floor_window(kind, dialect);
-        (
-            window,
-            window.map(|_| ContextTokensSource::Unverified),
-        )
+        (window, window.map(|_| ContextTokensSource::Unverified))
     }
 }
 
