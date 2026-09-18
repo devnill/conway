@@ -734,11 +734,30 @@ impl App {
         // plugin candidate, not only the `plugins` param's already-
         // filtered, installed-only subset -- a browser must show what is
         // available-but-off too. Derived from `crate::first_party_plugins
-        // ::all_bundle_plugins` directly (same crate, same single bundle
-        // `installed_plugins` itself filters -- never a second,
+        // ::configured_bundle_plugins` directly (same crate, the same single
+        // bundle `installed_plugins` itself filters -- never a second,
         // independently-derived candidate list) rather than threaded in as
         // a new `App::new` parameter, which would have forced every one of
         // this crate's ~30 existing `App::new` call sites to name one.
+        //
+        // `configured_*`, not the bare `all_bundle_plugins` scan, since
+        // board item `01M2VA3ARE8RGRZ40VDC349HVK`: `PluginBrowserEntry::
+        // description` is what `/plugin`'s detail panel renders, and a
+        // description that reports a configurable value (`conway.trim`'s
+        // `keep_turns`) reads it off the plugin's own live state -- without
+        // `[plugins.config.<id>]` applied first, this browser showed the
+        // compiled-in default while the running session used the operator's
+        // value. That gap used to be disclosed in `docs/plugins/trim.md`;
+        // it is closed now, through the SAME `apply_plugin_config` the real
+        // build already runs, never a second config-resolution path.
+        //
+        // The `unwrap_or_else` fallback: a malformed `[plugins.config.<id>]`
+        // value already failed `first_party_plugins::install` at
+        // `ConwayBuilder::build` time, so this process would not be running
+        // a TUI at all -- and a startup path that has a live `Conway` in
+        // hand must not abort over a re-derivation for a browser. Unreachable
+        // in practice; degrades to default-valued descriptions rather than
+        // to no browser.
         //
         // A throwaway `InMemoryMemoryStore` backs the `conway.memory`
         // candidate here, deliberately -- this scan only ever calls
@@ -751,22 +770,31 @@ impl App {
         let browse_memory_store: std::sync::Arc<dyn conway::plugin::MemoryStore> =
             std::sync::Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let install_ids = &conway.config().plugins.install;
-        state.plugin_browser = crate::first_party_plugins::all_bundle_plugins(
+        let plugin_candidates = crate::first_party_plugins::configured_bundle_plugins(
             &conway.config().cwd,
-            browse_memory_store,
+            browse_memory_store.clone(),
             &env_vars,
+            &conway.config().plugins.config,
         )
-        .iter()
-        .map(|p| {
-            let manifest = p.manifest();
-            crate::tui::state::PluginBrowserEntry {
-                installed: install_ids.contains(&manifest.id),
-                id: manifest.id,
-                version: manifest.version,
-                description: p.description(),
-            }
-        })
-        .collect();
+        .unwrap_or_else(|_| {
+            crate::first_party_plugins::all_bundle_plugins(
+                &conway.config().cwd,
+                browse_memory_store,
+                &env_vars,
+            )
+        });
+        state.plugin_browser = plugin_candidates
+            .iter()
+            .map(|p| {
+                let manifest = p.manifest();
+                crate::tui::state::PluginBrowserEntry {
+                    installed: install_ids.contains(&manifest.id),
+                    id: manifest.id,
+                    version: manifest.version,
+                    description: p.description(),
+                }
+            })
+            .collect();
         // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the `/plugin` listing's
         // OTHER two sources -- read straight from config, never spawned
         // (`view/plugins.rs`'s own doc: "no candidate set to browse, so

@@ -389,29 +389,46 @@ pub async fn run_admin(
 
 /// Exactly `tui::app::startup`'s own `state.plugin_browser` construction
 /// (that call site's own comment cites this as the read to mirror) --
-/// every compiled-in candidate `all_bundle_plugins` links, each tagged
-/// `installed` by membership in `conway.config().plugins.install`. Kept as
-/// its own function since both [`list`] and [`install`]'s unknown-id check
-/// need the identical candidate set.
+/// every compiled-in candidate this binary links, each tagged `installed`
+/// by membership in `conway.config().plugins.install`. Kept as its own
+/// function since both [`list`] and [`install`]'s unknown-id check need
+/// the identical candidate set.
+///
+/// **Reads through [`first_party_plugins::configured_bundle_plugins`], not
+/// the bare `all_bundle_plugins` scan** -- board item
+/// `01M2VA3ARE8RGRZ40VDC349HVK`. [`PluginBrowserEntry::description`] is
+/// filled from `Plugin::description()`, and a plugin whose description
+/// reports a configurable value (`conway.trim`'s `keep_turns`) reads it off
+/// its own live state: without `[plugins.config.<id>]` applied first, this
+/// function hands `list` the compiled-in default to print while the running
+/// system uses the operator's value. Deliberately NOT routed through
+/// `installed_plugins` (which applies the config but also filters to
+/// `[plugins].install`): this listing's whole job is to show the `[ ]` rows
+/// too. See that function's own doc for the full reasoning.
 fn browser_entries(
     conway: &Conway,
     memory_store: Arc<dyn MemoryStore>,
     env: &HashMap<String, String>,
-) -> Vec<PluginBrowserEntry> {
+) -> conway::Result<Vec<PluginBrowserEntry>> {
     let cwd = conway.config().cwd.clone();
     let install_ids = &conway.config().plugins.install;
-    first_party_plugins::all_bundle_plugins(&cwd, memory_store, env)
-        .iter()
-        .map(|p| {
-            let manifest = p.manifest();
-            PluginBrowserEntry {
-                installed: install_ids.contains(&manifest.id),
-                id: manifest.id,
-                version: manifest.version,
-                description: p.description(),
-            }
-        })
-        .collect()
+    Ok(first_party_plugins::configured_bundle_plugins(
+        &cwd,
+        memory_store,
+        env,
+        &conway.config().plugins.config,
+    )?
+    .iter()
+    .map(|p| {
+        let manifest = p.manifest();
+        PluginBrowserEntry {
+            installed: install_ids.contains(&manifest.id),
+            id: manifest.id,
+            version: manifest.version,
+            description: p.description(),
+        }
+    })
+    .collect())
 }
 
 /// Every compiled-in candidate's own declared hook events (`Plugin::
@@ -461,6 +478,51 @@ fn unknown_id_message(id: &str, entries: &[PluginBrowserEntry]) -> String {
     )
 }
 
+/// The provenance half of board item `01M2VA3ARE8RGRZ40VDC349HVK`: once
+/// [`browser_entries`] renders a plugin's EFFECTIVE configuration, a reader
+/// still cannot tell an operator-set value from a compiled-in default by
+/// looking at it -- `you get ... older than 3 turns ...` reads identically
+/// whether `settings.json` said `3` or the plugin's default happened to be
+/// `3`.
+///
+/// **The ruling: state provenance at the TABLE, never per value.** A line
+/// naming the `[plugins.config."<id>"]` entry that was applied (with the
+/// keys conway actually accepted), or saying plainly that there is none, is
+/// answerable from what this command already has in hand. Tagging each
+/// individual number `(default)`/`(configured)` is not: `Plugin::
+/// description()` returns free prose, so there is no structured value for a
+/// renderer to tag, and inventing one would mean a per-field provenance API
+/// on every plugin -- a far larger change than the reporting defect that
+/// prompted it.
+///
+/// This also covers the silent-fallback case the item names. A mistyped
+/// KEY inside a table is already a hard error (`Plugin::configure` refuses
+/// an unknown key by name, failing the build); a mistyped plugin ID is not
+/// -- `apply_plugin_config` walks candidates and simply never finds a table
+/// that names nothing. With this line, `conway plugin list --verbose` says
+/// `defaults -- no [plugins.config."conway.trim"] entry` for exactly that
+/// case, so the operator sees their table did not land instead of guessing
+/// from an unchanged number.
+///
+/// Printed only in the verbose/detail block, beside the `you get` line
+/// whose contents it explains -- the terse one-line-per-row table stays one
+/// line per row.
+fn config_line(id: &str, config: Option<&serde_json::Value>) -> String {
+    let Some(value) = config else {
+        return format!("defaults -- no [plugins.config.\"{id}\"] entry in settings.json");
+    };
+    let rendered = match value.as_object() {
+        Some(map) if map.is_empty() => "(empty table)".to_string(),
+        Some(map) => map
+            .iter()
+            .map(|(key, v)| format!("{key} = {v}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        None => value.to_string(),
+    };
+    format!("{rendered} -- from [plugins.config.\"{id}\"] in settings.json")
+}
+
 /// `events` is this plugin's own declared hook events (board item
 /// `01M250HW1186RKZRNS3DQAMFYW`) -- printed as its own labelled section,
 /// same indent as `you get`/`you lose`/`costs` above it, but only when
@@ -468,7 +530,14 @@ fn unknown_id_message(id: &str, entries: &[PluginBrowserEntry]) -> String {
 /// `events` line at all, matching `you_get`/`you_lose`/`costs`'s own
 /// "empty means nothing to report" convention (`PluginDescription`'s own
 /// field docs) rather than printing a stray empty header for every row.
-fn print_row(row: &crate::plugin_rows::PluginRow, verbose: bool, events: &[EventDecl]) {
+/// `config` is this plugin's own `[plugins.config."<id>"]` value, if the
+/// operator wrote one -- `None` means no table names this id at all.
+fn print_row(
+    row: &crate::plugin_rows::PluginRow,
+    verbose: bool,
+    events: &[EventDecl],
+    config: Option<&serde_json::Value>,
+) {
     let box_glyph = if row.active { "x" } else { " " };
     println!("[{box_glyph}] {} -- {}", row.id, row.contributes);
     if verbose {
@@ -485,6 +554,7 @@ fn print_row(row: &crate::plugin_rows::PluginRow, verbose: bool, events: &[Event
                 "    costs     {}",
                 crate::plugin_rows::non_empty_or(&description.costs, "none")
             );
+            println!("    config    {}", config_line(&row.id, config));
         }
         if !events.is_empty() {
             println!("    events");
@@ -502,9 +572,14 @@ fn list(
     only_id: Option<&str>,
     verbose: bool,
 ) -> conway::Result<ExitCode> {
-    let entries = browser_entries(conway, memory_store.clone(), env);
+    let entries = browser_entries(conway, memory_store.clone(), env)?;
     let events = plugin_events_by_id(conway, memory_store, env);
     let events_for = |id: &str| events.get(id).map(Vec::as_slice).unwrap_or(&[]);
+    // The operator's own `[plugins.config.<id>]` tables, read off the SAME
+    // `ConwayConfig` `browser_entries` just applied them from -- so the
+    // provenance line under a row can never disagree with the values above
+    // it (`config_line`'s own doc).
+    let plugin_config = &conway.config().plugins.config;
 
     if let Some(id) = only_id {
         let Some(entry) = entries.iter().find(|e| e.id == id) else {
@@ -517,13 +592,13 @@ fn list(
         // the printed row is byte-for-byte what the TUI's detail panel
         // would show for this same id.
         let rows = crate::plugin_rows::rows_from_plugin_browser(std::slice::from_ref(entry));
-        print_row(&rows[0], true, events_for(id));
+        print_row(&rows[0], true, events_for(id), plugin_config.get(id));
         return Ok(ExitCode::Completed);
     }
 
     for row in crate::plugin_rows::rows_from_plugin_browser(&entries) {
         let row_events = events_for(&row.id);
-        print_row(&row, verbose, row_events);
+        print_row(&row, verbose, row_events, plugin_config.get(&row.id));
     }
     Ok(ExitCode::Completed)
 }
@@ -548,7 +623,7 @@ fn install(
         return Ok(ExitCode::Usage);
     }
 
-    let entries = browser_entries(conway, memory_store, env);
+    let entries = browser_entries(conway, memory_store, env)?;
     for id in &targets {
         if !entries.iter().any(|e| &e.id == id) {
             diag::error(unknown_id_message(id, &entries));
@@ -594,7 +669,7 @@ fn remove(
     // silent, exit-0 no-op ("was not installed") indistinguishable from
     // successfully removing an id that was, in fact, never installed --
     // an operator who typos a real id could believe it's gone.
-    let entries = browser_entries(conway, memory_store, env);
+    let entries = browser_entries(conway, memory_store, env)?;
     for id in ids {
         if !entries.iter().any(|e| &e.id == id) {
             diag::error(unknown_id_message(id, &entries));

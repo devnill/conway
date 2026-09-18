@@ -78,19 +78,55 @@ answering it, are ever dropped, and always together.
 
 **Where the active window is visible.** `Plugin::description().you_get`
 reports the CURRENTLY active window, not a fixed string: it reads the same
-`keep_turns` the curator itself uses. `conway plugin list`
-(`first_party_plugins::installed_plugins`, which applies
-`[plugins.config.<id>]` before rendering) shows the configured value
-immediately, with no separate query needed. **The interactive TUI's
-`/settings` plugin browser does not, today:** it reads
-`first_party_plugins::all_bundle_plugins`, the unfiltered "every compiled-in
-candidate, on or off" scan the browser needs to show what is
-available-but-off — that scan constructs every candidate with its plain
-default and does not apply `[plugins.config.<id>]` to any of them, so its
-row for `conway.trim` always reads the unconfigured default (`8`)
-regardless of what `settings.json` actually says. This is a disclosed gap,
-not an oversight: closing it means threading an operator's config table
-through a TUI-owned call site this item did not touch.
+`keep_turns` the curator itself uses.
+
+`conway plugin list --verbose` (or `conway plugin list conway.trim`, which
+always prints the full breakdown for one id) shows it. Both read through
+`first_party_plugins::configured_bundle_plugins` — the unfiltered "every
+compiled-in candidate, on or off" scan the listing needs in order to show
+what is available-but-off, with each named candidate's own
+`[plugins.config.<id>]` table applied through the same `apply_plugin_config`
+the real build runs. It is deliberately *not*
+`first_party_plugins::installed_plugins`: that function does apply the
+config, but it also filters to `[plugins].install`, which would silence
+every `[ ]` row in a listing whose whole job is to show them.
+
+**The interactive TUI's `/plugin` browser agrees**, and through the same
+function: `tui::app::startup` builds `AppState::plugin_browser` from
+`configured_bundle_plugins` too, so its detail panel for `conway.trim` reads
+the configured window, not the default. (Until board item
+`01M2VA3ARE8RGRZ40VDC349HVK` both surfaces read the bare
+`all_bundle_plugins` scan and both printed `8` regardless of what
+`settings.json` said. The headless listing claimed otherwise and named a
+function it did not call; that is what the item fixed.)
+
+**One divergence remains, disclosed:** the `config` provenance line below is
+printed by `conway plugin list` only. The TUI's detail panel shows the
+effective values but does not yet name the table they came from.
+
+**Configured or default, stated outright.** An effective value alone cannot
+tell you whether an operator set it or whether it is simply the compiled-in
+default — `older than 3 turns` reads identically either way. So the verbose
+listing states the provenance at the *table* level, under each plugin:
+
+```
+[x] conway.trim -- drops old tool call/result round-trips to save context room
+    you get   tool call/result round-trips older than 3 turns behind ...
+    you lose  ...
+    costs     ...
+    config    keep_turns = 3 -- from [plugins.config."conway.trim"] in settings.json
+```
+
+With no table for that id, the same line reads `defaults -- no
+[plugins.config."conway.trim"] entry in settings.json`. That is the check
+for the one silent-fallback case this mechanism still has: a mistyped *key*
+inside the table is already a hard error (`configure` refuses an unknown key
+by name), but a mistyped plugin *id* matches no candidate and is simply
+never applied — so the line reading `defaults` is how you see that your
+table did not land. Provenance is deliberately not stated per value:
+`Plugin::description()` returns prose, with no structured value for a
+renderer to tag, and giving it one would mean a per-field provenance API on
+every plugin.
 
 ## This is the mechanism's worked example, not a special case
 

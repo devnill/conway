@@ -525,6 +525,18 @@ fn apply_plugin_config(
 /// set independently, so the browser's own "N installed of M compiled-in"
 /// count can never drift from what `[plugins].install` actually resolves
 /// against.
+///
+/// **Returns every candidate at its compiled-in DEFAULT configuration**:
+/// this function does not apply `[plugins.config.<id>]`, so a candidate
+/// whose [`Plugin::description`] reports a configurable value (today:
+/// `conway.trim`'s `keep_turns`) reports the default here, not the
+/// operator's. A caller that renders a description must use
+/// [`configured_bundle_plugins`] instead -- board item
+/// `01M2VA3ARE8RGRZ40VDC349HVK`, where `conway plugin list` printing `8`
+/// against a configured `3` is exactly this distinction going unnoticed.
+/// A caller that only reads `manifest()`/`tools()`/`instructions()`
+/// (`tui::app::plugin_toggle`'s dependency graph, `first_run`'s token
+/// measurement) is unaffected by config and correctly stays here.
 /// `env` is the same explicit process-environment map every
 /// `CONWAY_CONFIG_DIR`-aware resolver in this codebase takes -- forwarded to
 /// `resolve_idiom_plugin`, never read from `std::env` here (board item
@@ -575,6 +587,52 @@ pub fn all_bundle_plugins(
         confine_plugin,
         None,
     )
+}
+
+/// [`all_bundle_plugins`] with every named candidate's own
+/// `[plugins.config.<id>]` table applied -- the read surface for anything
+/// that RENDERS a candidate's [`Plugin::description`], board item
+/// `01M2VA3ARE8RGRZ40VDC349HVK`.
+///
+/// **Why this exists rather than routing a renderer through
+/// [`installed_plugins`].** `installed_plugins` does apply the config, but
+/// it also filters to `[plugins].install` membership -- and every renderer
+/// that needs this (the `conway plugin list` table, the TUI's `/plugin`
+/// browser) exists precisely to show what is AVAILABLE-but-off as well as
+/// what is on. Routing either one through `installed_plugins` would silence
+/// every `[ ]` row, trading a wrong number for a missing list. So the
+/// unfiltered scan is the right base; what it was missing was the config
+/// application, which is what this wrapper adds.
+///
+/// **Not a second config-resolution path.** This calls the SAME
+/// `apply_plugin_config` [`install`] and [`installed_plugins`] already call,
+/// with the same `[plugins.config.<id>]` map off the same `ConwayConfig` --
+/// there is exactly one implementation of "apply an operator's plugin config
+/// to a candidate" in this module, and all three callers share it. A
+/// renderer using this function therefore cannot disagree with what the real
+/// build accepted: `Plugin::description().you_get` reads the same
+/// already-configured plugin state the curator/tool would.
+///
+/// **Fallible, and in practice already decided.** `apply_plugin_config`'s
+/// `Err` (a malformed value, an unknown key) would have failed [`install`]
+/// at `ConwayBuilder::build` time, long before any renderer runs -- this
+/// signature propagates rather than swallowing it so a future caller that
+/// somehow reaches a bad table reports it, instead of quietly rendering
+/// defaults, which is the exact defect this function was added to close.
+///
+/// The `Arc::get_mut` exclusivity `apply_plugin_config` requires holds here
+/// for the same reason it holds in its other two callers: `all_bundle_
+/// plugins` hands back `bundle`'s `Vec` untouched, so every `Arc` in it is
+/// still uniquely owned when this line runs.
+pub fn configured_bundle_plugins(
+    cwd: &std::path::Path,
+    memory_store: Arc<dyn MemoryStore>,
+    env: &HashMap<String, String>,
+    config: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<Vec<Arc<dyn Plugin>>, FacadeError> {
+    let mut plugins = all_bundle_plugins(cwd, memory_store, env);
+    apply_plugin_config(&mut plugins, config)?;
+    Ok(plugins)
 }
 
 /// Ordered `(id, summary)` pairs for [`DEFAULT_OPINION_SET`], read off each
@@ -1511,6 +1569,62 @@ mod tests {
         assert!(
             you_get.contains('3'),
             "conway.trim's description must reflect the configured window (3), got: {you_get}"
+        );
+    }
+
+    /// Board item `01M2VA3ARE8RGRZ40VDC349HVK`: [`configured_bundle_plugins`]
+    /// must be BOTH things at once -- the unfiltered candidate set (so a
+    /// browser can still render an available-but-off plugin) AND
+    /// config-applied (so what it renders is the effective value). Either
+    /// property alone is already available elsewhere
+    /// (`all_bundle_plugins`/`installed_plugins`); it is their conjunction
+    /// that this function exists for, so both are checked here, in one test,
+    /// against the same returned `Vec`.
+    ///
+    /// The full round trip through `conway plugin list` and the TUI browser
+    /// is covered against the real binary in
+    /// `tests/plugin_list_effective_config.rs`; this is the local property.
+    #[test]
+    fn configured_bundle_plugins_is_unfiltered_and_config_applied() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let env: HashMap<String, String> = HashMap::new();
+        let config: std::collections::BTreeMap<String, serde_json::Value> = [(
+            conway_plugin_trim::PLUGIN_ID.to_string(),
+            serde_json::json!({ "keep_turns": 3 }),
+        )]
+        .into_iter()
+        .collect();
+
+        let plugins = configured_bundle_plugins(&cwd, memory_store, &env, &config)
+            .expect("keep_turns=3 is a valid config value");
+
+        // Unfiltered: nothing here was ever named in a `[plugins].install`
+        // list (this function takes none), so every linked candidate is
+        // present -- the property a `[ ]` row depends on.
+        let unfiltered = plugins.len();
+        assert!(
+            unfiltered >= 12,
+            "expected every linked candidate, got {unfiltered}"
+        );
+        let you_get = plugins
+            .iter()
+            .find(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID)
+            .expect("conway.trim is in the bundle")
+            .description()
+            .you_get;
+        // Config-applied: the description reports the CONFIGURED window.
+        assert!(
+            you_get.contains(" 3 turns"),
+            "conway.trim's description must report the configured window, got: {you_get}"
+        );
+        // BREAK-THE-GUARD: and not the compiled-in default alongside it.
+        assert!(
+            !you_get.contains(&format!(
+                " {} turns",
+                conway_plugin_trim::DEFAULT_KEEP_TURNS
+            )),
+            "the unconfigured default must be gone once a value is configured, got: {you_get}"
         );
     }
 
