@@ -753,6 +753,33 @@ struct LoopState {
     /// words, not an empty string just because a new user turn had not yet
     /// produced any of its own.
     last_assistant_text: String,
+    /// The most recent batch of tool calls this agent DISPATCHED, kept
+    /// after that batch finishes -- the `max_steps`/`max_tool_calls`
+    /// answer to "where did it stop", which
+    /// `AgentTree::in_flight_tools` cannot give.
+    ///
+    /// The tree's in-flight slot is the right source for a cancellation
+    /// (something genuinely was in flight when the token tripped, and
+    /// `mark_tools_finished` is deliberately skipped on that path -- see
+    /// its own doc). A budget ceiling trips somewhere else entirely:
+    /// [`AgentLoop::check_budget`] runs at the TOP of the next loop
+    /// iteration, by which point the previous batch returned normally and
+    /// `mark_tools_finished` has already cleared that slot. So the
+    /// in-flight slot is empty on every budget path and calling
+    /// `interrupted_call_note` from `check_budget` -- which board item
+    /// `01M2V047Q99N4HGXF0Y42JVBB9` first proposed -- would always render
+    /// nothing. This field is what that path reads instead: not
+    /// "interrupted mid-call" (nothing was), but "this is the last thing it
+    /// got to", which is the honest form of the same information.
+    ///
+    /// Written at the same dispatch site that calls `mark_tools_started`,
+    /// from the same `Vec`, so the two can never disagree about what was
+    /// sent. Never cleared -- including at the keep-alive user-turn
+    /// boundary, matching `last_assistant_text` rather than
+    /// `turn_steps`/`tool_calls`: an agent that idles and then trips a
+    /// session-lifetime ceiling should still name the last real work it
+    /// did. Empty only before this agent's first dispatch.
+    last_dispatch: Vec<crate::tree::InFlightCall>,
     /// Which runway (`crate::runway`) window-fill thresholds and budget
     /// dimensions have already produced a model-facing `SystemNote` this
     /// run -- see [`runway::RunwayTracker`]'s own doc. Reset for the
@@ -1435,9 +1462,11 @@ impl AgentLoop {
                                 return Ok(self.finish_cancelled(&state, &result_builder).await);
                             }
                             () = tokio::time::sleep(remaining) => {
+                                let limit = format!("deadline={deadline}");
+                                let account = self.budget_account(&state, &result_builder, &limit);
                                 return Ok(self.finish(
-                                    ResultStatus::BudgetExceeded { limit: format!("deadline={deadline}") },
-                                    self.terminal_account(&state, &result_builder),
+                                    ResultStatus::BudgetExceeded { limit },
+                                    account,
                                     state.usage,
                                     state.turn,
                                     state.turn_steps,
@@ -1742,9 +1771,11 @@ impl AgentLoop {
                     tokio::select! {
                         biased;
                         () = tokio::time::sleep(remaining) => {
+                            let limit = format!("deadline={deadline}");
+                            let account = self.budget_account(&state, &result_builder, &limit);
                             return Ok(self.finish(
-                                ResultStatus::BudgetExceeded { limit: format!("deadline={deadline}") },
-                                self.terminal_account(&state, &result_builder),
+                                ResultStatus::BudgetExceeded { limit },
+                                account,
                                 state.usage,
                                 state.turn,
                                 state.turn_steps,
@@ -2079,15 +2110,19 @@ impl AgentLoop {
             // below is still awaiting) always finds a truthful answer to
             // "what was interrupted" -- see `AgentTree::mark_tools_started`'s
             // own doc for why this is set on the TREE, not on `state`.
-            self.deps.tree.mark_tools_started(
-                self.agent_id,
-                outcome
-                    .response
-                    .tool_calls
-                    .iter()
-                    .map(|call| crate::tree::InFlightCall::new(call.name.clone(), &call.arguments))
-                    .collect(),
-            );
+            //
+            // The same `Vec` is also kept on `state.last_dispatch` (see that
+            // field's own doc), which is what the BUDGET paths read: the
+            // tree's slot is cleared by `mark_tools_finished` a few lines
+            // below, before any budget check ever runs.
+            let dispatched: Vec<crate::tree::InFlightCall> = outcome
+                .response
+                .tool_calls
+                .iter()
+                .map(|call| crate::tree::InFlightCall::new(call.name.clone(), &call.arguments))
+                .collect();
+            state.last_dispatch = dispatched.clone();
+            self.deps.tree.mark_tools_started(self.agent_id, dispatched);
 
             let outcomes = self
                 .deps
@@ -2334,6 +2369,77 @@ impl AgentLoop {
         String::new()
     }
 
+    /// [`Self::terminal_account`] plus the derived partial-handback note
+    /// ([`crate::result::budget_summary`]) -- the trailing text EVERY
+    /// site that produces a `ResultStatus::BudgetExceeded` passes to
+    /// [`Self::finish`]: all four of [`Self::check_budget`]'s dimensions,
+    /// plus `run_inner`'s two in-turn deadline arms (the idle
+    /// `awaiting_prompt` wait and the in-flight backend call). `grep -n
+    /// 'BudgetExceeded' agent_loop.rs` finds no construction site that
+    /// still passes a bare [`Self::terminal_account`].
+    ///
+    /// Board item `01M2V047Q99N4HGXF0Y42JVBB9`. `crate::runway`'s 80%
+    /// warning is advice; a model that spends its last step on more work
+    /// dies with everything in its head and the parent gets a failed tool
+    /// call carrying `"(stopped after N turn(s), ...)"`. This method is the
+    /// part that holds without the model cooperating: whatever the agent
+    /// DID say (`terminal_account`, unchanged and always first) followed by
+    /// what the runtime knows regardless -- which ceiling, how far it got,
+    /// what it was last doing, and the `transcript_ref` to resume from.
+    ///
+    /// **What "where it stopped" reads from.** The tree's in-flight slot
+    /// first, for the case where a call genuinely was still running, then
+    /// `state.last_dispatch` -- which is the case in practice on every
+    /// budget path, since `check_budget` runs at the top of the next loop
+    /// iteration, after `mark_tools_finished` already cleared that slot.
+    /// See `LoopState::last_dispatch`'s own doc.
+    ///
+    /// **When it adds nothing.** An agent that terminated before its first
+    /// turn ever produced anything ([`Self::terminal_account`]'s case 3,
+    /// empty string) gets no note: there is no partial work to hand back
+    /// and nowhere it stopped, so `ResultBuilder`'s status-naming fallback
+    /// remains the honest summary. `agent_loop_e2e.rs`'s
+    /// `budget_deadline_already_elapsed_with_no_turns_run_names_the_status_not_a_marker`
+    /// pins exactly that string; this item is about a child that DID work
+    /// and lost it, never about relabelling one that did none.
+    ///
+    /// **What this does NOT override.** `ResultBuilder::resolve` still
+    /// prefers an explicit `report` call over trailing text, so an agent
+    /// that DID call `report` before its ceiling keeps its own summary and
+    /// this note is not appended to it -- the same precedence
+    /// [`Self::finish_cancelled`] already accepts for
+    /// `interrupted_call_note`. That case is the one where the parent
+    /// already has a real answer; `limit`, `steps_taken` and
+    /// `transcript_ref` remain on the `AgentResult` itself either way.
+    fn budget_account(&self, state: &LoopState, builder: &ResultBuilder, limit: &str) -> String {
+        let account = self.terminal_account(state, builder);
+        if account.is_empty() {
+            // `terminal_account`'s case 3, verbatim: an agent that
+            // terminated before its very first turn ever produced anything.
+            // There is no partial work to hand back and no place it stopped
+            // -- a "here is what I got through" note would be describing
+            // nothing. The status-naming fallback in
+            // `ResultBuilder::from_trailing_text` stays the honest summary,
+            // and the `limit` on the status itself still says which ceiling
+            // it was. This item is about a child that DID work and lost it.
+            return account;
+        }
+        let in_flight = self.deps.tree.in_flight_tools(self.agent_id);
+        let last_calls: &[crate::tree::InFlightCall] = if in_flight.is_empty() {
+            &state.last_dispatch
+        } else {
+            &in_flight
+        };
+        let stop = crate::result::BudgetStop {
+            limit,
+            steps_taken: state.turn,
+            tool_calls: state.tool_calls,
+            last_calls,
+            transcript_ref: self.session,
+        };
+        crate::result::budget_summary(&account, &stop)
+    }
+
     /// Ends a `keep_alive` agent's current user turn cleanly: resets every
     /// turn-scoped counter/accumulator and opens the resume gate so
     /// `run_inner`'s next loop iteration waits for the caller's next prompt
@@ -2465,12 +2571,12 @@ impl AgentLoop {
                     steps_this_turn,
                 };
             }
+            let scoped = format!("{limit} (this session)");
+            let account = self.budget_account(state, builder, &scoped);
             return BudgetCheck::Finished(
                 self.finish(
-                    ResultStatus::BudgetExceeded {
-                        limit: format!("{limit} (this session)"),
-                    },
-                    self.terminal_account(state, builder),
+                    ResultStatus::BudgetExceeded { limit: scoped },
+                    account,
                     state.usage,
                     state.turn,
                     state.turn_steps,
@@ -2481,12 +2587,12 @@ impl AgentLoop {
         }
         if let Some(deadline) = budget.deadline {
             if Utc::now() >= deadline {
+                let limit = format!("deadline={deadline}");
+                let account = self.budget_account(state, builder, &limit);
                 return BudgetCheck::Finished(
                     self.finish(
-                        ResultStatus::BudgetExceeded {
-                            limit: format!("deadline={deadline}"),
-                        },
-                        self.terminal_account(state, builder),
+                        ResultStatus::BudgetExceeded { limit },
+                        account,
                         state.usage,
                         state.turn,
                         state.turn_steps,
@@ -2499,12 +2605,12 @@ impl AgentLoop {
         if let Some(max_tokens) = budget.max_tokens {
             let spent = state.usage.input_tokens as u64 + state.usage.output_tokens as u64;
             if spent >= max_tokens as u64 {
+                let limit = format!("max_tokens={max_tokens}");
+                let account = self.budget_account(state, builder, &limit);
                 return BudgetCheck::Finished(
                     self.finish(
-                        ResultStatus::BudgetExceeded {
-                            limit: format!("max_tokens={max_tokens}"),
-                        },
-                        self.terminal_account(state, builder),
+                        ResultStatus::BudgetExceeded { limit },
+                        account,
                         state.usage,
                         state.turn,
                         state.turn_steps,
@@ -2523,12 +2629,12 @@ impl AgentLoop {
                         steps_this_turn,
                     };
                 }
+                let scoped = format!("{limit} (this session)");
+                let account = self.budget_account(state, builder, &scoped);
                 return BudgetCheck::Finished(
                     self.finish(
-                        ResultStatus::BudgetExceeded {
-                            limit: format!("{limit} (this session)"),
-                        },
-                        self.terminal_account(state, builder),
+                        ResultStatus::BudgetExceeded { limit: scoped },
+                        account,
                         state.usage,
                         state.turn,
                         state.turn_steps,
