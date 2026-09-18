@@ -714,21 +714,35 @@ pub struct AppState {
     /// REPLAYS its history, so a replayed `UserTurn` would drop a notice
     /// staged by the very switch that just focused it.
     pub pending_focus_notice: Option<String>,
-    /// What an operator-typed `--role`/`--model` flag on `/spawn`/`/fork`
-    /// named for a child, keyed by the child's own `AgentId` --
-    /// `commands::bare_fork`/`bare_spawn`'s (and the explicit-target
-    /// `/fork @<agent> --role`/`--model` arm's) one write site, right after
-    /// the fork/spawn that used the flag succeeds. A side-table alongside
+    /// What an operator's own command NAMED for a child -- a `--role`/
+    /// `--model` flag on `/spawn`/`/fork`, or the whole point of a
+    /// `/model <backend/model>`/`/role <alias>` switch -- keyed by the
+    /// child's own `AgentId`. Written by
+    /// `commands::bare_fork`/`bare_spawn` (and the explicit-target
+    /// `/fork @<agent> --role`/`--model` arm) right after the fork/spawn
+    /// that used the flag succeeds, and by `commands::switch_session`
+    /// (board item `01M2TWAZXTVB50YGMDK7MRN2W1`) right after the fork a
+    /// switch is made OF succeeds -- beside its `switch_lineage` write, so
+    /// both facts about that child land before anything observes it.
+    ///
+    /// **What this is not: the model an agent effectively resolves to.**
+    /// Every agent has one of those; it is re-resolved per turn from the
+    /// child's own `AgentSpec` and is not knowable here without a routing
+    /// lookup per row per frame. This map holds only the narrower fact
+    /// that somebody TYPED a model or role for this agent, which is
+    /// exactly the fact worth spending a deep tree's row width on -- see
+    /// `commands::switch_session`'s own doc. A side-table alongside
     /// `AgentTreeView`/`TreeNode`, mirroring `budget_warned_agents`'/
     /// `switch_lineage`'s own reasoning just above (`TreeNode` has no
     /// `Default`, so a marker only a few call sites ever set does not
     /// belong on it): the runtime's own `Event::AgentSpawned` carries no
     /// role/model field at all (routing is resolved lazily, per turn, off
     /// the child's own `AgentSpec` -- see `conway_runtime::subagent::start`),
-    /// so this fact exists ONLY here, in the one place that actually typed
-    /// the flag -- a model-invoked `conway_spawn`/`conway_fork` tool call
-    /// elsewhere in the tree has no entry here at all, and its row shows the
-    /// plain recipe exactly as it did before this field existed.
+    /// so this fact exists ONLY here, in the places that actually typed
+    /// the flag or the switch -- a model-invoked `conway_spawn`/
+    /// `conway_fork` tool call elsewhere in the tree has no entry here at
+    /// all, and its row shows the plain recipe exactly as it did before
+    /// this field existed.
     /// `view::agents::recipe_parts`/`view::agents::hop_label` are the two
     /// places this gets read (the `/agents` panel row and the status
     /// line's lineage breadcrumb).

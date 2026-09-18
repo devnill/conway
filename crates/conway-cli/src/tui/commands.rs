@@ -1984,16 +1984,45 @@ async fn bare_fork<H: Host>(
 /// would be destroyed before it is ever drawn. `focus_agent` re-pushes
 /// `pending_focus_notice` itself, immediately after that clear, on every
 /// clear it performs; see that field's own doc.
+///
+/// Board item `01M2TWAZXTVB50YGMDK7MRN2W1` ("after a `/model` switch the
+/// `/agents` row never names the model you switched to"): `switched` -- the
+/// model pin or role alias this switch is actually FOR -- is now the single
+/// value both halves of "say what just happened" are composed from. It
+/// spells the confirmation notice (`switched model to <x>`, previously a
+/// `describe` string each caller formatted for itself) AND is recorded in
+/// `state.spawn_role_or_model`, which is what puts `model: <x>` on the
+/// switch child's own `/agents` row (`view::agents::recipe_parts`) and on
+/// the status line's lineage breadcrumb (`view::status`). Before this, the
+/// switch site composed the notice from the `ModelRef` it had in hand and
+/// then dropped it on the floor: the row read `* 01M2TVT0 agent fork @seq
+/// 12 (focused)` -- naming everything about the switch except the one
+/// thing it was about. Deriving both from one value is what keeps the
+/// notice and the row from ever naming different models.
+///
+/// **No new lookup, and no widening of what a row shows.**
+/// `spawn_role_or_model` is, and stays, "what the operator's own command
+/// NAMED for this agent" -- the `--role`/`--model` flag on `/spawn`/`/fork`
+/// and now the `/model`/`/role` switch that is nothing BUT such a choice.
+/// It is not "the model this agent effectively resolves to", which every
+/// row has and which would need a per-row routing re-resolve (and would
+/// spend, on every row of a deep tree, the width that keeps the tree
+/// readable). A row whose model nobody chose by hand is byte-for-byte what
+/// it was.
 async fn switch_session<H: Host>(
     state: &mut AppState,
     host: &H,
     focused: AgentId,
-    describe: impl Into<String>,
+    switched: SpawnRoleOrModel,
     spec: ForkSpec,
 ) -> Effect {
+    let describe = match &switched {
+        SpawnRoleOrModel::Model(model) => format!("switched model to {model}"),
+        SpawnRoleOrModel::Role(role) => format!("switched role to {role}"),
+    };
     match host.fork(focused, spec).await {
         Ok(child) => {
-            state.pending_focus_notice = Some(format!("{}: {focused} -> {child}", describe.into()));
+            state.pending_focus_notice = Some(format!("{describe}: {focused} -> {child}"));
             // Board item A1d ("say why a turn fell back"), the "switch-forks
             // do not pile up" half: this IS the one call site that knows
             // `child` exists purely because of a `/model`/`/role` switch off
@@ -2006,6 +2035,15 @@ async fn switch_session<H: Host>(
             // `agent_panel::AppState::visible_agent_nodes`/`switch_history`
             // for how it is read.
             state.switch_lineage.insert(child, focused);
+            // Board item `01M2TWAZXTVB50YGMDK7MRN2W1`: and the switch's own
+            // TARGET, in the side-map the panel row already reads -- the
+            // third write site of a map that previously had only two
+            // (`bare_spawn`/`bare_fork`'s `--role`/`--model` flags). Same
+            // fact, same shape: an operator named a model/role for a child
+            // at the moment they created it. Recorded here, beside
+            // `switch_lineage`, so both facts about this child land before
+            // anything can observe it.
+            state.spawn_role_or_model.insert(child, switched);
             Effect::FocusNewSession {
                 child,
                 parent: focused,
@@ -2043,7 +2081,7 @@ pub async fn apply_model_switch<H: Host>(model: String, state: &mut AppState, ho
                 state,
                 host,
                 focused,
-                format!("switched model to {model_ref}"),
+                SpawnRoleOrModel::Model(model_ref),
                 spec,
             )
             .await
@@ -2894,18 +2932,18 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         // instead of pinning a model directly.
         SlashCommand::Role { role: Some(role) } => {
             let focused = state.focused_agent;
+            let alias = RoleAlias::new(role.clone());
             let spec = ForkSpec::new(String::new())
                 .keep_alive(true)
                 .tools(interactive_keep_alive_tools())
-                .role(RoleAlias::new(role.clone()));
-            switch_session(
-                state,
-                host,
-                focused,
-                format!("switched role to {role}"),
-                spec,
-            )
-            .await
+                .role(alias.clone());
+            // Board item `01M2TWAZXTVB50YGMDK7MRN2W1`: `/role` gets the
+            // identical treatment to `/model` beside it -- the alias names
+            // the row (`role: <alias>`) as well as the notice. The two
+            // switch paths differing on whether the row says what changed
+            // would be an accident of which one the fix was written for,
+            // not a distinction either surface means.
+            switch_session(state, host, focused, SpawnRoleOrModel::Role(alias), spec).await
         }
         // Bare `/role` -- board item `01M24ZJ9ABPP0DGVAA2PS3XVDD`: lists
         // every configured role (including `conway::config::
@@ -3352,10 +3390,16 @@ fn resolve_agent(state: &AppState, token: &str) -> Result<AgentId, String> {
 /// finished agents here would silently drop rows a copied transcript is
 /// expected to keep.
 ///
+/// **That is also why the indent here is `view::agents::ancestor_depth`,
+/// the real-tree depth, while the panel's is `visible_depth`** (board item
+/// `01M2TWAZXTVB50YGMDK7MRN2W1`): a `/tree` line's every ancestor is a
+/// line just above it, so the real depth and the drawn depth are the same
+/// number. The panel, which hides terminal and switch-replaced rows, is
+/// where they come apart.
+///
 /// Lines are composed in one immutable pass over `state.tree` and only then
 /// pushed as notices: `notice` needs `&mut state`, so the depth walk
-/// (`view::agents::ancestor_depth`, the panel's own helper, borrowed
-/// immutably) cannot run interleaved with it.
+/// (borrowed immutably) cannot run interleaved with it.
 fn render_tree_snapshot(state: &mut AppState) {
     let lines: Vec<String> = state
         .tree
@@ -8125,6 +8169,136 @@ mod tests {
             host.calls(),
             vec!["fork", "fork"],
             "both switches must reach host.fork"
+        );
+    }
+
+    /// Board item `01M2TWAZXTVB50YGMDK7MRN2W1`: **three REAL `/model`
+    /// commands**, each driven through `execute` and followed by exactly
+    /// what `App::run` does with the `Effect::FocusNewSession` it returns
+    /// -- then the panel is rendered through the real `view::draw` pass and
+    /// must NAME the model that was switched to.
+    ///
+    /// Deliberately not the shape of `state/agent_panel.rs`'s
+    /// `three_consecutive_switches_collapse_to_one_visible_row`, which
+    /// hand-writes the `switch_lineage` entries it then asserts on. That
+    /// test pins the draw-time predicate, which is a real and separate
+    /// thing to pin -- but it writes the state under test, so a regression
+    /// in `switch_session`'s own bookkeeping (the actual defect this item
+    /// fixes: the switch site knew the `ModelRef` and recorded nothing)
+    /// would not fail it. Nothing here touches `switch_lineage` or
+    /// `spawn_role_or_model` by hand; every entry they hold at the
+    /// assertions below was put there by a `/model` command.
+    ///
+    /// Three switches, not two, because two was already the ceiling of
+    /// real-keystroke coverage and the collapse only has more than one
+    /// hidden ancestor from the third one on.
+    ///
+    /// The model names share no characters (`aaaa`/`bbbb`/`cccc`), so a
+    /// stale match cannot be mistaken for a live one -- the idiom
+    /// `CONTRIBUTING.md`'s pty section requires for its emission
+    /// transcript, kept here even though `test_support::render` returns a
+    /// real cursor-addressed grid that does not have that hazard.
+    #[tokio::test]
+    async fn three_real_model_switches_leave_one_row_that_names_the_model_switched_to() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+
+        let mut previous = root;
+        let mut switch_children = Vec::new();
+        for model in ["anthropic/aaaa", "anthropic/bbbb", "anthropic/cccc"] {
+            let child = AgentId::new();
+            host.fork_child = Some(child);
+
+            let effect = execute(
+                SlashCommand::Model {
+                    model: Some(model.to_string()),
+                },
+                &mut state,
+                &host,
+            )
+            .await;
+
+            let Effect::FocusNewSession {
+                child: forked,
+                parent,
+                ..
+            } = effect
+            else {
+                panic!("/model {model} must fork and focus, got a different effect");
+            };
+            assert_eq!(forked, child);
+            assert_eq!(parent, previous, "each switch forks the FOCUSED agent");
+            let staged = state.pending_focus_notice.clone();
+            assert!(
+                staged.is_some_and(|text| text.contains(model)),
+                "the switch notice must still name the model: {model}"
+            );
+
+            // Exactly what `App::run` does with this effect: seed the tree
+            // node (the child's own `AgentSpawned` never reaches the stream
+            // the app switches to -- `ensure_agent_tracked`'s own doc), then
+            // focus. Then the operator's next real turn ends that switch's
+            // notice, as `App::submit` does.
+            state.ensure_agent_tracked(child, parent);
+            state.focus_agent(child);
+            state.pending_focus_notice = None;
+
+            previous = child;
+            switch_children.push(child);
+        }
+
+        assert_eq!(host.calls(), vec!["fork", "fork", "fork"]);
+        let tip = *switch_children.last().expect("three switches");
+
+        // Acceptance 2, from REAL switches: still exactly one row, the tip.
+        assert_eq!(state.tree.nodes.len(), 4, "provenance survives: 4 agents");
+        let visible: Vec<AgentId> = state.visible_agent_nodes().map(|n| n.agent_id).collect();
+        assert_eq!(
+            visible,
+            vec![tip],
+            "the switch lineage collapses to its tip"
+        );
+
+        // The bookkeeping the row is drawn from -- written by `/model`
+        // itself, never by this test.
+        let cccc = "anthropic/cccc".parse::<ModelRef>().expect("valid ref");
+        assert_eq!(
+            state.spawn_role_or_model.get(&tip),
+            Some(&SpawnRoleOrModel::Model(cccc)),
+            "the switch site must record what it switched TO, not just what it replaced"
+        );
+
+        // Acceptance 1, through the real render pass: the row names it.
+        state.agent_view_open = true;
+        let rows = crate::tui::test_support::render(&state, RENDER_WIDTH, 24);
+        let row = rows
+            .iter()
+            .find(|row| row.contains("(focused)"))
+            .unwrap_or_else(|| {
+                panic!("the agent panel must draw a row for the focused tip: {rows:?}")
+            });
+        assert!(
+            row.contains("model: anthropic/cccc"),
+            "the collapsed switch row must name the model switched to: {row:?}"
+        );
+        assert!(
+            !row.contains("aaaa") && !row.contains("bbbb"),
+            "the row names the LIVE tip's model, not a replaced one: {row:?}"
+        );
+
+        // Acceptance 4, same row: the tip is not indented under the three
+        // agents it hides. `split('│')` takes the panel block's own border
+        // off the front, leaving the row body -- whose first character is
+        // the status glyph when the indent is right, and a space when the
+        // row is nested under something invisible.
+        let body = row
+            .split('│')
+            .nth(1)
+            .unwrap_or_else(|| panic!("the panel row must sit inside its block: {row:?}"));
+        assert!(
+            !body.starts_with(' '),
+            "a collapsed tip whose every ancestor is hidden must not be indented: {body:?}"
         );
     }
 
