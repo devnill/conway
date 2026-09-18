@@ -90,7 +90,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use conway_core::capabilities::{Capabilities, ContextTokensSource, ToolCallSupport};
 use conway_core::content::{ContentBlock, Role, StopReason, ToolCall, ToolSpec, Usage};
 use conway_core::error::{BackendError, RoutingError, RuntimeError};
@@ -99,10 +98,12 @@ use conway_core::failure::{classify, observation_for, FailureClass};
 use conway_core::ids::{
     AgentId, BackendId, EndpointId, ModelId, ModelRef, PrefixKey, RoleAlias, SessionId, ToolName,
 };
-use conway_core::ports::{Backend, GenerateRequest, GenerateResponse, HealthRegistry, StreamChunk};
+use conway_core::ports::{
+    Admission, Backend, GenerateRequest, GenerateResponse, HealthRegistry, StreamChunk,
+};
 use conway_core::provenance::Provenance;
 use conway_core::retry::{max_jitter, MAX_RETRIES};
-use conway_core::routing::{AttemptFailure, BreakerState, Observation, Route, RoutingReason};
+use conway_core::routing::{BreakerState, Observation, Route, RoutingReason};
 use conway_core::segment::{CacheTtl, PromptSegment};
 use futures::StreamExt;
 use rand::RngExt;
@@ -152,7 +153,12 @@ pub struct AttemptOutcome {
     pub attempts: u8,
     pub latency: Duration,
     /// Candidates `Backend::admit` refused before any network call, each
-    /// with a `CapabilitySkip` reason carrying that refusal's own message.
+    /// with the skip reason `admission_skip_reason` built for it: a
+    /// `HeadroomSkip` carrying the refusal's own three numbers for a
+    /// context refusal, a `CapabilitySkip` carrying the error's message for
+    /// anything else. The SAME reason values the winning route's
+    /// `RoutingReason::Fallback::skipped` carries, so this side-channel and
+    /// the routing record cannot disagree.
     pub skipped: Vec<(ModelRef, RoutingReason)>,
     /// The winning route's own resolved context window ceiling
     /// (`caps.max_context_tokens`, the SAME `Capabilities` this fn already
@@ -212,23 +218,76 @@ fn window_of(caps: &Capabilities) -> Option<u32> {
     (caps.max_context_tokens != u32::MAX).then_some(caps.max_context_tokens)
 }
 
-/// Board item A1d ("say why a turn fell back"): appends `extra` (this
-/// candidate's own predecessors' `Backend::admit` refusals, in the order
-/// they were discovered) onto the winning `route`'s `RoutingReason::
-/// Fallback::after`, WITHOUT disturbing whatever the router itself already
-/// placed there (`conway_plugin_routing::DeclarativeRouter::evaluate`'s own
-/// pre-filter skips, board item A1d's other half) -- the two lists never
-/// name the same candidate: a router-level `CapabilitySkip`/`HealthSkip`
-/// never reaches this engine's `req.routes` at all, and an admission
-/// refusal can only happen to a candidate the router already selected. A
-/// no-op for every other `RoutingReason` variant (`AliasPrimary`,
+/// The skip reason for one `Backend::admit` refusal, carrying the refusal's
+/// OWN numbers rather than a rendered sentence wherever it gave any.
+///
+/// `BackendError::ContextTooLarge` -- the only error `Backend::admit`'s
+/// documented contract permits -- becomes
+/// [`RoutingReason::HeadroomSkip`], whose three fields are exactly the
+/// three `Admission` the backend computed, so every downstream renderer
+/// (`/why`, the TUI's mid-turn notice, `conway routes explain`) can restate
+/// the shortfall through the one shared `RoutingReason::skip_detail`
+/// instead of re-parsing a string. Any other error is a non-conformant
+/// implementation; it degrades to a `CapabilitySkip` carrying that error's
+/// `Display` verbatim, which is what this site did for every refusal before
+/// the structured variant existed.
+///
+/// Note what this deliberately does NOT produce: an `AttemptFailure`. The
+/// candidate was refused before any request was sent, so there is no
+/// attempt, no error from a provider, and no timestamp worth recording --
+/// manufacturing one would make the routing record claim a call that never
+/// happened.
+fn admission_skip_reason(model_ref: &ModelRef, err: &BackendError) -> RoutingReason {
+    match err {
+        BackendError::ContextTooLarge {
+            est_tokens,
+            headroom_tokens,
+            max_context_tokens,
+            ..
+        } => RoutingReason::HeadroomSkip {
+            skipped: model_ref.clone(),
+            admission: Admission {
+                est_tokens: *est_tokens,
+                headroom_tokens: *headroom_tokens,
+                max_context_tokens: *max_context_tokens,
+            },
+        },
+        other => RoutingReason::CapabilitySkip {
+            skipped: model_ref.clone(),
+            missing: vec![other.to_string()],
+        },
+    }
+}
+
+/// Board item A1d ("say why a turn fell back"), AMENDED: records `extra`
+/// (this candidate's own predecessors' `Backend::admit` refusals, in the
+/// order they were discovered) on the winning `route`'s
+/// `RoutingReason::Fallback::skipped`, WITHOUT disturbing
+/// `Fallback::after`, which the router itself populated with its own
+/// pre-filter skips (`conway_plugin_routing::DeclarativeRouter::evaluate`,
+/// board item A1d's other half). The two lists never name the same
+/// candidate: a router-level skip never reaches this engine's `req.routes`
+/// at all, and an admission refusal can only happen to a candidate the
+/// router already selected.
+///
+/// **This used to append to `after` instead**, as a synthesized
+/// `AttemptFailure` per refusal. That was wrong in a way that mattered: a
+/// candidate refused at admission was never dialed, so recording it as an
+/// attempt failure made the routing record describe a call that did not
+/// happen -- and, because the enriched reason was only ever attached to the
+/// returned `AttemptOutcome` and never to the `Event::ModelDecision` this
+/// engine emits, the surfaces an operator actually reads (`/why` and the
+/// mid-turn notice) saw the router's untouched `Fallback { after: [] }` and
+/// rendered a bare `after:` with nothing following it.
+///
+/// A no-op for every other `RoutingReason` variant (`AliasPrimary`,
 /// `PinnedByApi`/`PinnedByAgentDef`) -- `extra` is empty for the winning
 /// route in every one of those cases anyway, since nothing before it could
 /// have been skipped, but the match still names the reason explicitly
-/// rather than reaching into an enum variant that cannot carry `after`.
-fn with_admission_failures(mut route: Route, extra: &[AttemptFailure]) -> Route {
-    if let RoutingReason::Fallback { after, .. } = &mut route.reason {
-        after.extend(extra.iter().cloned());
+/// rather than reaching into an enum variant that cannot carry a skip list.
+fn with_admission_skips(mut route: Route, extra: &[RoutingReason]) -> Route {
+    if let RoutingReason::Fallback { skipped, .. } = &mut route.reason {
+        skipped.extend(extra.iter().cloned());
     }
     route
 }
@@ -561,18 +620,17 @@ impl AttemptEngine {
         // to recover it there.
         let mut last_terminal_route: Option<Route> = None;
         let mut skipped: Vec<(ModelRef, RoutingReason)> = Vec::new();
-        // Board item A1d ("say why a turn fell back"): the SAME admission
-        // refusals `skipped` above already records, reshaped as
-        // `AttemptFailure` (`model`/`error`/`at`) so the eventual winning
-        // route's `RoutingReason::Fallback::after` can name them WITH the
-        // refusal's own numbers (`BackendError::ContextTooLarge`'s
-        // `Display`) -- never a second, independently-worded reason.
-        // Distinct from `skipped` itself: that field stays `(ModelRef,
-        // RoutingReason)` for its existing consumers (`AttemptOutcome::
-        // skipped`, unit-tested by name in `attempt_fallback.rs`); this one
-        // exists solely to enrich the reason already carried on the route
-        // that ultimately succeeds.
-        let mut skip_failures: Vec<AttemptFailure> = Vec::new();
+        // Board item A1d ("say why a turn fell back"), AMENDED: the reasons
+        // from `skipped` above, kept as a bare list so the eventual winning
+        // route's `RoutingReason::Fallback::skipped` -- and, crucially, the
+        // `Event::ModelDecision` emitted for it -- can name every candidate
+        // this loop passed over WITH the refusal's own numbers. Previously
+        // these were reshaped into synthetic `AttemptFailure`s and appended
+        // to `Fallback::after`, which claimed an attempt that never
+        // happened and, being attached only to the returned
+        // `AttemptOutcome`, never reached `/why` or the mid-turn notice at
+        // all -- see `with_admission_skips`' own doc.
+        let mut admission_skips: Vec<RoutingReason> = Vec::new();
         // The raw refusals `Backend::admit` produced, kept alongside
         // `skipped` (whose `missing` is already a rendered `String`) so the
         // all-refused aggregate below can source its numbers directly from
@@ -630,19 +688,16 @@ impl AttemptEngine {
             // skips this ONE candidate -- never a backend call, never a
             // health `Observation` -- and the chain advances.
             if let Err(err) = backend.admit(&gen_req, req.headroom) {
-                let error_text = err.to_string();
-                skipped.push((
-                    model_ref.clone(),
-                    RoutingReason::CapabilitySkip {
-                        skipped: model_ref.clone(),
-                        missing: vec![error_text.clone()],
-                    },
-                ));
-                skip_failures.push(AttemptFailure {
-                    model: model_ref.clone(),
-                    error: error_text,
-                    at: Utc::now(),
-                });
+                // ONE reason per refusal, built once and shared by both
+                // consumers (`AttemptOutcome::skipped` and the winning
+                // route's `Fallback::skipped`), so the side-channel and the
+                // routing record can never word the same refusal
+                // differently. A context refusal keeps its NUMBERS here
+                // (`RoutingReason::HeadroomSkip`) rather than only a
+                // rendered sentence -- see `admission_skip_reason`.
+                let reason = admission_skip_reason(&model_ref, &err);
+                skipped.push((model_ref.clone(), reason.clone()));
+                admission_skips.push(reason);
                 admission_refusals.push((model_ref, err));
                 continue;
             }
@@ -665,6 +720,21 @@ impl AttemptEngine {
             // just above.
             let mut stream_retry_count: u32 = 0;
 
+            // The reason this candidate's `Event::ModelDecision` announces
+            // -- the router's own reason ENRICHED with whatever this loop
+            // skipped on the way here. This is the fix for the silent
+            // admission-time fallback: the event used to carry
+            // `route.reason` untouched, so a chain whose head was refused
+            // by `Backend::admit` announced a bare `Fallback { after: [],
+            // skipped: [] }` and every reader of it -- `/why`, the TUI's
+            // mid-turn notice -- had nothing to say. The enrichment already
+            // existed (`with_admission_skips`), but was applied only to the
+            // returned `AttemptOutcome`, which no operator-facing surface
+            // reads. Computed once per candidate, outside the retry loop:
+            // `admission_skips` cannot change while this candidate is being
+            // retried.
+            let decision_reason = with_admission_skips(route.clone(), &admission_skips).reason;
+
             loop {
                 self.bus.emit(
                     req.session,
@@ -672,7 +742,7 @@ impl AttemptEngine {
                     Event::ModelDecision {
                         role: req.role.clone(),
                         chosen: model_ref.clone(),
-                        reason: route.reason.clone(),
+                        reason: decision_reason.clone(),
                         attempt,
                     },
                 );
@@ -715,7 +785,7 @@ impl AttemptEngine {
                         );
                         return Ok(AttemptOutcome {
                             response,
-                            route: with_admission_failures(route.clone(), &skip_failures),
+                            route: with_admission_skips(route.clone(), &admission_skips),
                             attempts: attempt,
                             latency,
                             skipped: skipped.clone(),
@@ -1000,7 +1070,7 @@ impl AttemptEngine {
                         patched,
                         attempt,
                         skipped.clone(),
-                        skip_failures.clone(),
+                        admission_skips.clone(),
                     ));
                 }
             }
@@ -1063,7 +1133,7 @@ impl AttemptEngine {
         arguments: Value,
         attempts: u8,
         skipped: Vec<(ModelRef, RoutingReason)>,
-        skip_failures: Vec<AttemptFailure>,
+        admission_skips: Vec<RoutingReason>,
     ) -> AttemptOutcome {
         let backend = self.backend_for(&route.backend);
         let caps = backend.capabilities(&route.model);
@@ -1081,7 +1151,7 @@ impl AttemptEngine {
         };
         AttemptOutcome {
             response,
-            route: with_admission_failures(route, &skip_failures),
+            route: with_admission_skips(route, &admission_skips),
             attempts,
             latency: Duration::ZERO,
             skipped,

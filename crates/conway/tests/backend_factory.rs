@@ -472,6 +472,7 @@ async fn two_entries_naming_one_kind_invoke_the_factory_twice_and_produce_two_di
         reason: RoutingReason::Fallback {
             position: 1,
             after: Vec::new(),
+            skipped: Vec::new(),
         },
     };
     let router: Arc<dyn conway_core::ports::Router> =

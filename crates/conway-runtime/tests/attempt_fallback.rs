@@ -251,6 +251,7 @@ fn fallback(position: u8) -> RoutingReason {
     RoutingReason::Fallback {
         position,
         after: Vec::new(),
+        skipped: Vec::new(),
     }
 }
 
@@ -1344,24 +1345,27 @@ async fn t1_mixed_candidates_skips_small_attempts_large() {
     let (skipped_model, reason) = &outcome.skipped[0];
     assert_eq!(*skipped_model, model_ref("small", "m1"));
     match reason {
-        RoutingReason::CapabilitySkip { missing, .. } => {
-            // The `Backend::admit` refusal's own `Display`
-            // (previously a hardcoded
-            // "min_context" placeholder from the pre-flight partition this
-            // item retired).
-            assert_eq!(missing.len(), 1);
-            assert!(
-                missing[0].starts_with("context too large:"),
-                "got: {missing:?}"
-            );
+        // The `Backend::admit` refusal's own three numbers, carried
+        // STRUCTURALLY rather than as a rendered sentence a reader would
+        // have to parse back out (previously a `CapabilitySkip` whose
+        // single `missing` entry was the error's `Display`; before that, a
+        // hardcoded "min_context" placeholder from the pre-flight partition
+        // that retired).
+        RoutingReason::HeadroomSkip { admission, .. } => {
+            assert_eq!(admission.est_tokens, 30_000);
+            assert_eq!(admission.headroom_tokens, 4_000);
+            assert_eq!(admission.max_context_tokens, 32_768);
+            assert_eq!(admission.required_tokens(), 34_000);
+            assert_eq!(admission.shortfall_tokens(), 1_232);
+            // And the rendering every operator-facing surface shares still
+            // names all five, so nothing was lost in the move from a string
+            // to three fields.
+            let (_, detail) = reason.skip_detail().expect("a skip carries a detail");
             for needle in ["30000", "4000", "34000", "32768", "1232"] {
-                assert!(
-                    missing[0].contains(needle),
-                    "missing {needle} in {missing:?}"
-                );
+                assert!(detail.contains(needle), "missing {needle} in {detail}");
             }
         }
-        other => panic!("expected CapabilitySkip, got {other:?}"),
+        other => panic!("expected HeadroomSkip, got {other:?}"),
     }
 
     // ModelDecision is emitted only for the attempted (large) candidate.
@@ -1386,14 +1390,17 @@ async fn t1_mixed_candidates_skips_small_attempts_large() {
 /// (`outcome.route.reason`, the exact value `agent_loop.rs` serializes into
 /// `LogRecord::Assistant::route_reason`) now names the refusal, WITH its
 /// numbers -- not merely that `AttemptOutcome::skipped` (a side-channel
-/// most callers never read) is non-empty, which a placeholder `after: vec![]`
-/// would already satisfy. Before this item's change to `attempt.rs`'s
-/// `with_admission_failures`, `route.reason` was the router's own
-/// `Fallback { after: Vec::new(), .. }` verbatim, never enriched with what
-/// the attempt loop itself discovered -- see this test's own doc-comment
-/// history note in the completion report for the failing-before run.
+/// most callers never read) is non-empty, which a placeholder empty list
+/// would already satisfy.
+///
+/// **AMENDED: the refusal is recorded on `Fallback::skipped`, not
+/// `Fallback::after`.** `small` was refused by `Backend::admit` before any
+/// request was sent, so it has no attempt, no provider error, and no
+/// timestamp; the synthetic `AttemptFailure` this used to assert on
+/// described a call that never happened. `after` stays empty here, and
+/// correctly so -- nothing was attempted before `large`.
 #[tokio::test]
-async fn t1_fallback_route_reason_after_names_the_admission_refusal_with_its_numbers() {
+async fn t1_fallback_route_reason_names_the_admission_refusal_with_its_numbers() {
     let small = Arc::new(RecordingBackend::new(
         "small",
         caps(ToolCallSupport::Streaming { validated: true }, 32_768),
@@ -1424,31 +1431,39 @@ async fn t1_fallback_route_reason_after_names_the_admission_refusal_with_its_num
         .await
         .expect("large candidate must be attempted");
 
-    let RoutingReason::Fallback { position, after } = &outcome.route.reason else {
+    let RoutingReason::Fallback {
+        position,
+        after,
+        skipped,
+    } = &outcome.route.reason
+    else {
         panic!(
             "expected the winning route to carry Fallback, got {:?}",
             outcome.route.reason
         );
     };
     assert_eq!(*position, 1);
-    assert_eq!(after.len(), 1, "exactly the `small` refusal, got {after:?}");
-    assert_eq!(after[0].model, model_ref("small", "m1"));
     assert!(
-        after[0].error.starts_with("context too large:"),
-        "got: {}",
-        after[0].error
+        after.is_empty(),
+        "nothing was ATTEMPTED before `large`, so `after` must stay empty \
+         rather than carry a manufactured failure: {after:?}"
     );
+    assert_eq!(
+        skipped.len(),
+        1,
+        "exactly the `small` admission refusal, got {skipped:?}"
+    );
+    let (skipped_model, detail) = skipped[0]
+        .skip_detail()
+        .expect("an admission skip renders a detail");
+    assert_eq!(*skipped_model, model_ref("small", "m1"));
     // Every number the refusal's own `BackendError::ContextTooLarge`
-    // `Display` names -- est_tokens=30000, headroom=4000,
-    // required=34000, window=32768, shortfall=1232 -- sourced from the
-    // refusal directly (see `attempt.rs`'s own `with_admission_failures`
-    // doc), never recomputed.
+    // carried -- est_tokens=30000, headroom=4000, required=34000,
+    // window=32768, shortfall=1232 -- sourced from the refusal directly
+    // (see `attempt.rs`'s own `admission_skip_reason` doc), never
+    // recomputed.
     for needle in ["30000", "4000", "34000", "32768", "1232"] {
-        assert!(
-            after[0].error.contains(needle),
-            "missing {needle} in {}",
-            after[0].error
-        );
+        assert!(detail.contains(needle), "missing {needle} in {detail}");
     }
 }
 

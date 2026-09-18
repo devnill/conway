@@ -2131,8 +2131,19 @@ impl AppState {
                     // EXISTING `Entry::Notice` variant/rendering -- no new
                     // transcript entry kind, no `view/transcript.rs`
                     // change.
-                    if let RoutingReason::Fallback { after, .. } = reason {
-                        if let Some(text) = fallback_notice_text(chosen, after) {
+                    //
+                    // AMENDED: `after` alone was not enough. A candidate
+                    // refused at ADMISSION is never attempted, so it
+                    // produces no `AttemptFailure` and `after` stays
+                    // legitimately empty -- and that is the commonest real
+                    // cause of a fallback (a chain head whose window cannot
+                    // hold the request). Those skips now arrive on
+                    // `RoutingReason::Fallback::skipped`, and the notice
+                    // fires on EITHER list being non-empty, so a
+                    // mid-session model change caused by an admission skip
+                    // is no longer silent.
+                    if let RoutingReason::Fallback { after, skipped, .. } = reason {
+                        if let Some(text) = fallback_notice_text(chosen, after, skipped) {
                             self.transcript.push(Entry::Notice { text });
                         }
                     }
@@ -2376,26 +2387,43 @@ impl AppState {
 
 /// Board item A1d: the one-line dim notice `apply`'s `Event::ModelDecision`
 /// arm pushes onto the transcript when a turn routed past a named
-/// candidate. `None` when `after` is empty -- an ordinary primary/pinned
-/// selection, or a `Fallback` whose `after` a caller has not (yet)
-/// populated, says nothing rather than announcing a fallback with no
-/// content to show. Every skip's `error` text already carries its own
-/// numbers (`conway_plugin_routing::router::render_reason` /
-/// `conway_runtime::attempt`'s admission-refusal text) -- this fn only
-/// joins them, it never reformats a number itself.
+/// candidate. `None` only when BOTH lists are empty -- an ordinary
+/// primary/pinned selection, or a `Fallback` that genuinely passed nothing
+/// over, says nothing rather than announcing a fallback with no content to
+/// show.
+///
+/// Two sources, one line. `after` holds candidates that were ATTEMPTED and
+/// failed; `admission_skips` holds candidates refused before any request
+/// was sent (`RoutingReason::Fallback::skipped`), which have no attempt and
+/// so can never appear in `after`. Reading only `after` is what made an
+/// admission-time fallback silent: nothing was attempted, so there was
+/// nothing to announce, and the operator discovered the model had changed
+/// by reading the model name on the reply.
+///
+/// Every number rendered here is sourced, never recomputed: an attempted
+/// failure's `error` text (`conway_plugin_routing::router::render_reason` /
+/// the backend's own refusal `Display`) and a skip's
+/// `RoutingReason::skip_detail` -- `conway-core`'s single skip renderer,
+/// shared with `/why` and `conway routes explain`.
 fn fallback_notice_text(
     chosen: &conway::ModelRef,
     after: &[conway::AttemptFailure],
+    admission_skips: &[conway::RoutingReason],
 ) -> Option<String> {
-    if after.is_empty() {
-        return None;
-    }
-    let skipped = after
+    let mut parts: Vec<String> = after
         .iter()
         .map(|f| format!("{} skipped: {}", f.model, f.error))
-        .collect::<Vec<_>>()
-        .join("; ");
-    Some(format!("routed to {chosen} — {skipped}"))
+        .collect();
+    parts.extend(
+        admission_skips
+            .iter()
+            .filter_map(|reason| reason.skip_detail())
+            .map(|(model, detail)| format!("{model} skipped: {detail}")),
+    );
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("routed to {chosen} — {}", parts.join("; ")))
 }
 
 #[cfg(test)]

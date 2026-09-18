@@ -356,6 +356,16 @@ impl DeclarativeRouter {
                         RoutingReason::Fallback {
                             position: position as u8,
                             after: skipped_so_far(&entries, now),
+                            // `RoutingReason::Fallback::skipped` records
+                            // candidates refused at ADMISSION -- i.e. by
+                            // `Backend::admit`, inside the attempt engine,
+                            // which is a layer this router never reaches.
+                            // The router's own pre-filter skips are already
+                            // carried above (`skipped_so_far`), so leaving
+                            // this empty is the honest answer here, not an
+                            // omission: nothing was admission-skipped by
+                            // the time `resolve` returned.
+                            skipped: Vec::new(),
                         }
                     };
                     EvalOutcome::Selected(reason)
@@ -498,6 +508,15 @@ fn render_reason(reason: &RoutingReason) -> String {
         RoutingReason::CapabilitySkip { missing, .. } => {
             format!("capability: {}", missing.join("; "))
         }
+        // Produced by the attempt engine's `Backend::admit` refusal, not by
+        // this router -- rendered here anyway so a reason that reaches
+        // `NoCandidate`'s `considered` list from any producer still reads
+        // as a sentence. The numbers come from
+        // `RoutingReason::skip_detail`, the single shared skip renderer.
+        RoutingReason::HeadroomSkip { .. } => match reason.skip_detail() {
+            Some((_, detail)) => format!("headroom: {detail}"),
+            None => "headroom: skipped".to_string(),
+        },
         RoutingReason::HealthSkip { breaker, .. } => {
             format!("health: {breaker:?} breaker open")
         }
@@ -701,7 +720,10 @@ mod tests {
             .resolve(&request("planner", 100))
             .expect("m1 must be selected once m0 is filtered");
         assert_eq!(routes.len(), 1, "only the surviving candidate is a Route");
-        let RoutingReason::Fallback { position, after } = &routes[0].reason else {
+        let RoutingReason::Fallback {
+            position, after, ..
+        } = &routes[0].reason
+        else {
             panic!("expected Fallback, got {:?}", routes[0].reason);
         };
         assert_eq!(*position, 1);
@@ -742,6 +764,7 @@ mod tests {
         let RoutingReason::Fallback {
             position: explain_position,
             after: explain_after,
+            ..
         } = reason
         else {
             panic!("expected Fallback, got {reason:?}");

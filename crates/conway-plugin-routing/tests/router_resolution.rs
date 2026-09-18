@@ -237,14 +237,16 @@ fn all_healthy_chain_preserves_order_with_primary_and_fallback_reasons() {
         routes[1].reason,
         RoutingReason::Fallback {
             position: 1,
-            after: vec![]
+            after: vec![],
+            skipped: vec![]
         }
     );
     assert_eq!(
         routes[2].reason,
         RoutingReason::Fallback {
             position: 2,
-            after: vec![]
+            after: vec![],
+            skipped: vec![]
         }
     );
     assert_eq!(routes[0].model, a.model);
@@ -273,7 +275,10 @@ fn head_skipped_chain_survivor_keeps_its_chain_index_not_survivor_index() {
     // (see `index_with` above), the exact same "capability:
     // capabilities: unknown (backend, model) pair" text
     // `router.rs::check_candidate` produces.
-    let RoutingReason::Fallback { position, after } = &routes[0].reason else {
+    let RoutingReason::Fallback {
+        position, after, ..
+    } = &routes[0].reason
+    else {
         panic!(
             "survivor at chain position 2 must not be AliasPrimary, got {:?}",
             routes[0].reason
@@ -451,7 +456,10 @@ fn headroom_flips_selection_across_chain_positions() {
     assert_eq!(routes[0].model, large.model);
     // Board item A1d: `after` now names `small`'s own headroom rejection,
     // with its numbers, instead of an empty placeholder.
-    let RoutingReason::Fallback { position, after } = &routes[0].reason else {
+    let RoutingReason::Fallback {
+        position, after, ..
+    } = &routes[0].reason
+    else {
         panic!("expected Fallback, got {:?}", routes[0].reason);
     };
     assert_eq!(*position, 1);
