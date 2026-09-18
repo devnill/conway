@@ -19,7 +19,7 @@
 //! the test suite, so a field there is a much wider change than a local.
 
 use chrono::Utc;
-use conway_core::agent::{AgentResult, Fact, ResultStatus};
+use conway_core::agent::{AgentResult, DEFAULT_SUMMARY_LIMIT, Fact, ResultStatus};
 use conway_core::content::{Artifact, ContentBlock};
 use conway_core::error::StoreError;
 use conway_core::ids::{LogSeq, SessionId, ToolName};
@@ -210,6 +210,15 @@ pub(crate) fn status_label(status: &ResultStatus) -> &'static str {
 /// doc says the same of the threshold arithmetic this function has nothing
 /// to do with; the principle is the same one).
 pub fn interrupted_call_note(calls: &[InFlightCall]) -> Option<String> {
+    Some(format!("interrupted mid-call: {}", render_calls(calls)?))
+}
+
+/// Renders `calls` as `tool(args), tool(args)` -- the shared half of
+/// [`interrupted_call_note`] and [`budget_stop_note`], so those two never
+/// drift on how a call is named. `None` for an empty slice: both callers
+/// omit their whole sentence in that case rather than emit one with an
+/// empty list in it.
+fn render_calls(calls: &[InFlightCall]) -> Option<String> {
     if calls.is_empty() {
         return None;
     }
@@ -217,7 +226,115 @@ pub fn interrupted_call_note(calls: &[InFlightCall]) -> Option<String> {
         .iter()
         .map(|c| format!("{}({})", c.tool, c.args_summary))
         .collect();
-    Some(format!("interrupted mid-call: {}", parts.join(", ")))
+    Some(parts.join(", "))
+}
+
+/// Everything the runtime already knows about a budget-terminated agent at
+/// the moment `AgentLoop::budget_account` (`agent_loop.rs`) ends it -- a
+/// plain code span, not an intra-doc link: that method and the
+/// `check_budget` it serves are both private, and this struct is public, so
+/// a link would trip the crate's `private_intra_doc_links` doc gate. No
+/// field here is newly measured: `limit` is the same string that goes into
+/// `ResultStatus::BudgetExceeded`, the counters are the same `LoopState`
+/// fields that go into `AgentResult::steps_taken`/`usage`, `last_calls` is
+/// the same `InFlightCall` rendering [`interrupted_call_note`] already
+/// uses, and `transcript_ref` is the session the result itself already
+/// points at.
+#[derive(Debug)]
+pub struct BudgetStop<'a> {
+    /// Which ceiling tripped, verbatim (e.g. `max_steps=5 (this session)`).
+    pub limit: &'a str,
+    /// Steps taken over this agent's whole life (`AgentResult::steps_taken`).
+    pub steps_taken: u32,
+    /// Tool calls dispatched (`LoopState::tool_calls`).
+    pub tool_calls: u32,
+    /// What this agent was working on when the ceiling hit: the calls still
+    /// in flight if any were, else the last batch it dispatched. Empty if
+    /// it never dispatched anything at all, in which case the "stopped at"
+    /// sentence is omitted rather than emitted empty.
+    pub last_calls: &'a [InFlightCall],
+    /// Where the full story is (`AgentResult::transcript_ref`), so a parent
+    /// can resume from the work already done rather than redo it.
+    pub transcript_ref: SessionId,
+}
+
+/// The derived partial-handback note a budget-terminated agent appends to
+/// its own terminal summary -- board item `01M2V047Q99N4HGXF0Y42JVBB9`.
+///
+/// **Why this exists.** `crate::runway`'s 80%-crossing note is advice: it
+/// tells a model to wrap up, and a model that spends its last step on more
+/// work instead dies with everything still in its head. Observed against a
+/// real backend: the parent received a bare failed tool call whose
+/// `AgentResult::summary` was [`ResultBuilder::from_trailing_text`]'s
+/// placeholder (`"(stopped after 5 turn(s), ...)"`) and nothing else. The
+/// notice announced; it bought nothing.
+///
+/// This note is the part that does not depend on the model cooperating.
+/// Every input is already in hand at the moment the ceiling trips, so even
+/// a child that ignored its warning entirely still hands back which limit
+/// ended it, how far it got, what it was doing when it stopped, and where
+/// to resume -- appended AFTER whatever real text it did produce, which
+/// `AgentLoop::terminal_account` supplies and this note never replaces.
+///
+/// Deliberately written into the `summary` rather than onto a new
+/// `ResultStatus::BudgetExceeded` field: `summary` is the one field EVERY
+/// downstream rendering already carries -- `conway-tools`'
+/// `agent_result_output` (the awaited-spawn JSON), `context::builder`'s
+/// `child_result_text` (the fire-and-forget mailbox line, which renders
+/// only `status_label` + `summary` and drops every other field), and the
+/// TUI's own child notice -- so one change reaches all three without
+/// widening a `#[non_exhaustive]` core enum that a dozen `match`es spell
+/// out.
+///
+/// One line, no interior newlines, so a `{:#?}`-rendered log record (what
+/// `conway sessions show` prints) keeps it greppable.
+///
+/// Private: [`budget_summary`] is the composition every caller wants, and
+/// it is the one that reserves room for this note under the summary cap.
+fn budget_stop_note(stop: &BudgetStop<'_>) -> String {
+    let mut note = format!(
+        "[partial handback -- budget exceeded] this agent stopped because {} was reached, \
+         after {} step(s) and {} tool call(s) dispatched.",
+        stop.limit, stop.steps_taken, stop.tool_calls
+    );
+    if let Some(calls) = render_calls(stop.last_calls) {
+        note.push_str(&format!(" stopped at: {calls}."));
+    }
+    note.push_str(&format!(
+        " Anything above this line is PARTIAL work, not a final answer; the rest was never \
+         attempted. Full transcript: {} -- resume from there rather than redoing the work.",
+        stop.transcript_ref
+    ));
+    note
+}
+
+/// The whole terminal summary a budget-terminated agent hands back:
+/// `account` (whatever it actually produced -- `AgentLoop::terminal_account`)
+/// followed by the derived `budget_stop_note` below. Plain code spans, not
+/// intra-doc links: both of those are private and this function is public,
+/// so a link would trip the crate's `private_intra_doc_links` doc gate.
+///
+/// **Why the composition is a function and not a `format!` at the call
+/// site.** `AgentResult::new` truncates every summary to
+/// [`DEFAULT_SUMMARY_LIMIT`] chars *from the front*. Appending the note
+/// naively would mean a chatty agent -- exactly the kind that fills its
+/// budget -- silently loses the entire note to that cap, and loses it in
+/// precisely the runs this note exists for. So the note's own length is
+/// reserved first and `account` is what gets trimmed (with an ellipsis, so
+/// the trim is visible) if the two together would not fit. The agent's own
+/// words still lead; only their tail is at risk, and the tail of a partial
+/// account is the least load-bearing part of it.
+pub fn budget_summary(account: &str, stop: &BudgetStop<'_>) -> String {
+    const SEPARATOR: &str = "\n\n";
+    let note = budget_stop_note(stop);
+    let reserved = note.chars().count() + SEPARATOR.chars().count();
+    let room = DEFAULT_SUMMARY_LIMIT.saturating_sub(reserved);
+    if account.chars().count() <= room {
+        return format!("{account}{SEPARATOR}{note}");
+    }
+    // One char of the room spent on the ellipsis that marks the trim.
+    let kept: String = account.chars().take(room.saturating_sub(1)).collect();
+    format!("{kept}…{SEPARATOR}{note}")
 }
 
 /// Persists `result` as `session`'s terminal `LogRecord::AgentResultRecord`
@@ -562,6 +679,123 @@ mod tests {
         let contract = schema_requiring("summary");
         let outcome = validate_result_contract(None, &contract, false);
         assert_ne!(outcome, ContractOutcome::Ok);
+    }
+
+    fn in_flight(tool: &str, args: serde_json::Value) -> InFlightCall {
+        InFlightCall::new(ToolName::new(tool), &args)
+    }
+
+    /// The note a budget-terminated agent hands its parent names all four
+    /// things the observed failure lacked: which ceiling, how far it got,
+    /// what it was doing, and where to resume.
+    #[test]
+    fn budget_stop_note_names_limit_progress_call_and_transcript() {
+        let calls = vec![in_flight("bash", serde_json::json!({"command": "echo hi"}))];
+        let transcript = SessionId::new();
+        let note = budget_stop_note(&BudgetStop {
+            limit: "max_steps=5 (this session)",
+            steps_taken: 5,
+            tool_calls: 5,
+            last_calls: &calls,
+            transcript_ref: transcript,
+        });
+        assert!(note.contains("max_steps=5 (this session)"), "{note}");
+        assert!(note.contains("5 step(s)"), "{note}");
+        assert!(note.contains("5 tool call(s)"), "{note}");
+        assert!(note.contains("stopped at: bash("), "{note}");
+        assert!(note.contains(&transcript.to_string()), "{note}");
+        assert!(note.contains("PARTIAL"), "{note}");
+        assert!(
+            !note.contains('\n'),
+            "the note must stay one line so a `{{:#?}}`-rendered log record keeps it \
+             greppable: {note}"
+        );
+    }
+
+    /// An agent that hit its ceiling without ever dispatching a tool call
+    /// omits the "stopped at" sentence rather than rendering an empty list.
+    #[test]
+    fn budget_stop_note_omits_the_call_sentence_when_nothing_was_dispatched() {
+        let note = budget_stop_note(&BudgetStop {
+            limit: "max_tokens=100",
+            steps_taken: 1,
+            tool_calls: 0,
+            last_calls: &[],
+            transcript_ref: SessionId::new(),
+        });
+        assert!(!note.contains("stopped at:"), "{note}");
+        assert!(note.contains("max_tokens=100"), "{note}");
+    }
+
+    /// The agent's own partial work leads; the derived note follows. Both
+    /// survive -- the whole point of the item.
+    #[test]
+    fn budget_summary_leads_with_the_agents_own_account() {
+        let calls = vec![in_flight("bash", serde_json::json!({"command": "echo hi"}))];
+        let stop = BudgetStop {
+            limit: "max_steps=5 (this session)",
+            steps_taken: 5,
+            tool_calls: 5,
+            last_calls: &calls,
+            transcript_ref: SessionId::new(),
+        };
+        let summary = budget_summary("I covered crates/conway-cli", &stop);
+        assert!(
+            summary.starts_with("I covered crates/conway-cli\n\n"),
+            "the agent's own partial work must lead: {summary}"
+        );
+        assert!(
+            summary.contains("[partial handback -- budget exceeded]"),
+            "the derived note must follow it: {summary}"
+        );
+    }
+
+    /// A chatty agent -- exactly the kind that fills a budget -- must not
+    /// push the note off the end of `AgentResult::new`'s 2000-char summary
+    /// cap. The account is trimmed to make room, not the note.
+    #[test]
+    fn budget_summary_reserves_room_for_the_note_under_the_summary_cap() {
+        let calls = vec![in_flight("bash", serde_json::json!({"command": "echo hi"}))];
+        let stop = BudgetStop {
+            limit: "max_steps=5 (this session)",
+            steps_taken: 5,
+            tool_calls: 5,
+            last_calls: &calls,
+            transcript_ref: SessionId::new(),
+        };
+        let note = budget_stop_note(&stop);
+        let summary = budget_summary(&"a".repeat(5000), &stop);
+
+        assert!(
+            summary.chars().count() <= DEFAULT_SUMMARY_LIMIT,
+            "the composed summary must already fit the cap `AgentResult::new` applies, so \
+             nothing is silently cut: {} chars",
+            summary.chars().count()
+        );
+        assert!(
+            summary.ends_with(&note),
+            "the note must survive intact at the end: {summary}"
+        );
+        assert!(
+            summary.starts_with("aaa"),
+            "the account still leads: {summary}"
+        );
+        assert!(
+            summary.contains('…'),
+            "the trim must be visible, not silent: {summary}"
+        );
+    }
+
+    /// `interrupted_call_note`'s wording is load-bearing for
+    /// `child_killed_mid_tool_call_names_the_interrupted_call`
+    /// (`conway-cli`'s dogfood suite) and must not have drifted when
+    /// `budget_stop_note` started sharing its call rendering.
+    #[test]
+    fn interrupted_call_note_wording_is_unchanged_and_empty_is_none() {
+        let calls = vec![in_flight("bash", serde_json::json!({"command": "sleep 5"}))];
+        let note = interrupted_call_note(&calls).expect("a non-empty slice yields a note");
+        assert!(note.starts_with("interrupted mid-call: bash("), "{note}");
+        assert!(interrupted_call_note(&[]).is_none());
     }
 
     #[test]

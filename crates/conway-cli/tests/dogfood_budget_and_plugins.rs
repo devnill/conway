@@ -145,6 +145,13 @@ fn write_fixture_with_bash(
 // Gate 7 -- children get their budget warning
 // ---------------------------------------------------------------------
 
+/// The partial work the budget-killed child says out loud on every turn.
+/// Deliberately a phrase that appears nowhere else in this fixture -- not
+/// in the root's prompt, not in any scripted root turn, not in any status
+/// line -- so finding it in the PARENT's durable log can only mean the
+/// child's handback carried it there.
+const CHILD_PARTIAL: &str = "so far I covered crates/conway-cli and crates/conway-core";
+
 /// A child spawned with `max_steps=5` on a job that cannot finish (it keeps
 /// calling `bash` every turn, never producing a bare text reply) receives
 /// the 80% wrap-up notice BEFORE it dies, and that notice reaches BOTH the
@@ -158,6 +165,25 @@ fn write_fixture_with_bash(
 /// (`crates/conway-tools/src/subagent/tools.rs::BudgetArg`), independent
 /// of the root's `[limits].max_steps` (set generously large here so only
 /// the CHILD's budget is ever in play).
+///
+/// ## Board item `01M2V047Q99N4HGXF0Y42JVBB9`: the notice must BUY something
+///
+/// As first written this test proved only that the notice ARRIVED. Its mock
+/// child scripted `Chunk::ToolCall` + `Chunk::Finish("tool_calls")` with no
+/// `Chunk::Text` anywhere, so the child's `last_assistant_text` was
+/// structurally always empty and its handback was always the
+/// `terminal_account` placeholder -- meaning the test would have passed
+/// unchanged if a budget-killed child could never hand back anything at
+/// all, which (per that item, reproduced against a real backend) is exactly
+/// what was happening.
+///
+/// The child now speaks on every turn, so it is a child that CAN report
+/// partial work, and the assertions below check that what reaches the
+/// parent's durable log is (a) the child's own partial prose and (b) the
+/// derived stop note (`conway-runtime`'s `result::budget_stop_note`)
+/// naming the ceiling, the progress, the last call, and the transcript to
+/// resume from. The original notice-arrival and `!budget` assertions are
+/// unchanged and still run first.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
     // No `tools` selector on the spawn args. `SpawnArgs.tools` maps onto
@@ -192,8 +218,31 @@ async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
     // consumed (the shared mock's own documented graceful-unscripted-
     // request fallback covers any request beyond what was scripted
     // anyway, so this is not load-bearing, only a safety margin).
-    for _ in 0..6 {
+    //
+    // Each turn ALSO emits prose alongside its tool call -- the fix for
+    // this test's own blind spot (see this fn's doc). `Chunk::Text` here is
+    // what `agent_loop`'s `full_text(&outcome.response.content)` captures
+    // into `LoopState::last_assistant_text` on every turn, which is in turn
+    // what `terminal_account` reports when the ceiling ends the run. The
+    // same sentence every turn (rather than a per-turn counter) so the
+    // assertion below does not depend on WHICH turn happened to be last;
+    // text BEFORE the tool call, mirroring how a real model narrates then
+    // acts.
+    //
+    // Exactly FIVE such entries, matching the ceiling -- the 6th safety-
+    // margin entry below deliberately carries NO `CHILD_PARTIAL`. `Script`
+    // is one flat, globally-sequential list (`common/mock_backend.rs`: "one
+    // entry per successive request the CLI makes"), so the margin entry is
+    // consumed by whichever agent makes the 6th request -- in practice the
+    // ROOT's own follow-up turn, since the ceiling trips the child after
+    // exactly 5. Putting `CHILD_PARTIAL` in it would have the ROOT say the
+    // sentence into its own session log, and the assertion below would then
+    // pass against a completely empty handback -- the very false pass this
+    // item is about. Keeping it out means `CHILD_PARTIAL` can only ever
+    // reach the parent's log by travelling child -> handback -> parent.
+    for _ in 0..5 {
         turns.push(vec![
+            Chunk::Text(CHILD_PARTIAL),
             Chunk::ToolCall {
                 name: "bash",
                 args: serde_json::json!({"command": "echo still going"}),
@@ -201,6 +250,13 @@ async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
             Chunk::Finish("tool_calls"),
         ]);
     }
+    turns.push(vec![
+        Chunk::ToolCall {
+            name: "bash",
+            args: serde_json::json!({"command": "echo still going"}),
+        },
+        Chunk::Finish("tool_calls"),
+    ]);
     // The root's own follow-up turn once the child's terminal result comes
     // back as `conway_spawn`'s own tool output.
     turns.push(vec![Chunk::Text("done"), Chunk::Finish("stop")]);
@@ -318,6 +374,75 @@ async fn child_with_max_steps_five_gets_the_wrap_up_notice_before_it_dies() {
         show_stdout.contains("child_result"),
         "the parent's own durable log must record the child's termination \
          (ChildResultRecord) -- got: {show_stdout}"
+    );
+
+    // Board item `01M2V047Q99N4HGXF0Y42JVBB9`. Everything above proves the
+    // notice ARRIVED. These prove it BOUGHT something: that what the parent
+    // actually received is more than a failed tool call.
+    //
+    // (a) The child's own partial work. `CHILD_PARTIAL` is scripted ONLY
+    // into the child's turns (see the script comment above), so its
+    // presence in the ROOT's log means the handback carried it -- through
+    // `terminal_account` -> `ResultBuilder::resolve` -> `AgentResult::
+    // summary` -> both `conway-tools`' `agent_result_output` (the awaited
+    // `conway_spawn` tool result) and `context::builder`'s
+    // `child_result_text` (the `ChildResultRecord`). Against HEAD before
+    // this item the child could emit no text at all and this fails.
+    assert!(
+        show_stdout.contains(CHILD_PARTIAL),
+        "a budget-killed child's PARTIAL work must reach the parent, not be lost with the \
+         child -- the parent's log must carry the child's own words ({CHILD_PARTIAL:?}), \
+         got: {show_stdout}"
+    );
+
+    // (b) The derived stop note -- the half that holds even when the model
+    // ignores its wrap-up notice entirely, since every input is already in
+    // the runtime's hand (`conway-runtime`'s `result::budget_stop_note`).
+    //
+    // Asserted against ONE LINE of the output rather than the whole dump:
+    // `sessions show` prints each record with `{:#?}`, which renders a
+    // multi-line summary as a single escaped line, and the note itself is
+    // one line by construction (`budget_stop_note`'s own unit test pins
+    // that). Whole-dump `contains` would let the transcript reference below
+    // pass on an unrelated occurrence -- the child's session id is already
+    // in the parent's log as `AgentResult::transcript_ref` regardless of
+    // this item, so only "in the note, on the same line" is evidence.
+    let note_line = show_stdout
+        .lines()
+        .find(|line| line.contains("[partial handback -- budget exceeded]"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the handback must MARK ITSELF PARTIAL so the parent does not read it as a \
+                 final answer -- got: {show_stdout}"
+            )
+        });
+    assert!(
+        note_line.contains("max_steps=5 (this session)"),
+        "the derived note must name WHICH ceiling ended the child -- got: {note_line}"
+    );
+    // The `max_steps` equivalent of the deadline path's own
+    // `interrupted_call_note` coverage in
+    // `child_killed_mid_tool_call_names_the_interrupted_call`, below: WHERE
+    // in the work it stopped, not only which limit it hit. `bash(` alone,
+    // not the rendered arguments -- `{:#?}` escapes the quotes inside the
+    // JSON args summary.
+    assert!(
+        note_line.contains("stopped at: bash("),
+        "the `max_steps` path must name where the child stopped (its last dispatched call), \
+         as the deadline path already does -- got: {note_line}"
+    );
+    // The resume pointer, checked against the CHILD's real session id
+    // rather than a substring shape, so a note naming the wrong session
+    // (or the parent's own) would fail here.
+    let child_id = sessions
+        .iter()
+        .find(|s| s.origin.is_some())
+        .expect("the spawned child must have its own session")
+        .id;
+    assert!(
+        note_line.contains(&child_id.to_string()),
+        "the derived note must point at the CHILD's own transcript so the parent can resume \
+         rather than redo the work -- expected {child_id}, got: {note_line}"
     );
 }
 
