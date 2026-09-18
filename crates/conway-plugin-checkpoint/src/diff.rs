@@ -98,8 +98,15 @@ fn diff_ops<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<(OpKind, &'a str)> {
 }
 
 /// Renders a unified diff between `old_text` and `new_text`, labeled with
-/// `old_label`/`new_label` (conventionally the same path twice, for the
-/// `---`/`+++` headers). Empty when the two are byte-identical.
+/// `old_label`/`new_label` for the `---`/`+++` headers. Empty when the two
+/// are byte-identical.
+///
+/// This module has no opinion about which side is which -- that is the
+/// caller's decision, and for `/conway.checkpoint.diff` a consequential
+/// one (see `DiffCommand`'s own doc, "Direction, and why both sides are
+/// labelled"). Callers are expected to pass labels that DISTINGUISH the
+/// two sides rather than the same path twice: a reader who cannot tell a
+/// preview's direction from its headers cannot check it.
 pub fn unified_diff(old_label: &str, new_label: &str, old_text: &str, new_text: &str) -> String {
     if old_text == new_text {
         return String::new();
