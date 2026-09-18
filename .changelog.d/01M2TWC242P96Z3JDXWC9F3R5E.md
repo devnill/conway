@@ -1,0 +1,13 @@
+### Added
+
+- **`--session <id-or-name>` targets a plugin subcommand at an existing session** — board item `01M2TWC242P96Z3JDXWC9F3R5E`. A bare `conway <plugin-id>.<command>` invocation used to mint a fresh, prompt-less session and hand the command *that* session's id, which made every session-keyed plugin store unreachable from a shell: `conway conway.checkpoint.list` reported "no snapshots recorded yet" about a session created by the act of asking. `conway conway.checkpoint.list --session <id-or-name>` now resumes the named session instead, so `list`/`diff`/`rollback` (and `--rewind`'s fork, and `conway.history`'s mask/checkout) all act on the session the operator named. The flag must come first, immediately after the subcommand word — a plugin command's arguments are free text, so position is the only unambiguous rule, and a `--session` token anywhere else is a named usage error rather than silent free text. Unlike the root `--session` flag it never creates: an id or name that resolves to nothing is exit 2.
+
+- **`sessions show <id> --diff` reports calls whose result never landed** — board item `01M2TWC242P96Z3JDXWC9F3R5E`. An `edit`/`write` `ToolUse` with no matching `ToolResultRecord` — the defining shape of a worker killed mid-edit — was silently dropped, so the one call an operator most needed to check was the one the report omitted. Those calls now appear under a trailing `## unfinished` heading naming the tool and path. They are deliberately not folded into the diffs above: conway knows the call was proposed and does not know whether it ran.
+
+### Changed
+
+- **`conway.checkpoint`'s empty listing names the session it answered for** — board item `01M2TWC242P96Z3JDXWC9F3R5E`. "No snapshots recorded yet for this session" was true every time and still misled, because the reader supplying "this session" meant the one they had just killed. The empty arm now prints the session id and points at `--session <id-or-name>` and `conway sessions list` — the difference between "there is nothing to roll back" and "you asked the wrong session".
+
+### Fixed
+
+- **`docs/sessions.md` described `--diff`'s pre-fix baseline** — board item `01M2TWC242P96Z3JDXWC9F3R5E`. The page still said `--diff` reads a path's current on-disk bytes and treats them as the baseline; since `01M2V6HMBAWKM0GG90J14K4Q8F` it un-applies the recorded calls to reconstruct what the session started from. The page also now states that a delegated subagent's edits are not missing from `--diff` but filed under the subagent's own session id (conway writes one session per agent), so `sessions show <that-id> --diff` answers for it directly.

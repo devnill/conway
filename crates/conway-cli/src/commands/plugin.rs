@@ -42,7 +42,8 @@
 //! none yet, so [`run`] starts one fresh, prompt-less session purely to
 //! have real `focused_agent`/`root_agent`/`session_id` values to hand the
 //! command -- the same shape `crate::oneshot::resolve_session`'s
-//! flag-free arm already creates for one-shot mode. A
+//! flag-free arm already creates for one-shot mode -- unless `--session
+//! <id-or-name>` names an existing one (its own section below). A
 //! [`conway::plugin::CommandOutcome::ForkSession`] outcome is honored for
 //! real (the fork actually happens, against the real store) but, unlike the
 //! TUI, there is no follow-on interactive loop to hand the child to -- this
@@ -53,6 +54,63 @@
 //! genuinely submitted (a real `UserTurn` record, real `Provenance::
 //! CommandPrompt` attribution), but this function does not stay attached
 //! to drive the resulting turn -- see that arm's own comment for why.
+//!
+//! ## `--session <id-or-name>`: naming the session to run against
+//!
+//! Board item `01M2TWC242P96Z3JDXWC9F3R5E`. A freshly-minted session is the
+//! right default (there is nothing else to run against), but it is the
+//! WRONG answer for every plugin whose state is keyed by session id --
+//! `conway.checkpoint`'s snapshot store above all. `conway
+//! conway.checkpoint.list` minted an empty session and then truthfully
+//! reported that THAT session had recorded no snapshots, which reads as
+//! "there were no snapshots" to the one operator who most needs the
+//! opposite answer: the one who just killed a worker mid-edit.
+//!
+//! **This is also the per-AGENT answer, not merely a per-session one.**
+//! conway writes one session file per agent (`SessionMeta::agent_id`;
+//! `SessionHandle::transcript` resolves an agent to its own session), so a
+//! delegated worker's tool calls -- and therefore its checkpoint snapshots,
+//! which `CheckpointObserver` keys on the agent loop's own `session` --
+//! already live under that worker's own session id. `conway sessions list`
+//! names it (`ORIGIN` reads `spawn@<seq> <parent>`); this flag reads its
+//! store.
+//!
+//! `split_session_flag` (a private fn -- plain code span, not a doc link,
+//! on purpose, like `plugin_rows` below) takes `--session <id-or-name>` (or
+//! `--session=<id-or-name>`) off the FRONT of the argument tail and
+//! resolves it through `crate::session_names` -- the identical id-or-name
+//! grammar `conway sessions show|tree|export` already accept -- then
+//! [`run`] `Conway::resume`s it instead of minting one. Unlike the ROOT
+//! `--session` flag (`cli::Cli::session`), this one never creates: an id or
+//! name nothing answers to is a usage error (exit 2), because "create it"
+//! is exactly the behaviour that produced the empty listing above.
+//!
+//! **It must come first, and that is enforced rather than guessed.** A
+//! plugin command's arguments are free text, consumed verbatim
+//! ([`CommandCtx::args`]), so there is no schema to tell a flag conway owns
+//! from one a plugin does; the only unambiguous rule is a positional one.
+//! A `--session` token anywhere else in the tail is a named usage error
+//! rather than silent free text, because every first-party command that
+//! could receive it would otherwise mis-read it (`/conway.checkpoint.list`
+//! as "takes no arguments, got ...", `/conway.checkpoint.rollback` as a
+//! path to restore). A *quoted* argument containing the word is untouched:
+//! the check is exact-token, over the pre-join `args` vector.
+//!
+//! **Every outcome follows the target, not the mint.** `ForkSession`,
+//! `Checkout`, `MaskRecord` and `SubmitPrompt` below all resolve against
+//! `handle.id()`, so `conway conway.checkpoint.rollback --session <id> 42
+//! --rewind` forks the session that was rolled back rather than an empty
+//! one -- which is the whole reason this flag lives here, at the one site
+//! that owns the handle, rather than being parsed independently inside each
+//! store-backed plugin.
+//!
+//! **Not yet reachable as `conway --session <id> <plugin-id>.<command>`.**
+//! The ROOT flag of that name is parsed by clap into `cli::Cli::session`
+//! and never reaches [`run`], whose signature (`main.rs`'s
+//! `Command::External` arm) carries no `Cli`. Threading it there is a
+//! `main.rs`/`cli.rs` change board item `01M2TWC242P96Z3JDXWC9F3R5E` did
+//! not own; until then the flag belongs AFTER the subcommand word, which
+//! is what this module documents and tests.
 //!
 //! ## `run_admin`: `conway plugin list|install|remove`
 //!
@@ -142,7 +200,14 @@ pub async fn run(
         diag::error("no subcommand given");
         return Ok(ExitCode::Usage);
     };
-    let rest = args[1..].join(" ");
+    let (session_ref, tail) = match split_session_flag(&args[1..]) {
+        Ok(split) => split,
+        Err(message) => {
+            diag::error(format!("{full_name}: {message}"));
+            return Ok(ExitCode::Usage);
+        }
+    };
+    let rest = tail.join(" ");
 
     let plugins = first_party_plugins::installed_plugins(conway, memory_store, agent_names, env)?;
     let registry = match CommandRegistry::build(&plugins) {
@@ -166,10 +231,19 @@ pub async fn run(
         return Ok(ExitCode::Usage);
     };
 
-    // No live session yet -- start a fresh, prompt-less one purely for real
-    // agent/session ids (module doc). Never prompted, so this never
-    // consults the permission gate or reaches a model.
-    let handle = conway.new_session(SessionSpec::default()).await?;
+    // `--session <id-or-name>` names an EXISTING session to run against
+    // (module doc, "naming the session to run against"); without it there
+    // is no live session yet, so start a fresh, prompt-less one purely for
+    // real agent/session ids. Either way this is never prompted here, so
+    // nothing in this function consults the permission gate or reaches a
+    // model -- except the `SubmitPrompt` arm far below, which says so.
+    let handle = match &session_ref {
+        Some(raw) => match resume_target(conway, raw).await {
+            Ok(handle) => handle,
+            Err(code) => return Ok(code),
+        },
+        None => conway.new_session(SessionSpec::default()).await?,
+    };
     let ctx = CommandCtx {
         focused_agent: handle.root(),
         root_agent: handle.root(),
@@ -302,6 +376,99 @@ pub async fn run(
             }
         }
     }
+}
+
+/// The one token [`run`] consumes itself rather than forwarding verbatim
+/// into [`CommandCtx::args`] -- see this module's own top doc, "`--session
+/// <id-or-name>`: naming the session to run against", for the whole
+/// contract.
+const SESSION_FLAG: &str = "--session";
+
+/// The `--session=<value>` spelling's prefix. Both spellings are accepted
+/// because clap accepts both everywhere else in this binary, and an
+/// operator who has typed `--session=<id>` at the root flag has no reason
+/// to expect the same text to become free text one word later.
+const SESSION_FLAG_EQ: &str = "--session=";
+
+fn is_session_flag(token: &str) -> bool {
+    token == SESSION_FLAG || token.starts_with(SESSION_FLAG_EQ)
+}
+
+/// Splits a leading `--session <id-or-name>` / `--session=<id-or-name>` off
+/// `tail` (clap's `external_subcommand` payload minus the subcommand word
+/// itself), returning the named session and everything left to hand the
+/// plugin command verbatim.
+///
+/// `Err` carries the operator-facing sentence, without a `<full-name>:`
+/// prefix -- [`run`]'s single call site adds that, the same way it does for
+/// every other usage error it reports.
+///
+/// Position is load-bearing and enforced: a `--session` token anywhere but
+/// the front is an error naming the rule, never silent free text. See this
+/// module's top doc for why a positional rule is the only unambiguous one
+/// available over a free-text argument, and why a quoted argument
+/// containing the word is unaffected (this walks whole `args` tokens, not
+/// the joined string).
+fn split_session_flag(tail: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    let missing_value = || {
+        format!(
+            "`{SESSION_FLAG}` needs a session id or name after it -- e.g. `{SESSION_FLAG} \
+             <id-or-name>`; `conway sessions list` prints every session this project knows about"
+        )
+    };
+    let (session, rest): (Option<String>, &[String]) = match tail.first() {
+        Some(first) if first == SESSION_FLAG => match tail.get(1) {
+            Some(value) if !is_session_flag(value) => (Some(value.clone()), &tail[2..]),
+            _ => return Err(missing_value()),
+        },
+        Some(first) if first.starts_with(SESSION_FLAG_EQ) => {
+            let value = &first[SESSION_FLAG_EQ.len()..];
+            if value.is_empty() {
+                return Err(missing_value());
+            }
+            (Some(value.to_string()), &tail[1..])
+        }
+        _ => (None, tail),
+    };
+    if let Some(stray) = rest.iter().find(|token| is_session_flag(token.as_str())) {
+        return Err(format!(
+            "`{stray}` must come FIRST, immediately after the subcommand name -- `conway \
+             <plugin-id>.<command> {SESSION_FLAG} <id-or-name> [args...]`. Everything after that \
+             point is handed to the command verbatim, so conway cannot tell a flag of its own \
+             from one of the command's there"
+        ));
+    }
+    Ok((session, rest.to_vec()))
+}
+
+/// Resolves `--session`'s value the same way `conway sessions show|tree|
+/// export <id-or-name>` resolve theirs (`crate::session_names::resolve`: a
+/// full ULID used directly, anything else looked up in the names sidecar),
+/// then reattaches to it.
+///
+/// **Never creates.** A `FacadeError` from `Conway::resume` -- "no such
+/// session" above all -- is a usage error (exit 2) naming the value that
+/// did not resolve, matching `sessions show <unknown-id>`'s own contract.
+/// The root `--session` flag creates-if-new; this one deliberately does
+/// not, because a silently-created empty session is exactly the failure
+/// this flag exists to end (module doc).
+async fn resume_target(conway: &Conway, raw: &str) -> Result<conway::SessionHandle, ExitCode> {
+    let names = crate::session_names::NamesStore::load(&crate::session_names::session_root(conway))
+        .map_err(|e| {
+            diag::error(e.to_string());
+            ExitCode::Usage
+        })?;
+    let sid = crate::session_names::resolve(raw, &names).map_err(|e| {
+        diag::error(e.to_string());
+        ExitCode::Usage
+    })?;
+    conway.resume(sid).await.map_err(|e| {
+        diag::error(format!(
+            "unknown session {raw}: {e} -- `conway sessions list` prints every session this \
+             project knows about, one row per agent"
+        ));
+        ExitCode::Usage
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -696,4 +863,85 @@ fn remove(
         }
     }
     Ok(ExitCode::Completed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tail(tokens: &[&str]) -> Vec<String> {
+        tokens.iter().map(|t| t.to_string()).collect()
+    }
+
+    /// Board item `01M2TWC242P96Z3JDXWC9F3R5E`: the flag is taken off the
+    /// front and the rest is handed to the plugin command untouched.
+    #[test]
+    fn a_leading_session_flag_is_split_off_the_argument_tail() {
+        let (session, rest) = split_session_flag(&tail(&["--session", "sess-1", "42", "--all"]))
+            .expect("a well-formed --session splits");
+        assert_eq!(session.as_deref(), Some("sess-1"));
+        assert_eq!(rest, tail(&["42", "--all"]));
+    }
+
+    /// The `--session=<value>` spelling is the same flag, not free text.
+    #[test]
+    fn the_equals_spelling_is_the_same_flag() {
+        let (session, rest) = split_session_flag(&tail(&["--session=sess-1", "42"]))
+            .expect("a well-formed --session= splits");
+        assert_eq!(session.as_deref(), Some("sess-1"));
+        assert_eq!(rest, tail(&["42"]));
+    }
+
+    /// Absent the flag, every token stays exactly where it was -- this
+    /// function must be invisible to every command that does not use it.
+    #[test]
+    fn without_the_flag_the_tail_is_returned_verbatim() {
+        let (session, rest) =
+            split_session_flag(&tail(&["42", "some/path", "--all"])).expect("no flag, no error");
+        assert_eq!(session, None);
+        assert_eq!(rest, tail(&["42", "some/path", "--all"]));
+    }
+
+    /// A trailing `--session` with nothing after it is a named usage
+    /// error, never a silently-empty session reference.
+    #[test]
+    fn a_session_flag_with_no_value_is_a_named_error() {
+        let err = split_session_flag(&tail(&["--session"])).expect_err("no value is an error");
+        assert!(err.contains("needs a session id or name"), "{err}");
+
+        let err = split_session_flag(&tail(&["--session="])).expect_err("empty value is an error");
+        assert!(err.contains("needs a session id or name"), "{err}");
+
+        // `--session --session=x` is a missing value too: the next token is
+        // itself the flag, so nothing named a session.
+        let err = split_session_flag(&tail(&["--session", "--session=x"]))
+            .expect_err("the flag is not its own value");
+        assert!(err.contains("needs a session id or name"), "{err}");
+    }
+
+    /// The position rule is enforced rather than guessed. Left as free
+    /// text, `/conway.checkpoint.rollback 42 --session <id>` would read
+    /// `--session` as the PATH to restore and `<id>` as a second path --
+    /// a silent misfire on a destructive command.
+    #[test]
+    fn a_session_flag_after_the_first_position_is_a_named_error() {
+        let err = split_session_flag(&tail(&["42", "--session", "sess-1"]))
+            .expect_err("a late --session is an error");
+        assert!(err.contains("must come FIRST"), "{err}");
+
+        let err = split_session_flag(&tail(&["--session", "sess-1", "42", "--session=other"]))
+            .expect_err("a second --session is an error too");
+        assert!(err.contains("must come FIRST"), "{err}");
+    }
+
+    /// One shell-quoted argument that merely CONTAINS the word arrives as
+    /// a single token and is not the flag -- prose arguments
+    /// (`conway.names.rename`, `conway.idiom`) keep working.
+    #[test]
+    fn a_quoted_argument_containing_the_word_is_not_the_flag() {
+        let (session, rest) = split_session_flag(&tail(&["ask about --session please"]))
+            .expect("a quoted argument is not the flag");
+        assert_eq!(session, None);
+        assert_eq!(rest, tail(&["ask about --session please"]));
+    }
 }

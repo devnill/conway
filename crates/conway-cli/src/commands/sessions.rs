@@ -68,10 +68,16 @@ pub enum SessionsAction {
         /// touched it. Root agent only -- a subagent's own `edit`/`write`
         /// calls are NOT included (`docs/sessions.md` says the same). This
         /// line used to read "this session's agents", which overstated the
-        /// scope to every reader of `--help`
-        /// -- the headless counterpart of the TUI's `/diff` command (see
-        /// `diff_snapshot`'s own doc for how the two share one
-        /// reconstruction). Mutually exclusive in effect with `--json`
+        /// scope to every reader of `--help`. A delegated subagent keeps
+        /// its OWN session (one session file per agent,
+        /// `SessionMeta.agent_id`), so `conway sessions list` names it and
+        /// this same flag answers for it directly -- see
+        /// `docs/sessions.md`. This is the headless counterpart of the
+        /// TUI's `/diff` command (see `diff_snapshot`'s own doc for how the
+        /// two share one reconstruction). Lists separately, and never folds
+        /// into the diffs, every `edit`/`write` call this session proposed
+        /// and never logged a result for -- the shape a kill mid-edit
+        /// leaves behind. Mutually exclusive in effect with `--json`
         /// (whichever is checked first wins; `show` never combines the two
         /// output shapes) -- matches how this subcommand already treats
         /// `--json` as an output-shape switch, not an additive flag.
@@ -472,9 +478,9 @@ async fn show(conway: &Conway, id: &str, json: bool, diff: bool) -> conway::Resu
 /// `write` that clobbered pre-existing content, whose displaced bytes the
 /// log genuinely does not contain (see `crate::diff::cumulative_diffs`).
 fn print_diff_snapshot(records: &[LogRecord]) {
-    let touches = diff_touches_from_records(records);
-    let diffs = crate::diff::cumulative_diffs(&touches, &std::collections::HashMap::new());
-    if diffs.is_empty() {
+    let walk = diff_walk(records);
+    let diffs = crate::diff::cumulative_diffs(&walk.touches, &std::collections::HashMap::new());
+    if diffs.is_empty() && walk.unfinished.is_empty() {
         println!("no files edited or written yet in this session");
         return;
     }
@@ -482,6 +488,52 @@ fn print_diff_snapshot(records: &[LogRecord]) {
         println!("## {path}");
         print!("{diff_text}");
     }
+    print_unfinished(&walk.unfinished);
+}
+
+/// The post-kill half of board item `01M2TWC242P96Z3JDXWC9F3R5E`. Printed
+/// AFTER every reconstructed diff, and deliberately not folded INTO them:
+/// conway knows this call was proposed and does not know whether it ran, so
+/// applying its arguments to a baseline would manufacture a diff that may
+/// describe bytes no file ever held. The honest report is the call itself,
+/// named, with the uncertainty stated.
+///
+/// This is the shape a kill mid-edit leaves behind -- a `ToolUse` whose
+/// `ToolResultRecord` never got written -- which is precisely the case an
+/// operator runs `--diff` for, so omitting it (as this surface did until
+/// board item `01M2TWC242P96Z3JDXWC9F3R5E`) hid the most interesting row in
+/// the report.
+fn print_unfinished(unfinished: &[UnfinishedCall]) {
+    if unfinished.is_empty() {
+        return;
+    }
+    println!("## unfinished -- proposed, but no result was ever recorded");
+    println!(
+        "  This session ended between these calls and their results (killed, crashed, or cut \
+         off). conway cannot tell whether each one landed, so none of them is folded into the \
+         diffs above -- check these paths yourself."
+    );
+    for call in unfinished {
+        println!("  {} {}", call.tool, call.path);
+    }
+}
+
+/// One `edit`/`write` call this session proposed and never logged a result
+/// for -- see `print_unfinished` for why that is reported rather than
+/// dropped.
+#[derive(Debug, PartialEq)]
+struct UnfinishedCall {
+    tool: String,
+    path: String,
+}
+
+/// Everything `print_diff_snapshot` needs out of one pass over the log:
+/// the ordered [`crate::diff::FileTouch`]es whose calls demonstrably
+/// SUCCEEDED, and the calls that never resolved either way.
+#[derive(Debug, Default)]
+struct DiffWalk {
+    touches: Vec<crate::diff::FileTouch>,
+    unfinished: Vec<UnfinishedCall>,
 }
 
 /// Walks `records` in order, pairing each `edit`/`write`
@@ -489,17 +541,29 @@ fn print_diff_snapshot(records: &[LogRecord]) {
 /// `content`) with its matching `LogRecord::ToolResultRecord` by
 /// `call_id`, and extracts a [`crate::diff::FileTouch`] for every call
 /// that SUCCEEDED (`!result.is_error`) -- a failed call (e.g. `old_string
-/// not found`) never touched the file, so it contributes nothing. A
-/// `ToolUse` with no matching `ToolResultRecord` later in the log (the
-/// session ended mid-call) is silently dropped, the same "never panics on
-/// an incomplete/untrusted log" posture every other reader in this crate
-/// takes.
-fn diff_touches_from_records(records: &[LogRecord]) -> Vec<crate::diff::FileTouch> {
+/// not found`) never touched the file, so it contributes nothing to
+/// `DiffWalk::touches`.
+///
+/// A `ToolUse` with no matching `ToolResultRecord` anywhere later in the
+/// log lands in `DiffWalk::unfinished` instead, in the order it was
+/// proposed. It is never a `touch`: an unresolved call may have written the
+/// file, may have failed, or may never have run at all, and folding its
+/// arguments into the cumulative diff would state one of those three as
+/// fact. Still never panics on an incomplete/untrusted log -- the same
+/// posture every other reader in this crate takes; the change is only that
+/// an incomplete log is now REPORTED as incomplete rather than silently
+/// narrowed to the part that happens to be complete.
+fn diff_walk(records: &[LogRecord]) -> DiffWalk {
     use conway::plugin::ContentBlock;
 
     let mut pending: std::collections::HashMap<String, (String, serde_json::Value)> =
         std::collections::HashMap::new();
-    let mut touches = Vec::new();
+    // Proposal order, kept alongside `pending` purely so the leftovers can
+    // be reported in the order the model proposed them -- a `HashMap`'s own
+    // iteration order is arbitrary, and a post-kill report whose rows
+    // shuffle between runs is one an operator cannot diff against anything.
+    let mut proposed: Vec<String> = Vec::new();
+    let mut walk = DiffWalk::default();
     for record in records {
         match record {
             LogRecord::Assistant { content, .. } => {
@@ -510,7 +574,12 @@ fn diff_touches_from_records(records: &[LogRecord]) -> Vec<crate::diff::FileTouc
                         arguments,
                     } = block
                     {
-                        pending.insert(call_id.clone(), (name.to_string(), arguments.clone()));
+                        if pending
+                            .insert(call_id.clone(), (name.to_string(), arguments.clone()))
+                            .is_none()
+                        {
+                            proposed.push(call_id.clone());
+                        }
                     }
                 }
             }
@@ -518,7 +587,7 @@ fn diff_touches_from_records(records: &[LogRecord]) -> Vec<crate::diff::FileTouc
                 if !result.is_error {
                     if let Some((name, args)) = pending.get(&result.call_id) {
                         if let Some(touch) = crate::diff::file_touch_from_args(name, args) {
-                            touches.push(touch);
+                            walk.touches.push(touch);
                         }
                     }
                 }
@@ -527,7 +596,26 @@ fn diff_touches_from_records(records: &[LogRecord]) -> Vec<crate::diff::FileTouc
             _ => {}
         }
     }
-    touches
+    for call_id in &proposed {
+        // `remove`, not `get`: a call id re-proposed after its first use
+        // was already resolved appears twice in `proposed`, and this report
+        // must name each unresolved call once, not once per proposal.
+        let Some((name, args)) = pending.remove(call_id) else {
+            continue;
+        };
+        // Reuses `file_touch_from_args` as the single place that knows
+        // which tools name a file and where the path lives in their
+        // arguments -- a `bash` call left unresolved by the same kill is
+        // still not a file change, and must not be reported as one.
+        let Some(touch) = crate::diff::file_touch_from_args(&name, &args) else {
+            continue;
+        };
+        walk.unfinished.push(UnfinishedCall {
+            tool: name,
+            path: touch.path,
+        });
+    }
+    walk
 }
 
 async fn tree(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
@@ -792,9 +880,10 @@ mod tests {
             tool_result_record("tc_2", "edit", true),
         ];
 
-        let touches = diff_touches_from_records(&records);
-        assert_eq!(touches.len(), 1, "{touches:?}");
-        assert_eq!(touches[0].path, "f.txt");
+        let walk = diff_walk(&records);
+        assert_eq!(walk.touches.len(), 1, "{walk:?}");
+        assert_eq!(walk.touches[0].path, "f.txt");
+        assert!(walk.unfinished.is_empty(), "{walk:?}");
     }
 
     /// Board item `01M2V6HMBAWKM0GG90J14K4Q8F`, acceptance 2: replaying a
@@ -833,7 +922,7 @@ mod tests {
             tool_result_record("tc_2", "edit", false),
         ];
 
-        let touches = diff_touches_from_records(&records);
+        let touches = diff_walk(&records).touches;
         let diffs = crate::diff::cumulative_diffs(&touches, &std::collections::HashMap::new());
         assert_eq!(diffs.len(), 1, "{diffs:?}");
         let (got_path, text) = &diffs[0];
@@ -852,7 +941,59 @@ mod tests {
             tool_use_record("tc_1", "bash", serde_json::json!({"command": "ls"})),
             tool_result_record("tc_1", "bash", false),
         ];
-        assert!(diff_touches_from_records(&records).is_empty());
+        assert!(diff_walk(&records).touches.is_empty());
+    }
+
+    /// Board item `01M2TWC242P96Z3JDXWC9F3R5E`, acceptance 2. The defining
+    /// shape of a worker killed mid-edit: the `write` `ToolUse` is in the
+    /// log, its `ToolResultRecord` never got written. Before that item, that
+    /// call was dropped on the floor and `--diff` reported only the
+    /// completed `edit` beside it -- so the one call whose fate the
+    /// operator actually needed to check was the one call the report
+    /// omitted.
+    #[test]
+    fn a_call_whose_result_never_landed_is_reported_not_dropped() {
+        let records = vec![
+            tool_use_record(
+                "tc_1",
+                "edit",
+                serde_json::json!({"path": "done.txt", "old_string": "a", "new_string": "b"}),
+            ),
+            tool_result_record("tc_1", "edit", false),
+            // Killed here: proposed, never resolved either way.
+            tool_use_record(
+                "tc_2",
+                "write",
+                serde_json::json!({"path": "halfway.txt", "content": "new\n"}),
+            ),
+        ];
+
+        let walk = diff_walk(&records);
+        assert_eq!(walk.touches.len(), 1, "{walk:?}");
+        assert_eq!(walk.touches[0].path, "done.txt");
+        assert_eq!(
+            walk.unfinished,
+            vec![UnfinishedCall {
+                tool: "write".to_string(),
+                path: "halfway.txt".to_string(),
+            }],
+            "an unresolved call is reported, and never folded into the diffs"
+        );
+    }
+
+    /// The same kill, but the unresolved call is a `bash` one: still not a
+    /// file change, so it is not reported as one. Guards the obvious
+    /// over-correction to the test above.
+    #[test]
+    fn an_unfinished_non_file_call_is_not_reported_as_a_file_change() {
+        let records = vec![tool_use_record(
+            "tc_1",
+            "bash",
+            serde_json::json!({"command": "sed -i s/a/b/ f.txt"}),
+        )];
+        let walk = diff_walk(&records);
+        assert!(walk.touches.is_empty(), "{walk:?}");
+        assert!(walk.unfinished.is_empty(), "{walk:?}");
     }
 
     /// Two real ULIDs sharing their first 8 characters -- the exact shape

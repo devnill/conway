@@ -289,6 +289,22 @@ impl ToolObserver for CheckpointObserver {
 
 /// `/conway.checkpoint.list`: every snapshot this session has recorded, in
 /// seq order.
+///
+/// # The empty listing says whose emptiness it is
+///
+/// Board item `01M2TWC242P96Z3JDXWC9F3R5E`. This store is keyed by session
+/// id, and conway writes one session per AGENT, so "no snapshots" is always
+/// a statement about ONE agent's record -- never about the project. Typed
+/// as a bare shell subcommand (`conway conway.checkpoint.list`) with no
+/// `--session`, it is a statement about a session conway minted for the
+/// duration of the command, which has necessarily recorded nothing.
+///
+/// The old wording ("no snapshots recorded yet for this session") was true
+/// every time and still misled, because the reader supplying "this session"
+/// meant the one they had just killed. So the empty arm now names the
+/// session id it is answering for and names the flag that addresses a
+/// different one -- the whole difference between "there is nothing to roll
+/// back" and "you asked the wrong session".
 struct ListCommand {
     store: Arc<CheckpointStore>,
 }
@@ -312,7 +328,12 @@ impl Command for ListCommand {
         let session = ctx.session_id.to_string();
         match self.store.entries(&session) {
             Ok(entries) if entries.is_empty() => CommandOutcome::Output(vec![
-                "conway.checkpoint: no snapshots recorded yet for this session".to_string(),
+                format!("conway.checkpoint: no snapshots recorded yet for session {session}"),
+                "(that is this ONE session's record. conway keeps one session per agent, so a \
+                 delegated worker's writes are under its own session id: `conway sessions list` \
+                 names them, and `conway conway.checkpoint.list --session <id-or-name>` reads \
+                 one of them.)"
+                    .to_string(),
             ]),
             Ok(mut entries) => {
                 entries.sort_by_key(|entry| entry.seq);
@@ -1178,6 +1199,33 @@ mod tests {
         let diff_cmd = &commands[1];
         let outcome = diff_cmd.invoke(ctx_for(SessionId::new(), "1 extra")).await;
         assert!(matches!(outcome, CommandOutcome::Error(_)));
+    }
+
+    /// Board item `01M2TWC242P96Z3JDXWC9F3R5E`: an empty listing names the
+    /// session it is answering for, and names the flag that addresses a
+    /// different one. It used to say only "for this session",
+    /// which an operator who had just killed a worker read as "there were
+    /// no snapshots" -- the opposite of the truth.
+    #[tokio::test]
+    async fn an_empty_list_names_its_session_and_the_way_to_reach_another() {
+        let dir = TempDir::new().unwrap();
+        let plugin = CheckpointPlugin::new(dir.path());
+        let commands = plugin.commands();
+        let list_cmd = &commands[0];
+        let session = SessionId::new();
+        let outcome = list_cmd.invoke(ctx_for(session, "")).await;
+        let CommandOutcome::Output(lines) = outcome else {
+            panic!("an empty listing is Output, not Error");
+        };
+        let text = lines.join("\n");
+        assert!(
+            text.contains(&session.to_string()),
+            "the empty listing must name the session it answered for: {text}"
+        );
+        assert!(
+            text.contains("--session"),
+            "the empty listing must name the flag that reaches another session: {text}"
+        );
     }
 
     #[tokio::test]
