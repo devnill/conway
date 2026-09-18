@@ -326,6 +326,18 @@ mod tests {
     /// row (`c`, the live tip), with the OTHER three (root, a, b) still
     /// present in `tree.nodes` (provenance survives) but hidden from
     /// `visible_agent_nodes`.
+    ///
+    /// **What this test does NOT prove, stated so nobody reads it as
+    /// proving it** (board item `01M2TWAZXTVB50YGMDK7MRN2W1`): it writes
+    /// the `switch_lineage` entries it then asserts on, so it pins the
+    /// draw-time predicate and nothing about the bookkeeping that produces
+    /// those entries -- `switch_session` could stop recording switches
+    /// entirely and this would still pass. `commands.rs`'s
+    /// `three_real_model_switches_leave_one_row_that_names_the_model_
+    /// switched_to` drives three REAL `/model` commands through `execute`
+    /// and asserts the same collapse (plus the model name on the row) with
+    /// nothing hand-written. Both are wanted: this one isolates the
+    /// predicate, that one covers the wiring.
     #[test]
     fn three_consecutive_switches_collapse_to_one_visible_row() {
         let root = AgentId::new();

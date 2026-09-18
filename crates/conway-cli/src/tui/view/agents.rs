@@ -5,6 +5,8 @@
 //! itself (`transcript.rs`'s `Entry::Agent` handling) -- this panel is for
 //! browsing the whole tree at a glance, not the only place activity shows.
 
+use std::collections::HashSet;
+
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -23,10 +25,14 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     // `AgentVisibility` mode takes effect. Row indices (selection, focus)
     // are indices into this filtered list.
     let visible: Vec<&TreeNode> = state.visible_agent_nodes().collect();
+    // Board item `01M2TWAZXTVB50YGMDK7MRN2W1`, second defect: the indent is
+    // measured against the rows actually on screen, not the real tree --
+    // see `visible_depth`. Collected once per frame rather than per row.
+    let on_screen: HashSet<conway::AgentId> = visible.iter().map(|n| n.agent_id).collect();
     let items: Vec<ListItem> = visible
         .iter()
         .map(|node| {
-            let depth = ancestor_depth(state, node.agent_id);
+            let depth = visible_depth(state, node.agent_id, &on_screen);
             let indent = "  ".repeat(depth);
             let label = node
                 .agent_def
@@ -321,8 +327,9 @@ const MAX_ANCESTOR_CHAIN: usize = 64;
 
 /// The root-first ancestry chain for `agent`, `agent` itself included as the
 /// LAST element -- e.g. `[root, child, grandchild]` for `grandchild`. Shared
-/// bounded walk ([`MAX_ANCESTOR_CHAIN`]) behind both [`ancestor_depth`]
-/// (the panel's own indent rule) and V5's lineage breadcrumb
+/// bounded walk ([`MAX_ANCESTOR_CHAIN`]) behind [`ancestor_depth`]
+/// (`/tree`'s indent rule), `visible_depth` (the panel's own), and V5's
+/// lineage breadcrumb
 /// (`view/status.rs`), so there is exactly one cycle-safe tree walk rather
 /// than two copies that could disagree. A node missing from `state.tree`
 /// entirely (should not happen for anything reachable from `agent`, but
@@ -353,10 +360,58 @@ pub(crate) fn ancestor_chain(state: &AppState, agent: conway::AgentId) -> Vec<co
     chain
 }
 
-/// `pub(crate)` so item A3's `/tree` snapshot renderer (`tui::commands`)
-/// indents by the same ancestor-depth rule the panel rows use.
+/// How deep `agent` sits in the REAL, unfiltered tree.
+///
+/// `pub(crate)` for item A3's `/tree` snapshot renderer (`tui::commands`),
+/// which is the caller this rule is right for: `/tree` deliberately prints
+/// every node, terminal and switch-replaced alike (see
+/// `render_tree_snapshot`'s own doc), so every ancestor it indents under is
+/// a line the reader can actually see just above.
+///
+/// **The panel uses `visible_depth` instead**, and the difference is the
+/// whole of board item `01M2TWAZXTVB50YGMDK7MRN2W1`'s second defect --
+/// see that function.
 pub(crate) fn ancestor_depth(state: &AppState, agent: conway::AgentId) -> usize {
     ancestor_chain(state, agent).len() - 1
+}
+
+/// How deep `agent` sits among the rows ACTUALLY ON SCREEN: the number of
+/// its ancestors that are themselves visible rows (`on_screen`, the ids of
+/// `AppState::visible_agent_nodes` for this frame).
+///
+/// Board item `01M2TWAZXTVB50YGMDK7MRN2W1`, the second defect: the panel
+/// indented by [`ancestor_depth`], which walks the real parent chain, while
+/// its row SET is filtered twice over -- by `AgentVisibility` and by the
+/// switch-lineage collapse. After three `/model` switches that produced a
+/// single row indented six columns with nothing above it: a row nested
+/// under something invisible. Indenting by a depth the reader cannot count
+/// is not a smaller version of the tree shape, it is a false claim about
+/// it; the two rules were inconsistent and this is the one that matches
+/// what is drawn.
+///
+/// Every row of an unfiltered tree is unaffected -- with all ancestors
+/// visible this returns exactly what `ancestor_depth` does -- so ordinary
+/// nesting still reads as nesting. The collapse's own tip drops to column
+/// 0, which is the truth: every agent it collapsed is hidden. A row whose
+/// parent the `ActiveOnly`/`FinishedOnly` filter hid gets the same
+/// treatment for the same reason, rather than a special case for switches
+/// alone.
+///
+/// A `HashSet` argument rather than a lookup per ancestor: `draw` builds it
+/// once per frame from the `visible` vector it already has.
+fn visible_depth(
+    state: &AppState,
+    agent: conway::AgentId,
+    on_screen: &HashSet<conway::AgentId>,
+) -> usize {
+    let chain = ancestor_chain(state, agent);
+    // `chain`'s last element is `agent` itself -- never counted, whether or
+    // not it is in `on_screen` (it always is, for a row being drawn).
+    chain
+        .iter()
+        .take(chain.len().saturating_sub(1))
+        .filter(|id| on_screen.contains(*id))
+        .count()
 }
 
 fn status_marker(status: NodeStatus) -> &'static str {
@@ -1116,6 +1171,185 @@ mod tests {
             vec![root, child, grandchild]
         );
         assert_eq!(ancestor_depth(&state, grandchild), 2);
+    }
+
+    // ---- Board item `01M2TWAZXTVB50YGMDK7MRN2W1`, second defect: the
+    // panel indents by the rows it actually DREW, not by the real tree. ----
+
+    /// One terminal row per line, unlike the whole-buffer [`rendered`]
+    /// above -- an indent claim is a claim about the START of a row, so it
+    /// needs the row boundaries. (`ratatui`'s `TestBackend` is a real
+    /// cursor-addressed grid, so unlike the pty harness's emission
+    /// transcript this shows the final state of each cell.)
+    fn rendered_rows(state: &AppState, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), state, &Theme::default()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The row body inside the panel block's own border -- what an indent
+    /// assertion has to look at, since column 0 is the border itself.
+    fn row_body(row: &str) -> &str {
+        row.split('│')
+            .nth(1)
+            .unwrap_or_else(|| panic!("a panel row must sit inside its block: {row:?}"))
+    }
+
+    /// Root -> a -> b -> c, every hop a `/model`/`/role` switch. Written by
+    /// hand HERE because this is a draw-time unit test of the indent rule
+    /// alone; the wiring that produces these entries from real `/model`
+    /// commands is pinned in `commands.rs` (`three_real_model_switches_
+    /// leave_one_row_that_names_the_model_switched_to`), deliberately not
+    /// re-proved from hand-written state.
+    fn three_switch_chain() -> (AppState, AgentId) {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let a = AgentId::new();
+        let b = AgentId::new();
+        let c = AgentId::new();
+        for (id, parent) in [(a, root), (b, a), (c, b)] {
+            state.tree.nodes.push(node(
+                id,
+                Some(parent),
+                None,
+                NodeStatus::Running,
+                None,
+                None,
+                false,
+            ));
+            state.switch_lineage.insert(id, parent);
+        }
+        (state, c)
+    }
+
+    #[test]
+    fn visible_depth_counts_only_ancestors_that_are_themselves_drawn() {
+        let (state, tip) = three_switch_chain();
+        let on_screen: HashSet<AgentId> = state.visible_agent_nodes().map(|n| n.agent_id).collect();
+
+        assert_eq!(on_screen.len(), 1, "the collapse leaves one row");
+        assert_eq!(
+            ancestor_depth(&state, tip),
+            3,
+            "the REAL chain is three deep -- that is what /tree still indents by"
+        );
+        assert_eq!(
+            visible_depth(&state, tip, &on_screen),
+            0,
+            "but none of those three ancestors is a row, so the panel must not indent under them"
+        );
+    }
+
+    /// The defect as it looked on screen: a lone row six columns in, with
+    /// nothing above it to be nested under.
+    #[test]
+    fn a_collapsed_switch_tips_row_is_not_indented_under_the_agents_it_hides() {
+        let (state, _tip) = three_switch_chain();
+
+        // Row 0 is the block's own titled top border, so row 1 is the
+        // first (and here only) list item.
+        let rows = rendered_rows(&state, 60, 8);
+        let body = row_body(&rows[1]);
+
+        assert!(
+            body.starts_with('*'),
+            "row 1 must be the tip's own row, starting with its status glyph: {body:?}"
+        );
+        assert!(
+            !body.starts_with(' '),
+            "a row whose every ancestor is hidden must start at column 0: {body:?}"
+        );
+    }
+
+    /// **The half that keeps the fix honest:** when the ancestors ARE
+    /// drawn, the indent is exactly what it always was -- this is a rule
+    /// change about hidden rows, not a removal of the tree shape. An
+    /// implementation that simply stopped indenting would pass the test
+    /// above and fail this one.
+    #[test]
+    fn an_ordinary_nested_row_keeps_its_indent() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        let grandchild = AgentId::new();
+        for (id, parent) in [(child, root), (grandchild, child)] {
+            state.tree.nodes.push(node(
+                id,
+                Some(parent),
+                None,
+                NodeStatus::Running,
+                None,
+                None,
+                false,
+            ));
+        }
+
+        // Rows 1..=3, under the block's own titled top border: root,
+        // child, grandchild, in tree order.
+        let rows = rendered_rows(&state, 60, 8);
+        let bodies: Vec<&str> = rows[1..4]
+            .iter()
+            .map(|row| row_body(row.as_str()))
+            .collect();
+
+        assert!(!bodies[0].starts_with(' '), "the root: {:?}", bodies[0]);
+        assert!(
+            bodies[1].starts_with("  ") && !bodies[1].starts_with("   "),
+            "the child, one level in: {:?}",
+            bodies[1]
+        );
+        assert!(
+            bodies[2].starts_with("    ") && !bodies[2].starts_with("     "),
+            "the grandchild, two levels in: {:?}",
+            bodies[2]
+        );
+    }
+
+    /// The other filter that hides a parent gets the same rule, for the
+    /// same reason -- `ActiveOnly` with a finished middle node must not
+    /// leave the grandchild claiming a nesting level that has no row.
+    #[test]
+    fn a_row_whose_parent_the_visibility_filter_hid_is_not_indented_under_it() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        let grandchild = AgentId::new();
+        state.tree.nodes.push(node(
+            child,
+            Some(root),
+            None,
+            NodeStatus::Finished,
+            None,
+            None,
+            false,
+        ));
+        state.tree.nodes.push(node(
+            grandchild,
+            Some(child),
+            None,
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+        state.agent_visibility = AgentVisibility::ActiveOnly;
+
+        let on_screen: HashSet<AgentId> = state.visible_agent_nodes().map(|n| n.agent_id).collect();
+        assert_eq!(
+            visible_depth(&state, grandchild, &on_screen),
+            1,
+            "the root is still a row (one level), the finished child is not"
+        );
     }
 
     #[test]
