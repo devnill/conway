@@ -63,8 +63,12 @@ pub enum SessionsAction {
         #[arg(long)]
         json: bool,
         /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: print the cumulative
-        /// diff of every path this session's agents edited/wrote, against
-        /// the bytes each path had the first time this session touched it
+        /// diff of every path this session's ROOT AGENT edited/wrote,
+        /// against the bytes each path had the first time this session
+        /// touched it. Root agent only -- a subagent's own `edit`/`write`
+        /// calls are NOT included (`docs/sessions.md` says the same). This
+        /// line used to read "this session's agents", which overstated the
+        /// scope to every reader of `--help`
         /// -- the headless counterpart of the TUI's `/diff` command (see
         /// `diff_snapshot`'s own doc for how the two share one
         /// reconstruction). Mutually exclusive in effect with `--json`

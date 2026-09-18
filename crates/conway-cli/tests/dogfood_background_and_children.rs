@@ -164,9 +164,16 @@ async fn backgrounded_job_returns_fast_leaves_output_uncaptured_and_leaves_the_p
     );
 }
 
-/// "The result never reports BOTH an exit code AND a timeout." Proven
-/// positively above (the success-path result carries `exit code: 0` and
-/// no `timed out` text); this checks the SAME mutual-exclusion holds
+/// "The result never reports BOTH an exit code AND a timeout." The
+/// success-path half of that mutual exclusion is proven in
+/// `conway-tools`'s own `shell_bash.rs`
+/// (`backgrounded_child_does_not_hold_the_call_to_its_timeout` asserts
+/// `exit code: 0` AND no `timed out` text) -- NOT by the compiled-binary
+/// test above, which checks the timing, the pid, and the still-running
+/// notice, but never the exit-code text. Said precisely because an earlier
+/// version of this comment claimed the test above proved it, which sent a
+/// coverage audit looking for an assertion that was never there. This
+/// checks the SAME mutual-exclusion holds
 /// on the timeout path too, by inspecting the timed-out result's own text
 /// directly (`bash.rs::finish`'s own `unreachable!` guards this
 /// structurally, but this is the black-box, compiled-binary proof of the
