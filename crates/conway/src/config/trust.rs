@@ -395,18 +395,7 @@ impl TrustStore {
                 trusted_at: chrono::Utc::now().to_rfc3339(),
             },
         );
-        let serialized = serde_json::to_string_pretty(&store.file)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        super::writer::write_atomically(&path, &serialized)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // Best-effort: the write above already succeeded, and a
-            // failure to tighten permissions afterward must not undo a
-            // trust decision the operator already made.
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
-        Ok(())
+        Self::write_back(&path, &store)
     }
 
     /// [`Self::trust`]'s exact counterpart for the `settings.json` kind
@@ -418,39 +407,336 @@ impl TrustStore {
     /// `settings.json`: an operator action taken on purpose, never a side
     /// effect of loading config.
     pub fn trust_settings(env: &HashMap<String, String>, abs_path: &Path) -> std::io::Result<()> {
+        let contents = std::fs::read_to_string(abs_path)?;
+        Self::trust_settings_bytes(env, abs_path, &contents)
+    }
+
+    /// [`Self::trust_settings`] with the bytes supplied by the caller rather
+    /// than re-read here (board item `01M2TTWSQ53CDWB9VRGSX05XNQ`).
+    ///
+    /// The distinction is not cosmetic. A surface that SHOWS an operator a
+    /// file and then records consent has to record consent for the bytes it
+    /// showed, not for whatever is on disk a moment later -- otherwise a
+    /// file rewritten between the display and the write is trusted without
+    /// anyone ever having read it, which is precisely the consent this
+    /// module exists to make real. `conway trust settings`
+    /// (`conway_cli::commands::trust`) reads once, prints what it read, and
+    /// passes those same bytes here. [`Self::trust_settings`] above is now a
+    /// thin read-then-delegate over this, so both paths share one writer.
+    pub fn trust_settings_bytes(
+        env: &HashMap<String, String>,
+        abs_path: &Path,
+        contents: &str,
+    ) -> std::io::Result<()> {
         let path = Self::path(env).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "no resolvable global config directory to write trust.json into",
             )
         })?;
-        let contents = std::fs::read_to_string(abs_path)?;
         let mut store = Self::load_from_path(&path);
         store.file.settings_files.insert(
             path_key(abs_path),
             TrustedRecord {
-                content_digest: content_digest(&contents),
+                content_digest: content_digest(contents),
                 trusted_at: chrono::Utc::now().to_rfc3339(),
             },
         );
+        Self::write_back(&path, &store)
+    }
+
+    /// Withdraws whatever this store has recorded for `abs_path` -- BOTH
+    /// kinds, since a path on its own does not say which one it was
+    /// recorded as, and an operator typing `conway trust revoke <path>`
+    /// means "stop trusting this file", not "stop trusting one of the two
+    /// senses in which this file might be trusted". The returned
+    /// [`Revoked`] reports which maps actually held a record.
+    ///
+    /// Withdrawing something that was never recorded is `Ok(Revoked::
+    /// default())` and writes nothing -- not an error, and deliberately
+    /// distinguishable from a real removal so a caller can say which
+    /// happened (`conway trust revoke` treats "nothing recorded" as a usage
+    /// error, because a typo'd path would otherwise look like a successful
+    /// revocation).
+    pub fn revoke(env: &HashMap<String, String>, abs_path: &Path) -> std::io::Result<Revoked> {
+        let path = Self::path(env).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no resolvable global config directory to write trust.json into",
+            )
+        })?;
+        let mut store = Self::load_from_path(&path);
+        let key = path_key(abs_path);
+        // Two statements rather than one struct literal: each `remove` takes
+        // its own mutable borrow of `store.file`, and keeping them apart
+        // makes that obvious to a reader rather than relying on the exact
+        // borrow-scoping rules inside a struct expression.
+        let permission_file = store.file.permission_files.remove(&key).is_some();
+        let settings_file = store.file.settings_files.remove(&key).is_some();
+        let revoked = Revoked {
+            permission_file,
+            settings_file,
+        };
+        if !revoked.any() {
+            return Ok(revoked);
+        }
+        Self::write_back(&path, &store)?;
+        Ok(revoked)
+    }
+
+    /// Every decision this store currently holds, both kinds, as rows an
+    /// operator surface can print (`conway trust list`). Sorted by kind then
+    /// path so the output is stable across runs -- the underlying maps are
+    /// `HashMap`s, whose iteration order is deliberately randomized and
+    /// would otherwise reshuffle the listing on every invocation.
+    ///
+    /// [`TrustEntry::status`] is computed by re-reading each recorded path,
+    /// so the listing distinguishes "still matches the bytes you trusted"
+    /// from "edited since" from "gone" -- the three states an operator
+    /// auditing this file actually needs, and the reason this returns rows
+    /// rather than bare paths.
+    pub fn entries(&self) -> Vec<TrustEntry> {
+        let mut rows = Vec::new();
+        collect_entries(
+            TrustKind::PermissionFile,
+            &self.file.permission_files,
+            &mut rows,
+        );
+        collect_entries(
+            TrustKind::SettingsFile,
+            &self.file.settings_files,
+            &mut rows,
+        );
+        rows.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.path.cmp(&b.path)));
+        rows
+    }
+
+    /// The tail every writer above shares: serialize, atomic tmp-then-rename
+    /// through `super::writer::write_atomically`, then best-effort tighten
+    /// to `0600` on unix. Factored out when [`Self::revoke`] became a third
+    /// writer (board item `01M2TTWSQ53CDWB9VRGSX05XNQ`) rather than pasted a
+    /// third time -- the permission-tightening step in particular is easy to
+    /// omit by accident, and omitting it would make the very file
+    /// `TrustStore::load_from_path` refuses to read when it is group-writable.
+    fn write_back(path: &Path, store: &Self) -> std::io::Result<()> {
         let serialized = serde_json::to_string_pretty(&store.file)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        super::writer::write_atomically(&path, &serialized)?;
+        super::writer::write_atomically(path, &serialized)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            // Best-effort: the write above already succeeded, and a failure
+            // to tighten permissions afterward must not undo a decision the
+            // operator already made.
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         }
         Ok(())
     }
 }
 
+/// Which of [`TrustStore`]'s two independent maps a [`TrustEntry`] came
+/// from. `Ord` purely so [`TrustStore::entries`] can sort by it; the
+/// ordering carries no meaning beyond "group the listing".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TrustKind {
+    /// A project-scoped `.conway/permissions.json`.
+    PermissionFile,
+    /// A project-scoped `.conway/settings.json`.
+    SettingsFile,
+}
+
+impl TrustKind {
+    /// The one-word label an operator surface prints. Deliberately the
+    /// same two words the TUI's `/trust permissions` and the CLI's `conway
+    /// trust settings` are spelled with, so a row in `conway trust list`
+    /// names the command that produced it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrustKind::PermissionFile => "permissions",
+            TrustKind::SettingsFile => "settings",
+        }
+    }
+}
+
+impl std::fmt::Display for TrustKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One row of [`TrustStore::entries`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustEntry {
+    pub kind: TrustKind,
+    /// The path exactly as recorded -- the key a [`TrustStore::revoke`]
+    /// call has to be given to match. Never re-derived or re-canonicalized
+    /// here: a listing that printed a different spelling than the one
+    /// stored would hand the operator a revoke argument that does not match.
+    pub path: PathBuf,
+    /// RFC 3339, as recorded at the moment consent was given.
+    pub trusted_at: String,
+    /// [`TrustStatus::Unchanged`] when the file still holds the bytes that
+    /// were trusted, [`TrustStatus::Changed`] when it has been edited since
+    /// (the guard is armed again), and `None` when the file can no longer
+    /// be read at all -- a stale record for something deleted or moved.
+    /// [`TrustStatus::New`] never appears here: a row exists only because a
+    /// record does.
+    pub status: Option<TrustStatus>,
+}
+
+/// What a [`TrustStore::revoke`] call actually removed. Both `false` means
+/// nothing was recorded for that path and nothing was written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Revoked {
+    pub permission_file: bool,
+    pub settings_file: bool,
+}
+
+impl Revoked {
+    /// Whether anything at all was removed.
+    pub fn any(self) -> bool {
+        self.permission_file || self.settings_file
+    }
+
+    /// The kinds actually removed, for a message that says what happened.
+    pub fn kinds(self) -> Vec<TrustKind> {
+        let mut kinds = Vec::new();
+        if self.permission_file {
+            kinds.push(TrustKind::PermissionFile);
+        }
+        if self.settings_file {
+            kinds.push(TrustKind::SettingsFile);
+        }
+        kinds
+    }
+}
+
+fn collect_entries(
+    kind: TrustKind,
+    map: &HashMap<String, TrustedRecord>,
+    out: &mut Vec<TrustEntry>,
+) {
+    for (key, record) in map {
+        let path = PathBuf::from(key);
+        let status = std::fs::read_to_string(&path).ok().map(|contents| {
+            if record.content_digest == content_digest(&contents) {
+                TrustStatus::Unchanged
+            } else {
+                TrustStatus::Changed
+            }
+        });
+        out.push(TrustEntry {
+            kind,
+            path,
+            trusted_at: record.trusted_at.clone(),
+            status,
+        });
+    }
+}
+
+/// The project `settings.json` [`guard_untrusted_project_settings`] would
+/// gate for `cwd`, or `None` when the walk reaches none.
+///
+/// Exists because `super::discovery::project_discovery_exclusions` is
+/// `pub(crate)`: an operator surface OUTSIDE this crate (`conway trust
+/// settings`, in `conway-cli`) has to be able to name the exact same file
+/// the guard names, with the exact same exclusions applied, or it would
+/// record consent under a key the guard never looks up -- consent that
+/// silently does nothing. This is that one shared answer, not a second walk
+/// with its own opinions.
+pub fn project_settings_path(cwd: &Path, env: &HashMap<String, String>) -> Option<PathBuf> {
+    super::discovery::discover(cwd, &super::discovery::project_discovery_exclusions(env))
+}
+
+/// Why [`resolve_settings_trust_target`] could not name a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettingsTargetError {
+    /// The ancestor walk from `cwd` reached no project `settings.json` at
+    /// all -- there is nothing here to consent to.
+    NoProjectSettings { cwd: PathBuf },
+    /// An explicitly named path is not a file this process can see.
+    NotAFile { path: PathBuf },
+}
+
+impl std::fmt::Display for SettingsTargetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SettingsTargetError::NoProjectSettings { cwd } => write!(
+                f,
+                "no project settings.json is reachable from {} -- nothing to trust here \
+                 (pass --path <file> to name one explicitly)",
+                cwd.display()
+            ),
+            SettingsTargetError::NotAFile { path } => {
+                write!(f, "{} is not a readable file", path.display())
+            }
+        }
+    }
+}
+
+/// Which file a `conway trust settings` invocation should record a decision
+/// about: the walk-discovered project `settings.json` when `explicit` is
+/// `None`, or `explicit` itself (resolved against `cwd` when relative).
+///
+/// **The returned path is the trust KEY, and getting its spelling wrong is
+/// a silent failure**, not a loud one: [`TrustStore`] keys on the path's
+/// `Display` string, so consent recorded for `/p/./.conway/settings.json`
+/// is never found by a guard that looks up `/p/.conway/settings.json`. So
+/// an `explicit` path that names the same underlying file as the discovered
+/// one comes back in the DISCOVERED spelling (the one the guard will use),
+/// and anything else comes back canonicalized -- one spelling per file,
+/// decided here rather than at each call site.
+pub fn resolve_settings_trust_target(
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    explicit: Option<&Path>,
+) -> Result<PathBuf, SettingsTargetError> {
+    let discovered = project_settings_path(cwd, env);
+    let Some(explicit) = explicit else {
+        return discovered.ok_or_else(|| SettingsTargetError::NoProjectSettings {
+            cwd: cwd.to_path_buf(),
+        });
+    };
+    let absolute = if explicit.is_absolute() {
+        explicit.to_path_buf()
+    } else {
+        cwd.join(explicit)
+    };
+    if !absolute.is_file() {
+        return Err(SettingsTargetError::NotAFile { path: absolute });
+    }
+    // Same fall-back-to-the-literal-path rule `discovery::same_settings_
+    // file` uses: canonicalizing is an improvement when it works, never a
+    // reason to fail.
+    let resolve = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if let Some(discovered) = discovered {
+        if resolve(&discovered) == resolve(&absolute) {
+            return Ok(discovered);
+        }
+    }
+    Ok(resolve(&absolute))
+}
+
 /// The named refusal [`guard_untrusted_project_settings`] returns: a
 /// walk-discovered project `settings.json` exists at `path` and is not
 /// (yet) trusted. `Display` is the message an operator sees verbatim --
-/// names the exact file and the one action ([`TrustStore::trust_settings`],
-/// surfaced through a `/trust settings`-shaped operator action) that turns
-/// this into a successful load next time.
+/// names the exact file and, since board item
+/// `01M2TTWSQ53CDWB9VRGSX05XNQ`, at least one remedy reachable from the
+/// shell where conway just refused to start.
+///
+/// **The wording is load-bearing, and its first version was wrong.** It
+/// named the TUI's `/trust settings` command and the
+/// `TrustStore::trust_settings` Rust API. The TUI is what had just refused
+/// to start, so that command could not be reached; the Rust API is not an
+/// operator remedy; and `/trust settings` did not exist in the first place
+/// (`conway_cli::tui::commands` parses `/trust permissions`, and nothing
+/// else). Every remedy named below is now something an operator can type
+/// at the shell prompt they are already standing at: `conway trust
+/// settings` (the headless consent path, `conway_cli::commands::trust`)
+/// and removing the file. Changing
+/// this text is a behavior change, not a copy edit -- a
+/// `crates/conway-cli/tests/trust_cli.rs` case asserts the real binary
+/// prints a reachable remedy.
 ///
 /// A distinct type, not a bare `String`, so a caller CAN pattern-match on
 /// it (`FacadeError::UntrustedProjectSettings`'s own doc: an interactive
@@ -464,14 +750,25 @@ pub struct UntrustedProjectSettings {
 
 impl std::fmt::Display for UntrustedProjectSettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let p = self.path.display();
+        writeln!(
+            f,
+            "untrusted project settings.json at {p} -- a project-scoped settings.json \
+             can redirect a backend's base_url/api_key, so it is never applied without \
+             explicit consent, and conway will not start until you give one."
+        )?;
+        writeln!(f, "  To review it and consent to exactly these bytes:")?;
+        writeln!(f, "      conway trust settings --path {p}")?;
+        writeln!(
+            f,
+            "  To start without the project config instead, remove the file:"
+        )?;
+        writeln!(f, "      rm {p}")?;
         write!(
             f,
-            "untrusted project settings.json at {} -- a project-scoped settings.json \
-             can redirect a backend's base_url/api_key, so it is never applied without \
-             explicit consent. Review its contents, then trust it (the TUI's `/trust \
-             settings` command, or `conway::config::trust::TrustStore::trust_settings` \
-             for an embedder) before this config will load.",
-            self.path.display()
+            "  `conway trust list` shows every decision already recorded; \
+             `conway trust revoke {p}` withdraws this one. Editing the file after \
+             trusting it re-arms this refusal, on purpose."
         )
     }
 }
@@ -518,9 +815,12 @@ pub fn guard_untrusted_project_settings(
     cwd: &Path,
     env: &HashMap<String, String>,
 ) -> Result<(), UntrustedProjectSettings> {
-    let Some(path) =
-        super::discovery::discover(cwd, &super::discovery::project_discovery_exclusions(env))
-    else {
+    // [`project_settings_path`], not a second inline walk: that function is
+    // what an operator surface outside this crate calls to name the file it
+    // is about to record consent for, and if the two ever disagreed the
+    // consent would be recorded under a key this gate never looks up --
+    // silently, with no error anywhere. One walk, one answer.
+    let Some(path) = project_settings_path(cwd, env) else {
         return Ok(());
     };
     let Ok(contents) = std::fs::read_to_string(&path) else {
@@ -1008,5 +1308,307 @@ mod tests {
             "the operator's own user layer must apply unconditionally, with \
              no consent gate at all"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M2TTWSQ53CDWB9VRGSX05XNQ` -- the headless consent path
+    // and the reachable refusal. See `conway_cli::commands::trust` for the
+    // operator surface these back, and `crates/conway-cli/tests/trust_cli.rs`
+    // for the end-to-end, real-binary half.
+    // -----------------------------------------------------------------
+
+    /// **Fails against HEAD.** The refusal named `/trust settings` (a TUI
+    /// command that does not exist -- `conway_cli::tui::commands` parses
+    /// `/trust permissions` and nothing else) and a Rust API. Neither is
+    /// reachable from a shell where conway has just refused to start, so
+    /// this asserts on what a blocked operator can actually type.
+    #[test]
+    fn the_refusal_names_a_remedy_reachable_from_a_blocked_shell() {
+        let refusal = UntrustedProjectSettings {
+            path: PathBuf::from("/repo/.conway/settings.json"),
+        };
+        let message = refusal.to_string();
+
+        assert!(
+            message.contains("conway trust settings --path /repo/.conway/settings.json"),
+            "the refusal must name the headless consent command, got: {message}"
+        );
+        assert!(
+            message.contains("rm /repo/.conway/settings.json"),
+            "the refusal must say the file can be removed to proceed, got: {message}"
+        );
+        // BREAK-THE-GUARD: the two remedies that could not be reached are
+        // gone, not merely joined by a third.
+        assert!(
+            !message.contains("TrustStore::trust_settings"),
+            "a Rust API is not an operator remedy, got: {message}"
+        );
+        assert!(
+            !message.contains("the TUI's"),
+            "the TUI is what just refused to start, got: {message}"
+        );
+    }
+
+    /// The whole reason a separate bytes-taking writer exists: a surface
+    /// that SHOWS a file and then records consent must record what it
+    /// showed, not whatever landed on disk a moment later.
+    #[test]
+    fn trust_settings_bytes_records_the_bytes_the_caller_showed_not_a_later_rewrite() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let project_root = tempfile_dir();
+        let conf_dir = project_root.join(".conway");
+        fs::create_dir_all(&conf_dir).unwrap();
+        let settings_path = conf_dir.join("settings.json");
+
+        let shown = r#"{"limits":{"max_steps":7}}"#;
+        fs::write(&settings_path, shown).unwrap();
+        // Something else rewrites the file after it was read and shown.
+        fs::write(&settings_path, r#"{"limits":{"max_steps":9999}}"#).unwrap();
+
+        TrustStore::trust_settings_bytes(&env, &settings_path, shown).unwrap();
+
+        let store = TrustStore::load(&env);
+        let now_on_disk = fs::read_to_string(&settings_path).unwrap();
+        assert_eq!(
+            store.settings_status(&settings_path, &now_on_disk),
+            TrustStatus::Changed,
+            "consenting to the bytes that were shown must NOT trust bytes nobody saw"
+        );
+        assert!(
+            store.is_settings_trusted(&settings_path, shown),
+            "the bytes actually shown must be the ones recorded"
+        );
+    }
+
+    /// `conway trust settings` has to name the exact file the guard gates,
+    /// under the exact spelling the guard looks up, or the decision it
+    /// records is silently never found.
+    #[test]
+    fn resolve_settings_trust_target_names_the_file_the_guard_gates() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let project_root = tempfile_dir();
+        let conf_dir = project_root.join(".conway");
+        fs::create_dir_all(&conf_dir).unwrap();
+        let settings_path = conf_dir.join("settings.json");
+        fs::write(&settings_path, r#"{"limits":{"max_steps":5}}"#).unwrap();
+
+        let target = super::resolve_settings_trust_target(&project_root, &env, None)
+            .expect("a reachable project settings.json must resolve");
+        let refused = super::guard_untrusted_project_settings(&project_root, &env).unwrap_err();
+        assert_eq!(
+            target, refused.path,
+            "the file trusted and the file refused must be the same key"
+        );
+
+        // And consenting to it really does clear the gate.
+        let contents = fs::read_to_string(&target).unwrap();
+        TrustStore::trust_settings_bytes(&env, &target, &contents).unwrap();
+        super::guard_untrusted_project_settings(&project_root, &env)
+            .expect("the gate must stop refusing once consent is recorded");
+    }
+
+    /// An explicitly named path that happens to BE the discovered file
+    /// comes back in the discovered spelling -- otherwise
+    /// `--path ./.conway/settings.json` would record a key
+    /// (`/p/./.conway/settings.json`) the guard never looks up, and the
+    /// operator would be told "trusted" while conway kept refusing.
+    #[test]
+    fn an_explicit_path_resolves_to_the_discovered_spelling() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let project_root = tempfile_dir();
+        let conf_dir = project_root.join(".conway");
+        fs::create_dir_all(&conf_dir).unwrap();
+        let settings_path = conf_dir.join("settings.json");
+        fs::write(&settings_path, r#"{}"#).unwrap();
+
+        let discovered = super::resolve_settings_trust_target(&project_root, &env, None).unwrap();
+        for spelling in [
+            PathBuf::from("./.conway/settings.json"),
+            PathBuf::from(".conway/./settings.json"),
+        ] {
+            let resolved =
+                super::resolve_settings_trust_target(&project_root, &env, Some(spelling.as_path()))
+                    .unwrap_or_else(|e| panic!("{} must resolve: {e}", spelling.display()));
+            assert_eq!(
+                resolved,
+                discovered,
+                "{} names the same file as the walk and must resolve to the same key",
+                spelling.display()
+            );
+        }
+    }
+
+    /// Nothing to consent to is a named error, not a panic and not a
+    /// silently-trusted nothing.
+    #[test]
+    fn resolve_settings_trust_target_reports_an_absent_project_layer() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        // A directory with no ancestor `.conway/settings.json` of its own.
+        let cwd = tempfile_dir();
+
+        let err = super::resolve_settings_trust_target(&cwd, &env, None)
+            .expect_err("nothing is reachable here");
+        assert!(
+            matches!(err, super::SettingsTargetError::NoProjectSettings { .. }),
+            "expected NoProjectSettings, got {err:?}"
+        );
+
+        let missing = cwd.join("nope.json");
+        let err = super::resolve_settings_trust_target(&cwd, &env, Some(missing.as_path()))
+            .expect_err("a path that is not a file cannot be trusted");
+        assert!(
+            matches!(err, super::SettingsTargetError::NotAFile { .. }),
+            "expected NotAFile, got {err:?}"
+        );
+    }
+
+    /// `conway trust list`'s data: both kinds, one row each, sorted, with
+    /// the three states an auditing operator needs to tell apart.
+    #[test]
+    fn entries_reports_both_kinds_with_unchanged_edited_and_missing_states() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+
+        let permissions = tempfile_dir().join("permissions.json");
+        fs::write(&permissions, r#"{"allow":["bash:*"]}"#).unwrap();
+        TrustStore::trust(&env, &permissions).unwrap();
+
+        let edited = tempfile_dir().join("settings.json");
+        fs::write(&edited, r#"{"limits":{"max_steps":1}}"#).unwrap();
+        TrustStore::trust_settings(&env, &edited).unwrap();
+        fs::write(&edited, r#"{"limits":{"max_steps":2}}"#).unwrap();
+
+        let vanished = tempfile_dir().join("settings.json");
+        fs::write(&vanished, r#"{}"#).unwrap();
+        TrustStore::trust_settings(&env, &vanished).unwrap();
+        fs::remove_file(&vanished).unwrap();
+
+        let entries = TrustStore::load(&env).entries();
+        assert_eq!(
+            entries.len(),
+            3,
+            "one row per recorded decision: {entries:?}"
+        );
+        assert_eq!(
+            entries[0].kind,
+            TrustKind::PermissionFile,
+            "rows must be grouped by kind, permissions first: {entries:?}"
+        );
+        assert_eq!(entries[0].path, permissions);
+        assert_eq!(entries[0].status, Some(TrustStatus::Unchanged));
+        assert!(
+            !entries[0].trusted_at.is_empty(),
+            "every row carries when consent was given"
+        );
+
+        let settings_rows: Vec<&TrustEntry> = entries
+            .iter()
+            .filter(|e| e.kind == TrustKind::SettingsFile)
+            .collect();
+        assert_eq!(settings_rows.len(), 2, "{entries:?}");
+        let edited_row = settings_rows
+            .iter()
+            .find(|e| e.path == edited)
+            .expect("the edited file has a row");
+        assert_eq!(
+            edited_row.status,
+            Some(TrustStatus::Changed),
+            "an edit since consent must be visible in the listing"
+        );
+        let vanished_row = settings_rows
+            .iter()
+            .find(|e| e.path == vanished)
+            .expect("the deleted file still has a row");
+        assert_eq!(
+            vanished_row.status, None,
+            "a record for a file that is gone must read as such, not as trusted"
+        );
+    }
+
+    /// Revoking re-arms the guard for exactly that path, and says what it
+    /// removed.
+    #[test]
+    fn revoking_a_settings_decision_re_arms_the_guard() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let project_root = tempfile_dir();
+        let conf_dir = project_root.join(".conway");
+        fs::create_dir_all(&conf_dir).unwrap();
+        let settings_path = conf_dir.join("settings.json");
+        fs::write(&settings_path, r#"{"limits":{"max_steps":3}}"#).unwrap();
+
+        TrustStore::trust_settings(&env, &settings_path).unwrap();
+        super::guard_untrusted_project_settings(&project_root, &env)
+            .expect("consent recorded: the gate must pass");
+
+        let revoked = TrustStore::revoke(&env, &settings_path).unwrap();
+        assert!(revoked.settings_file, "the settings record was removed");
+        assert!(
+            !revoked.permission_file,
+            "nothing was recorded for this path as a permission file"
+        );
+        assert_eq!(revoked.kinds(), vec![TrustKind::SettingsFile]);
+
+        super::guard_untrusted_project_settings(&project_root, &env)
+            .expect_err("after revocation the gate must refuse again");
+        assert!(
+            TrustStore::load(&env).entries().is_empty(),
+            "the revoked row must be gone from the listing too"
+        );
+    }
+
+    /// Revoking a path with no record is not an error and writes nothing --
+    /// the distinction the CLI turns into "nothing is recorded for <path>"
+    /// rather than a success message for a typo.
+    #[test]
+    fn revoking_an_unrecorded_path_removes_nothing_and_writes_nothing() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let never_trusted = tempfile_dir().join("settings.json");
+        fs::write(&never_trusted, r#"{}"#).unwrap();
+
+        let revoked = TrustStore::revoke(&env, &never_trusted).unwrap();
+        assert!(
+            !revoked.any(),
+            "nothing was recorded, so nothing was removed"
+        );
+        assert!(
+            !TrustStore::path(&env).unwrap().exists(),
+            "a no-op revoke must not create a trust.json"
+        );
+    }
+
+    /// The two kinds stay independent through revocation too: a path
+    /// trusted as both loses both in one call (an operator saying "stop
+    /// trusting this file" means the file, not one sense of it), and a
+    /// DIFFERENT path keeps its own record.
+    #[test]
+    fn revoke_clears_both_kinds_for_one_path_and_leaves_other_paths_alone() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+
+        let both = tempfile_dir().join("settings.json");
+        fs::write(&both, r#"{}"#).unwrap();
+        TrustStore::trust(&env, &both).unwrap();
+        TrustStore::trust_settings(&env, &both).unwrap();
+
+        let other = tempfile_dir().join("settings.json");
+        fs::write(&other, r#"{}"#).unwrap();
+        TrustStore::trust_settings(&env, &other).unwrap();
+
+        let revoked = TrustStore::revoke(&env, &both).unwrap();
+        assert!(
+            revoked.permission_file && revoked.settings_file,
+            "{revoked:?}"
+        );
+
+        let entries = TrustStore::load(&env).entries();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].path, other);
+        assert_eq!(entries[0].kind, TrustKind::SettingsFile);
     }
 }

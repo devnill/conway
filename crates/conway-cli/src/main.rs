@@ -69,6 +69,27 @@ async fn main() -> std::process::ExitCode {
     // it, the exact hazard this item exists to close).
     let env: HashMap<String, String> = std::env::vars().collect();
 
+    // Board item `01M2TTWSQ53CDWB9VRGSX05XNQ`: `conway trust` is dispatched
+    // HERE, ahead of the single `build_conway` call below, and it is the
+    // only subcommand that is. Every other target needs a built `Conway`;
+    // this one must run WITHOUT one, because `ConwayBuilder::discover`
+    // (inside `build_conway`) is precisely where
+    // `conway::config::trust::guard_untrusted_project_settings` refuses an
+    // untrusted project `settings.json`. Routing this through the ordinary
+    // `dispatch` choke point would mean the command that grants consent is
+    // itself blocked by the missing consent -- the exact unreachable-remedy
+    // defect this item closes. Nothing here needs a `Conway`: the trust
+    // store is a standalone, path-keyed file resolved from the cwd and
+    // `env` alone (`commands::trust`'s own module doc).
+    //
+    // Placed after the `--cwd` `set_current_dir` above, so the walk this
+    // performs starts from the same directory `conway::config::LoadOptions::
+    // default` would have used for the blocked run.
+    if let Some(Command::Trust(args)) = &cli.command {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        return to_process_code(commands::trust::run(args, &cwd, &env));
+    }
+
     // **Disclosed reconciliation -- widens this function and
     // `build_conway` beyond `dispatch`'s own match arms, which is the one
     // piece of this shared file each of those items' briefs asked to leave
@@ -820,6 +841,17 @@ async fn dispatch(
         // no second destination competing for it in the same dispatch.
         Some(Command::Plugin(args)) => {
             commands::plugin::run_admin(args, &conway, memory_store, env).await
+        }
+        // Board item `01M2TTWSQ53CDWB9VRGSX05XNQ`: not reached in practice
+        // -- `main` returns on `Command::Trust` before `build_conway` ever
+        // runs (see that early return's own comment for why it cannot wait
+        // for this choke point). Kept as a real arm, calling the real
+        // function, rather than a `_` catch-all: a `_` here would silently
+        // swallow the NEXT variant somebody adds, and this arm still does
+        // the right thing if the early return is ever removed.
+        Some(Command::Trust(args)) => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            Ok(commands::trust::run(args, &cwd, env))
         }
         // **Disclosed reconciliation, out of this arm's own owning
         // item's paths but unavoidable and unclaimed:** dispatching

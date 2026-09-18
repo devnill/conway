@@ -19,6 +19,7 @@ use crate::commands::plugin::PluginArgs;
 use crate::commands::routes::RoutesArgs;
 use crate::commands::sessions::SessionsArgs;
 use crate::commands::tools::ToolsArgs;
+use crate::commands::trust::TrustArgs;
 
 /// Adding a flag here? It does **not** reach a running `conway` through
 /// `conway::config::merge::CliOverrides` — that struct is an embedder-facing
@@ -304,6 +305,22 @@ pub enum Command {
     /// `sessions`/`routes`/`tools` above. See `commands::plugin`'s own
     /// module doc for the `list`/`install`/`remove` surface itself.
     Plugin(PluginArgs),
+    /// `conway trust settings|list|revoke` (board item
+    /// `01M2TTWSQ53CDWB9VRGSX05XNQ`): the headless half of consent for a
+    /// project-scoped `.conway/settings.json` -- the same
+    /// `conway::config::trust::TrustStore` writer and the same
+    /// `trust.json`, reachable from a shell where conway itself refuses to
+    /// start. A BUILT-IN clap subcommand, on the same footing as `plugin`
+    /// above.
+    ///
+    /// **Uniquely among these variants, `main.rs` dispatches this one
+    /// BEFORE `build_conway`.** Every other subcommand needs a built
+    /// `Conway`; this one must run without one, because `ConwayBuilder::
+    /// discover` is exactly where the untrusted-settings guard refuses --
+    /// see `commands::trust`'s own module doc for why waiting until the
+    /// ordinary dispatch point would make this command unreachable in the
+    /// one situation it exists for.
+    Trust(TrustArgs),
     /// Anything that is not one of the built-in subcommands above falls
     /// through here instead of failing to parse -- clap's own
     /// `external_subcommand` idiom (the same shape `cargo` uses to dispatch
