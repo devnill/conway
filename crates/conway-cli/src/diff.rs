@@ -40,7 +40,7 @@
 //! whitespace-normalized -- so a simulated result never disagrees with
 //! what the real tool would actually do to the file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Above this many `(old_lines+1)*(new_lines+1)` table cells, [`unified_diff`]
 /// gives up on a fine-grained diff and returns a coarse summary instead --
@@ -303,57 +303,126 @@ pub fn apply_touch(before: &str, kind: &TouchKind) -> String {
     }
 }
 
+/// Reconstructs one path's pre-session content by UN-applying that path's
+/// recorded touches, newest first, onto whatever the file holds on disk
+/// right now -- the fallback [`cumulative_diffs`] uses for a path it was
+/// given no recorded baseline for.
+///
+/// **Why reverse-folding and not "read the file and call that the
+/// baseline".** By the time anyone runs `/diff` or `sessions show --diff`,
+/// the recorded calls have ALREADY landed: the current bytes are the
+/// *after*, never the *before*. Undoing each touch in reverse walks back
+/// from that after-state to the state the session found. An `edit` is
+/// invertible by construction -- it is a literal substring substitution, so
+/// swapping `new_string`/`old_string` and running the same
+/// [`simulate_edit`] the forward fold uses reverses it exactly.
+///
+/// **The honest limits.**
+///
+/// * A `write` is NOT invertible: it carries the content it produced and
+///   nothing about what it displaced. Walking back past one yields
+///   `String::new()` -- right for the common case (a `write` that created
+///   a new file, which had no prior content) and an overstatement for a
+///   `write` that clobbered an existing file, whose prior bytes the call
+///   log simply does not contain. The live TUI does not depend on this:
+///   it hands [`cumulative_diffs`] the real bytes it captured before the
+///   call ran (`AppState::diff_baseline`).
+/// * An `edit` whose inversion [`simulate_edit`] refuses (its
+///   `new_string` is now absent, or ambiguous without `replace_all` --
+///   e.g. the operator has since edited the same region by hand) leaves
+///   the running content unchanged rather than guessing, so that call's
+///   contribution silently drops out of the reconstructed baseline.
+///
+/// Unrelated concurrent edits elsewhere in the file are preserved by this
+/// walk, land in the baseline, and therefore appear on BOTH sides of the
+/// resulting diff -- which is the point: the command reports what conway
+/// did, not what the working tree looks like.
+fn derive_baseline(path: &str, kinds: &[&TouchKind]) -> String {
+    let mut content = std::fs::read_to_string(path).unwrap_or_default();
+    for kind in kinds.iter().rev() {
+        match kind {
+            TouchKind::Write { .. } => content = String::new(),
+            TouchKind::Edit {
+                old_string,
+                new_string,
+                replace_all,
+            } => {
+                if let Some((undone, _)) =
+                    simulate_edit(&content, new_string, old_string, *replace_all)
+                {
+                    content = undone;
+                }
+            }
+        }
+    }
+    content
+}
+
 /// The cumulative diff `/diff` and `sessions show --diff` both show: every
-/// path touched by `touches` (in order), diffed against the bytes it had
-/// the FIRST time this ordered sequence touches it.
+/// path touched by `touches` (in the order each path was first touched),
+/// diffed against the bytes it held when this session FIRST touched it.
 ///
-/// **The one disk read this function performs, and its honest limit.** The
-/// first time a given path appears in `touches`, its CURRENT on-disk
-/// content (read once, right here) is taken as the baseline -- correct for
-/// a live session's `/diff` (nothing has touched the file yet at that
-/// point) and for `sessions show --diff` run shortly after a session ends
-/// against files nothing else has since modified. It is NOT correct for an
-/// old session inspected long after its files diverged further, or for a
-/// path some other process already reverted -- conway persists no full
-/// file snapshots to reconstruct a truer baseline from, so this is the best
-/// available answer from the call log alone (see `docs/sessions.md`).
-/// Every subsequent touch to the same path is folded in-memory via
-/// [`simulate_edit`]/direct replacement, with NO further disk access --
-/// this is what keeps the result deterministic and repeatable within one
-/// invocation.
+/// **Where the baseline comes from.** `known_baselines` maps a path to the
+/// bytes a caller genuinely observed before the session's first call
+/// against it. The live TUI has exactly that, captured at PROPOSE time --
+/// before the tool runs -- in `AppState::diff_baseline`, so `/diff` is
+/// exact. `sessions show --diff` replays a finished session's log, which
+/// persists no file snapshots at all, so it passes an empty map and every
+/// path falls through to this module's own private `derive_baseline`,
+/// which reconstructs the baseline by un-applying the recorded touches
+/// from the current on-disk bytes (see that function for the two cases
+/// where the reconstruction is approximate). The two surfaces therefore
+/// agree wherever the
+/// reconstruction is exact, and `/diff` is the more accurate of the two
+/// where it is not.
 ///
-/// A `write` touch replaces the running content outright (it always
-/// carries the full new content). An `edit` touch that [`simulate_edit`]
-/// refuses (disagrees with what the real, already-successful call must
-/// have done -- e.g. the tracked content drifted from what the live tool
-/// actually saw) leaves that path's running content unchanged rather than
-/// guessing.
+/// **What this function does NOT do: take the current on-disk bytes as the
+/// baseline.** That was the original shape and it was wrong by
+/// construction (board item `01M2V6HMBAWKM0GG90J14K4Q8F`): both callers run
+/// AFTER the recorded calls have landed, so current-as-baseline made the
+/// forward fold re-apply changes the file already had -- an `edit` whose
+/// `old_string` was already replaced is refused by [`simulate_edit`] and a
+/// `write` re-writes what is already there, leaving baseline == current and
+/// every real session's diff empty.
+///
+/// The forward fold itself reads no files: once a path has a baseline,
+/// every touch is folded in memory via [`apply_touch`], which keeps the
+/// result deterministic and repeatable within one invocation. A `write`
+/// touch replaces the running content outright (it always carries the full
+/// new content); an `edit` touch [`simulate_edit`] refuses leaves the
+/// running content unchanged rather than guessing.
 ///
 /// Returns `(path, unified_diff)` pairs for paths with a non-empty diff, in
 /// the order each path was first touched.
-pub fn cumulative_diffs(touches: &[FileTouch]) -> Vec<(String, String)> {
-    let mut baseline: BTreeMap<String, String> = BTreeMap::new();
-    let mut current: BTreeMap<String, String> = BTreeMap::new();
+pub fn cumulative_diffs(
+    touches: &[FileTouch],
+    known_baselines: &HashMap<String, String>,
+) -> Vec<(String, String)> {
     let mut order: Vec<String> = Vec::new();
-
+    let mut by_path: BTreeMap<String, Vec<&TouchKind>> = BTreeMap::new();
     for touch in touches {
-        if !current.contains_key(&touch.path) {
-            let disk = std::fs::read_to_string(&touch.path).unwrap_or_default();
-            baseline.insert(touch.path.clone(), disk.clone());
-            current.insert(touch.path.clone(), disk);
-            order.push(touch.path.clone());
-        }
-        let before = current.get(&touch.path).cloned().unwrap_or_default();
-        let after = apply_touch(&before, &touch.kind);
-        current.insert(touch.path.clone(), after);
+        by_path
+            .entry(touch.path.clone())
+            .or_insert_with(|| {
+                order.push(touch.path.clone());
+                Vec::new()
+            })
+            .push(&touch.kind);
     }
 
     order
         .into_iter()
         .filter_map(|path| {
-            let base = baseline.get(&path).cloned().unwrap_or_default();
-            let cur = current.get(&path).cloned().unwrap_or_default();
-            let d = unified_diff(&path, &path, &base, &cur);
+            let kinds = by_path.get(&path)?;
+            let base = known_baselines
+                .get(&path)
+                .cloned()
+                .unwrap_or_else(|| derive_baseline(&path, kinds));
+            let mut current = base.clone();
+            for kind in kinds {
+                current = apply_touch(&current, kind);
+            }
+            let d = unified_diff(&path, &path, &base, &current);
             if d.is_empty() {
                 None
             } else {
@@ -464,11 +533,18 @@ mod tests {
         );
     }
 
+    /// Board item `01M2V6HMBAWKM0GG90J14K4Q8F`: every caller of
+    /// [`cumulative_diffs`] runs AFTER the recorded calls landed, so a
+    /// fixture that leaves the files in their pre-edit state tests a state
+    /// the product never occupies. These tests seed, then **apply the same
+    /// change on disk**, then fold -- which is why they fail against the
+    /// implementation that took the current bytes as the baseline.
     #[test]
     fn cumulative_diffs_folds_two_edits_to_one_path_into_one_diff_against_first_touch() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("f.txt");
         std::fs::write(&path, "one\ntwo\nthree\n").expect("write");
+        std::fs::write(&path, "ONE\ntwo\nTHREE\n").expect("the edits land on disk");
         let path_str = path.to_string_lossy().to_string();
 
         let touches = vec![
@@ -490,7 +566,7 @@ mod tests {
             },
         ];
 
-        let diffs = cumulative_diffs(&touches);
+        let diffs = cumulative_diffs(&touches, &HashMap::new());
         assert_eq!(diffs.len(), 1, "one path touched: {diffs:?}");
         let (got_path, diff_text) = &diffs[0];
         assert_eq!(got_path, &path_str);
@@ -507,6 +583,9 @@ mod tests {
         let path_b = dir.path().join("b.txt");
         std::fs::write(&path_a, "alpha\n").expect("write a");
         std::fs::write(&path_b, "beta\n").expect("write b");
+        // Both calls land, as they have by the time anyone asks for a diff.
+        std::fs::write(&path_a, "ALPHA\n").expect("edit a lands");
+        std::fs::write(&path_b, "BETA\n").expect("write b lands");
         let a_str = path_a.to_string_lossy().to_string();
         let b_str = path_b.to_string_lossy().to_string();
 
@@ -527,7 +606,7 @@ mod tests {
             },
         ];
 
-        let diffs = cumulative_diffs(&touches);
+        let diffs = cumulative_diffs(&touches, &HashMap::new());
         assert_eq!(diffs.len(), 2, "{diffs:?}");
         let paths: Vec<&String> = diffs.iter().map(|(p, _)| p).collect();
         assert!(paths.contains(&&a_str));
@@ -536,6 +615,133 @@ mod tests {
 
     #[test]
     fn cumulative_diffs_is_empty_when_no_touches() {
-        assert_eq!(cumulative_diffs(&[]), Vec::new());
+        assert_eq!(cumulative_diffs(&[], &HashMap::new()), Vec::new());
+    }
+
+    /// A `write` that CREATED the file reconstructs an empty baseline, so
+    /// the diff shows the whole file added -- and, critically, is not
+    /// empty. Against the pre-fix implementation the written content was
+    /// both baseline and result, and this path vanished from the output.
+    #[test]
+    fn cumulative_diffs_reconstructs_an_empty_baseline_for_a_write_created_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("new.txt");
+        std::fs::write(&path, "hello\nworld\n").expect("the write landed");
+        let path_str = path.to_string_lossy().to_string();
+
+        let touches = vec![FileTouch {
+            path: path_str.clone(),
+            kind: TouchKind::Write {
+                content: "hello\nworld\n".to_string(),
+            },
+        }];
+
+        let diffs = cumulative_diffs(&touches, &HashMap::new());
+        assert_eq!(diffs.len(), 1, "{diffs:?}");
+        assert!(diffs[0].1.contains("+hello"), "{}", diffs[0].1);
+        assert!(diffs[0].1.contains("+world"), "{}", diffs[0].1);
+    }
+
+    /// An unrelated concurrent edit elsewhere in the file survives the
+    /// reconstruction into the baseline, so it lands on BOTH sides of the
+    /// diff and is not reported -- the command describes what conway did,
+    /// not what the working tree looks like.
+    #[test]
+    fn cumulative_diffs_does_not_report_a_concurrent_edit_it_did_not_make() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        // conway edited `two`; something else edited `four` afterwards.
+        std::fs::write(&path, "one\nTWO\nthree\nOPERATOR\n").expect("write");
+        let path_str = path.to_string_lossy().to_string();
+
+        let touches = vec![FileTouch {
+            path: path_str.clone(),
+            kind: TouchKind::Edit {
+                old_string: "two".to_string(),
+                new_string: "TWO".to_string(),
+                replace_all: false,
+            },
+        }];
+
+        let diffs = cumulative_diffs(&touches, &HashMap::new());
+        assert_eq!(diffs.len(), 1, "{diffs:?}");
+        let text = &diffs[0].1;
+        assert!(text.contains("-two"), "{text}");
+        assert!(text.contains("+TWO"), "{text}");
+        assert!(
+            !text.contains("+OPERATOR"),
+            "an edit conway did not make must not be reported: {text}"
+        );
+    }
+
+    /// A supplied baseline wins over reconstruction, and is the ONLY way
+    /// to get the right answer for a `write` that clobbered existing
+    /// content: the call log carries what the write produced and nothing
+    /// about what it displaced, so reconstruction alone would report the
+    /// whole file as added. The live TUI supplies this from
+    /// `AppState::diff_baseline`.
+    #[test]
+    fn cumulative_diffs_prefers_a_supplied_baseline_over_reconstruction() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "replacement\n").expect("the write landed");
+        let path_str = path.to_string_lossy().to_string();
+
+        let touches = vec![FileTouch {
+            path: path_str.clone(),
+            kind: TouchKind::Write {
+                content: "replacement\n".to_string(),
+            },
+        }];
+
+        let mut baselines = HashMap::new();
+        baselines.insert(path_str.clone(), "displaced\n".to_string());
+
+        let diffs = cumulative_diffs(&touches, &baselines);
+        assert_eq!(diffs.len(), 1, "{diffs:?}");
+        let text = &diffs[0].1;
+        assert!(text.contains("-displaced"), "{text}");
+        assert!(text.contains("+replacement"), "{text}");
+    }
+
+    /// The baseline map is consulted per path, not all-or-nothing: a run
+    /// mixing one captured path with one uncaptured path diffs both.
+    #[test]
+    fn cumulative_diffs_mixes_a_supplied_baseline_with_a_reconstructed_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let known = dir.path().join("known.txt");
+        let unknown = dir.path().join("unknown.txt");
+        std::fs::write(&known, "after\n").expect("write known");
+        std::fs::write(&unknown, "UNSEEN\n").expect("write unknown");
+        let known_str = known.to_string_lossy().to_string();
+        let unknown_str = unknown.to_string_lossy().to_string();
+
+        let touches = vec![
+            FileTouch {
+                path: known_str.clone(),
+                kind: TouchKind::Write {
+                    content: "after\n".to_string(),
+                },
+            },
+            FileTouch {
+                path: unknown_str.clone(),
+                kind: TouchKind::Edit {
+                    old_string: "unseen".to_string(),
+                    new_string: "UNSEEN".to_string(),
+                    replace_all: false,
+                },
+            },
+        ];
+
+        let mut baselines = HashMap::new();
+        baselines.insert(known_str.clone(), "before\n".to_string());
+
+        let diffs = cumulative_diffs(&touches, &baselines);
+        assert_eq!(diffs.len(), 2, "{diffs:?}");
+        assert_eq!(diffs[0].0, known_str, "first-touch order is preserved");
+        assert!(diffs[0].1.contains("-before"), "{}", diffs[0].1);
+        assert_eq!(diffs[1].0, unknown_str);
+        assert!(diffs[1].1.contains("-unseen"), "{}", diffs[1].1);
+        assert!(diffs[1].1.contains("+UNSEEN"), "{}", diffs[1].1);
     }
 }
