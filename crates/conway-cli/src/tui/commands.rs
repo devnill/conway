@@ -3439,7 +3439,23 @@ fn render_tree_snapshot(state: &mut AppState) {
 /// folds them through `crate::diff::cumulative_diffs` -- the SAME fold
 /// this module's own doc points at `conway sessions show --diff` for, so
 /// the two surfaces can never show a different answer for the same
-/// session. Pushed as ONE `Entry::Notice` per touched path (mirroring
+/// session.
+///
+/// **The baseline is `state.diff_baseline`, not the files' current bytes**
+/// (board item `01M2V6HMBAWKM0GG90J14K4Q8F`). `/diff` runs after the calls
+/// have landed, so a disk read here returns the *after* state and the fold
+/// has nothing left to show -- the command printed "no files edited or
+/// written yet in this session" over three applied edits. `AppState`
+/// instead captures each path's real bytes at PROPOSE time (`state.rs`'s
+/// `Event::ToolCallProposed` arm), and this passes that map straight
+/// through as `cumulative_diffs`'s `known_baselines`, so the live TUI's
+/// answer is exact and needs no disk access at all. A path this `AppState`
+/// never watched a proposal for (a focus-switch/resume replay emits no
+/// `ToolCallProposed`) is simply absent from the map, and
+/// `cumulative_diffs` reconstructs that one baseline itself -- the same
+/// code path, and the same answer, `sessions show --diff` gets.
+///
+/// Pushed as ONE `Entry::Notice` per touched path (mirroring
 /// `render_tree_snapshot`'s own one-notice-per-line convention, but here
 /// one notice per FILE section so `/tree`-style scrolling lands on whole
 /// diffs, not split mid-hunk), each headed by a plain `## {path}` line (no
@@ -3465,7 +3481,7 @@ fn render_diff_snapshot(state: &mut AppState) {
         })
         .collect();
 
-    let diffs = crate::diff::cumulative_diffs(&touches);
+    let diffs = crate::diff::cumulative_diffs(&touches, &state.diff_baseline);
     if diffs.is_empty() {
         notice(
             state,
@@ -6754,11 +6770,108 @@ mod tests {
         );
     }
 
-    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2's own acceptance check: after
-    /// THREE edits across TWO files, `/diff` shows both files' cumulative
-    /// changes -- one against a temp file edited twice, one against a temp
-    /// file written once. No facade call: `/diff` reads `state.transcript`
-    /// alone, the same shape as `/tree` immediately above.
+    /// Envelope helper for the `/diff` tests below, which drive `AppState`
+    /// through real `Event`s rather than hand-built `Entry`s -- the
+    /// `ToolCallProposed`/`ToolCallFinished` pair is what a live session
+    /// actually applies, and it is `ToolCallProposed` that captures
+    /// `state.diff_baseline`.
+    fn tool_envelope(
+        session: SessionId,
+        agent: AgentId,
+        seq: u64,
+        event: Event,
+    ) -> conway::Envelope {
+        conway::Envelope {
+            seq,
+            ts: chrono::Utc::now(),
+            session,
+            agent,
+            event,
+        }
+    }
+
+    /// Applies one successful `edit`/`write` call the way a live session
+    /// does it, in the order a live session does it: the model proposes
+    /// (which is when `AppState` reads the file's real "before" bytes),
+    /// **the tool then actually changes the file on disk**, and only then
+    /// does the call settle.
+    ///
+    /// Board item `01M2V6HMBAWKM0GG90J14K4Q8F`: the middle step is the
+    /// whole point. The previous versions of these tests pushed
+    /// `Entry::Tool` entries and never touched disk, so the files were
+    /// still in their PRE-edit state when `/diff` ran -- a state no real
+    /// session is ever in, and the exact reason the tests passed while the
+    /// live command printed "no files edited or written yet in this
+    /// session" over three applied edits.
+    fn apply_call_for_real(
+        state: &mut AppState,
+        session: SessionId,
+        agent: AgentId,
+        seq: u64,
+        call_id: &str,
+        tool: &str,
+        args: serde_json::Value,
+    ) {
+        state.apply(&tool_envelope(
+            session,
+            agent,
+            seq,
+            Event::ToolCallProposed {
+                call_id: call_id.to_string(),
+                tool: ToolName::new(tool),
+                args: args.clone(),
+            },
+        ));
+
+        let path = args["path"].as_str().expect("every touch carries a path");
+        let before = std::fs::read_to_string(path).unwrap_or_default();
+        let after = match tool {
+            "write" => args["content"]
+                .as_str()
+                .expect("write carries content")
+                .to_string(),
+            "edit" => {
+                let old = args["old_string"]
+                    .as_str()
+                    .expect("edit carries old_string");
+                let new = args["new_string"]
+                    .as_str()
+                    .expect("edit carries new_string");
+                assert!(
+                    before.contains(old),
+                    "the fixture's edit must be one the real tool would accept: \
+                     {old:?} not in {before:?}"
+                );
+                before.replacen(old, new, 1)
+            }
+            other => panic!("unsupported fixture tool {other}"),
+        };
+        std::fs::write(path, &after).expect("apply the edit on disk");
+
+        state.apply(&tool_envelope(
+            session,
+            agent,
+            seq + 1,
+            Event::ToolCallFinished {
+                call_id: call_id.to_string(),
+                is_error: false,
+                preview: "ok".to_string(),
+            },
+        ));
+    }
+
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2's own acceptance check,
+    /// repaired for `01M2V6HMBAWKM0GG90J14K4Q8F`: after THREE edits across
+    /// TWO files -- **all three actually applied to disk**, through the
+    /// real propose/settle event pair -- `/diff` shows both files'
+    /// cumulative changes against what they held when the session first
+    /// touched them. No facade call: `/diff` reads `state` alone, the same
+    /// shape as `/tree` immediately above.
+    ///
+    /// This fails against the pre-fix implementation, which took each
+    /// path's bytes AT `/diff` TIME as the baseline: with the edits
+    /// already on disk, baseline == current and the command reported
+    /// nothing touched.
     #[tokio::test]
     async fn diff_command_shows_cumulative_changes_across_two_files_after_three_edits() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -6768,6 +6881,85 @@ mod tests {
         std::fs::write(&path_b, "old\n").expect("seed b");
         let a_str = path_a.to_string_lossy().to_string();
         let b_str = path_b.to_string_lossy().to_string();
+
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        apply_call_for_real(
+            &mut state,
+            session,
+            root,
+            1,
+            "tc_1",
+            "edit",
+            serde_json::json!({"path": a_str, "old_string": "alpha", "new_string": "ALPHA"}),
+        );
+        apply_call_for_real(
+            &mut state,
+            session,
+            root,
+            3,
+            "tc_2",
+            "edit",
+            serde_json::json!({"path": a_str, "old_string": "beta", "new_string": "BETA"}),
+        );
+        apply_call_for_real(
+            &mut state,
+            session,
+            root,
+            5,
+            "tc_3",
+            "write",
+            serde_json::json!({"path": b_str, "content": "new\n"}),
+        );
+
+        // The state a real session is in by the time `/diff` runs: the
+        // edits have landed. Pinned explicitly so a future change that
+        // stops applying them cannot quietly restore the old, unfalsifiable
+        // fixture.
+        assert_eq!(
+            std::fs::read_to_string(&path_a).expect("read a"),
+            "ALPHA\nBETA\n"
+        );
+        assert_eq!(std::fs::read_to_string(&path_b).expect("read b"), "new\n");
+
+        let host = FakeHost::new(root);
+
+        execute(SlashCommand::Diff, &mut state, &host).await;
+
+        assert!(host.calls().is_empty(), "/diff must not consult the facade");
+        let combined = notice_lines(&state).join("\n");
+        assert!(combined.contains(&format!("## {a_str}")), "{combined}");
+        assert!(combined.contains(&format!("## {b_str}")), "{combined}");
+        assert!(combined.contains("-alpha"), "{combined}");
+        assert!(combined.contains("+ALPHA"), "{combined}");
+        assert!(combined.contains("-beta"), "{combined}");
+        assert!(combined.contains("+BETA"), "{combined}");
+        assert!(combined.contains("-old"), "{combined}");
+        assert!(combined.contains("+new"), "{combined}");
+    }
+
+    /// The same three-edits-on-disk end state, but reached by an
+    /// `AppState` that never watched the proposals -- the shape a
+    /// focus-switch/resume replay produces (`record_to_event` emits no
+    /// `Event::ToolCallProposed`), and the shape `conway sessions show
+    /// --diff` is permanently in, since a session log persists no file
+    /// snapshots.
+    ///
+    /// With `state.diff_baseline` empty, `cumulative_diffs` must
+    /// reconstruct each path's baseline by un-applying the recorded
+    /// touches from the file's current bytes, and land on the same answer
+    /// the live TUI gives above. Also fails against the pre-fix
+    /// implementation, for the same reason.
+    #[tokio::test]
+    async fn diff_command_reconstructs_the_baseline_when_it_watched_no_proposals() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "alpha\nbeta\n").expect("seed");
+        let path_str = path.to_string_lossy().to_string();
+        // The edits landed; this `AppState` simply was not watching.
+        std::fs::write(&path, "ALPHA\nBETA\n").expect("apply on disk");
 
         let root = AgentId::new();
         let mut state = AppState::new(root);
@@ -6786,32 +6978,27 @@ mod tests {
         state.transcript.push(tool_entry(
             "tc_1",
             "edit",
-            serde_json::json!({"path": a_str, "old_string": "alpha", "new_string": "ALPHA"}),
+            serde_json::json!({"path": path_str, "old_string": "alpha", "new_string": "ALPHA"}),
         ));
         state.transcript.push(tool_entry(
             "tc_2",
             "edit",
-            serde_json::json!({"path": a_str, "old_string": "beta", "new_string": "BETA"}),
+            serde_json::json!({"path": path_str, "old_string": "beta", "new_string": "BETA"}),
         ));
-        state.transcript.push(tool_entry(
-            "tc_3",
-            "write",
-            serde_json::json!({"path": b_str, "content": "new\n"}),
-        ));
+        assert!(
+            state.diff_baseline.is_empty(),
+            "the fixture's whole point is that nothing was captured"
+        );
         let host = FakeHost::new(root);
 
         execute(SlashCommand::Diff, &mut state, &host).await;
 
-        assert!(host.calls().is_empty(), "/diff must not consult the facade");
         let combined = notice_lines(&state).join("\n");
-        assert!(combined.contains(&format!("## {a_str}")), "{combined}");
-        assert!(combined.contains(&format!("## {b_str}")), "{combined}");
+        assert!(combined.contains(&format!("## {path_str}")), "{combined}");
         assert!(combined.contains("-alpha"), "{combined}");
         assert!(combined.contains("+ALPHA"), "{combined}");
         assert!(combined.contains("-beta"), "{combined}");
         assert!(combined.contains("+BETA"), "{combined}");
-        assert!(combined.contains("-old"), "{combined}");
-        assert!(combined.contains("+new"), "{combined}");
     }
 
     /// A session with nothing edited/written yet gets an honest notice, not
@@ -6832,7 +7019,12 @@ mod tests {
     }
 
     /// A failed `edit` call contributes nothing to `/diff` -- nothing
-    /// actually changed on disk.
+    /// actually changed on disk. Driven through the real
+    /// propose/settle event pair (board item
+    /// `01M2V6HMBAWKM0GG90J14K4Q8F`), so the proposal seeds
+    /// `state.diff_baseline` exactly as it does for a successful call and
+    /// the record-filtering this test covers is the only thing that can
+    /// keep the path out of the output.
     #[tokio::test]
     async fn diff_command_ignores_failed_calls() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -6840,21 +7032,38 @@ mod tests {
         std::fs::write(&path, "alpha\n").expect("seed");
         let path_str = path.to_string_lossy().to_string();
 
+        let session = SessionId::new();
         let root = AgentId::new();
         let mut state = AppState::new(root);
-        state.transcript.push(Entry::Tool {
-            call_id: "tc_1".to_string(),
-            name: "edit".to_string(),
-            status: ToolStatus::Finished { is_error: true },
-            preview: "old_string not found".to_string(),
-            args: serde_json::json!({
-                "path": path_str, "old_string": "nope", "new_string": "x"
-            })
-            .to_string(),
-            progress: String::new(),
-            expanded: false,
-            ts: None,
+        let args = serde_json::json!({
+            "path": path_str, "old_string": "nope", "new_string": "x"
         });
+        state.apply(&tool_envelope(
+            session,
+            root,
+            1,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("edit"),
+                args,
+            },
+        ));
+        // The tool refused it; the file is untouched, exactly as after a
+        // real `old_string not found`.
+        state.apply(&tool_envelope(
+            session,
+            root,
+            2,
+            Event::ToolCallFinished {
+                call_id: "tc_1".to_string(),
+                is_error: true,
+                preview: "old_string not found".to_string(),
+            },
+        ));
+        assert!(
+            state.diff_baseline.contains_key(&path_str),
+            "a proposal captures the baseline whether or not the call succeeds"
+        );
         let host = FakeHost::new(root);
 
         execute(SlashCommand::Diff, &mut state, &host).await;

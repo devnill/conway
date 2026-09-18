@@ -1403,17 +1403,53 @@ pub struct AppState {
     /// crate's tests already inject config explicitly rather than mutating
     /// process-global env/statics (`crate::tui::keybindings`'s own doc).
     pub keybindings: crate::tui::keybindings::Keymap,
-    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: this session's running
-    /// per-path content tracker for `edit`/`write` tool calls -- the FIRST
-    /// time a path is seen (in `Event::ToolCallProposed`, below), its
-    /// current on-disk bytes are read ONCE and stored here; every
-    /// subsequent successful call to that same path folds its own change
-    /// on top (`AppState::finish_tool`, via `crate::diff::apply_touch`),
-    /// with no further disk access. This is what lets both a per-call
-    /// settled-entry diff (stored once in [`Self::tool_diffs`], never
-    /// recomputed) and the `/diff` command's cumulative view be computed
-    /// from in-memory state alone after the first touch to a given path.
+    /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: this session's RUNNING
+    /// per-path content for `edit`/`write` tool calls -- what conway
+    /// believes each touched file now holds. The FIRST time a path is seen
+    /// (in `Event::ToolCallProposed`, below) its current on-disk bytes are
+    /// read ONCE and stored here (and, unchanged forever after, in
+    /// [`Self::diff_baseline`]); every subsequent successful call to that
+    /// same path folds its own change on top (`AppState::finish_tool`, via
+    /// `crate::diff::apply_touch`), with no further disk access. That is
+    /// what lets a per-call settled-entry diff (stored once in
+    /// [`Self::tool_diffs`], never recomputed) be computed from in-memory
+    /// state alone after the first touch to a given path: the `before` it
+    /// diffs against is this field's value just prior to the fold.
+    ///
+    /// **This field is the *after* side, not the *before* side, and
+    /// `/diff` does not read it** (board item
+    /// `01M2V6HMBAWKM0GG90J14K4Q8F` corrected an earlier version of this
+    /// doc that claimed otherwise). `/diff` needs the bytes the session
+    /// STARTED from, which this field has already folded away; it takes
+    /// those from [`Self::diff_baseline`] and re-folds the transcript's
+    /// own successful touches through `crate::diff::cumulative_diffs`,
+    /// which applies the identical `apply_touch` rule -- so the two can
+    /// never disagree about what a given call did.
     pub(crate) diff_track: HashMap<String, String>,
+    /// Board item `01M2V6HMBAWKM0GG90J14K4Q8F`: the FROZEN twin of
+    /// [`Self::diff_track`] -- the bytes each `edit`/`write` target held the
+    /// first time this session proposed a call against it, seeded from the
+    /// SAME single disk read and never folded, never overwritten
+    /// afterwards. This is `/diff`'s baseline (passed to
+    /// `crate::diff::cumulative_diffs` as `known_baselines` by
+    /// `tui/commands.rs::render_diff_snapshot`).
+    ///
+    /// **Why a captured snapshot and not a read at `/diff` time.** By the
+    /// time the operator types `/diff` the calls have landed, so the file's
+    /// current bytes are the *after*; reading them then and calling them
+    /// the baseline yielded an empty diff for every real session -- the
+    /// defect this field exists to fix. The capture happens at PROPOSE
+    /// time, before the tool runs, which is the only moment the true
+    /// "before" is still on disk.
+    ///
+    /// Populated only for paths this `AppState` actually watched a
+    /// `ToolCallProposed` for. A focus-switch/resume replay emits no
+    /// `ToolCallProposed` at all (`conway::session_handle::record_to_event`
+    /// has no arm for it), so a replayed session's paths are simply absent
+    /// here and `cumulative_diffs` falls back to reconstructing their
+    /// baselines from the recorded touches -- see its own doc for that
+    /// fallback's limits.
+    pub(crate) diff_baseline: HashMap<String, String>,
     /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: one settled `edit`/`write`
     /// tool call's own unified diff (`crate::diff::unified_diff`), keyed by
     /// `call_id` and computed EXACTLY ONCE, in
@@ -1591,6 +1627,7 @@ impl AppState {
             // `App::new` overwrites it" doc just above.
             keybindings: crate::tui::keybindings::Keymap::defaults(),
             diff_track: HashMap::new(),
+            diff_baseline: HashMap::new(),
             tool_diffs: HashMap::new(),
         }
     }
@@ -2126,26 +2163,30 @@ impl AppState {
                 });
                 // Board item 01M1YVEJB6GAPST5YZET4KZZE2: the FIRST time this
                 // session sees `edit`/`write` propose a call against a given
-                // `path`, read its current on-disk bytes ONCE and seed
-                // `diff_track` with them -- this is the ONLY disk read this
-                // whole diff feature performs per path; `finish_tool` folds
-                // every later successful call on top in memory (see
-                // `diff_track`'s own doc). Read here, at PROPOSE time
-                // (before the call runs), so the captured bytes are
-                // genuinely the "before" state -- reading at finish time
-                // would already see this call's own result on disk. A
-                // read failure (missing file, permission, non-UTF-8) is
-                // folded to an empty baseline rather than skipped entirely:
-                // an `edit` against a nonexistent/unreadable path is going
-                // to fail anyway (surfaced by the tool's own error text),
-                // and a `write` creating a brand-new file legitimately has
-                // no prior content -- both cases want "nothing here yet",
-                // not "diff unavailable".
+                // `path`, read its current on-disk bytes ONCE and seed BOTH
+                // `diff_track` (which folds forward from here, for per-call
+                // settled diffs) and `diff_baseline` (which never moves
+                // again, and is what `/diff` diffs against) -- this is the
+                // ONLY disk read this whole diff feature performs per path.
+                // Read here, at PROPOSE time (before the call runs), so the
+                // captured bytes are genuinely the "before" state -- reading
+                // at finish time, or at `/diff` time, would already see this
+                // call's own result on disk, which is exactly the defect
+                // board item `01M2V6HMBAWKM0GG90J14K4Q8F` records. A read
+                // failure (missing file, permission, non-UTF-8) is folded to
+                // an empty baseline rather than skipped entirely: an `edit`
+                // against a nonexistent/unreadable path is going to fail
+                // anyway (surfaced by the tool's own error text), and a
+                // `write` creating a brand-new file legitimately has no
+                // prior content -- both cases want "nothing here yet", not
+                // "diff unavailable".
                 if matches!(tool.as_str(), "edit" | "write") {
                     if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
-                        self.diff_track
-                            .entry(path.to_string())
-                            .or_insert_with(|| std::fs::read_to_string(path).unwrap_or_default());
+                        if !self.diff_track.contains_key(path) {
+                            let before = std::fs::read_to_string(path).unwrap_or_default();
+                            self.diff_baseline.insert(path.to_string(), before.clone());
+                            self.diff_track.insert(path.to_string(), before);
+                        }
                     }
                 }
                 self.set_tree_status(env.agent, NodeStatus::Running);
