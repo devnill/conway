@@ -1499,16 +1499,14 @@ mod tests {
             "default".to_string(),
             conway_core::routing::RoleConfig {
                 chain: vec![default_model.clone()],
-                required: conway_core::capabilities::RequiredCaps::default(),
-                params: conway_core::content::SamplingParams::default(),
-                headroom_tokens: None,
+                ..Default::default()
             },
         );
         let router: Arc<dyn conway::Router> = Arc::new(conway_core::routing::MinimalRouter::new(
             conway_core::routing::RoutingConfig {
                 roles,
-                health: conway_core::routing::HealthConfig::default(),
                 default_headroom_tokens: 4096,
+                ..Default::default()
             },
         ));
 

@@ -1305,15 +1305,12 @@ impl Conway {
         let mut report = match &self.router_explain {
             Some(explainer) => explainer.explain(&req),
             None => {
-                let routing_config =
-                    self.config
-                        .routing()
-                        .unwrap_or_else(|_| conway_core::routing::RoutingConfig {
-                            roles: std::collections::BTreeMap::new(),
-                            health: conway_core::routing::HealthConfig::default(),
-                            default_headroom_tokens:
-                                conway_core::capabilities::DEFAULT_HEADROOM_TOKENS,
-                        });
+                // `RoutingConfig::default()` is exactly the fallback this
+                // used to spell out by hand: no roles, `HealthConfig::
+                // default()`, and `DEFAULT_HEADROOM_TOKENS` for the global
+                // headroom (that `Default` impl's own doc states the
+                // equivalence).
+                let routing_config = self.config.routing().unwrap_or_default();
                 MinimalRouter::new(routing_config).explain(&req)
             }
         };

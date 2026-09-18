@@ -413,6 +413,25 @@ impl RoutingConfig {
     }
 }
 
+/// Hand-written rather than derived, because `default_headroom_tokens` must
+/// agree with the `#[serde(default = "default_headroom_tokens")]` attribute
+/// on that field -- a derived `Default` would hand back `0` and silently
+/// disagree with what deserializing a document that omits the key produces.
+///
+/// This exists so construction sites can write `..Default::default()` instead
+/// of an exhaustive literal: adding a field here should not be a compile
+/// break at every call site in the workspace. The values below are exactly
+/// what every such site already spelled out.
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            roles: BTreeMap::new(),
+            health: HealthConfig::default(),
+            default_headroom_tokens: default_headroom_tokens(),
+        }
+    }
+}
+
 /// One role's fallback chain, capability floor, and sampling defaults.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RoleConfig {
@@ -735,24 +754,22 @@ mod tests {
             "planner".to_string(),
             RoleConfig {
                 chain: vec![],
-                required: RequiredCaps::default(),
-                params: SamplingParams::default(),
                 headroom_tokens: Some(32_768),
+                ..Default::default()
             },
         );
         roles.insert(
             "fast".to_string(),
             RoleConfig {
                 chain: vec![],
-                required: RequiredCaps::default(),
-                params: SamplingParams::default(),
                 headroom_tokens: None,
+                ..Default::default()
             },
         );
         let config = RoutingConfig {
             roles,
-            health: HealthConfig::default(),
             default_headroom_tokens: 8_192,
+            ..Default::default()
         };
 
         let planner: RoleAlias = "planner".parse().unwrap();
@@ -895,15 +912,13 @@ mod tests {
                     model_ref("anthropic", "claude-sonnet-4-6"),
                     model_ref("local", "qwen3-coder-80b"),
                 ],
-                required: RequiredCaps::default(),
-                params: SamplingParams::default(),
-                headroom_tokens: None,
+                ..Default::default()
             },
         );
         RoutingConfig {
             roles,
-            health: HealthConfig::default(),
             default_headroom_tokens: 4_096,
+            ..Default::default()
         }
     }
 
