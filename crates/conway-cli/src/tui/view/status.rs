@@ -1031,10 +1031,7 @@ fn activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
         .copied()
         .unwrap_or("");
     let phrase = activity_phrase(&state.activity);
-    let elapsed = state
-        .turn_started_at
-        .map(|t| t.elapsed().as_secs())
-        .unwrap_or(0);
+    let elapsed = activity_elapsed_secs(state);
     vec![
         vec![
             Span::styled(format!("{glyph} {phrase}"), style),
@@ -1046,6 +1043,46 @@ fn activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
         vec![Span::styled(format!("{glyph} {phrase}"), style)],
         vec![],
     ]
+}
+
+/// How long the thing named by `AppState::activity` has been going, in
+/// whole seconds -- the number [`activity_ladder`] renders after the
+/// phrase.
+///
+/// Board item `01M2V60KWK9AYX3J7V5TPJZN7Q`: **which clock this reads
+/// depends on the activity, because the two states do not share one.**
+/// This used to read `turn_started_at` for every activity, and that field
+/// means "a model turn is in flight" -- which is false while a permission
+/// prompt is open. The agent loop's binding event order is `TurnStarted <
+/// ModelDecision < TextDelta* < TurnFinished < ToolCallProposed*`
+/// (`conway-runtime`'s `agent_loop` module doc), so a prompt for one of
+/// that turn's tool calls always opens AFTER `TurnFinished` has already
+/// driven `clear_turn_state` and zeroed `turn_started_at`. The old
+/// `unwrap_or(0)` then rendered a literal `0s` for the entire wait -- the
+/// spinner glyph beside it kept advancing, so the line looked live and the
+/// number looked authoritative, in the one state where the number is the
+/// operator's actual decision input ("how long has this been blocked on
+/// me?"). The reading is also the one conway gets right on both of its
+/// other surfaces: `LogRecord::PermissionDecisionRecord`'s `waited_ms` and
+/// the post-decision `allowed once · waited 53s` note.
+///
+/// The fix is a second clock (`AppState::awaiting_permission_since`),
+/// NOT keeping `turn_started_at` alive across the permission path -- every
+/// other reader of that field asks it "is a turn in flight?" and would
+/// have started lying instead.
+///
+/// Known remaining case, deliberately NOT folded in here: `RunningTool`
+/// has the same shape (it too is only ever reached after `TurnFinished`
+/// cleared `turn_started_at`) and so also renders `0s`. It needs its own
+/// clock and a decision about what the figure means when several tool
+/// calls are in flight at once, which is a different question from this
+/// one; it is filed separately rather than guessed at here.
+fn activity_elapsed_secs(state: &AppState) -> u64 {
+    let clock = match state.activity {
+        Activity::AwaitingPermission => state.awaiting_permission_since,
+        _ => state.turn_started_at,
+    };
+    clock.map(|t| t.elapsed().as_secs()).unwrap_or(0)
 }
 
 /// The `activity` field's ladder while an `/ask` is in flight (board item
@@ -1487,6 +1524,116 @@ mod tests {
         assert!(
             !line.contains("s · +"),
             "no `Ns · +N tok` elapsed/tail while idle: {line}"
+        );
+    }
+
+    // ---- Board item `01M2V60KWK9AYX3J7V5TPJZN7Q`: the elapsed figure
+    // while a permission prompt is open. ----
+
+    /// **The regression guard.** Against HEAD, `activity_ladder` read
+    /// `turn_started_at` for every activity; `turn_started_at` is `None`
+    /// throughout a permission wait (`TurnFinished`, and with it
+    /// `clear_turn_state`, always lands before any prompt for that turn's
+    /// tool calls can open), so the `unwrap_or(0)` branch rendered a
+    /// literal `0s` no matter how long the operator had been sitting there
+    /// -- while the spinner glyph beside it kept advancing, which is what
+    /// made the wrong number look live. Set the wait to 53 seconds, the
+    /// same figure the reproducing session's `waited_ms: 53517` decision
+    /// record carried, and the line must say `53s`.
+    ///
+    /// Asserted against the plain-text render, not through the pty
+    /// harness, deliberately: `CONTRIBUTING.md`'s partial-redraw note says
+    /// a terminal re-emits only the cells that CHANGED, and a
+    /// once-per-second counter ticking `0s` -> `1s` -> ... is the exact
+    /// shape that defeats a `contains()` on the accumulated screen -- the
+    /// trap that has produced four wrong diagnoses on this board. The
+    /// claim here ("the figure is the wait, not zero") is a pure function
+    /// of `AppState`, so the render function is both the honest seam and
+    /// the deterministic one: no real 53-second wall-clock wait, no
+    /// mock-backend permission round-trip, no flake.
+    #[test]
+    fn awaiting_permission_renders_the_real_wait_not_a_literal_zero() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::AwaitingPermission;
+        // Exactly the state a real prompt produces: no turn in flight...
+        state.turn_started_at = None;
+        // ...and the wait clock started 53s ago.
+        state.awaiting_permission_since = Some(Instant::now() - Duration::from_secs(53));
+
+        let line = status_line(&state);
+        assert!(
+            line.contains("awaiting permission"),
+            "precondition -- the awaiting-permission rung must be the one rendered: {line}"
+        );
+        assert!(
+            line.contains("53s"),
+            "the elapsed figure must be the real wait: {line}"
+        );
+        assert!(
+            !line.contains(" 0s · +"),
+            "HEAD's literal `0s` must not be what the operator reads: {line}"
+        );
+    }
+
+    /// The same claim read back off a REAL rendered buffer rather than
+    /// pre-render span content, mirroring
+    /// `auto_allow_buffer_reads_back_a_deliberate_ellipsis_not_a_silent_mid_word_clip`'s
+    /// reasoning: `flatten`'s view can (and has) disagreed with what a
+    /// `Paragraph` actually puts on screen.
+    #[test]
+    fn the_awaiting_permission_wait_is_on_the_rendered_row_not_just_in_the_spans() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::AwaitingPermission;
+        state.turn_started_at = None;
+        state.awaiting_permission_since = Some(Instant::now() - Duration::from_secs(53));
+
+        let rendered = render_row(&state, &Theme::default(), WIDE);
+        assert!(
+            rendered.contains("53s"),
+            "the rendered status row must carry the real wait: {rendered:?}"
+        );
+    }
+
+    /// The counter keeps moving: two reads of the same state at different
+    /// wait lengths must produce different figures. This is what "the
+    /// number is wrong, not frozen" means -- HEAD renders `0s` for both.
+    #[test]
+    fn the_awaiting_permission_counter_advances_with_the_wait() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::AwaitingPermission;
+        state.turn_started_at = None;
+
+        state.awaiting_permission_since = Some(Instant::now() - Duration::from_secs(7));
+        let early = status_line(&state);
+        state.awaiting_permission_since = Some(Instant::now() - Duration::from_secs(61));
+        let later = status_line(&state);
+
+        assert!(early.contains("7s"), "{early}");
+        assert!(later.contains("61s"), "{later}");
+        assert_ne!(
+            early, later,
+            "the elapsed figure must change as the wait lengthens"
+        );
+    }
+
+    /// The other clock is untouched. An ordinary in-flight turn still
+    /// reads `turn_started_at`, and a stale `awaiting_permission_since`
+    /// left over from an earlier, already-resolved prompt must not be
+    /// borrowed for it -- the two clocks measure different things and
+    /// neither silently stands in for the other (the same rule
+    /// `ask_started_at` already follows).
+    #[test]
+    fn an_ordinary_turn_still_reads_the_turn_clock_not_the_permission_clock() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::Thinking;
+        state.turn_started_at = Some(Instant::now() - Duration::from_secs(12));
+        state.awaiting_permission_since = Some(Instant::now() - Duration::from_secs(999));
+
+        let line = status_line(&state);
+        assert!(line.contains("12s"), "{line}");
+        assert!(
+            !line.contains("999s"),
+            "the permission clock must never leak into an ordinary turn's figure: {line}"
         );
     }
 
