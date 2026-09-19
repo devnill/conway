@@ -855,25 +855,29 @@ pub struct AppState {
     /// history is not lost: the transcript keeps an `Entry::Tool` row per
     /// `call_id`, each stamped with its own envelope timestamp.
     ///
-    /// **Lifetime.** Stamped only at the single site that sets
-    /// `Activity::RunningTool` (`apply`'s `ToolCallProposed` arm), and
-    /// cleared at each `apply` site that takes the focused agent off that
-    /// rung (`TurnStarted`, `PermissionRequested`, `TurnFinished`,
-    /// `AgentFinished`) and by [`Self::focus_agent`]. Because the renderer
-    /// reads this field ONLY from `activity_elapsed_secs`'s
-    /// `Activity::RunningTool` arm, and the only writer of that variant is
-    /// the same statement that stamps this clock, a value left here by an
-    /// `activity` write elsewhere in the TUI (`app.rs`/`app/focus.rs` both
-    /// set `Thinking`) can never be the one rendered.
+    /// **Lifetime.** Stamped only at the sites that set
+    /// `Activity::RunningTool` (`apply`'s `ToolCallProposed` and
+    /// `ToolCallStarted` arms), and cleared at each `apply` site that takes
+    /// the focused agent off that rung (`TurnStarted`,
+    /// `PermissionRequested`, a denial in `PermissionResolved`,
+    /// `TurnFinished`, `AgentFinished`) and by [`Self::focus_agent`].
+    /// Because the renderer reads this field ONLY from
+    /// `activity_elapsed_secs`'s `Activity::RunningTool` arm, and every
+    /// writer of that variant is the same statement that stamps this
+    /// clock, a value left here by an `activity` write elsewhere in the
+    /// TUI (`app.rs`/`app/focus.rs` both set `Thinking`) can never be the
+    /// one rendered.
     ///
-    /// Known adjacent behavior, pre-existing and deliberately not changed
-    /// here: a call that WAS prompted does not return to this rung once it
-    /// is approved -- `Event::PermissionResolved` leaves `activity` at
-    /// [`Activity::AwaitingPermission`] until the next turn-level event, so
-    /// such a call executes under the `awaiting permission…` rung rather
-    /// than this one. Which rung is up is not this clock's question; this
-    /// field only guarantees that whenever the `running <tool>…` rung IS
-    /// up, the figure beside it is the age of the call it names.
+    /// The adjacent behavior this item recorded here as known and
+    /// unchanged -- a prompted call executing under the `awaiting
+    /// permission…` rung because `Event::PermissionResolved` left
+    /// `activity` at [`Activity::AwaitingPermission`] -- was then fixed by
+    /// board item `01M2X463TDVV5TG53M3X1M3M6V`: `Event::ToolCallStarted`
+    /// puts the rung back up and re-stamps this clock, so an approved
+    /// call's figure measures its execution and not the deliberation that
+    /// preceded it. See that arm in `apply` for why the transition is
+    /// carried by `ToolCallStarted` rather than by the resolution itself,
+    /// and what a denied call shows instead.
     pub running_tool_since: Option<Instant>,
     /// New context tokens ADDED this turn: the sum of
     /// `Event::ContextSegmentAdded { tokens_est }` deltas observed on the
@@ -2418,6 +2422,47 @@ impl AppState {
                 // operator is currently reading for a different one.
                 if env.agent == self.focused_agent {
                     self.awaiting_permission_since = None;
+                    // Board item `01M2X463TDVV5TG53M3X1M3M6V`, the other
+                    // half: **what a DENIED call shows.** A denial emits no
+                    // `ToolCallStarted` and no `ToolCallFinished` (the
+                    // runner returns at its `Deny` arm), so this is the
+                    // last event that call ever produces -- whatever rung
+                    // is up now stays up until the next turn-level event.
+                    // `awaiting permission` is false the moment the
+                    // operator answers, and `running <tool>` is false for a
+                    // call that will never run, so the rung comes down to
+                    // `Idle`: precisely where the event stream left it
+                    // before the proposal (the binding order `TurnFinished
+                    // < ToolCallProposed*` means the turn is already over
+                    // by then), and the follow-up turn the denial feedback
+                    // provokes moves it on within a tick.
+                    //
+                    // Only a rung that is ABOUT THIS CALL comes down. A
+                    // parallel batch keeps a sibling call's rung up --
+                    // denying one call says nothing about the others, and
+                    // blanking the bar while another tool genuinely runs
+                    // would trade one false rung for another. The rung
+                    // names a tool rather than a `call_id`, so "about this
+                    // call" is: the wait rung (which only ever belongs to
+                    // the call being asked about), or a running rung naming
+                    // the denied call's own tool. Two concurrent calls of
+                    // the SAME tool can make that match the wrong sibling;
+                    // the cost is one `Idle` frame until the next event,
+                    // which is why it is not worth a per-call rung stack.
+                    if matches!(decision, Kind::Denied | Kind::DeniedWithFeedback) {
+                        let denied_tool = self.tool_name_for_call(call_id);
+                        let rung_is_about_this_call = match &self.activity {
+                            Activity::AwaitingPermission => true,
+                            Activity::RunningTool(name) => {
+                                denied_tool.as_deref() == Some(name.as_str())
+                            }
+                            _ => false,
+                        };
+                        if rung_is_about_this_call {
+                            self.activity = Activity::Idle;
+                            self.running_tool_since = None;
+                        }
+                    }
                 }
             }
             // The TUI renders a dim one-line entry under the tool call it
@@ -2440,6 +2485,44 @@ impl AppState {
             }
             Event::ToolCallStarted { call_id } => {
                 self.set_tool_status(call_id, ToolStatus::Running);
+                // Board item `01M2X463TDVV5TG53M3X1M3M6V`: **this is the
+                // event that puts the `running <tool>…` rung (back) up.**
+                // A call that was prompted for permission executed under
+                // `awaiting permission… 0s` for its whole run: the prompt
+                // replaced the rung, `PermissionResolved` cleared only the
+                // wait CLOCK, and nothing moved `activity` off
+                // `AwaitingPermission` until the next turn-level event --
+                // so the label said conway was blocked on an operator who
+                // had already answered, wearing a figure frozen at zero
+                // because `01M2V60KWK9AYX3J7V5TPJZN7Q` correctly stops that
+                // clock on resolution.
+                //
+                // Carried HERE rather than on `PermissionResolved`, which
+                // also knows the decision: this event fires if and only if
+                // the call is actually about to run. `execute_one` returns
+                // at its `PermissionOutcome::Deny` arm before emitting it
+                // (`conway-runtime`'s `tools/runner.rs`), and it is emitted
+                // AFTER the concurrency semaphore's permit is acquired, so
+                // the rung means "executing", not "allowed and queued".
+                // It is emitted for every allowed call, prompted or not, so
+                // this is one unconditional rule and not a special case
+                // bolted onto the permission path.
+                //
+                // The clock is RE-STAMPED with the name, exactly as the
+                // `ToolCallProposed` arm stamps them together: the figure
+                // measures execution, and the operator's deliberation is
+                // separately (and durably) recorded as
+                // `PermissionDecisionRecord::waited_ms` and shown in the
+                // `allowed once · waited 53s` note. Name and clock are
+                // still only ever written in one statement pair, so the row
+                // can never show one call's name wearing another's age --
+                // see `Self::running_tool_since`'s own doc.
+                if env.agent == self.focused_agent {
+                    if let Some(tool) = self.tool_name_for_call(call_id) {
+                        self.activity = Activity::RunningTool(tool);
+                        self.running_tool_since = Some(Instant::now());
+                    }
+                }
             }
             // T4: append the progress note to the matching in-flight
             // `Entry::Tool` by `call_id` (previously dropped by the wildcard
@@ -3018,5 +3101,278 @@ mod running_tool_clock {
             state.running_tool_since, running,
             "a resolution the operator never saw does not interrupt the execution it allows"
         );
+    }
+}
+
+/// Board item `01M2X463TDVV5TG53M3X1M3M6V`: **which RUNG is up once a
+/// prompted call has been answered.** The two sibling items
+/// (`01M2V60KWK9AYX3J7V5TPJZN7Q`, `01M2VDD6MQG7H73AHGX8HJGV2J`) were both
+/// about which CLOCK a rung reads; this one is about which rung is
+/// displayed at all. `Event::PermissionResolved` stopped the wait clock
+/// and left `activity` at [`Activity::AwaitingPermission`], so an approved
+/// call executed under `awaiting permission… 0s` -- a rung that says
+/// conway is blocked on the operator who has already answered, wearing a
+/// figure frozen at zero because the clock behind it is correctly stopped.
+///
+/// These pin the STATE half. The render half -- that the row on screen
+/// reads `running <tool>…` after the allow -- is pinned in
+/// `view/status.rs`'s own tests, against a real `TestBackend` buffer.
+#[cfg(test)]
+mod approved_call_rung {
+    use std::time::Duration;
+
+    use super::fixtures::envelope;
+    use super::*;
+    use conway::{PermissionDecisionKind, SessionId, ToolName};
+
+    /// `bash`/`grep` deliberately -- never `edit`/`write`, whose arm reads
+    /// the proposed path off disk to seed the diff baseline.
+    fn propose(call_id: &str, tool: &str) -> Event {
+        Event::ToolCallProposed {
+            call_id: call_id.to_string(),
+            tool: ToolName::new(tool),
+            args: serde_json::json!({}),
+        }
+    }
+
+    fn requested(call_id: &str) -> Event {
+        Event::PermissionRequested {
+            call_id: call_id.to_string(),
+            rendered: "bash -lc ls".to_string(),
+        }
+    }
+
+    fn resolved(call_id: &str, decision: PermissionDecisionKind) -> Event {
+        Event::PermissionResolved {
+            call_id: call_id.to_string(),
+            decision,
+        }
+    }
+
+    fn started(call_id: &str) -> Event {
+        Event::ToolCallStarted {
+            call_id: call_id.to_string(),
+        }
+    }
+
+    /// **The reproduction.** The full prompted-call sequence a real
+    /// approval produces: `ToolCallProposed` -> `PermissionRequested` ->
+    /// `PermissionResolved(allow)` -> `ToolCallStarted`. Against HEAD the
+    /// last event only set the per-call tool status, so `activity` was
+    /// still `AwaitingPermission` for the whole execution.
+    #[test]
+    fn an_allowed_call_returns_to_the_running_rung_when_it_starts() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        state.apply(&envelope(session, agent, requested("tc_1")));
+        assert_eq!(
+            state.activity,
+            Activity::AwaitingPermission,
+            "precondition -- the prompt replaced the running rung"
+        );
+
+        state.apply(&envelope(
+            session,
+            agent,
+            resolved("tc_1", PermissionDecisionKind::AllowOnce),
+        ));
+        state.apply(&envelope(session, agent, started("tc_1")));
+
+        assert_eq!(
+            state.activity,
+            Activity::RunningTool("bash".to_string()),
+            "an approved call must execute under its own rung, not under the wait it is past"
+        );
+        assert!(
+            state.awaiting_permission_since.is_none(),
+            "the wait is over -- its clock stays stopped"
+        );
+        assert!(
+            state
+                .running_tool_since
+                .expect("the running rung is up, so its clock must be running")
+                .elapsed()
+                < Duration::from_secs(60),
+            "the rung's clock must be running again once its rung is back"
+        );
+    }
+
+    /// **The re-stamp decision.** The execution figure is measured from
+    /// the START, not from the proposal that preceded the prompt: the
+    /// operator's deliberation is not execution time, and it is already
+    /// recorded durably as `PermissionDecisionRecord::waited_ms` (and
+    /// shown in the `allowed once · waited 53s` transcript note). The
+    /// implausibly old pre-set stamp is what makes this deterministic --
+    /// it either survives (the behavior being ruled out) or it does not.
+    #[test]
+    fn the_execution_figure_is_stamped_at_the_start_not_at_the_proposal() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        state.apply(&envelope(session, agent, requested("tc_1")));
+        state.apply(&envelope(
+            session,
+            agent,
+            resolved("tc_1", PermissionDecisionKind::AllowOnce),
+        ));
+        // As if the proposal's stamp had survived a ten-minute deliberation.
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(600));
+
+        state.apply(&envelope(session, agent, started("tc_1")));
+
+        assert!(
+            state
+                .running_tool_since
+                .expect("the running rung is up, so its clock must be running")
+                .elapsed()
+                < Duration::from_secs(60),
+            "the figure must measure the execution, never the wait that preceded it"
+        );
+    }
+
+    /// **The denial decision.** A denied call never starts, so `running`
+    /// would be a lie and `awaiting permission` already is one -- the
+    /// operator has answered. The rung goes back to exactly where the
+    /// event stream left it before the proposal: `Idle` (the binding order
+    /// `TurnFinished < ToolCallProposed*` means the turn itself is already
+    /// over by then), with both clocks stopped. The next turn-level event
+    /// -- the follow-up turn the denial feedback provokes -- moves it on.
+    #[test]
+    fn a_denied_call_drops_the_rung_to_idle_never_running() {
+        for decision in [
+            PermissionDecisionKind::Denied,
+            PermissionDecisionKind::DeniedWithFeedback,
+        ] {
+            let session = SessionId::new();
+            let agent = AgentId::new();
+            let mut state = AppState::new(agent);
+
+            state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+            state.apply(&envelope(session, agent, requested("tc_1")));
+            state.apply(&envelope(session, agent, resolved("tc_1", decision)));
+
+            assert_eq!(
+                state.activity,
+                Activity::Idle,
+                "a denied call is neither running nor still awaiting an answer ({decision:?})"
+            );
+            assert!(state.running_tool_since.is_none(), "{decision:?}");
+            assert!(state.awaiting_permission_since.is_none(), "{decision:?}");
+        }
+    }
+
+    /// A denial that never reached the operator (a rule/hook/mode denial,
+    /// no prompt ever opened) leaves the rung claiming `running <tool>`
+    /// for a call that will never run. Same rule, same reason: the rung is
+    /// about this call, so it comes down.
+    #[test]
+    fn a_silent_denial_also_takes_down_the_rung_naming_that_call() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        assert_eq!(state.activity, Activity::RunningTool("bash".to_string()));
+
+        state.apply(&envelope(
+            session,
+            agent,
+            resolved("tc_1", PermissionDecisionKind::Denied),
+        ));
+
+        assert_eq!(state.activity, Activity::Idle);
+        assert!(state.running_tool_since.is_none());
+    }
+
+    /// The narrowness of that rule, stated as a test: a denial takes down
+    /// only a rung that is ABOUT the denied call. A sibling call still
+    /// executing keeps the rung it named -- the denial of one call in a
+    /// parallel batch is not a statement about the others.
+    #[test]
+    fn a_denial_leaves_a_sibling_calls_rung_up() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        state.apply(&envelope(session, agent, propose("tc_2", "grep")));
+        assert_eq!(state.activity, Activity::RunningTool("grep".to_string()));
+        let sibling_clock = state.running_tool_since;
+
+        state.apply(&envelope(
+            session,
+            agent,
+            resolved("tc_1", PermissionDecisionKind::Denied),
+        ));
+
+        assert_eq!(
+            state.activity,
+            Activity::RunningTool("grep".to_string()),
+            "denying `bash` says nothing about the `grep` call the rung names"
+        );
+        assert_eq!(state.running_tool_since, sibling_clock);
+    }
+
+    /// Scoping, the same `env.agent == self.focused_agent` discipline every
+    /// other focused-agent-scoped field in `apply` follows: a background
+    /// agent's call starting must not move the rung the operator is
+    /// reading.
+    #[test]
+    fn a_background_agents_call_starting_never_moves_the_focused_rung() {
+        let session = SessionId::new();
+        let focused = AgentId::new();
+        let other = AgentId::new();
+        let mut state = AppState::new(focused);
+
+        state.apply(&envelope(session, focused, propose("tc_mine", "bash")));
+        state.apply(&envelope(session, focused, requested("tc_mine")));
+        state.apply(&envelope(session, other, propose("tc_other", "grep")));
+        assert_eq!(
+            state.activity,
+            Activity::AwaitingPermission,
+            "precondition -- an unfocused agent's proposal does not move the rung either"
+        );
+
+        state.apply(&envelope(session, other, started("tc_other")));
+
+        assert_eq!(
+            state.activity,
+            Activity::AwaitingPermission,
+            "the operator is still being asked about the FOCUSED agent's call"
+        );
+        assert!(state.running_tool_since.is_none());
+    }
+
+    /// A `ToolCallStarted` whose proposal this state never saw (a fresh
+    /// subscription mid-batch, or a `--resume`/focus-switch replay, which
+    /// synthesizes no `ToolCallProposed` at all) carries no tool name --
+    /// `Event::ToolCallStarted` holds only a `call_id`. There is nothing
+    /// to name the rung with, so the rung is left exactly as it was rather
+    /// than being taken over by an anonymous `running …`.
+    #[test]
+    fn a_start_with_no_proposal_in_the_transcript_leaves_the_rung_alone() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 1 }));
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::ThinkingDelta {
+                text: "hmm".to_string(),
+            },
+        ));
+        assert_eq!(state.activity, Activity::Thinking);
+
+        state.apply(&envelope(session, agent, started("tc_never_seen")));
+
+        assert_eq!(state.activity, Activity::Thinking);
+        assert!(state.running_tool_since.is_none());
     }
 }

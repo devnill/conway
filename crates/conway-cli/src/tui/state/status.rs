@@ -15,8 +15,13 @@ use super::*;
 /// Transitions live in [`AppState::apply`], driven by events on the
 /// FOCUSED agent's own stream only (`ThinkingDelta`->`Thinking`,
 /// `TextDelta`->`Responding`, `ToolCallProposed{tool}`->`RunningTool(name)`
-/// -- the name is captured from `Proposed`, not `Started`, which carries
-/// only a `call_id` -- `PermissionRequested`->`AwaitingPermission`,
+/// -- the name is captured from `Proposed`, since `Started` carries only a
+/// `call_id` and has to read the name back off the transcript row --
+/// `PermissionRequested`->`AwaitingPermission`,
+/// `ToolCallStarted`->`RunningTool(name)` (board item
+/// `01M2X463TDVV5TG53M3X1M3M6V`: an approved call returns to its own rung
+/// instead of executing under the wait it is past; a DENIED one drops to
+/// `Idle` at `PermissionResolved`),
 /// `TurnFinished`/`AgentFinished`->`Idle`). Reset to `Idle` whenever the
 /// focus itself changes ([`AppState::focus_agent`]) -- a freshly focused
 /// agent shows no activity signal until its own next event arrives, rather

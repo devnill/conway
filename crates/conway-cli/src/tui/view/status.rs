@@ -1340,7 +1340,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use conway::plugin::PluginStatusContribution;
-    use conway::AgentId;
+    use conway::{AgentId, Envelope, Event, PermissionDecisionKind, SessionId, ToolName};
 
     use super::*;
 
@@ -1792,6 +1792,108 @@ mod tests {
         assert!(
             !second.contains("40s"),
             "the rung must not wear the previous call's duration: {second}"
+        );
+    }
+
+    // ---- Board item `01M2X463TDVV5TG53M3X1M3M6V`: WHICH rung is up once
+    // a prompted call has been approved. ----
+
+    fn envelope(session: SessionId, agent: AgentId, event: Event) -> Envelope {
+        Envelope {
+            seq: 0,
+            ts: chrono::Utc::now(),
+            session,
+            agent,
+            event,
+        }
+    }
+
+    /// Drives the real event sequence an approved tool call produces --
+    /// `ToolCallProposed` -> `PermissionRequested` ->
+    /// `PermissionResolved(AllowOnce)` -> `ToolCallStarted` -- through
+    /// `AppState::apply`, rather than assigning `activity` by hand the way
+    /// the sibling render tests above do. The whole claim of this item is
+    /// that the SEQUENCE leaves the wrong rung up, so the sequence is what
+    /// the test has to pin.
+    fn approved_call_state() -> AppState {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({}),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::PermissionRequested {
+                call_id: "tc_1".to_string(),
+                rendered: "bash -lc ls".to_string(),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::PermissionResolved {
+                call_id: "tc_1".to_string(),
+                decision: PermissionDecisionKind::AllowOnce,
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::ToolCallStarted {
+                call_id: "tc_1".to_string(),
+            },
+        ));
+        state
+    }
+
+    /// **The regression guard.** Against HEAD the row read `awaiting
+    /// permission… 0s` for the whole execution of a call the operator had
+    /// already approved: `PermissionResolved` stopped the wait clock (the
+    /// `0s`) but left `activity` at `AwaitingPermission` (the label), so
+    /// the one state where the figure is a lie was also the state where
+    /// the label is one.
+    ///
+    /// Read back off a REAL `TestBackend` buffer, not through the pty
+    /// harness, for the reason both sibling items state at length: a
+    /// once-per-second counter is the canonical partial-redraw case where
+    /// a `contains()` on the accumulated emission transcript cannot match
+    /// (`CONTRIBUTING.md`).
+    #[test]
+    fn an_approved_call_executes_under_the_running_rung_not_the_wait_it_is_past() {
+        let state = approved_call_state();
+
+        let rendered = render_row(&state, &Theme::default(), WIDE);
+        assert!(
+            rendered.contains("running bash"),
+            "an approved call must execute under its own rung: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("awaiting permission"),
+            "HEAD's stale label must not be what the operator reads while the call runs: \
+             {rendered:?}"
+        );
+    }
+
+    /// And the figure beside it is live: the restored rung reads the
+    /// running-tool clock, so the number advances with the execution
+    /// instead of sitting at the `0s` the stopped wait clock produced.
+    #[test]
+    fn the_restored_rung_reads_the_running_tool_clock() {
+        let mut state = approved_call_state();
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(37));
+
+        let rendered = render_row(&state, &Theme::default(), WIDE);
+        assert!(
+            rendered.contains("37s"),
+            "the restored rung must carry the call's real age: {rendered:?}"
         );
     }
 

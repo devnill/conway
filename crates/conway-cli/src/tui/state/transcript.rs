@@ -363,6 +363,31 @@ impl AppState {
         self.tool_preview_lines
     }
 
+    /// The tool name this session saw proposed for `call_id`, or `None` if
+    /// no `Entry::Tool` for it is in the transcript.
+    ///
+    /// Board item `01M2X463TDVV5TG53M3X1M3M6V`: `Event::ToolCallStarted`
+    /// carries only a `call_id` -- it is the event that knows execution
+    /// actually began, and the only event that does, but it cannot name
+    /// the tool. The name was captured once at `ToolCallProposed` and put
+    /// on the transcript row; this reads it back from there rather than
+    /// adding a second per-call map beside it that could drift.
+    ///
+    /// `None` is a real case, not a defensive branch: a fresh subscription
+    /// joining mid-batch, and a `--resume`/focus-switch replay (whose
+    /// `record_to_event` synthesizes no `ToolCallProposed` at all), both
+    /// deliver starts/finishes for calls whose proposal this state never
+    /// saw. Callers leave the rung alone in that case -- an anonymous
+    /// `running …` is worse than the rung already showing.
+    pub(super) fn tool_name_for_call(&self, call_id: &str) -> Option<String> {
+        self.transcript.iter().rev().find_map(|entry| match entry {
+            Entry::Tool {
+                call_id: id, name, ..
+            } if id == call_id => Some(name.clone()),
+            _ => None,
+        })
+    }
+
     pub(super) fn set_tool_status(&mut self, call_id: &str, status: ToolStatus) {
         for entry in self.transcript.iter_mut().rev() {
             if let Entry::Tool {
