@@ -778,3 +778,58 @@ fn explain_on_unknown_role_returns_empty_report_without_panicking() {
     let report = RoutingExplain::new(&router).explain(&request("ghost-role", 1_000));
     assert!(report.entries.is_empty());
 }
+
+// ---------------------------------------------------------------------
+// Per-candidate headroom on the explain surface
+// (board item `01M2TVEWVMPP69TZ17XSGWEW82`, acceptance 4).
+// ---------------------------------------------------------------------
+
+/// `ExplainReport::headroom_tokens` is ONE number per role, and since
+/// headroom resolves per candidate that number is true for at most one row.
+/// `ExplainEntry::headroom_tokens` is the reservation each row was actually
+/// checked against -- here, two candidates of the same role with windows
+/// three orders of magnitude apart, and therefore two different derived
+/// reservations.
+///
+/// Fails against HEAD: `ExplainEntry` had no `headroom_tokens` field, and
+/// every candidate was checked against the single role-wide value.
+#[test]
+fn explain_reports_headroom_per_candidate_not_one_number_per_role() {
+    let small = model_ref("local", "qwen3-coder-32k");
+    let big = model_ref("cloud", "glm-5.2");
+
+    let mut config = routing_config(
+        vec![("planner", vec![small.clone(), big.clone()], None)],
+        8_192,
+    );
+    config.headroom_fraction = Some(10);
+
+    let index = index_with(&[
+        (small.clone(), caps(32_768)),
+        (big.clone(), caps(1_000_000)),
+    ]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let report = RoutingExplain::new(&router).explain(&request("planner", 1_000));
+    assert_eq!(report.entries.len(), 2);
+    assert_eq!(
+        report.entries[0].headroom_tokens,
+        Some(3_276),
+        "a tenth of the 32768-token candidate's OWN window"
+    );
+    assert_eq!(
+        report.entries[1].headroom_tokens,
+        Some(100_000),
+        "a tenth of the 1000000-token candidate's OWN window"
+    );
+
+    // The role-wide figure survives, and is neither of them -- which is
+    // exactly why the per-entry field had to exist.
+    assert_eq!(report.headroom_tokens, 8_192);
+
+    // And both reach the rendered report, so an operator reading
+    // `routes explain` sees the number that governed each row.
+    let rendered = report.render_text();
+    assert!(rendered.contains("headroom=3276"), "{rendered}");
+    assert!(rendered.contains("headroom=100000"), "{rendered}");
+}

@@ -216,6 +216,42 @@ fn default_headroom_tokens() -> u32 {
 /// configured models.
 pub const DEFAULT_HEADROOM_FRACTION: u32 = 10;
 
+/// The minimum headroom [`resolve_adaptive_headroom`] may produce. A
+/// fraction of a very small window starves the model of output space
+/// (10% of a 4K window is 409 tokens, under a single ordinary reply), so
+/// the fraction is raised to this floor rather than silently handing back
+/// an unusable reservation.
+///
+/// **Moved here from `conway::config::schema::HEADROOM_FLOOR`**, which now
+/// re-exports this constant rather than restating the number: board item
+/// `01M2TVEWVMPP69TZ17XSGWEW82` moved the fraction arithmetic itself into
+/// this crate (so the router can apply it per CANDIDATE, against that
+/// candidate's own window, instead of once per role against the smallest
+/// window the facade happened to find in `models.json`), and the floor has
+/// to travel with the arithmetic or the two halves would be free to drift.
+pub const HEADROOM_FLOOR: u32 = 2_048;
+
+/// The conway-DERIVED headroom for one candidate: a fraction of that
+/// candidate's OWN context window, raised to [`HEADROOM_FLOOR`].
+///
+/// `None` when `fraction == 0` -- the operator's explicit opt-out of
+/// adaptive headroom, which must fall through to the next level of the
+/// precedence ladder (`routing.default_headroom_tokens`) rather than divide
+/// by zero or invent a floor nobody asked for. Total otherwise.
+///
+/// The sibling of [`resolve_adaptive_tool_result_bound`], deliberately: both
+/// are "a fraction of a window, floored". This one has no cap -- a large
+/// window SHOULD reserve proportionally more output space, which is the
+/// whole point of scaling headroom to the model, whereas an unboundedly
+/// large single tool result degrades attention no matter how big the window
+/// is.
+pub fn resolve_adaptive_headroom(window: u32, fraction: u32) -> Option<u32> {
+    if fraction == 0 {
+        return None;
+    }
+    Some((window / fraction).max(HEADROOM_FLOOR))
+}
+
 /// A declarative, config-time-resolved reservation of output/reasoning
 /// tokens: a global default with per-role overrides.
 ///
@@ -481,7 +517,7 @@ pub const DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS: u32 = 8_192;
 
 /// Floor a fraction-computed tool-result bound (`window / fraction`) is
 /// raised to before the [`DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS`] cap is
-/// applied -- mirrors the sibling `conway::config::schema::HEADROOM_FLOOR`
+/// applied -- mirrors the sibling [`HEADROOM_FLOOR`]
 /// at the same value, for the same reason: without it, a small enough
 /// window divides down to a bound
 /// that is not a size safety valve but a role-breaking default (a 4096-token

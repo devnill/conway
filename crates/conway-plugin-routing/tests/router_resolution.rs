@@ -935,3 +935,191 @@ fn strictest_merge_admits_a_candidate_meeting_both_the_role_floor_and_the_caller
     assert_eq!(routes.len(), 1);
     assert_eq!(routes[0].model, m.model);
 }
+
+// ---------------------------------------------------------------------
+// Per-candidate headroom (board item `01M2TVEWVMPP69TZ17XSGWEW82`).
+//
+// Before this item, `DeclarativeRouter` resolved ONE headroom per role,
+// once, before any candidate was known. A chain mixing a 32k model and a
+// 1M model therefore had to check both against the same reservation -- and
+// the reservation the facade derived was a fraction of the LARGEST window
+// it could find in `models.json`, which made the small model permanently
+// unreachable while looking like a deliberate operator setting.
+// ---------------------------------------------------------------------
+
+/// P-15, the test the item requires to fail against HEAD.
+///
+/// `planner` reserves 100,000 tokens role-wide -- the exact number conway
+/// derived for the operator from a 1M-token chain sibling. A 4,000-token
+/// prompt to a 32,768-token model is entirely reasonable (4,000 + 3,276 of
+/// derived headroom is a tenth of that window), but under one role-wide
+/// 100,000 it is refused: 4,000 + 100,000 does not fit in 32,768.
+///
+/// Against HEAD this asserts `SELECTED` on a candidate HEAD skips, so it
+/// fails there; here the derived per-candidate level (3,276, a tenth of
+/// this candidate's OWN window) outranks the role-wide 100,000 -- which it
+/// may, because 100,000 was never operator-written. `headroom_fraction`
+/// is set explicitly and `headroom_tokens` is left `None`, exactly as a
+/// real load produces it now that `merge.rs` no longer writes derived
+/// values back into the role.
+#[test]
+fn a_small_window_model_is_reachable_under_a_chain_sized_for_a_large_one() {
+    let small = model_ref("local", "qwen3-coder-32k");
+    let big = model_ref("cloud", "glm-5.2");
+
+    let mut config = routing_config(
+        vec![(
+            "planner",
+            vec![small.clone(), big.clone()],
+            // No operator per-role override: the 100,000 this chain used to
+            // acquire was conway's own derivation, not a typed value.
+            None,
+        )],
+        100_000,
+    );
+    config.headroom_fraction = Some(10);
+
+    let index = index_with(&[
+        (small.clone(), caps(32_768)),
+        (big.clone(), caps(1_000_000)),
+    ]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let routes = router
+        .resolve(&request("planner", 4_000))
+        .expect("a 4000-token prompt fits a 32768-token model with a proportional reservation");
+    assert_eq!(
+        routes[0].model, small.model,
+        "the 32k model must be admitted for a small prompt, not skipped because a 1M \
+         sibling's headroom was applied to it"
+    );
+}
+
+/// BREAK-THE-GUARD for the test above: the fix must not have turned the
+/// headroom gate off. The same 32k candidate, with a prompt that genuinely
+/// does not fit beside its OWN proportional reservation
+/// (30_000 + 3_276 > 32_768), is still skipped -- and the 1M sibling,
+/// which does fit, is selected instead.
+#[test]
+fn per_candidate_headroom_still_refuses_a_prompt_that_genuinely_does_not_fit() {
+    let small = model_ref("local", "qwen3-coder-32k");
+    let big = model_ref("cloud", "glm-5.2");
+
+    let mut config = routing_config(
+        vec![("planner", vec![small.clone(), big.clone()], None)],
+        8_192,
+    );
+    config.headroom_fraction = Some(10);
+
+    let index = index_with(&[
+        (small.clone(), caps(32_768)),
+        (big.clone(), caps(1_000_000)),
+    ]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let routes = router
+        .resolve(&request("planner", 30_000))
+        .expect("the large-window sibling still fits");
+    assert_eq!(
+        routes[0].model, big.model,
+        "30000 + 3276 exceeds 32768, so the small model must still be skipped"
+    );
+}
+
+/// The precedence ladder, pinned at the ROUTER (the layer that actually
+/// admits or skips), in the order the item's ruling fixes:
+/// operator-per-model > operator-per-role > conway-derived-per-candidate >
+/// `default_headroom_tokens`.
+///
+/// Driven through observable routing outcomes rather than by reading a
+/// resolved number back: each level is made to be the ONLY one that admits
+/// (or refuses) the candidate under test, so a router consulting the wrong
+/// level produces the wrong route.
+#[test]
+fn router_headroom_precedence_model_then_role_then_derived_then_default() {
+    let m = model_ref("local", "qwen3-coder-32k");
+    let index = index_with(&[(m.clone(), caps(32_768))]);
+    let est = 20_000;
+
+    // Level 4 only: no fraction, no overrides. 20_000 + 20_000 > 32_768,
+    // so the default refuses.
+    let config = routing_config(vec![("planner", vec![m.clone()], None)], 20_000);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index.clone());
+    router
+        .resolve(&request("planner", est))
+        .expect_err("level 4 (default_headroom_tokens = 20000) must refuse a 20000-token prompt");
+
+    // Level 3 beats level 4: the derived 3_276 admits what the default
+    // 20_000 refused.
+    let mut config = routing_config(vec![("planner", vec![m.clone()], None)], 20_000);
+    config.headroom_fraction = Some(10);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index.clone());
+    let routes = router
+        .resolve(&request("planner", est))
+        .expect("level 3 (derived from this candidate's own 32768 window) outranks level 4");
+    assert_eq!(routes[0].model, m.model);
+
+    // Level 2 beats level 3: an operator per-role 20_000 refuses again,
+    // even with the fraction on. A conway-derived value never overrides an
+    // operator-written one.
+    let mut config = routing_config(vec![("planner", vec![m.clone()], Some(20_000))], 8_192);
+    config.headroom_fraction = Some(10);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index.clone());
+    router
+        .resolve(&request("planner", est))
+        .expect_err("level 2 (operator per-role) must outrank the derived level 3");
+
+    // Level 1 beats level 2: an operator per-model 4_000 admits it again,
+    // over that same per-role 20_000.
+    let mut config = routing_config(vec![("planner", vec![m.clone()], Some(20_000))], 8_192);
+    config.headroom_fraction = Some(10);
+    config.models.insert(
+        m.to_string(),
+        conway_core::routing::ModelHeadroom {
+            headroom_tokens: Some(4_000),
+        },
+    );
+    let router = router_from(config, Arc::new(FakeHealth::new()), index.clone());
+    let routes = router
+        .resolve(&request("planner", est))
+        .expect("level 1 (operator per-model) outranks level 2 (operator per-role)");
+    assert_eq!(routes[0].model, m.model);
+}
+
+/// Nothing clamps: an operator per-model headroom that does not fit the
+/// model's own window is honoured exactly as written, and the candidate is
+/// honestly refused rather than having the number quietly shrunk to fit.
+/// (`config::merge::validate` is what tells the operator so, by name.)
+#[test]
+fn an_operator_per_model_headroom_is_never_clamped_to_fit_the_window() {
+    let m = model_ref("local", "qwen3-coder-32k");
+    let mut config = routing_config(vec![("planner", vec![m.clone()], None)], 8_192);
+    config.headroom_fraction = Some(10);
+    config.models.insert(
+        m.to_string(),
+        conway_core::routing::ModelHeadroom {
+            headroom_tokens: Some(40_000),
+        },
+    );
+
+    let index = index_with(&[(m.clone(), caps(32_768))]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let err = router
+        .resolve(&request("planner", 100))
+        .expect_err("40000 tokens of headroom does not fit a 32768-token window");
+    match err {
+        RoutingError::ContextTooLarge {
+            headroom_tokens,
+            max_context_tokens,
+            ..
+        } => {
+            assert_eq!(
+                headroom_tokens, 40_000,
+                "the operator's own number must be reported back unmodified"
+            );
+            assert_eq!(max_context_tokens, 32_768);
+        }
+        other => panic!("expected ContextTooLarge, got {other:?}"),
+    }
+}

@@ -550,9 +550,11 @@ with a per-role override:
 ```
 
 `coder` uses its own `4096`; `planner`, with no override, falls back to
-`routing.default_headroom_tokens`. Precedence is per-role override >
-global default > conway's own built-in constant (`8192`) if you set
-neither. Two env vars reach the same knobs without touching the file:
+`routing.default_headroom_tokens`. Above both of those sits a per-MODEL
+override, and between the per-role level and the flat default sits a value
+conway derives for each candidate from that candidate's own window — see
+["Adaptive headroom"](#adaptive-headroom-on-by-default) below for the full
+four-level ladder. Two env vars reach the same knobs without touching the file:
 `CONWAY_ROUTING__DEFAULT_HEADROOM_TOKENS=16000` and
 `CONWAY_ROLES__<ALIAS>__HEADROOM_TOKENS=32768` (the latter only applies
 to a role that already exists in the merged config; an unknown alias is
@@ -571,61 +573,133 @@ its window at all), depending which end of that range a role's chain
 happens to resolve to.
 
 `routing.headroom_fraction` fixes this by making the effective headroom a
-FRACTION of the role's own smallest reachable window, computed once at
-config-load time, rather than a fixed number: `max(smallest_window / d,
+FRACTION of the window, rather than a fixed number: `max(window / d,
 2048)` (`HEADROOM_FLOOR`, disclosed so a tiny window never gets starved
 down to something unusably small). Default `d = 10` (10% of the window) —
 `headroom_fraction` is set unless you say otherwise, so an ordinary
-config with no `[routing]` section at all already gets this. A role whose
-chain resolves nothing but small windows gets a small, still-proportional
-headroom; a role that can reach a 1M-token model gets a generous one, with
-no operator tuning required:
+config with no `[routing]` section at all already gets this.
+
+**Which window?** The candidate's own — resolved per chain entry, at route
+time. This is the correction that matters, and it used to be otherwise: the
+fraction was applied ONCE per role, at config-load time, against the
+smallest window conway could find for that role *in `models.json`*, and the
+single number that produced was written back into
+`roles.<alias>.headroom_tokens` and applied to every candidate in the chain.
+A chain mixing a 32K model and a 1M model therefore got one reservation
+sized for whichever of them conway had metadata for, and a chain entry
+`models.json` said nothing about was not merely unsized — it was invisible,
+so a 32,768-token model could sit behind a 100,000-token reservation
+derived from a 1M-token sibling, be rejected by the context-window gate on
+every single request, and produce no diagnostic anywhere. Headroom is now
+resolved per candidate, against that candidate's own window, and
+`roles.<alias>.headroom_tokens` means only what you typed there.
 
 ```json
 // what an operator sees with NO [routing] section at all
 {
   "roles": {
-    "coder": { "chain": ["ollama-cloud/glm-5.2"] }
+    "coder": { "chain": ["local/qwen3-32k", "ollama-cloud/glm-5.2"] }
   }
 }
 ```
 
-resolves `coder`'s headroom to `max(32768 / 10, 2048) = 3276` — not the
-flat `8192` a config predating this feature would have used (which, at
-25% of that same window, is exactly the ratio the walked scenario below
-names as the proximate trigger of a real session's context rejection).
+gives `local/qwen3-32k` `max(32768 / 10, 2048) = 3276` tokens of headroom
+and `ollama-cloud/glm-5.2` `max(1000000 / 10, 2048) = 100000` — two
+different numbers for two candidates of the same role, which is the point.
+Both models stay reachable for a small prompt.
 
-**Precedence, unchanged in shape, one link added:** an explicit per-role
-`headroom_tokens` always wins (over both the fraction and the flat
-default); absent that, `headroom_fraction` (when nonzero) computes the
-adaptive value; absent BOTH a model window and an override, the flat
-`routing.default_headroom_tokens` is the fallback — "the fixed default is
-the fallback only when no model window is known," not the everyday case
-it used to be. Set `"routing": { "headroom_fraction": 0 }` to opt back
-out entirely (every role falls back to the flat
-`default_headroom_tokens`, exactly the pre-adaptive behavior); a fraction
-this codebase computes is never silently clamped or overridden at
-runtime — the same "not clamped" guarantee the warning below documents
-applies here too, just one step earlier (the VALUE that lands in
-`headroom_tokens` is adaptively chosen; once resolved, it is as fixed as
-if you had typed it yourself).
+#### Per-model headroom
+
+When the proportional default is not what a particular model wants — a
+heavy reasoner that needs more reserved space, a model whose declared
+window you do not trust — name it directly:
+
+```json
+{
+  "routing": {
+    "models": {
+      "local/qwen3-32k": { "headroom_tokens": 3000 }
+    }
+  }
+}
+```
+
+The key is the same `"<backend>/<model>"` string `roles.<alias>.chain` and
+`models.json` already use. It goes **here, in settings, and deliberately
+not in `models.json`**: that file is a regenerable facts catalogue (window,
+tier, tool support) that conway itself rewrites during first-run setup and
+provider management, dropping any field it does not recognize. Headroom is
+your policy, and a metadata refresh must not be able to erase a policy
+decision.
+
+**Precedence, highest first:**
+
+1. `routing.models."<backend>/<model>".headroom_tokens` — you, per model
+2. `roles.<alias>.headroom_tokens` — you, per role
+3. conway-derived, per candidate: `max(candidate_window / headroom_fraction, 2048)`
+4. `routing.default_headroom_tokens` — the flat fallback
+
+A value conway derived never beats one you wrote; among values you wrote,
+the more specific wins. Level 3 sitting *above* level 4 rather than below
+it is the load-bearing half — it is what stops one role-wide number from
+making a smaller sibling permanently unreachable.
+
+Nothing on this ladder is ever clamped. Levels 1 and 2 are honoured exactly
+as written even when they make a candidate unreachable; you are told so by
+name at startup (see the two warnings below) rather than having your number
+quietly shrunk to fit. Set `"routing": { "headroom_fraction": 0 }` to opt
+out of level 3 entirely, in which case every candidate with no explicit
+override falls back to the flat `default_headroom_tokens`.
+
+`conway routes explain` reports the reservation each candidate was actually
+checked against, per row, since one number per role is now true for at most
+one of them.
+
+#### A chain entry conway has no window for
+
+Levels 1, 2 and 4 need no metadata, but level 3 does: conway cannot take a
+tenth of a window it does not know. A chain entry with no `models.json`
+record therefore skips straight to the flat default — and, because that
+silence is exactly what hid the defect described above, config loading now
+says so:
+
+```text
+conway: warning: role 'coder': chain entry 'local/qwen3.8:27b-mlx' has no
+entry in model metadata (models.json), so conway cannot size its headroom
+against its real context window or check that the reservation fits; it
+falls back to 8192 tokens. If that model's window is small, set
+routing.models."local/qwen3.8:27b-mlx".headroom_tokens explicitly, or add
+the model to models.json so the adaptive fraction can size it
+```
+
+A warning, not an error: an unnamed model is a legitimate state (a freshly
+added local model, a provider conway ships no metadata for), and the router
+still resolves a window for it from dialect capabilities at route time.
 
 ### A headroom that already exceeds a model's window
 
 Config loading catches one shape of this mistake before you ever hit
-`ContextTooLarge`: a role's effective headroom (per-role override, or the
-global default) that is `>=` the *smallest* context window reachable
-through its own chain. That role's requests would be rejected by the
+`ContextTooLarge`: a headroom that is `>=` the context window of a chain
+entry it applies to. Every chain entry of every role is checked, each
+against its own window and its own resolved headroom (the same four-level
+ladder the router applies at route time), so a reservation that is wrong
+for one candidate is reported even when it is fine for that candidate's
+siblings. Requests routed to that model would be rejected by the
 context-window gate before a single token of real content is ever
 counted — so this is surfaced as a startup warning, not left for you to
 discover mid-session:
 
 ```
 conway: warning: headroom for role 'coder' is 200000 tokens, which is not
-less than the smallest context window in its chain
-(anthropic/claude-haiku-4-5 = 32768 tokens); every request routed to that
-model will be rejected by the context-window gate
+less than the context window of chain entry anthropic/claude-haiku-4-5
+(32768 tokens); every request routed to that model will be rejected by the
+context-window gate
 ```
+
+The subject names the level that actually produced the number — `headroom
+for model '<ref>'`, `headroom for role '<alias>'`, `conway's adaptive
+headroom for role '<alias>'`, or `routing.default_headroom_tokens` — so the
+message never points at a setting that is not the one in effect.
 
 The CLI prints every such warning to stderr at startup, for every
 subcommand (`sessions`, `routes`, one-shot `-p`) as well as the
@@ -646,7 +720,7 @@ Fix it by raising the model's declared `max_context_tokens` in
 
 A second, milder warning catches the shape that actually broke a real
 walked session (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`): headroom that
-reaches `>= 25%` of the smallest reachable window, but not `>=` it
+reaches `>= 25%` of a candidate's window, but not `>=` it
 outright. `8192` (conway's own built-in default) against a
 `32768`-token window is exactly `25%`; the check above never fires for that
 pair (`8192 < 32768`), so a role could sit at that ratio indefinitely with
@@ -654,9 +728,9 @@ no warning at all, right up until a normal-sized prompt to that model hit
 `ContextTooLarge` mid-session:
 
 ```
-conway: warning: routing.default_headroom_tokens is 8192 tokens (25% of the
-smallest context window in its chain, ollama-cloud/glm-5.2 = 32768 tokens);
-a long-running conversation to that model can hit the context-window gate
+conway: warning: routing.default_headroom_tokens is 8192 tokens, 25% of the
+context window reachable from role 'coder' (ollama-cloud/glm-5.2 = 32768
+tokens); a long-running conversation to that model can hit the context-window gate
 well before it would with a smaller reservation -- consider a smaller
 headroom_tokens for this role, or a larger-window fallback later in its
 chain
@@ -699,9 +773,11 @@ context rejected: 34000 prompt + 16000 reserved output = 50000 tokens, but ollam
 ```
 
 This is `RoutingError::ContextTooLarge`: it names the input size, the
-resolved headroom, and the *largest* window among the candidates that
-still didn't fit (so a chain with several too-small models reports its
-best case, not an arbitrary one). No truncation or escalation ever
+*largest* window among the candidates that still didn't fit (so a chain
+with several too-small models reports its best case, not an arbitrary
+one), and the headroom *that candidate* was resolved to — not the role's,
+since headroom is now per candidate and the role-wide figure is not the
+number that rejected the model being named. No truncation or escalation ever
 happens on your behalf — this is terminal by design; the trailing clause
 (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`) names the operator's actual next
 move so the message doubles as the fix, not just the diagnosis: shrink the
@@ -764,8 +840,11 @@ actually-built shape:
    window"](#a-headroom-that-consumes-most-of-a-models-window-without-exceeding-it)
    below. This item's finishing pass went further: `routing.headroom_fraction`
    (["Adaptive headroom"](#adaptive-headroom-on-by-default) above) is now ON
-   BY DEFAULT (`d = 10`, computed once at config-load time from each role's
-   own smallest reachable window), so the flat `8192`-against-a-32K-window
+   BY DEFAULT (`d = 10`, resolved at route time against each CANDIDATE's own
+   window — it was once per role, from the smallest window that role could
+   reach in `models.json`, until board item `01M2TVEWVMPP69TZ17XSGWEW82`
+   found that this made a smaller chain sibling unreachable), so the flat
+   `8192`-against-a-32K-window
    shape that triggered the warning in the first place — the exact scenario
    this item's own walked session hit — no longer arises from an unconfigured
    `[routing]` section at all. **Cost:** none to the admission check itself

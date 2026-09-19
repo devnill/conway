@@ -53,7 +53,8 @@ use conway_core::ids::{EndpointId, ModelRef, RoleAlias};
 use conway_core::ports::{Admission, CapabilityIndex, HealthRegistry, Router};
 use conway_core::prelude::SamplingParams;
 use conway_core::routing::{
-    AttemptFailure, BreakerState, Route, RouteRequest, RoutingConfig, RoutingReason,
+    resolve_headroom, AttemptFailure, BreakerState, Route, RouteRequest, RoutingConfig,
+    RoutingReason,
 };
 
 use crate::capability::{non_size_missing, size_missing, strictest};
@@ -68,6 +69,14 @@ struct CompiledRole {
     chain: Vec<ModelRef>,
     params: SamplingParams,
     headroom_tokens: u32,
+    /// The operator's own `RoleConfig::headroom_tokens`, kept UNRESOLVED
+    /// (board item `01M2TVEWVMPP69TZ17XSGWEW82`). `headroom_tokens` above
+    /// has already had the global default folded in, so it cannot answer
+    /// "did the operator write a number for this role?" -- and level 2 of
+    /// the precedence ladder is exactly that question, since a
+    /// conway-derived per-candidate value must outrank the global default
+    /// but never an operator's per-role one.
+    headroom_override: Option<u32>,
     required: RequiredCaps,
 }
 
@@ -79,6 +88,14 @@ pub struct DeclarativeRouter {
     /// `HeadroomPolicy::default_headroom_tokens`, used for a pinned request
     /// whose `role` is absent from `roles`.
     fallback_headroom: u32,
+    /// Retained (board item `01M2TVEWVMPP69TZ17XSGWEW82`) for
+    /// `RoutingConfig::headroom_for_model` alone: per-candidate headroom
+    /// needs the operator's `[routing].models` table and the
+    /// `headroom_fraction` divisor, and neither is per-role, so neither
+    /// fits in `CompiledRole`. Everything this router reads per ROLE is
+    /// still compiled once into `roles` above -- this is not a second,
+    /// parallel source of chain/params/required.
+    config: RoutingConfig,
     health: Arc<dyn HealthRegistry>,
     capability_index: CapabilityIndex,
 }
@@ -113,6 +130,13 @@ pub(crate) struct EvalEntry<'a> {
     #[allow(dead_code)] // consumed by the RoutingExplain, not yet landed
     pub(crate) chain_position: Option<u8>,
     pub(crate) outcome: EvalOutcome,
+    /// The headroom THIS candidate was checked against (board item
+    /// `01M2TVEWVMPP69TZ17XSGWEW82`): `RoutingConfig::headroom_for_model`
+    /// resolved against this candidate's own window. Projected onto
+    /// `ExplainEntry::headroom_tokens`, and read by `resolve`'s T-1
+    /// aggregate so a `ContextTooLarge` reports the reservation that
+    /// actually rejected the named model rather than the role's.
+    pub(crate) headroom_tokens: u32,
 }
 
 /// The full evaluation of a `RouteRequest` against every candidate it could
@@ -121,6 +145,8 @@ pub(crate) struct EvalEntry<'a> {
 /// can never diverge.
 pub(crate) struct Evaluation<'a> {
     pub(crate) entries: Vec<EvalEntry<'a>>,
+    /// The ROLE-wide headroom, for the report header only. Every admission
+    /// decision in `entries` used its own `EvalEntry::headroom_tokens`.
     #[allow(dead_code)] // consumed by the RoutingExplain, not yet landed
     pub(crate) headroom_tokens: u32,
 }
@@ -176,6 +202,7 @@ impl DeclarativeRouter {
                     chain: role_cfg.chain.clone(),
                     params: role_cfg.params.clone(),
                     headroom_tokens: policy_headroom,
+                    headroom_override: role_cfg.headroom_tokens,
                     required: role_cfg.required.clone(),
                 },
             );
@@ -188,9 +215,48 @@ impl DeclarativeRouter {
         Ok(DeclarativeRouter {
             roles,
             fallback_headroom: policy.default_headroom_tokens,
+            config,
             health,
             capability_index,
         })
+    }
+
+    /// The headroom ONE candidate of `role` is checked against: the full
+    /// four-level ladder (`conway_core::routing::resolve_headroom`) applied
+    /// to that candidate's OWN context window.
+    ///
+    /// This is the seam board item `01M2TVEWVMPP69TZ17XSGWEW82` exists to
+    /// move. Before it, [`Self::effective_headroom`] answered once per
+    /// role, before any candidate was known, so a chain mixing a 32k model
+    /// and a 1M model had to pick one number for both -- and the number the
+    /// facade derived was a fraction of the LARGEST window it could find,
+    /// which made the smaller model permanently unreachable while looking
+    /// like a deliberate setting.
+    ///
+    /// `window` is `None` for a candidate with no capability-index entry.
+    /// That candidate is rejected by `check_candidate` regardless (there is
+    /// no window to admit against), but resolving its headroom honestly
+    /// anyway keeps `ExplainEntry::headroom_tokens` populated for every row
+    /// the router actually evaluated.
+    /// Level 4 is `self.fallback_headroom` (the POLICY's global default),
+    /// not `config.default_headroom_tokens`, because `new` above has
+    /// already established the policy as this router's authority for
+    /// headroom and rejected any sidecar that disagrees with the config
+    /// per role. Levels 1-3 come from the config, which is the only place
+    /// they exist at all.
+    fn headroom_for_candidate(
+        &self,
+        role: &RoleAlias,
+        model_ref: &ModelRef,
+        window: Option<u32>,
+    ) -> u32 {
+        resolve_headroom(
+            self.config.model_headroom_override(model_ref),
+            self.roles.get(role).and_then(|r| r.headroom_override),
+            self.config.headroom_fraction,
+            window,
+            self.fallback_headroom,
+        )
     }
 
     /// The effective headroom for `role`: its compiled override if the role
@@ -304,7 +370,7 @@ impl DeclarativeRouter {
         &'a self,
         req: &'a RouteRequest,
     ) -> Result<Evaluation<'a>, RoutingError> {
-        let headroom_tokens = self.effective_headroom(&req.role);
+        let role_headroom_tokens = self.effective_headroom(&req.role);
         let required = self.effective_required(&req.role, req);
 
         let (chain, is_pin): (&[ModelRef], bool) = match &req.pin {
@@ -331,6 +397,15 @@ impl DeclarativeRouter {
 
         let mut entries = Vec::with_capacity(chain.len());
         for (position, model_ref) in chain.iter().enumerate() {
+            // Board item `01M2TVEWVMPP69TZ17XSGWEW82`: headroom is resolved
+            // HERE, inside the candidate loop, against this candidate's own
+            // window -- not once per role above. `role_headroom_tokens`
+            // survives only as the report header's role-wide figure.
+            let window = self
+                .capability_index
+                .get(model_ref)
+                .map(|caps| caps.max_context_tokens);
+            let headroom_tokens = self.headroom_for_candidate(&req.role, model_ref, window);
             let outcome = match self.check_candidate(model_ref, req, headroom_tokens, &required) {
                 Err((reason, headroom_only_window)) => {
                     EvalOutcome::Skipped(reason, headroom_only_window)
@@ -375,12 +450,13 @@ impl DeclarativeRouter {
                 model_ref,
                 chain_position: if is_pin { None } else { Some(position as u8) },
                 outcome,
+                headroom_tokens,
             });
         }
 
         Ok(Evaluation {
             entries,
-            headroom_tokens,
+            headroom_tokens: role_headroom_tokens,
         })
     }
 
@@ -429,15 +505,20 @@ impl Router for DeclarativeRouter {
         // headroom *and* something else -- makes this a mixed outcome, which
         // falls through to `NoCandidate` below (see the module-level note).
         let mut all_headroom_only = !evaluation.entries.is_empty();
-        let mut largest_window: Option<(&ModelRef, u32)> = None;
+        // Carries the winning candidate's OWN headroom alongside its window
+        // (board item `01M2TVEWVMPP69TZ17XSGWEW82`): with headroom resolved
+        // per candidate, the role-wide figure is not the number that
+        // rejected this model, and reporting it would put a reservation in
+        // the operator's error message that no gate ever applied.
+        let mut largest_window: Option<(&ModelRef, u32, u32)> = None;
         for entry in &evaluation.entries {
             let EvalOutcome::Skipped(_, headroom_window) = &entry.outcome else {
                 continue;
             };
             match headroom_window {
                 Some(window) => {
-                    if largest_window.is_none_or(|(_, best)| *window > best) {
-                        largest_window = Some((entry.model_ref, *window));
+                    if largest_window.is_none_or(|(_, best, _)| *window > best) {
+                        largest_window = Some((entry.model_ref, *window, entry.headroom_tokens));
                     }
                 }
                 None => all_headroom_only = false,
@@ -445,7 +526,7 @@ impl Router for DeclarativeRouter {
         }
 
         if all_headroom_only {
-            if let Some((model_ref, max_context_tokens)) = largest_window {
+            if let Some((model_ref, max_context_tokens, entry_headroom_tokens)) = largest_window {
                 // The derived numbers come from `Admission` rather than being
                 // restated here (ONE implementation of the headroom
                 // arithmetic). This site is the aggregate -- the whole
@@ -455,7 +536,7 @@ impl Router for DeclarativeRouter {
                 // disagree in the operator's own error message.
                 let admission = Admission {
                     est_tokens: req.est_tokens,
-                    headroom_tokens: evaluation.headroom_tokens,
+                    headroom_tokens: entry_headroom_tokens,
                     max_context_tokens,
                 };
                 return Err(RoutingError::ContextTooLarge {
