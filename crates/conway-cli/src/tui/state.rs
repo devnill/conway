@@ -783,6 +783,33 @@ pub struct AppState {
     /// status line renders live `elapsed` from `Instant::now() -
     /// turn_started_at` while this is `Some`; `None` while idle.
     pub turn_started_at: Option<Instant>,
+    /// When the permission prompt the focused agent is currently blocked on
+    /// opened (board item `01M2V60KWK9AYX3J7V5TPJZN7Q`): stamped by
+    /// `Event::PermissionRequested` for the focused agent, cleared by that
+    /// call's `Event::PermissionResolved` and by [`Self::focus_agent`].
+    ///
+    /// This is a SECOND clock, deliberately not a reuse of
+    /// [`Self::turn_started_at`]. `turn_started_at` means "a model turn is
+    /// in flight", and by the time a permission prompt is up that is false:
+    /// the agent loop's binding event order is `TurnStarted <
+    /// ModelDecision < TextDelta* < TurnFinished < ToolCallProposed*`
+    /// (`conway-runtime`'s `agent_loop` module doc), so `TurnFinished` --
+    /// and with it `clear_turn_state`, which zeroes `turn_started_at` --
+    /// has always already been applied before any permission prompt for
+    /// that turn's tool calls can open. The status line's elapsed figure
+    /// read `turn_started_at` unconditionally and therefore rendered a
+    /// literal `0s` for the WHOLE wait, in the one state where the number
+    /// is the operator's actual decision input. Making `turn_started_at`
+    /// survive the permission path instead would have made every other
+    /// reader of it ("is a turn in flight?" -- `state.rs`'s own
+    /// `TextDelta`/`ContextSegmentAdded` gates, `app/plugin_cmd.rs`,
+    /// `app/focus.rs`) lie instead.
+    ///
+    /// Reads the same wall clock the persisted record does: the
+    /// `waited_ms` on `LogRecord::PermissionDecisionRecord` measures the
+    /// same interval from the broker's side, so the live figure and the
+    /// recorded one agree.
+    pub awaiting_permission_since: Option<Instant>,
     /// New context tokens ADDED this turn: the sum of
     /// `Event::ContextSegmentAdded { tokens_est }` deltas observed on the
     /// focused agent's own stream between `TurnStarted` and `TurnFinished`.
@@ -1573,6 +1600,7 @@ impl AppState {
             pending_ui_form: None,
             spinner_frame: 0,
             turn_started_at: None,
+            awaiting_permission_since: None,
             turn_running_tokens: 0,
             turn_transcript_start: 0,
             focused_model: None,
@@ -1690,6 +1718,15 @@ impl AppState {
         // until the new focus's own `TurnStarted` arrives.
         self.spinner_frame = 0;
         self.turn_started_at = None;
+        // Board item `01M2V60KWK9AYX3J7V5TPJZN7Q`: the permission clock is
+        // per focused-agent for exactly the same reason the turn clock
+        // above is. The activity reset a few lines up already stops the
+        // `awaiting permission…` rung from rendering for the new focus, so
+        // this is the value, not the gate -- but leaving another agent's
+        // wait stamped here would make a later refocus-back read a clock
+        // that had kept running through the time the operator spent
+        // elsewhere.
+        self.awaiting_permission_since = None;
         self.turn_running_tokens = 0;
         // T4: `focus_agent` clears the transcript above, so the turn-summary
         // watermark floors at 0 for the newly focused agent.
@@ -2199,6 +2236,14 @@ impl AppState {
                 self.set_tree_status(env.agent, NodeStatus::AwaitingPermission);
                 if env.agent == self.focused_agent {
                     self.activity = Activity::AwaitingPermission;
+                    // Board item `01M2V60KWK9AYX3J7V5TPJZN7Q`: start the
+                    // wait clock the status line's elapsed figure reads
+                    // while this rung is up. Stamped unconditionally, not
+                    // `get_or_insert`: a second `PermissionRequested` for a
+                    // DIFFERENT call is a new wait, and the figure names
+                    // the wait the operator is being asked about now, not
+                    // the age of the oldest unanswered one.
+                    self.awaiting_permission_since = Some(Instant::now());
                 }
             }
             Event::TurnFinished { usage, .. } => {
@@ -2240,6 +2285,19 @@ impl AppState {
                 // `AppState::permission_decision_pending`'s own doc.
                 self.permission_decision_pending
                     .insert(call_id.clone(), *decision);
+                // Board item `01M2V60KWK9AYX3J7V5TPJZN7Q`: the wait is
+                // over -- stop the clock the `awaiting permission…` rung
+                // reads. Cleared for EVERY resolution kind, including the
+                // ones that never reached the operator at all (a cached or
+                // pattern-matched allow emits this event with no prompt
+                // ever having opened, so there is no clock running to stop
+                // and the clear is a no-op). Scoped to the focused agent
+                // for the same reason the stamp above is: a background
+                // agent resolving ITS prompt must not zero the clock the
+                // operator is currently reading for a different one.
+                if env.agent == self.focused_agent {
+                    self.awaiting_permission_since = None;
+                }
             }
             // The TUI renders a dim one-line entry under the tool call it
             // belongs to, for a PROMPTED decision only -- `waited_ms` is
@@ -2422,5 +2480,172 @@ pub(super) mod fixtures {
             inherited_upto: None,
             ephemeral: false,
         }
+    }
+}
+
+/// Board item `01M2V60KWK9AYX3J7V5TPJZN7Q`: the lifecycle of
+/// [`AppState::awaiting_permission_since`], the clock the status line's
+/// elapsed figure reads while a permission prompt is open.
+///
+/// These pin the STATE half of the fix. The render half -- that the figure
+/// on screen is that clock's value and not a literal `0s` -- is pinned in
+/// `view/status.rs`'s own tests, against the real rendered buffer.
+#[cfg(test)]
+mod awaiting_permission_clock {
+    use super::fixtures::envelope;
+    use super::*;
+    use conway::backend::StopReason;
+    use conway::{PermissionDecisionKind, SessionId};
+
+    fn awaiting_state() -> (SessionId, AgentId, AppState) {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let state = AppState::new(agent);
+        (session, agent, state)
+    }
+
+    /// The reproduction, at the state layer. The real event order that
+    /// reaches a prompt is `TurnStarted` -> `TurnFinished` ->
+    /// `PermissionRequested` (`conway-runtime`'s `agent_loop` module doc
+    /// makes `TurnFinished < ToolCallProposed*` binding), so by the time
+    /// the prompt opens `clear_turn_state` has ALREADY zeroed
+    /// `turn_started_at`. That is the whole defect: the elapsed figure read
+    /// that field, found `None`, and rendered `0s` for the entire wait.
+    #[test]
+    fn a_prompt_opens_with_turn_started_at_already_cleared_and_stamps_its_own_clock() {
+        let (session, agent, mut state) = awaiting_state();
+
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 1 }));
+        assert!(state.turn_started_at.is_some());
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::TurnFinished {
+                usage: Usage::default(),
+                stop: StopReason::ToolUse,
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::PermissionRequested {
+                call_id: "tc_1".into(),
+                rendered: "write notes.md".into(),
+            },
+        ));
+
+        assert_eq!(state.activity, Activity::AwaitingPermission);
+        assert!(
+            state.turn_started_at.is_none(),
+            "the premise of this item: no turn is in flight while a prompt is open, \
+             so `turn_started_at` cannot be the clock the wait is measured from"
+        );
+        assert!(
+            state.awaiting_permission_since.is_some(),
+            "the prompt must start its own wait clock"
+        );
+    }
+
+    /// The decision ends the wait, for an allow and for a denial alike.
+    #[test]
+    fn resolving_the_prompt_stops_the_clock() {
+        for decision in [
+            PermissionDecisionKind::AllowOnce,
+            PermissionDecisionKind::Denied,
+        ] {
+            let (session, agent, mut state) = awaiting_state();
+            state.apply(&envelope(
+                session,
+                agent,
+                Event::PermissionRequested {
+                    call_id: "tc_1".into(),
+                    rendered: "write notes.md".into(),
+                },
+            ));
+            assert!(state.awaiting_permission_since.is_some());
+
+            state.apply(&envelope(
+                session,
+                agent,
+                Event::PermissionResolved {
+                    call_id: "tc_1".into(),
+                    decision,
+                },
+            ));
+            assert!(
+                state.awaiting_permission_since.is_none(),
+                "the wait is over once the operator decides ({decision:?})"
+            );
+        }
+    }
+
+    /// Scoping. A background agent's prompt must neither start nor stop
+    /// the clock the operator is reading for the FOCUSED agent -- the same
+    /// `env.agent == self.focused_agent` discipline every other
+    /// focused-agent-scoped field in `apply` already follows.
+    #[test]
+    fn a_background_agents_prompt_never_touches_the_focused_agents_clock() {
+        let (session, focused, mut state) = awaiting_state();
+        let other = AgentId::new();
+
+        state.apply(&envelope(
+            session,
+            other,
+            Event::PermissionRequested {
+                call_id: "tc_other".into(),
+                rendered: "write elsewhere.md".into(),
+            },
+        ));
+        assert!(
+            state.awaiting_permission_since.is_none(),
+            "an unfocused agent's prompt must not start the focused clock"
+        );
+
+        state.apply(&envelope(
+            session,
+            focused,
+            Event::PermissionRequested {
+                call_id: "tc_mine".into(),
+                rendered: "write notes.md".into(),
+            },
+        ));
+        let mine = state.awaiting_permission_since;
+        assert!(mine.is_some());
+
+        state.apply(&envelope(
+            session,
+            other,
+            Event::PermissionResolved {
+                call_id: "tc_other".into(),
+                decision: PermissionDecisionKind::AllowOnce,
+            },
+        ));
+        assert_eq!(
+            state.awaiting_permission_since, mine,
+            "an unfocused agent's decision must not zero the wait the operator is reading"
+        );
+    }
+
+    /// A focus switch resets it alongside the turn clock -- the animation
+    /// counters are per focused-agent, and a wait belonging to the agent
+    /// just switched away from is not this one's.
+    #[test]
+    fn focusing_a_different_agent_clears_the_clock() {
+        let (session, agent, mut state) = awaiting_state();
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::PermissionRequested {
+                call_id: "tc_1".into(),
+                rendered: "write notes.md".into(),
+            },
+        ));
+        assert!(state.awaiting_permission_since.is_some());
+
+        state.focus_agent(AgentId::new());
+
+        assert!(state.awaiting_permission_since.is_none());
+        assert_eq!(state.activity, Activity::Idle);
     }
 }
