@@ -18,8 +18,8 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::capabilities::{
-    Capabilities, ContextTokensSource, ReliabilityTier, RequiredCaps, StructuredOutput,
-    ToolCallSupport, DEFAULT_HEADROOM_TOKENS,
+    resolve_adaptive_headroom, Capabilities, ContextTokensSource, ReliabilityTier, RequiredCaps,
+    StructuredOutput, ToolCallSupport, DEFAULT_HEADROOM_TOKENS,
 };
 use crate::content::SamplingParams;
 use crate::error::RoutingError;
@@ -311,6 +311,22 @@ pub struct ExplainEntry {
     /// report decoded from before this field existed still parses.
     #[serde(default)]
     pub cache_reporting: Option<CacheReporting>,
+    /// The headroom THIS candidate was actually checked against (board item
+    /// `01M2TVEWVMPP69TZ17XSGWEW82`). Since headroom now resolves per
+    /// candidate -- an operator per-model value, else the role's, else a
+    /// fraction of this candidate's OWN window -- the report-level
+    /// [`ExplainReport::headroom_tokens`] is true for at most one row, and
+    /// a reader comparing "needs N + headroom" against it would be reading
+    /// a number no gate used.
+    ///
+    /// `None` when the producing `RoutingExplainer` ran no per-candidate
+    /// resolution at all: today only [`MinimalRouter`], which does no
+    /// admission checking whatsoever, so it has no honest per-row answer --
+    /// the same reason its `capabilities` is `None`.
+    /// `#[serde(default)]` so a report decoded from before this field
+    /// existed still parses.
+    #[serde(default)]
+    pub headroom_tokens: Option<u32>,
 }
 
 /// The full "why did this model run, and why not the others" answer for one
@@ -345,6 +361,13 @@ pub struct ExplainReport {
     /// informational, not a claim that any entry was actually verified
     /// against it, so nothing claims a reach it does not have.
     pub required: RequiredCaps,
+    /// The ROLE-wide headroom (`RoutingConfig::headroom_for`) -- the number
+    /// a caller with no candidate in hand would have used. Since board item
+    /// `01M2TVEWVMPP69TZ17XSGWEW82` this is no longer the number every row
+    /// was checked against; [`ExplainEntry::headroom_tokens`] is, per
+    /// candidate. Kept because it still answers "what does this role
+    /// reserve by default", and because removing it would break every
+    /// decoder of an already-serialized report.
     pub headroom_tokens: u32,
     pub entries: Vec<ExplainEntry>,
     pub generated_at: DateTime<Utc>,
@@ -384,9 +407,19 @@ impl ExplainReport {
                 }
             };
             let model_ref = entry.model_ref.to_string();
+            // Per-candidate headroom (board item
+            // `01M2TVEWVMPP69TZ17XSGWEW82`): the reservation THIS row was
+            // checked against, which the header's role-wide number is no
+            // longer guaranteed to equal. Omitted entirely (not rendered as
+            // `headroom=?`) when the producer ran no per-candidate
+            // resolution, so no row ever displays a number nothing used.
+            let headroom = match entry.headroom_tokens {
+                Some(tokens) => format!("headroom={tokens}  "),
+                None => String::new(),
+            };
             let _ = writeln!(
                 out,
-                "  {marker} {model_ref:<width$}{word:<8} {reason}",
+                "  {marker} {model_ref:<width$}{word:<8} {headroom}{reason}",
                 width = width,
             );
         }
@@ -459,6 +492,100 @@ pub struct RoutingConfig {
     /// without an override.
     #[serde(default = "default_headroom_tokens")]
     pub default_headroom_tokens: u32,
+    /// Per-MODEL routing policy, keyed by the same `"backend/model"`
+    /// convention [`RoleConfig::chain`] and `models.json` already use.
+    /// Surfaced to an operator as `[routing].models."<backend>/<model>"`
+    /// (board item `01M2TVEWVMPP69TZ17XSGWEW82`).
+    ///
+    /// **Deliberately not `models.json`.** That file is a facts catalogue
+    /// (window, tier, tool support) written and rewritten by discovery and
+    /// the provider-manage flow -- `conway::config::model_metadata`'s
+    /// `set_context_window` reparses and reserializes the whole document
+    /// and silently drops any field it does not know, so a headroom stored
+    /// there would be erased by the next `first_run` or provider edit.
+    /// Headroom is operator POLICY; a metadata refresh must not be able to
+    /// overwrite a policy decision.
+    #[serde(default)]
+    pub models: BTreeMap<String, ModelHeadroom>,
+    /// Divisor for the conway-DERIVED per-candidate headroom
+    /// (`max(candidate_window / d, HEADROOM_FLOOR)`), mirroring the
+    /// `[routing].headroom_fraction` config key. `None` (or `Some(0)`)
+    /// disables derivation entirely, so
+    /// [`Self::default_headroom_tokens`] becomes the fallback for every
+    /// role with no override.
+    ///
+    /// **`None` in [`RoutingConfig::default`], even though the facade's own
+    /// `[routing].headroom_fraction` defaults to `Some(10)`.** The facade
+    /// (`conway::config::schema::ConwayConfig::routing`) passes its value
+    /// through explicitly, so a real deployment still gets adaptive
+    /// headroom by default. A `RoutingConfig` built as a Rust literal --
+    /// every in-process router fixture in this workspace -- gets the
+    /// pre-derivation behaviour unless it opts in, so turning derivation on
+    /// is a config decision rather than something that silently changes
+    /// what `default_headroom_tokens: 1_000` means in a unit test.
+    #[serde(default)]
+    pub headroom_fraction: Option<u32>,
+}
+
+/// Per-model routing policy: today, exactly one operator-authored knob.
+///
+/// Its own struct rather than a bare `BTreeMap<String, u32>` so the next
+/// per-model routing knob is an added field here instead of a second
+/// parallel table keyed the same way.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ModelHeadroom {
+    /// The operator's explicit reservation for this exact
+    /// `(backend, model)` pair. Honoured as written -- the most specific
+    /// level of [`RoutingConfig::headroom_for_model`]'s ladder -- even when
+    /// it makes the model unreachable; the operator is told so by name at
+    /// config load (`conway::config::merge::validate`) rather than having
+    /// their number quietly shrunk to fit.
+    pub headroom_tokens: Option<u32>,
+}
+
+/// The one implementation of the headroom precedence ladder (board item
+/// `01M2TVEWVMPP69TZ17XSGWEW82`), as a free function so the facade
+/// (`conway::config::schema::ConwayConfig`, which holds its own
+/// string-keyed schema types rather than a [`RoutingConfig`]) resolves the
+/// SAME order the router does without restating it. Total.
+///
+/// Order, highest first:
+///
+/// 1. `model_override` -- operator, `[routing].models.<ref>.headroom_tokens`
+/// 2. `role_override` -- operator, `roles.<alias>.headroom_tokens`
+/// 3. conway-derived: `max(window / fraction, HEADROOM_FLOOR)`, needing
+///    both a `fraction` and a known `window` for THIS candidate
+/// 4. `default_headroom_tokens`
+///
+/// **A conway-derived value never beats an operator-written one**; among
+/// operator-written values, the more specific wins. Level 3 sitting ABOVE
+/// level 4 rather than below it is the load-bearing half: it is what stops
+/// one role-wide number, sized against whichever chain member happened to
+/// be biggest, from making a smaller sibling permanently unreachable.
+///
+/// Nothing here clamps: a level-1 or level-2 value is returned exactly as
+/// the operator wrote it even when `window` is smaller, and the candidate
+/// is then honestly skipped by the admission gate.
+pub fn resolve_headroom(
+    model_override: Option<u32>,
+    role_override: Option<u32>,
+    fraction: Option<u32>,
+    window: Option<u32>,
+    default_headroom_tokens: u32,
+) -> u32 {
+    if let Some(tokens) = model_override {
+        return tokens;
+    }
+    if let Some(tokens) = role_override {
+        return tokens;
+    }
+    if let (Some(fraction), Some(window)) = (fraction, window) {
+        if let Some(derived) = resolve_adaptive_headroom(window, fraction) {
+            return derived;
+        }
+    }
+    default_headroom_tokens
 }
 
 impl RoutingConfig {
@@ -479,6 +606,45 @@ impl RoutingConfig {
             .get(role.as_str())
             .and_then(|r| r.headroom_tokens)
             .unwrap_or(self.default_headroom_tokens)
+    }
+
+    /// The operator's explicit per-model reservation for `model`, if any --
+    /// level 1 of [`resolve_headroom`]'s ladder.
+    pub fn model_headroom_override(&self, model: &ModelRef) -> Option<u32> {
+        if self.models.is_empty() {
+            return None;
+        }
+        self.models
+            .get(&model.to_string())
+            .and_then(|m| m.headroom_tokens)
+    }
+
+    /// The effective headroom for ONE candidate of `role`, resolved through
+    /// [`resolve_headroom`]'s full four-level ladder against that
+    /// candidate's own `window` (`None` when this process knows of no
+    /// window for it at all, which skips only the derived level -- never
+    /// the operator's own).
+    ///
+    /// This is the route-time answer. [`Self::headroom_for`] is the
+    /// role-wide one, and remains what a caller with no candidate in hand
+    /// (building a `RouteRequest`, rendering a report header) can honestly
+    /// ask for; it is deliberately NOT redefined in terms of this method,
+    /// because a role-wide question has no candidate window to derive from.
+    pub fn headroom_for_model(
+        &self,
+        role: &RoleAlias,
+        model: &ModelRef,
+        window: Option<u32>,
+    ) -> u32 {
+        resolve_headroom(
+            self.model_headroom_override(model),
+            self.roles
+                .get(role.as_str())
+                .and_then(|r| r.headroom_tokens),
+            self.headroom_fraction,
+            window,
+            self.default_headroom_tokens,
+        )
     }
 
     /// Builds the filter input for a request: the role's `required` caps
@@ -511,6 +677,11 @@ impl Default for RoutingConfig {
             roles: BTreeMap::new(),
             health: HealthConfig::default(),
             default_headroom_tokens: default_headroom_tokens(),
+            models: BTreeMap::new(),
+            // `None`, not `Some(DEFAULT_HEADROOM_FRACTION)` -- see the
+            // field's own doc for why the facade opts in explicitly
+            // instead.
+            headroom_fraction: None,
         }
     }
 }
@@ -764,6 +935,12 @@ impl RoutingExplainer for MinimalRouter {
                     token_fidelity: None,
                     context_window_source: None,
                     cache_reporting: None,
+                    // This type performs no admission check at all, so it
+                    // resolved no per-candidate headroom and has nothing
+                    // honest to report per row -- same reason
+                    // `capabilities` above is `None`. The role-wide value
+                    // still rides on the report below.
+                    headroom_tokens: None,
                 }
             })
             .collect();
@@ -1069,6 +1246,7 @@ mod tests {
             token_fidelity: Some(TokenCountFidelity::Calibrated),
             context_window_source: None,
             cache_reporting: None,
+            headroom_tokens: None,
         };
         let mut value = serde_json::to_value(&entry).unwrap();
         value
@@ -1169,6 +1347,7 @@ mod tests {
             token_fidelity: Some(TokenCountFidelity::Calibrated),
             context_window_source: None,
             cache_reporting: None,
+            headroom_tokens: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let back: ExplainEntry = serde_json::from_str(&json).unwrap();
@@ -1194,6 +1373,7 @@ mod tests {
             token_fidelity: None,
             context_window_source: None,
             cache_reporting: Some(CacheReporting::Reported),
+            headroom_tokens: None,
         };
         let mut value = serde_json::to_value(&entry).unwrap();
         value
@@ -1222,6 +1402,7 @@ mod tests {
             token_fidelity: None,
             context_window_source: None,
             cache_reporting: Some(CacheReporting::NotReported),
+            headroom_tokens: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let back: ExplainEntry = serde_json::from_str(&json).unwrap();

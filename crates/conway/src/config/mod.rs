@@ -76,6 +76,27 @@ pub enum WarningCode {
     /// rejection for the strictly worse failure of a mid-generation
     /// overflow after tokens are already paid for).
     HeadroomConsumesLargeFractionOfContext,
+    /// A role's fallback chain names a `"backend/model"` pair that loaded
+    /// model metadata (`models.json`) says nothing about, so conway can
+    /// neither size that candidate's headroom against its real context
+    /// window nor check that the reservation fits inside it.
+    ///
+    /// Board item `01M2TVEWVMPP69TZ17XSGWEW82`. This is the warning whose
+    /// ABSENCE was the defect: `merge::validate`'s headroom check used to
+    /// scan a chain for the smallest window it could find IN METADATA, so
+    /// an entry metadata did not name was not merely unchecked, it was
+    /// invisible -- a 32k-window model sat behind a 100,000-token
+    /// reservation (itself derived, silently, from a 1M-token sibling in
+    /// the same chain) and produced no diagnostic anywhere, while every
+    /// request routed to it was rejected by the context-window gate.
+    ///
+    /// A warning rather than a hard error: an unknown model is a
+    /// legitimate state (a freshly-added local model, a provider conway
+    /// ships no metadata for), the router still resolves a window for it
+    /// from dialect capabilities at route time, and `message` names the
+    /// role, the entry, and the headroom it falls back to -- enough to act
+    /// on without refusing to start.
+    ChainEntryContextWindowUnknown,
     /// A top-level `[tui]` section (or a `CONWAY_TUI__*` environment
     /// variable) is present in the merged document, but `ConwayConfig` no
     /// longer defines that key (Stage 2a moved `TuiSection` and its

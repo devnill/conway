@@ -1606,11 +1606,29 @@ impl ConwayBuilder {
         //     type's own doc). Computed directly from `config.roles` (the
         //     facade's own `RoleEntry`, still in scope with `chain: Vec<
         //     String>`) against `metadata` (loaded at step 2, also still in
-        //     scope) -- the IDENTICAL smallest-reachable-window technique
-        //     `config::merge::load_impl`'s adaptive-headroom block already
-        //     uses for the analogous `headroom_fraction` computation, just
-        //     not persisted back into `config` (nothing downstream of this
-        //     policy ever re-reads `config.roles` for it).
+        //     scope) -- and NOT persisted back into `config` (nothing
+        //     downstream of this policy ever re-reads `config.roles` for
+        //     it).
+        //
+        //     **This is now the only smallest-reachable-window computation
+        //     left in the facade** (board item
+        //     `01M2TVEWVMPP69TZ17XSGWEW82`). `config::merge::load_impl`
+        //     used to run the analogous one for `headroom_fraction`; that
+        //     block is gone, because sizing a whole ROLE against the
+        //     smallest window its chain could reach IN METADATA made a
+        //     chain entry metadata did not name invisible, and made a
+        //     32k-window sibling of a 1M-window model permanently
+        //     unreachable. Headroom now resolves per CANDIDATE, at route
+        //     time, against that candidate's own window.
+        //
+        //     Deliberately NOT changed to match: a tool-result bound is a
+        //     context-ASSEMBLY ceiling, decided once before any candidate
+        //     is chosen, so "smallest window this role can reach" is the
+        //     right question for it in a way it was not for headroom --
+        //     assembling a payload sized for the largest candidate would
+        //     overflow the moment the chain fell back to a smaller one.
+        //     `conway_core::capabilities::DEFAULT_TOOL_RESULT_BOUND_FLOOR`'s
+        //     own doc covers the rest of that distinction.
         let tool_result_bound_policy = {
             let fraction = config.routing.tool_result_bound_fraction;
             let cap = config.routing.tool_result_bound_cap_tokens;

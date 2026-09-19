@@ -310,39 +310,40 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
     let metadata_path = resolve_metadata_path(&config.models.metadata_path, &options.cwd);
     let metadata = model_metadata::load(&metadata_path)?;
 
-    // Adaptive headroom: when `routing.headroom_fraction` is set and a role
-    // has no explicit `headroom_tokens` override, compute the effective
-    // headroom as a fraction of the smallest context window reachable
-    // through that role's chain, clamped to `HEADROOM_FLOOR`. Scales
-    // headroom to the model — 8192 fixed is 25% of a 32K window but <1%
-    // of 976K. The operator's explicit choice always wins; this only
-    // touches roles with no override. The computed value is written into
-    // `roles.<alias>.headroom_tokens` so it is visible (GP-14). NOT
-    // clamping: `default_headroom_tokens` is untouched.
-    if let Some(fraction) = config.routing.headroom_fraction {
-        if fraction > 0 && !metadata.models.is_empty() {
-            for entry in config.roles.values_mut() {
-                if entry.headroom_tokens.is_some() {
-                    continue;
-                }
-                let mut smallest: Option<u32> = None;
-                for raw in &entry.chain {
-                    if let Some(model_meta) = metadata.models.get(raw.as_str()) {
-                        if smallest.is_none_or(|m| model_meta.max_context_tokens < m) {
-                            smallest = Some(model_meta.max_context_tokens);
-                        }
-                    }
-                }
-                if let Some(max_context) = smallest {
-                    let computed = std::cmp::max(
-                        max_context / fraction,
-                        crate::config::schema::HEADROOM_FLOOR,
-                    );
-                    entry.headroom_tokens = Some(computed);
-                }
-            }
-        }
-    }
+    // ADAPTIVE HEADROOM IS NO LONGER COMPUTED HERE (board item
+    // `01M2TVEWVMPP69TZ17XSGWEW82`). This is the removal that item names as
+    // its blocking prerequisite, and it is worth recording why, because the
+    // code that used to sit here looked entirely reasonable.
+    //
+    // It derived ONE headroom per role, as a fraction of the SMALLEST
+    // context window it could find among that role's chain entries, and
+    // wrote the result into `roles.<alias>.headroom_tokens`. Two defects,
+    // and the second is the one that cost an operator a working model:
+    //
+    //  1. A chain entry absent from `models.json` was invisible to the
+    //     scan. A chain of [32k-model-not-in-metadata, 1M-model] therefore
+    //     had "smallest" = 1,000,000, and at the default fraction of 10
+    //     derived 100,000 tokens of headroom -- which made the 32k model
+    //     permanently unreachable. The warning that should have caught that
+    //     used the identical scan, compared 100,000 against 1,000,000, and
+    //     stayed silent.
+    //  2. Writing the derived value INTO the role's own override field made
+    //     a number conway invented indistinguishable, downstream, from one
+    //     the operator typed. That is what made a correct precedence
+    //     impossible: nothing after this point could tell level 2
+    //     (operator, per role) from level 3 (derived).
+    //
+    // The fraction now travels to `conway_core::routing::RoutingConfig::
+    // headroom_fraction` (via `ConwayConfig::routing`) and is applied by
+    // the ROUTER, per candidate, against that candidate's OWN window --
+    // which is the only window the number is ever true about. Nothing
+    // rewrites the operator's document.
+    //
+    // GP-14 ("the computed value is visible") is still met, and better:
+    // `ConwayConfig::headroom_for_model` answers it for any
+    // (role, model) pair, `routes explain` reports it per candidate
+    // (`ExplainEntry::headroom_tokens`), and check 6 below now names the
+    // specific chain entry rather than a role-wide aggregate.
 
     let mut warnings = validate(&config, &metadata, &options.env)?;
     if had_tui {
@@ -964,8 +965,13 @@ fn validate_impl(
         }
     }
 
-    // 5. Hard error: headroom values must be > 0 (global and every present
-    //    per-role override).
+    // 5. Hard error: headroom values must be > 0 (global, every present
+    //    per-role override, and -- board item
+    //    `01M2TVEWVMPP69TZ17XSGWEW82` -- every present per-model
+    //    override). A zero at any level means "reserve nothing for the
+    //    model's own output", which is not a setting anyone wants: it
+    //    trades a safe pre-flight rejection for a mid-generation overflow
+    //    after the prompt tokens are already paid for.
     if config.routing.default_headroom_tokens == 0 {
         return Err(FacadeError::Config {
             path: None,
@@ -982,6 +988,16 @@ fn validate_impl(
             });
         }
     }
+    for (model_ref, entry) in &config.routing.models {
+        if entry.headroom_tokens == Some(0) {
+            return Err(FacadeError::Config {
+                path: None,
+                message: format!(
+                    "routing.models.\"{model_ref}\".headroom_tokens must be greater than 0"
+                ),
+            });
+        }
+    }
 
     // 6. Warning only: headroom >= smallest reachable model context, plus
     //    (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`) a milder warning when
@@ -994,34 +1010,87 @@ fn validate_impl(
     //    worse failure of a mid-generation overflow after tokens are
     //    already paid for, so this project surfaces the number instead of
     //    touching it.
+    //    **Rewritten per CHAIN ENTRY, board item
+    //    `01M2TVEWVMPP69TZ17XSGWEW82`.** This check used to scan a role's
+    //    chain for the smallest window IT COULD FIND IN `models.json`,
+    //    compare the role-wide headroom against that one window, and move
+    //    on. Two things followed from that, and both were silent:
+    //
+    //      - A chain entry with no `models.json` record was skipped
+    //        entirely. It could not trigger a warning however badly sized
+    //        the reservation was for it, because it was never looked at.
+    //        That is precisely the configuration that motivated this item.
+    //      - Even for entries that WERE in metadata, only the smallest was
+    //        ever checked. With headroom now resolved per candidate, a
+    //        per-model override on a larger sibling can be wrong on its own
+    //        terms while the smallest entry is fine.
+    //
+    //    So: every chain entry of every role, each against its OWN window
+    //    and its OWN resolved headroom (`ConwayConfig::headroom_for_model`
+    //    -- the same ladder the router applies at route time), and an entry
+    //    metadata knows nothing about gets said out loud instead of
+    //    skipped.
     let mut warnings = Vec::new();
     if !metadata.models.is_empty() {
         let mut seen = BTreeSet::new();
         for name in &role_names {
             let entry = &config.roles[*name];
             let role_alias = RoleAlias::new((*name).clone());
-            let headroom = config.headroom_for(&role_alias);
 
-            let mut smallest: Option<(&str, u32)> = None;
             for raw in &entry.chain {
-                if let Some(model_meta) = metadata.models.get(raw.as_str()) {
-                    if smallest.is_none_or(|(_, m)| model_meta.max_context_tokens < m) {
-                        smallest = Some((raw.as_str(), model_meta.max_context_tokens));
+                let Some(model_meta) = metadata.models.get(raw.as_str()) else {
+                    // No metadata record for this chain entry. conway
+                    // cannot size headroom for it, cannot check that
+                    // headroom fits, and -- before this item -- said
+                    // nothing at all, which is how a 32k model ended up
+                    // behind a 100,000-token reservation derived from a 1M
+                    // sibling with no diagnostic anywhere.
+                    let headroom = config.headroom_for_model(&role_alias, raw, None);
+                    let message = format!(
+                        "role '{name}': chain entry '{raw}' has no entry in model metadata \
+                         (models.json), so conway cannot size its headroom against its real \
+                         context window or check that the reservation fits; it falls back to \
+                         {headroom} tokens. If that model's window is small, set \
+                         routing.models.\"{raw}\".headroom_tokens explicitly, or add the model \
+                         to models.json so the adaptive fraction can size it"
+                    );
+                    if seen.insert(message.clone()) {
+                        warnings.push(ConfigWarning {
+                            code: WarningCode::ChainEntryContextWindowUnknown,
+                            message,
+                        });
                     }
-                }
-            }
+                    continue;
+                };
 
-            if let Some((model_ref, max_context)) = smallest {
-                let subject = if entry.headroom_tokens.is_some() {
+                let max_context = model_meta.max_context_tokens;
+                let headroom = config.headroom_for_model(&role_alias, raw, Some(max_context));
+                // Which knob the reader should edit, most specific first --
+                // the same ladder that produced `headroom`, so the message
+                // never points at a setting that is not the one in effect.
+                let subject = if config
+                    .routing
+                    .models
+                    .get(raw.as_str())
+                    .and_then(|m| m.headroom_tokens)
+                    .is_some()
+                {
+                    format!("headroom for model '{raw}'")
+                } else if entry.headroom_tokens.is_some() {
                     format!("headroom for role '{name}'")
+                } else if config.routing.headroom_fraction.is_some_and(|f| f > 0) {
+                    format!("conway's adaptive headroom for role '{name}'")
                 } else {
                     "routing.default_headroom_tokens".to_string()
                 };
+
                 if headroom >= max_context {
                     let message = format!(
-                        "{subject} is {headroom} tokens, which is not less than the smallest \
-                         context window in its chain ({model_ref} = {max_context} tokens); every \
-                         request routed to that model will be rejected by the context-window gate"
+                        "{subject} is {headroom} tokens, which is not less than the context \
+                         window of chain entry {model_ref} ({max_context} tokens); every \
+                         request routed to that model will be rejected by the context-window \
+                         gate",
+                        model_ref = raw
                     );
                     if seen.insert(message.clone()) {
                         warnings.push(ConfigWarning {
@@ -1033,8 +1102,8 @@ fn validate_impl(
                     // Integer percentage, rounded down; `max_context` is
                     // never 0 on this branch (a 0-token window would already
                     // have tripped the `>=` check above for any headroom
-                    // `>= 1`, and `headroom_tokens` is validated `> 0` by
-                    // check 6, just above).
+                    // `>= 1`, and every headroom level is validated `> 0` by
+                    // check 5, just above).
                     let percent = u64::from(headroom) * 100 / u64::from(max_context);
                     // Names the ROLE as well as the knob. `subject` alone
                     // says which setting to edit, which is right, but when
@@ -1045,12 +1114,13 @@ fn validate_impl(
                     // message text, one warning also has to stand for
                     // whichever role actually tripped it.
                     let message = format!(
-                        "{subject} is {headroom} tokens, {percent}% of the smallest context \
+                        "{subject} is {headroom} tokens, {percent}% of the context \
                          window reachable from role '{name}' ({model_ref} = {max_context} \
                          tokens); a long-running conversation to that model can hit the \
                          context-window gate well before it would with a smaller reservation \
                          -- consider a smaller headroom_tokens for that role, or a \
-                         larger-window fallback later in its chain"
+                         larger-window fallback later in its chain",
+                        model_ref = raw
                     );
                     if seen.insert(message.clone()) {
                         warnings.push(ConfigWarning {

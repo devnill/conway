@@ -438,7 +438,229 @@ fn default_headroom_fraction_computes_headroom_adaptively_with_no_config() {
         "the adaptive default should not need the large-fraction warning at all: {:?}",
         outcome.warnings
     );
-    assert_eq!(outcome.config.headroom_for(&RoleAlias::new("coder")), 3_276);
+    // Board item `01M2TVEWVMPP69TZ17XSGWEW82` moved WHERE this value is
+    // asked for, not what it is. It used to be written back into
+    // `roles.coder.headroom_tokens` by `merge::load_impl` and read out of
+    // `headroom_for`; that write-back is gone, because parking a derived
+    // number in a field only an operator is supposed to write made level 2
+    // and level 3 of the precedence ladder indistinguishable downstream.
+    assert_eq!(
+        outcome.config.headroom_for_model(
+            &RoleAlias::new("coder"),
+            "anthropic/claude-haiku-4-5",
+            Some(32_768)
+        ),
+        3_276
+    );
+
+    // The operator's own document is not rewritten.
+    assert_eq!(outcome.config.roles["coder"].headroom_tokens, None);
+    // And the ROLE-wide question -- asked with no candidate in hand --
+    // answers with the flat default rather than a number that is only true
+    // about one particular model.
+    assert_eq!(
+        outcome.config.headroom_for(&RoleAlias::new("coder")),
+        DEFAULT_HEADROOM_TOKENS
+    );
+}
+
+/// Board item `01M2TVEWVMPP69TZ17XSGWEW82`, acceptance 2: the whole
+/// precedence ladder, pinned in one place, in order --
+/// operator-per-model > operator-per-role > conway-derived-per-candidate >
+/// `routing.default_headroom_tokens`.
+///
+/// Fails against HEAD twice over: `[routing].models` does not exist there
+/// (this document would not deserialize at all), and the derived level was
+/// computed once per ROLE from the smallest window that role's chain could
+/// reach in metadata -- so `local/big` below would have been handed
+/// `local/small`'s number, which is the defect itself.
+#[test]
+fn headroom_precedence_is_model_then_role_then_derived_then_global_default() {
+    let dir = support::unique_temp_dir("headroom-precedence-ladder");
+    let metadata_path = dir.join("models.json");
+    std::fs::write(
+        &metadata_path,
+        r#"{"models":{
+            "local/small":{"max_context_tokens":32768,"tool_calling":"streaming","reasoning":false,"reliability_tier":"verified"},
+            "local/big":{"max_context_tokens":1000000,"tool_calling":"streaming","reasoning":false,"reliability_tier":"verified"},
+            "local/pinned":{"max_context_tokens":200000,"tool_calling":"streaming","reasoning":false,"reliability_tier":"verified"}
+        }}"#,
+    )
+    .unwrap();
+
+    let config_value = serde_json::json!({
+        "default_role": "coder",
+        "roles": {
+            // No per-role override: levels 1, 3 and 4 are reachable here.
+            "coder": { "chain": ["local/small", "local/big", "local/pinned"] },
+            // A per-role override: level 2 must beat level 3 for every
+            // candidate of this role, however different their windows.
+            "fixed": { "chain": ["local/small", "local/big"], "headroom_tokens": 4_000 },
+        },
+        "routing": {
+            "default_headroom_tokens": 9_999,
+            "headroom_fraction": 10,
+            // Level 1: the most specific operator statement there is.
+            "models": { "local/pinned": { "headroom_tokens": 1_234 } },
+        },
+        "backends": { "local": { "kind": "openai-compat" } },
+        "models": { "metadata_path": metadata_path.to_string_lossy() },
+    });
+    let path = dir.join("settings.json");
+    std::fs::write(&path, serde_json::to_vec(&config_value).unwrap()).unwrap();
+
+    let cfg = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(path),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .unwrap()
+    .config;
+
+    let coder = RoleAlias::new("coder");
+    let fixed = RoleAlias::new("fixed");
+
+    // 1. Operator per-model beats everything below it -- including the
+    //    20000 this candidate's own 200000-token window would derive.
+    assert_eq!(
+        cfg.headroom_for_model(&coder, "local/pinned", Some(200_000)),
+        1_234
+    );
+    //    ... and a per-role override too.
+    assert_eq!(
+        cfg.headroom_for_model(&fixed, "local/pinned", Some(200_000)),
+        1_234
+    );
+
+    // 2. Operator per-role beats the derived per-candidate value, for
+    //    every candidate of that role regardless of window size -- the
+    //    "a conway-derived value never beats an operator-written one" half
+    //    of the ruling.
+    assert_eq!(
+        cfg.headroom_for_model(&fixed, "local/small", Some(32_768)),
+        4_000
+    );
+    assert_eq!(
+        cfg.headroom_for_model(&fixed, "local/big", Some(1_000_000)),
+        4_000
+    );
+
+    // 3. Derived per-candidate beats the global default, and is derived
+    //    from THIS candidate's window. Two candidates of the SAME role get
+    //    two different numbers -- the whole point of the item.
+    assert_eq!(
+        cfg.headroom_for_model(&coder, "local/small", Some(32_768)),
+        3_276
+    );
+    assert_eq!(
+        cfg.headroom_for_model(&coder, "local/big", Some(1_000_000)),
+        100_000
+    );
+
+    // 4. The global default is the floor of the ladder: reached only when
+    //    no operator value applies and no window is known to derive from.
+    assert_eq!(cfg.headroom_for_model(&coder, "local/small", None), 9_999);
+}
+
+/// Board item `01M2TVEWVMPP69TZ17XSGWEW82`, acceptance 3, and the exact
+/// configuration that motivated the item: a chain entry absent from
+/// `models.json` was invisible to BOTH the derivation and the warning, so
+/// an operator whose small model had been made unreachable was told
+/// nothing at all.
+///
+/// Fails against HEAD: `validate`'s headroom check only ever looked at
+/// chain entries it found in metadata, so `local/unknown-small` below
+/// produced no warning of any kind.
+#[test]
+fn a_chain_entry_missing_from_model_metadata_is_reported_by_name() {
+    let dir = support::unique_temp_dir("headroom-missing-metadata");
+    let metadata_path = dir.join("models.json");
+    // Only the 1M model is described. The small one is exactly the
+    // `[floor (assumed)]` case from the incident.
+    std::fs::write(
+        &metadata_path,
+        r#"{"models":{"cloud/glm":{"max_context_tokens":1000000,"tool_calling":"streaming","reasoning":false,"reliability_tier":"verified"}}}"#,
+    )
+    .unwrap();
+
+    let config_value = serde_json::json!({
+        "default_role": "coder",
+        "roles": {
+            "coder": { "chain": ["local/unknown-small", "cloud/glm"] },
+        },
+        "backends": { "local": { "kind": "openai-compat" }, "cloud": { "kind": "openai-compat" } },
+        "models": { "metadata_path": metadata_path.to_string_lossy() },
+    });
+    let path = dir.join("settings.json");
+    std::fs::write(&path, serde_json::to_vec(&config_value).unwrap()).unwrap();
+
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(path),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .unwrap();
+
+    let warning = outcome
+        .warnings
+        .iter()
+        .find(|w| w.code == WarningCode::ChainEntryContextWindowUnknown)
+        .expect("a chain entry absent from models.json must be reported, not skipped");
+    assert!(
+        warning.message.contains("local/unknown-small"),
+        "the warning must name the offending entry: {}",
+        warning.message
+    );
+    assert!(
+        warning.message.contains("coder"),
+        "the warning must name the role: {}",
+        warning.message
+    );
+    assert!(
+        warning.message.contains("routing.models"),
+        "the warning must point at the knob that fixes it: {}",
+        warning.message
+    );
+
+    // BREAK-THE-GUARD: the KNOWN sibling in the same chain earns no such
+    // warning, so this check is not simply firing on every entry.
+    assert_eq!(
+        outcome
+            .warnings
+            .iter()
+            .filter(|w| w.code == WarningCode::ChainEntryContextWindowUnknown)
+            .count(),
+        1
+    );
+}
+
+/// The per-model level is operator policy, so a zero is as wrong there as
+/// at the role and global levels -- and is rejected the same way, naming
+/// the key.
+#[test]
+fn zero_per_model_headroom_is_a_hard_error_naming_the_model() {
+    let dir = support::unique_temp_dir("headroom-zero-model");
+    let path = dir.join("settings.json");
+    std::fs::write(
+        &path,
+        r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"routing":{"models":{"local/x":{"headroom_tokens":0}}}}"#,
+    )
+    .unwrap();
+
+    let result = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(path),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    });
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("local/x"), "{err}");
+    assert!(err.contains("must be greater than 0"), "{err}");
 }
 
 /// The per-role explicit override still wins over the adaptive default --

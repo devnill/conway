@@ -141,6 +141,13 @@ impl<'a> RoutingExplain<'a> {
                             token_fidelity,
                             context_window_source,
                             cache_reporting,
+                            // Board item `01M2TVEWVMPP69TZ17XSGWEW82`: the
+                            // reservation THIS row was checked against,
+                            // read off the shared `Evaluation` rather than
+                            // re-resolved here -- `explain` must never
+                            // re-implement a decision `resolve` made (this
+                            // file's own top-of-file rule).
+                            headroom_tokens: Some(entry.headroom_tokens),
                         }
                     })
                     .collect();

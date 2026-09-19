@@ -199,6 +199,42 @@ impl ConwayConfig {
             .unwrap_or(self.routing.default_headroom_tokens)
     }
 
+    /// The effective headroom for ONE candidate of `role` -- the answer the
+    /// router reaches at route time, asked at config-load time so
+    /// `config::merge::validate` can tell an operator which chain entry
+    /// their configuration makes unreachable (board item
+    /// `01M2TVEWVMPP69TZ17XSGWEW82`).
+    ///
+    /// `model_ref` is the raw `"backend/model"` chain string (this schema
+    /// holds chains as strings, not parsed `ModelRef`s). `window` is that
+    /// model's `max_context_tokens` from loaded metadata, or `None` when
+    /// `models.json` says nothing about it -- which skips only the derived
+    /// level of the ladder, never an operator's own value.
+    ///
+    /// Delegates to `conway_core::routing::resolve_headroom`, the SINGLE
+    /// implementation of the precedence order, so this side of the crate
+    /// boundary cannot drift from what the router does. See that function
+    /// for the order itself.
+    pub fn headroom_for_model(
+        &self,
+        role: &RoleAlias,
+        model_ref: &str,
+        window: Option<u32>,
+    ) -> u32 {
+        conway_core::routing::resolve_headroom(
+            self.routing
+                .models
+                .get(model_ref)
+                .and_then(|m| m.headroom_tokens),
+            self.roles
+                .get(role.as_str())
+                .and_then(|r| r.headroom_tokens),
+            self.routing.headroom_fraction,
+            window,
+            self.routing.default_headroom_tokens,
+        )
+    }
+
     /// The default model: the head of [`Self::default_role`]'s fallback
     /// chain, or `None` when the default role has no `[roles]` entry, or
     /// one with an empty `chain`.
@@ -297,6 +333,22 @@ impl ConwayConfig {
             roles,
             health: self.health.into(),
             default_headroom_tokens: self.routing.default_headroom_tokens,
+            // Board item `01M2TVEWVMPP69TZ17XSGWEW82`. This literal is
+            // deliberately exhaustive (no `..Default::default()`), unlike
+            // the ~12 other `RoutingConfig` construction sites in this
+            // workspace: it is the one place the operator's settings
+            // document becomes the core type, so a field added to
+            // `RoutingConfig` MUST fail to compile here and be consciously
+            // wired from config rather than silently picking up a default
+            // no settings key can ever change.
+            models: self.routing.models.clone(),
+            // `RoutingConfig::headroom_fraction` defaults to `None` in core
+            // so a Rust-literal fixture does not silently acquire adaptive
+            // headroom; the operator-facing default (`Some(10)`) lives on
+            // `RoutingSection::headroom_fraction` and is passed through
+            // here, which is what makes derivation conway's actual default
+            // behaviour for a real deployment.
+            headroom_fraction: self.routing.headroom_fraction,
         })
     }
 }
@@ -695,21 +747,35 @@ pub const DEFAULT_BACKEND_KIND: &str = "anthropic";
 #[serde(deny_unknown_fields, default)]
 pub struct RoutingSection {
     pub default_headroom_tokens: u32,
-    /// When `Some(d)`, a role with no explicit `headroom_tokens` override
-    /// gets its effective headroom computed as a fraction of the smallest
-    /// context window reachable through its chain, rather than inheriting
-    /// [`Self::default_headroom_tokens`]: `max(smallest_window / d, HEADROOM_FLOOR)`.
+    /// When `Some(d)`, a candidate with no explicit operator override gets
+    /// its effective headroom computed as a fraction of **that candidate's
+    /// own** context window, rather than inheriting
+    /// [`Self::default_headroom_tokens`]: `max(candidate_window / d,
+    /// HEADROOM_FLOOR)`.
     ///
     /// This scales headroom to the model: 8192 tokens is 25% of a 32K window
     /// but <1% of a 976K window. A fraction of 10 (`d = 10`) reserves 10%
     /// of the window — 3200 tokens on a 32K model (leaving more room for
     /// the prompt), 97K on a 976K model (generous for output).
     ///
-    /// The per-role override always wins: an operator who sets
-    /// `roles.<alias>.headroom_tokens` explicitly gets that value
-    /// regardless of this setting. An operator who sets neither gets the
-    /// fraction-computed value when this is `Some`, or
-    /// [`Self::default_headroom_tokens`] when `None`.
+    /// **Per CANDIDATE, not per role** (board item
+    /// `01M2TVEWVMPP69TZ17XSGWEW82`). This fraction was once applied once
+    /// per role, at config-load time, against the smallest window that
+    /// role's chain could reach *in `models.json`*, and the single result
+    /// was written back into `roles.<alias>.headroom_tokens`. Two defects
+    /// followed, both silent: a chain entry absent from `models.json` was
+    /// invisible to that scan (so a 32K model could sit behind a 100,000-
+    /// token reservation derived from a 1M-token sibling and be refused on
+    /// every request with no diagnostic), and a derived number parked in
+    /// the operator's own override field could not be told apart from one
+    /// the operator typed. Resolution now happens at route time, per
+    /// candidate, and nothing rewrites the operator's document.
+    ///
+    /// An operator override always wins: `[routing].models.<ref>.
+    /// headroom_tokens` first, then `roles.<alias>.headroom_tokens`, then
+    /// this fraction, then [`Self::default_headroom_tokens`]. See
+    /// `conway_core::routing::resolve_headroom`, the single implementation
+    /// of that order.
     ///
     /// The floor ([`HEADROOM_FLOOR`]) prevents a tiny window from
     /// producing an unusably small reservation — 10% of a 4K window is
@@ -721,9 +787,12 @@ pub struct RoutingSection {
     /// prior commit): the operator's 2026-09-01 ruling calls for the
     /// adaptive fraction to be conway's actual DEFAULT behavior, with the
     /// fixed [`Self::default_headroom_tokens`] surviving only as the
-    /// fallback for the one case adaptation cannot cover -- no model
-    /// metadata reachable for a role's chain at all (an unresolved model
-    /// id, or `[models].metadata_path` unset). Setting this to `Some(0)`
+    /// fallback for the one case adaptation cannot cover -- no context
+    /// window known for the candidate at all (a chain entry absent from
+    /// `models.json`, or `[models].metadata_path` unset). That case is now
+    /// reported rather than passed over in silence; see
+    /// `crate::config::WarningCode::ChainEntryContextWindowUnknown`.
+    /// Setting this to `Some(0)`
     /// (or any other value, including reverting to `None` -- `Option<u32>`
     /// stays the wire type so an operator config predating this default
     /// change round-trips its own explicit `null` unchanged) opts back out
@@ -763,6 +832,34 @@ pub struct RoutingSection {
     /// own doc for the "8192 tokens ~= 32KB" justification.
     #[serde(default = "default_tool_result_bound_cap_tokens")]
     pub tool_result_bound_cap_tokens: u32,
+    /// Per-MODEL headroom policy, keyed `"<backend>/<model>"` -- the same
+    /// convention `roles.<alias>.chain` and `models.json` already use.
+    /// Board item `01M2TVEWVMPP69TZ17XSGWEW82`, the most specific level of
+    /// the headroom precedence ladder:
+    ///
+    /// ```json
+    /// { "routing": {
+    ///     "models": { "local/qwen3-coder": { "headroom_tokens": 3000 } }
+    /// } }
+    /// ```
+    ///
+    /// **Here, and deliberately not in `models.json`.** That file is a
+    /// regenerable facts catalogue; `config::model_metadata::
+    /// set_context_window` reparses and reserializes the whole document and
+    /// drops any field it does not know, and both `first_run` and the TUI
+    /// provider-manage flow call it -- so a headroom stored there would be
+    /// silently erased by the next setup run. Headroom is operator policy,
+    /// and a metadata refresh must not be able to overwrite a policy
+    /// decision.
+    ///
+    /// Reuses `conway_core::routing::ModelHeadroom` rather than declaring a
+    /// facade mirror: the mirrors in this module exist because the core
+    /// types hold parsed `ModelRef`/`RoleAlias` values a settings document
+    /// cannot spell directly, and this one is a single `Option<u32>` with
+    /// nothing to translate. It already carries `deny_unknown_fields`,
+    /// matching this section's own posture.
+    #[serde(default)]
+    pub models: BTreeMap<String, conway_core::routing::ModelHeadroom>,
 }
 
 fn default_headroom_fraction() -> Option<u32> {
@@ -781,7 +878,15 @@ fn default_tool_result_bound_cap_tokens() -> u32 {
 /// fraction of a very small window can starve the model of output space,
 /// so the fraction is clamped to this floor. See
 /// [`RoutingSection::headroom_fraction`].
-pub const HEADROOM_FLOOR: u32 = 2_048;
+///
+/// **A re-export, not a second number** (board item
+/// `01M2TVEWVMPP69TZ17XSGWEW82`): the fraction arithmetic itself moved into
+/// `conway_core::capabilities::resolve_adaptive_headroom` so the ROUTER can
+/// apply it per candidate, and a floor restated on this side of the crate
+/// boundary would be free to drift from the one the router actually uses.
+/// The name stays because `docs/routing.md` and this module's own doc
+/// comments already refer to it.
+pub use conway_core::capabilities::HEADROOM_FLOOR;
 
 impl Default for RoutingSection {
     fn default() -> Self {
@@ -790,6 +895,7 @@ impl Default for RoutingSection {
             headroom_fraction: default_headroom_fraction(),
             tool_result_bound_fraction: default_tool_result_bound_fraction(),
             tool_result_bound_cap_tokens: default_tool_result_bound_cap_tokens(),
+            models: BTreeMap::new(),
         }
     }
 }

@@ -71,7 +71,8 @@ pub enum ConfigIssueKind {
 /// Checks: a role whose `chain` is empty; a chain entry with an empty
 /// backend or model segment; a duplicate `(backend, model)` pair within one
 /// chain; a role whose resolved headroom (`RoutingConfig::headroom_for`) is
-/// `>= 1_000_000`.
+/// `>= 1_000_000`; and a `[routing].models` entry whose per-model headroom
+/// is `>= 1_000_000`.
 pub fn validate(config: &RoutingConfig) -> Result<(), Vec<ConfigIssue>> {
     let mut issues = Vec::new();
 
@@ -124,6 +125,30 @@ pub fn validate(config: &RoutingConfig) -> Result<(), Vec<ConfigIssue>> {
                 kind: ConfigIssueKind::HeadroomExceedsBudget,
                 message: format!(
                     "role '{name}': headroom_tokens {headroom} is implausibly large (maximum 999999)"
+                ),
+            });
+        }
+    }
+
+    // Board item `01M2TVEWVMPP69TZ17XSGWEW82`: the per-MODEL level can now
+    // be the value the router actually resolves, so the plausibility check
+    // has to cover it too -- otherwise `HeadroomExceedsBudget` would be
+    // validating a level the request-time answer silently outranks, which
+    // is the same shape of hole the item itself closed one layer up.
+    // Reported with an empty role, because a per-model entry belongs to no
+    // role; the message names the key to edit.
+    for (model_ref, entry) in &config.models {
+        let Some(headroom) = entry.headroom_tokens else {
+            continue;
+        };
+        if headroom >= MAX_PLAUSIBLE_HEADROOM_TOKENS {
+            issues.push(ConfigIssue {
+                role: RoleAlias::new(String::new()),
+                position: None,
+                kind: ConfigIssueKind::HeadroomExceedsBudget,
+                message: format!(
+                    "routing.models '{model_ref}': headroom_tokens {headroom} is implausibly \
+                     large (maximum 999999)"
                 ),
             });
         }
