@@ -342,6 +342,25 @@ impl Command for ListCommand {
 /// path, exactly what `rollback <seq>` would change -- reading the SAME
 /// store `rollback` itself reads (this crate's own "ONE snapshot/restore
 /// implementation" constraint), but performing no write of its own.
+///
+/// # Direction, and why both sides are labelled
+///
+/// This is a preview of the ROLLBACK, not a replay of the write that
+/// produced the snapshot: the `-` side is what is on disk right now and
+/// the `+` side is what `rollback <seq>` would leave behind. That is the
+/// orientation `diff -u <before> <after>` has for the operation the
+/// operator is about to run, and the one the summary string and
+/// `docs/plugins/checkpoint.md` both promise.
+///
+/// It rendered the other way round until board item
+/// `01M2V5ZXJMMVFF0MVHYZ4HXAT8`, which matters more than a cosmetic slip:
+/// this is the last thing an operator reads before deciding to destroy the
+/// current contents of a file, so a reversed preview tells them rollback
+/// will produce exactly what it is about to discard. Because both headers
+/// carried the same bare path, nothing on screen disambiguated the
+/// direction either -- hence the `(current)` / `(after rollback to seq N)`
+/// labels below, which make the direction legible without reading this
+/// source.
 struct DiffCommand {
     store: Arc<CheckpointStore>,
 }
@@ -351,8 +370,9 @@ impl Command for DiffCommand {
     fn spec(&self) -> CommandSpec {
         CommandSpec {
             name: COMMAND_NAME_DIFF.to_string(),
-            summary: "shows, as a unified diff per path, what `rollback <seq>` would change -- \
-                      e.g. `/conway.checkpoint.diff 42`"
+            summary: "shows, as a unified diff per path, what `rollback <seq>` would change: \
+                      `-` is the file as it stands now, `+` is what the rollback would restore \
+                      -- e.g. `/conway.checkpoint.diff 42`"
                 .to_string(),
         }
     }
@@ -400,7 +420,10 @@ impl Command for DiffCommand {
                 ResolvedRef::Bytes(bytes) => (bytes, None),
                 ResolvedRef::Absent => (
                     Vec::new(),
-                    Some("(this path did not exist before this checkpoint)"),
+                    Some(
+                        "(this path did not exist before this checkpoint -- rolling back \
+                         DELETES it)",
+                    ),
                 ),
                 ResolvedRef::Missing(reason) => {
                     lines.push(format!("{}: {reason}", entry.path));
@@ -408,9 +431,15 @@ impl Command for DiffCommand {
                 }
             };
             let current_bytes = std::fs::read(&entry.path).unwrap_or_default();
-            let old_text = String::from_utf8_lossy(&target_bytes);
-            let new_text = String::from_utf8_lossy(&current_bytes);
-            let mut rendered = diff::unified_diff(&entry.path, &entry.path, &old_text, &new_text);
+            // The `-` side is the CURRENT file and the `+` side is the
+            // rollback target -- see this command's own doc comment for
+            // why that direction, and not its inverse, is the one a
+            // preview of `rollback <seq>` has to render.
+            let old_text = String::from_utf8_lossy(&current_bytes);
+            let new_text = String::from_utf8_lossy(&target_bytes);
+            let old_label = format!("{} (current)", entry.path);
+            let new_label = format!("{} (after rollback to seq {seq})", entry.path);
+            let mut rendered = diff::unified_diff(&old_label, &new_label, &old_text, &new_text);
             if rendered.is_empty() {
                 rendered = format!(
                     "{}: no difference from the pre-seq-{seq} snapshot",
@@ -944,7 +973,16 @@ mod tests {
         let observers = plugin.observers();
         let observer = &observers[0];
 
-        for (seq, content) in [(1u64, "v1"), (2, "v2"), (3, "v3")] {
+        // Deliberately NOT `v1`/`v2`/`v3`: the fixture content has to make
+        // the two sides of the diff distinguishable, or an assertion on it
+        // passes whichever way round the diff renders -- which is exactly
+        // how the inversion board item `01M2V5ZXJMMVFF0MVHYZ4HXAT8` fixed
+        // survived this test.
+        for (seq, content) in [
+            (1u64, "OLDEST-BYTES"),
+            (2, "MIDDLE-BYTES"),
+            (3, "NEWEST-BYTES"),
+        ] {
             std::fs::write(&path, content).unwrap();
             observer
                 .after_tool_call(&observer_ctx(), &call(session, "edit", "f.txt", seq))
@@ -957,7 +995,38 @@ mod tests {
         match diff_out {
             CommandOutcome::Output(lines) => {
                 let joined = lines.join("\n");
-                assert!(joined.contains("v1") || joined.contains("v2"), "{joined}");
+                let rendered: Vec<&str> = joined.lines().collect();
+                // `diff 2` previews `rollback 2`: on disk now is
+                // `NEWEST-BYTES`, and rolling back to the state before seq
+                // 2 restores `OLDEST-BYTES`. So the `-` side is the
+                // CURRENT bytes and the `+` side is the restored ones.
+                // Asserting both the presence of each expected side AND
+                // the absence of its inverse is what makes a flip fail
+                // here rather than pass silently.
+                assert!(
+                    rendered.contains(&"-NEWEST-BYTES"),
+                    "the `-` side must be the current file: {joined}"
+                );
+                assert!(
+                    rendered.contains(&"+OLDEST-BYTES"),
+                    "the `+` side must be what rollback would restore: {joined}"
+                );
+                assert!(
+                    !rendered.contains(&"+NEWEST-BYTES") && !rendered.contains(&"-OLDEST-BYTES"),
+                    "the diff is rendered backwards -- this previews the ROLLBACK, not the \
+                     write that made the snapshot: {joined}"
+                );
+                // And the direction is legible on screen, not only to a
+                // reader of this source: identical headers on both sides
+                // disambiguate nothing.
+                assert!(
+                    joined.contains("(current)"),
+                    "the `---` side must be labelled: {joined}"
+                );
+                assert!(
+                    joined.contains("(after rollback to seq 2)"),
+                    "the `+++` side must name the rollback it previews: {joined}"
+                );
             }
             other => panic!("expected Output, got {other:?}"),
         }
@@ -965,7 +1034,11 @@ mod tests {
         let rollback_cmd = &commands[2];
         let rollback_out = rollback_cmd.invoke(ctx_for(session, "2")).await;
         assert!(matches!(rollback_out, CommandOutcome::Output(_)));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "OLDEST-BYTES",
+            "the rollback must land on exactly the bytes `diff` put on its `+` side"
+        );
 
         // A hand edit, bypassing conway. `rollback 2` targets the SAME
         // entry (seq 2) as above, whose baseline IS known -- the seq to
@@ -989,7 +1062,7 @@ mod tests {
 
         // `--all` forces past the conflict.
         rollback_cmd.invoke(ctx_for(session, "2 --all")).await;
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "OLDEST-BYTES");
 
         let list_cmd = &commands[0];
         let list_out = list_cmd.invoke(ctx_for(session, "")).await;
@@ -1046,6 +1119,55 @@ mod tests {
             }
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    /// The other direction-sensitive case: a path the model CREATED has no
+    /// prior content, so rolling back deletes it. Previewing that rollback
+    /// must show the file's current lines going away (`-`), with nothing
+    /// arriving -- the exact inverse of what "show me what this write did"
+    /// would render, and the case where reading the preview backwards is
+    /// most dangerous (it would look like the file is about to be
+    /// created).
+    #[tokio::test]
+    async fn diff_of_a_model_created_path_previews_its_deletion() {
+        let dir = TempDir::new().unwrap();
+        let plugin = CheckpointPlugin::new(dir.path());
+        let path = dir.path().join("created.txt");
+        let session = SessionId::new();
+        let observers = plugin.observers();
+        let observer = &observers[0];
+
+        // The pre-call seam sees no file at all -> `SnapshotRef::Absent`.
+        observer
+            .before_tool_call(
+                &observer_ctx(),
+                &pending(session, "write", "created.txt", 1),
+            )
+            .await;
+        std::fs::write(&path, "CREATED-BY-THE-MODEL").unwrap();
+        observer
+            .after_tool_call(&observer_ctx(), &call(session, "write", "created.txt", 1))
+            .await;
+
+        let commands = plugin.commands();
+        let diff_cmd = &commands[1];
+        let CommandOutcome::Output(lines) = diff_cmd.invoke(ctx_for(session, "1")).await else {
+            panic!("expected Output");
+        };
+        let joined = lines.join("\n");
+        let rendered: Vec<&str> = joined.lines().collect();
+        assert!(
+            rendered.contains(&"-CREATED-BY-THE-MODEL"),
+            "rolling back a created path removes its content: {joined}"
+        );
+        assert!(
+            !rendered.contains(&"+CREATED-BY-THE-MODEL"),
+            "rendered backwards -- this previews the rollback, not the write: {joined}"
+        );
+        assert!(
+            joined.contains("DELETES it"),
+            "an absent baseline means the rollback deletes the path, and must say so: {joined}"
+        );
     }
 
     #[tokio::test]

@@ -305,6 +305,8 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
             message: format!("failed to parse merged configuration: {e}"),
         })?;
 
+    config.cwd = resolve_cwd(&config.cwd, &options.cwd);
+
     let metadata_path = resolve_metadata_path(&config.models.metadata_path, &options.cwd);
     let metadata = model_metadata::load(&metadata_path)?;
 
@@ -411,6 +413,51 @@ pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConf
     validate_impl(&merged, &metadata, &HashMap::new())?;
 
     Ok(merged)
+}
+
+/// Resolves the merged `cwd` VALUE (`configured`) against the load's own
+/// invocation directory (`invocation`, i.e. `LoadOptions::cwd`, which
+/// `LoadOptions::default` fills from `std::env::current_dir()`): returned
+/// unchanged when already absolute, otherwise joined onto `invocation` and
+/// lexically normalized ([`discovery::normalize_lexically`] -- no
+/// filesystem I/O, no symlink resolution, so this stays as pure and
+/// deterministic as the rest of [`load`]).
+///
+/// **Why this exists at all** (board item
+/// `01M2V6JHRWWEPN690C954R0PYS`): `ConwayConfig::cwd`'s schema default is
+/// the literal `"."` (`schema::default_cwd`) and must STAY that way --
+/// `default_document`'s own doc records why a real `std::env::current_dir()`
+/// baked into the default would reintroduce the "`default_document` and
+/// `ConwayConfig::baseline()` silently disagree" drift a previous item
+/// eliminated. But nothing used to replace that placeholder afterwards, so
+/// the shipped binary handed a literal `"."` to every downstream consumer
+/// that does path ARITHMETIC on it -- most visibly
+/// `conway_plugin_idiom::project_instructions_path`, whose walk up to the
+/// enclosing git root is completely inert on `"."` (`Path::new(".")
+/// .parent()` is `Some("")`, whose `.parent()` is `None`: the walk gives
+/// up after two relative misses). Launching conway from a SUBDIRECTORY of
+/// a repository therefore never found the repo-root `AGENTS.md` or
+/// `.conway/instructions.md`, silently; from the repository root it only
+/// appeared to work because `.` itself held the file. The environment
+/// block that same plugin sends the model was the second symptom, telling
+/// it `cwd .`.
+///
+/// Fixed HERE, at the one place the load's own invocation directory and
+/// the merged `cwd` value are both in hand, rather than inside any
+/// individual consumer: canonicalizing at a leaf (the git-root walk, say)
+/// would leave every OTHER consumer reading `"."` and would not touch the
+/// environment block at all. The walk is not wrong; its input was.
+///
+/// An operator who writes a genuinely relative `"cwd"` into a settings
+/// file (or passes one through [`CliOverrides::cwd`]) gets it interpreted
+/// relative to the invocation directory, which is the only reading that
+/// matches how `std::fs` would have resolved it anyway -- so this changes
+/// the SPELLING every consumer sees, not which directory it names.
+fn resolve_cwd(configured: &std::path::Path, invocation: &std::path::Path) -> PathBuf {
+    if configured.is_absolute() {
+        return configured.to_path_buf();
+    }
+    discovery::normalize_lexically(&invocation.join(configured))
 }
 
 /// Resolves a raw `[models].metadata_path` value (or its schema default,
@@ -1171,4 +1218,121 @@ fn validate_impl(
     }
 
     Ok(warnings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `LoadOptions` with an isolated `CONWAY_CONFIG_DIR` and nothing
+    /// else in `env` -- so a test never reads (or is steered by) the
+    /// developer's own real user-scope settings.
+    fn isolated_options(cwd: &std::path::Path, config_dir: &std::path::Path) -> LoadOptions {
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.display().to_string(),
+        );
+        LoadOptions {
+            cwd: cwd.to_path_buf(),
+            explicit_path: None,
+            env,
+            cli_overrides: CliOverrides::default(),
+            model_metadata_refresh: false,
+        }
+    }
+
+    /// Board item `01M2V6JHRWWEPN690C954R0PYS`, the regression this
+    /// function exists for: with NO settings file anywhere, `cwd` comes
+    /// out of the merge as `schema::default_cwd`'s literal relative `"."`
+    /// -- the exact value the shipped binary used to hand every downstream
+    /// consumer. `load` must replace it with the invocation directory
+    /// before anyone downstream does path arithmetic on it.
+    #[test]
+    fn a_defaulted_relative_cwd_is_resolved_against_the_invocation_directory() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let nested = project.path().join("pkg").join("sub");
+        std::fs::create_dir_all(&nested).expect("mkdir nested");
+
+        let outcome = load_ignoring_user_config(isolated_options(&nested, config_dir.path()))
+            .expect("an unconfigured project must load");
+
+        assert_eq!(
+            outcome.config.cwd, nested,
+            "the defaulted `.` must be resolved to the directory conway was actually launched \
+             from, not left as a literal `.` for every consumer to mis-resolve"
+        );
+    }
+
+    /// The same resolution for an EXPLICIT relative `"cwd": "."` written
+    /// into a settings file -- the literal spelling board item
+    /// `01M2V6JHRWWEPN690C954R0PYS` proved at the wire, exercised through
+    /// the real five-source merge rather than only
+    /// through the schema default above. An operator's relative value means
+    /// "relative to where conway was launched", which is the only reading
+    /// `std::fs` would have given it anyway.
+    #[test]
+    fn an_explicit_relative_dot_cwd_in_a_settings_file_is_resolved_the_same_way() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let dot_conway = project.path().join(".conway");
+        std::fs::create_dir_all(&dot_conway).expect("mkdir .conway");
+        std::fs::write(dot_conway.join("settings.json"), r#"{ "cwd": "." }"#)
+            .expect("write settings.json");
+        let nested = project.path().join("pkg").join("sub");
+        std::fs::create_dir_all(&nested).expect("mkdir nested");
+
+        let outcome = load_ignoring_user_config(isolated_options(&nested, config_dir.path()))
+            .expect("an explicit relative cwd must load");
+
+        assert_eq!(
+            outcome.config.cwd, nested,
+            "an explicitly written relative `.` must resolve against the invocation directory"
+        );
+    }
+
+    /// A relative value that is not `.` resolves the same way, and is
+    /// lexically normalized on the way through (`..` collapsed without
+    /// touching the filesystem) so downstream consumers see one clean
+    /// spelling.
+    #[test]
+    fn a_relative_cwd_with_parent_components_is_joined_and_lexically_normalized() {
+        let base = std::path::Path::new("/tmp/conway-invocation/pkg/sub");
+        assert_eq!(
+            resolve_cwd(std::path::Path::new("../other"), base),
+            std::path::PathBuf::from("/tmp/conway-invocation/pkg/other")
+        );
+        assert_eq!(
+            resolve_cwd(std::path::Path::new("."), base),
+            std::path::PathBuf::from("/tmp/conway-invocation/pkg/sub")
+        );
+    }
+
+    /// An operator who writes an ABSOLUTE `cwd` gets exactly that path
+    /// back, byte for byte -- this resolution only fills in a relative
+    /// value, it never re-interprets an explicit one (the same contract
+    /// [`resolve_metadata_path`] already has).
+    #[test]
+    fn an_absolute_configured_cwd_is_left_exactly_as_written() {
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let project = tempfile::tempdir().expect("tempdir");
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let dot_conway = project.path().join(".conway");
+        std::fs::create_dir_all(&dot_conway).expect("mkdir .conway");
+        std::fs::write(
+            dot_conway.join("settings.json"),
+            serde_json::to_string(&serde_json::json!({
+                "cwd": elsewhere.path().display().to_string(),
+            }))
+            .expect("serialize settings"),
+        )
+        .expect("write settings.json");
+
+        let outcome =
+            load_ignoring_user_config(isolated_options(project.path(), config_dir.path()))
+                .expect("an absolute cwd must load");
+
+        assert_eq!(outcome.config.cwd, elsewhere.path());
+    }
 }

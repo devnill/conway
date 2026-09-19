@@ -60,6 +60,34 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct ConwayConfig {
     pub default_role: RoleAlias,
+    /// The session's working directory, and the base every other relative
+    /// path in this document resolves against (`agents.dir`,
+    /// `models.metadata_path`, a relative `[session].root`, ...).
+    ///
+    /// **The wire default is the literal relative `"."`** (`default_cwd`
+    /// in this file), and it must stay that way -- see
+    /// `crate::config::merge::default_document`'s own doc for why a real
+    /// `std::env::current_dir()` baked in here would reintroduce the
+    /// "`default_document` and [`ConwayConfig::baseline`] silently
+    /// disagree" drift a previous board item eliminated.
+    ///
+    /// **What a caller of `config::load` actually receives is absolute**,
+    /// though: `load` resolves this field against `LoadOptions::cwd` (its
+    /// own `resolve_cwd`) before returning, so a relative value -- the
+    /// default, or an operator's own -- never reaches a consumer that does
+    /// path ARITHMETIC on it. That mattered concretely (board item
+    /// `01M2V6JHRWWEPN690C954R0PYS`): a literal `"."` handed to
+    /// `conway_plugin_idiom`'s walk up to the enclosing git root made the
+    /// walk inert (`Path::new(".").parent()` is `Some("")`, whose own
+    /// `.parent()` is `None`), so launching conway from a subdirectory of
+    /// a repository silently found no `AGENTS.md`/`.conway/instructions.md`
+    /// at all, and the environment block told the model `cwd .`.
+    ///
+    /// The one path that still sees the raw `"."` is a config that never
+    /// went through `load` -- `ConwayBuilder::from_parts`/`from_config`
+    /// with a hand-built `ConwayConfig` (or [`ConwayConfig::baseline`]) --
+    /// the same disclosed "bypasses `load`'s own resolution" caveat
+    /// [`SessionConfig`]'s `root` field already carries.
     #[serde(default = "default_cwd")]
     pub cwd: PathBuf,
     #[serde(default)]

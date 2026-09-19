@@ -70,6 +70,28 @@ plugin's coverage of that turn's file changes as partial, not complete.
 TUI status line's `session <id>@<seq>` field already use — an edit's own
 seq, or a prior rollback's own seq (rollbacks get one too, see below).
 
+### Which way round `diff` reads
+
+`diff <seq>` previews the **rollback**, not the write that produced the
+snapshot. The `-` side is the file as it stands right now; the `+` side is
+what `rollback <seq>` would leave behind. Both headers say which is which,
+so the direction is legible from the output alone:
+
+```
+/conway.checkpoint.diff 4
+  --- /work/notes.txt (current)
+  +++ /work/notes.txt (after rollback to seq 4)
+  @@ -1,1 +1,1 @@
+  -MODEL-WROTE-THIS
+  +ORIGINAL-BYTES
+```
+
+Read that as "run the rollback and the `-` lines become the `+` lines" —
+the same orientation `diff -u before after` has for any operation you are
+about to perform. For a path the model *created*, the whole file shows as
+`-` lines and nothing arrives: rolling back deletes it, and the output says
+so in as many words.
+
 ## Rollback preserves a hand edit, by default
 
 A rollback is not a naive overwrite. For every path it touches, it checks

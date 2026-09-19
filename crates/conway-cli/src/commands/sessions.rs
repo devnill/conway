@@ -459,9 +459,21 @@ async fn show(conway: &Conway, id: &str, json: bool, diff: bool) -> conway::Resu
 /// `AppState::transcript`. A session with nothing touched yet prints one
 /// honest line rather than nothing at all, matching the TUI's own empty
 /// state.
+///
+/// **Why the `known_baselines` argument is empty here** (board item
+/// `01M2V6HMBAWKM0GG90J14K4Q8F`). The live TUI can hand
+/// `cumulative_diffs` the bytes it captured before each call ran; this
+/// surface cannot -- it reads a session log, and no `LogRecord` variant
+/// persists a file snapshot. So every path falls through to
+/// `cumulative_diffs`'s own reconstruction, which un-applies the recorded
+/// touches from the file's current bytes to recover what the session
+/// started from. That agrees with `/diff` exactly for `edit` calls and for
+/// a `write` that created a new file; it overstates the change for a
+/// `write` that clobbered pre-existing content, whose displaced bytes the
+/// log genuinely does not contain (see `crate::diff::cumulative_diffs`).
 fn print_diff_snapshot(records: &[LogRecord]) {
     let touches = diff_touches_from_records(records);
-    let diffs = crate::diff::cumulative_diffs(&touches);
+    let diffs = crate::diff::cumulative_diffs(&touches, &std::collections::HashMap::new());
     if diffs.is_empty() {
         println!("no files edited or written yet in this session");
         return;
@@ -783,6 +795,53 @@ mod tests {
         let touches = diff_touches_from_records(&records);
         assert_eq!(touches.len(), 1, "{touches:?}");
         assert_eq!(touches[0].path, "f.txt");
+    }
+
+    /// Board item `01M2V6HMBAWKM0GG90J14K4Q8F`, acceptance 2: replaying a
+    /// finished session's records against files whose edits have ALREADY
+    /// landed -- the only state `sessions show --diff` is ever run in --
+    /// still reports the cumulative change. Against the pre-fix
+    /// implementation, which took the files' current bytes as the
+    /// baseline, this printed "no files edited or written yet in this
+    /// session" instead.
+    #[test]
+    fn a_replayed_session_diffs_against_what_the_files_held_before_the_calls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("target.txt");
+        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").expect("seed");
+        // Both edits are on disk by the time the operator inspects the
+        // session -- the state the dogfood repro was in.
+        std::fs::write(&path, "alpha\nBBBBB\ngamma\nDDDDD\n").expect("the edits landed");
+        let path_str = path.to_string_lossy().to_string();
+
+        let records = vec![
+            tool_use_record(
+                "tc_1",
+                "edit",
+                serde_json::json!({
+                    "path": path_str, "old_string": "beta", "new_string": "BBBBB"
+                }),
+            ),
+            tool_result_record("tc_1", "edit", false),
+            tool_use_record(
+                "tc_2",
+                "edit",
+                serde_json::json!({
+                    "path": path_str, "old_string": "delta", "new_string": "DDDDD"
+                }),
+            ),
+            tool_result_record("tc_2", "edit", false),
+        ];
+
+        let touches = diff_touches_from_records(&records);
+        let diffs = crate::diff::cumulative_diffs(&touches, &std::collections::HashMap::new());
+        assert_eq!(diffs.len(), 1, "{diffs:?}");
+        let (got_path, text) = &diffs[0];
+        assert_eq!(got_path, &path_str);
+        assert!(text.contains("-beta"), "{text}");
+        assert!(text.contains("+BBBBB"), "{text}");
+        assert!(text.contains("-delta"), "{text}");
+        assert!(text.contains("+DDDDD"), "{text}");
     }
 
     /// A `bash`/non-`edit`/`write` call is never extracted, even on
