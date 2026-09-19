@@ -107,9 +107,10 @@ the agent.
 Position is enforced rather than guessed: a plugin command's arguments are
 free text, handed through verbatim, so conway can only tell its own flag
 from the command's by where it sits. `--session` anywhere but the front is
-an error naming this rule, never silently passed along. (The root
-`conway --session <id> ...` flag is a different flag and does not yet reach
-plugin subcommands.)
+an error naming this rule, never silently passed along. The root
+`conway --session <id> ...` spelling reaches plugin subcommands too and
+means the same thing; giving both spellings at once is a usage error
+naming both values, rather than one silently winning.
 
 ### Which way round `diff` reads
 
