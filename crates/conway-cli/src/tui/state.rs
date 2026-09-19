@@ -810,6 +810,71 @@ pub struct AppState {
     /// same interval from the broker's side, so the live figure and the
     /// recorded one agree.
     pub awaiting_permission_since: Option<Instant>,
+    /// When the tool call that the `running <tool>…` rung NAMES was
+    /// proposed (board item `01M2VDD6MQG7H73AHGX8HJGV2J`): stamped by
+    /// `Event::ToolCallProposed` for the focused agent, in the same breath
+    /// as the [`Activity::RunningTool`] that carries the name, and cleared
+    /// wherever `apply` moves the focused agent's `activity` off that rung.
+    ///
+    /// A THIRD clock, for exactly the reason
+    /// [`Self::awaiting_permission_since`] is a second one, and with
+    /// exactly the same defect behind it: the agent loop's binding event
+    /// order is `TurnStarted < ModelDecision < TextDelta* < TurnFinished <
+    /// ToolCallProposed*`, so `TurnFinished` -- and with it
+    /// `clear_turn_state`, which zeroes [`Self::turn_started_at`] -- has
+    /// ALWAYS already been applied before any tool call of that turn is
+    /// dispatched. The status line's elapsed figure read `turn_started_at`
+    /// for this rung too, found `None` every single time, and rendered
+    /// `running bash… 0s` for the whole execution of every tool call on
+    /// every turn while the spinner beside it kept advancing.
+    ///
+    /// **What the number means when several calls are in flight -- the
+    /// decision this field encodes.** The rung names ONE tool, because
+    /// `Activity::RunningTool` carries one name and each
+    /// `ToolCallProposed` overwrites it; with a parallel batch the name is
+    /// the most recently proposed call's. So the number here is *that*
+    /// call's own age: name and clock are written together, in one place,
+    /// and are replaced together. The figure answers the question the row
+    /// actually asks -- "how long has THIS call been going" -- and never a
+    /// different one.
+    ///
+    /// The rejected alternative was the oldest in-flight call ("how long
+    /// has this batch been going"). It is a real question, but it is not
+    /// the one a row reading `running bash…` asks, and pairing that name
+    /// with a batch-wide duration is precisely the plausible-looking
+    /// number attached to the wrong call that the board item calls worse
+    /// than an obvious zero -- a wrong `0s` is at least visibly wrong. A
+    /// per-`call_id` map was rejected for a subtler reason: the rung can
+    /// only ever show one figure, so the map would still need this very
+    /// "which one" rule on top of a lifetime to manage.
+    ///
+    /// The consequence, stated so no later reader files it as a bug: while
+    /// a batch runs, the figure restarts each time a later call in that
+    /// batch is proposed -- because the NAME restarts with it. The pair
+    /// stays coherent, and the figure is never the batch's age. Per-call
+    /// history is not lost: the transcript keeps an `Entry::Tool` row per
+    /// `call_id`, each stamped with its own envelope timestamp.
+    ///
+    /// **Lifetime.** Stamped only at the single site that sets
+    /// `Activity::RunningTool` (`apply`'s `ToolCallProposed` arm), and
+    /// cleared at each `apply` site that takes the focused agent off that
+    /// rung (`TurnStarted`, `PermissionRequested`, `TurnFinished`,
+    /// `AgentFinished`) and by [`Self::focus_agent`]. Because the renderer
+    /// reads this field ONLY from `activity_elapsed_secs`'s
+    /// `Activity::RunningTool` arm, and the only writer of that variant is
+    /// the same statement that stamps this clock, a value left here by an
+    /// `activity` write elsewhere in the TUI (`app.rs`/`app/focus.rs` both
+    /// set `Thinking`) can never be the one rendered.
+    ///
+    /// Known adjacent behavior, pre-existing and deliberately not changed
+    /// here: a call that WAS prompted does not return to this rung once it
+    /// is approved -- `Event::PermissionResolved` leaves `activity` at
+    /// [`Activity::AwaitingPermission`] until the next turn-level event, so
+    /// such a call executes under the `awaiting permission…` rung rather
+    /// than this one. Which rung is up is not this clock's question; this
+    /// field only guarantees that whenever the `running <tool>…` rung IS
+    /// up, the figure beside it is the age of the call it names.
+    pub running_tool_since: Option<Instant>,
     /// New context tokens ADDED this turn: the sum of
     /// `Event::ContextSegmentAdded { tokens_est }` deltas observed on the
     /// focused agent's own stream between `TurnStarted` and `TurnFinished`.
@@ -1601,6 +1666,7 @@ impl AppState {
             spinner_frame: 0,
             turn_started_at: None,
             awaiting_permission_since: None,
+            running_tool_since: None,
             turn_running_tokens: 0,
             turn_transcript_start: 0,
             focused_model: None,
@@ -1727,6 +1793,11 @@ impl AppState {
         // that had kept running through the time the operator spent
         // elsewhere.
         self.awaiting_permission_since = None;
+        // Board item `01M2VDD6MQG7H73AHGX8HJGV2J`: and the tool-execution
+        // clock for the same reason again -- the call it times belongs to
+        // the agent being focused away from, and the activity reset above
+        // has already taken its rung down.
+        self.running_tool_since = None;
         self.turn_running_tokens = 0;
         // T4: `focus_agent` clears the transcript above, so the turn-summary
         // watermark floors at 0 for the newly focused agent.
@@ -1917,6 +1988,13 @@ impl AppState {
                     // clear the elapsed/running-token counters so the status
                     // line shows no working indicator.
                     self.clear_turn_state();
+                    // `01M2VDD6MQG7H73AHGX8HJGV2J`: the `running <tool>…`
+                    // rung is gone with the agent that owned it -- stop the
+                    // clock behind it too. NOT folded into
+                    // `clear_turn_state`: that runs at `TurnFinished`, which
+                    // lands BEFORE the tool calls it clears state for are
+                    // even dispatched.
+                    self.running_tool_since = None;
                 }
             }
             Event::AgentPromoted { .. } => {
@@ -1955,6 +2033,11 @@ impl AppState {
                     // authoritative `Usage` into `focused_agent_usage`).
                     self.turn_started_at = Some(Instant::now());
                     self.turn_running_tokens = 0;
+                    // `01M2VDD6MQG7H73AHGX8HJGV2J`: a new turn is the normal
+                    // end of the PREVIOUS turn's `running <tool>…` rung --
+                    // the model only gets to start another turn once those
+                    // calls have come back. The rung's clock stops with it.
+                    self.running_tool_since = None;
                     // T4: watermark the transcript so the turn-end summary
                     // can only attach to a block THIS turn produced (see
                     // `turn_transcript_start`).
@@ -2240,6 +2323,19 @@ impl AppState {
                 self.set_tree_status(env.agent, NodeStatus::Running);
                 if env.agent == self.focused_agent {
                     self.activity = Activity::RunningTool(tool.to_string());
+                    // Board item `01M2VDD6MQG7H73AHGX8HJGV2J`: start the
+                    // clock the status line's elapsed figure reads while
+                    // this rung is up. The SAME statement pair writes the
+                    // name and the clock, which is the whole of the
+                    // multi-call semantics: with several calls in flight the
+                    // rung names the last one proposed, so the number is
+                    // that call's age and not the batch's. Stamped
+                    // unconditionally, not `get_or_insert` -- a later
+                    // proposal renames the rung, and a figure that kept
+                    // running from an earlier call would then be timing a
+                    // call the row no longer names. See the field's own doc
+                    // for the alternatives this rules out.
+                    self.running_tool_since = Some(Instant::now());
                 }
             }
             Event::PermissionRequested { call_id, .. } => {
@@ -2255,6 +2351,13 @@ impl AppState {
                     // the wait the operator is being asked about now, not
                     // the age of the oldest unanswered one.
                     self.awaiting_permission_since = Some(Instant::now());
+                    // `01M2VDD6MQG7H73AHGX8HJGV2J`: the prompt REPLACES the
+                    // `running <tool>…` rung with `awaiting permission…`,
+                    // so the clock behind the replaced rung stops here.
+                    // Nothing is being executed while the prompt is open --
+                    // letting it keep running would bank the operator's own
+                    // deliberation time into the call's execution time.
+                    self.running_tool_since = None;
                 }
             }
             Event::TurnFinished { usage, .. } => {
@@ -2275,6 +2378,13 @@ impl AppState {
                     // the running-estimate counter (the authoritative `Usage`
                     // is now folded into `focused_agent_usage` above).
                     self.clear_turn_state();
+                    // `01M2VDD6MQG7H73AHGX8HJGV2J`: belt and braces. The
+                    // turn ending lands BEFORE this turn's own tool calls
+                    // are dispatched, so there is normally no tool clock
+                    // running here; a previous batch's stamp surviving into
+                    // an `Idle` rung would be a value nothing reads but
+                    // everything has to reason about.
+                    self.running_tool_since = None;
                 }
             }
             Event::PermissionResolved { call_id, decision } => {
@@ -2676,5 +2786,237 @@ mod awaiting_permission_clock {
 
         assert!(state.awaiting_permission_since.is_none());
         assert_eq!(state.activity, Activity::Idle);
+    }
+}
+
+/// Board item `01M2VDD6MQG7H73AHGX8HJGV2J`: the lifecycle of
+/// [`AppState::running_tool_since`], the clock the status line's elapsed
+/// figure reads while the `running <tool>…` rung is up.
+///
+/// These pin the STATE half of the fix -- above all the multi-call rule,
+/// which is the decision the item existed for: the clock belongs to the
+/// call the rung NAMES, so it is restamped exactly when the name is. The
+/// render half -- that the figure on screen is that clock's value and not
+/// a literal `0s` -- is pinned in `view/status.rs`'s own tests, against
+/// the real rendered buffer.
+#[cfg(test)]
+mod running_tool_clock {
+    use std::time::Duration;
+
+    use super::fixtures::envelope;
+    use super::*;
+    use conway::backend::StopReason;
+    use conway::{PermissionDecisionKind, SessionId, ToolName};
+
+    fn running_state() -> (SessionId, AgentId, AppState) {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let state = AppState::new(agent);
+        (session, agent, state)
+    }
+
+    /// `bash`/`grep` deliberately -- never `edit`/`write`, whose arm reads
+    /// the proposed path off disk to seed the diff baseline.
+    fn propose(call_id: &str, tool: &str) -> Event {
+        Event::ToolCallProposed {
+            call_id: call_id.to_string(),
+            tool: ToolName::new(tool),
+            args: serde_json::json!({}),
+        }
+    }
+
+    /// The reproduction, at the state layer. The real order reaching a
+    /// dispatch is `TurnStarted` -> `TurnFinished` -> `ToolCallProposed`
+    /// (`conway-runtime`'s `agent_loop` module doc makes `TurnFinished <
+    /// ToolCallProposed*` binding), so by the time the rung goes up
+    /// `clear_turn_state` has ALREADY zeroed `turn_started_at`. That is the
+    /// whole defect: the elapsed figure read that field, found `None`, and
+    /// rendered `0s` for the entire execution.
+    #[test]
+    fn a_call_starts_with_turn_started_at_already_cleared_and_stamps_its_own_clock() {
+        let (session, agent, mut state) = running_state();
+
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 1 }));
+        assert!(state.turn_started_at.is_some());
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::TurnFinished {
+                usage: Usage::default(),
+                stop: StopReason::ToolUse,
+            },
+        ));
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+
+        assert_eq!(state.activity, Activity::RunningTool("bash".to_string()));
+        assert!(
+            state.turn_started_at.is_none(),
+            "board item `01M2VDD6MQG7H73AHGX8HJGV2J`'s premise: the turn is already over \
+             when a tool call is dispatched, so `turn_started_at` cannot be the clock the \
+             execution is measured from"
+        );
+        assert!(
+            state.running_tool_since.is_some(),
+            "the dispatched call must start its own clock"
+        );
+    }
+
+    /// **The multi-call decision.** A second proposal in the same batch
+    /// renames the rung, and the clock is restamped with it -- the number
+    /// is the age of the call the rung names, never the batch's, and never
+    /// an older sibling call's.
+    ///
+    /// The pre-set stale stamp is what makes this deterministic: asserting
+    /// "the new `Instant` differs from the old one" would lean on clock
+    /// resolution, whereas an implausibly old stamp either survives
+    /// (get-or-insert semantics -- the behavior being ruled out) or does
+    /// not.
+    #[test]
+    fn a_later_call_in_the_batch_restamps_the_clock_along_with_the_name() {
+        let (session, agent, mut state) = running_state();
+
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        assert_eq!(state.activity, Activity::RunningTool("bash".to_string()));
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(600));
+
+        state.apply(&envelope(session, agent, propose("tc_2", "grep")));
+
+        assert_eq!(
+            state.activity,
+            Activity::RunningTool("grep".to_string()),
+            "the rung names the most recently proposed call"
+        );
+        assert!(
+            state
+                .running_tool_since
+                .expect("the rung is up, so its clock must be running")
+                .elapsed()
+                < Duration::from_secs(60),
+            "the clock must be restamped with the name -- a rung reading `running grep…` \
+             must not be wearing the age of the `bash` call proposed before it"
+        );
+    }
+
+    /// A permission prompt REPLACES the rung, so it stops the rung's clock
+    /// -- the operator's deliberation is not part of the call's execution
+    /// time, and `awaiting_permission_since` is the clock that wait has.
+    #[test]
+    fn a_prompt_replacing_the_rung_stops_its_clock() {
+        let (session, agent, mut state) = running_state();
+
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        assert!(state.running_tool_since.is_some());
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::PermissionRequested {
+                call_id: "tc_1".into(),
+                rendered: "bash -lc ls".into(),
+            },
+        ));
+
+        assert_eq!(state.activity, Activity::AwaitingPermission);
+        assert!(
+            state.running_tool_since.is_none(),
+            "nothing is executing while the prompt is open"
+        );
+        assert!(state.awaiting_permission_since.is_some());
+    }
+
+    /// The batch coming back and the model taking another turn is the
+    /// normal end of the rung; a terminal `AgentFinished` ends it too.
+    #[test]
+    fn the_next_turn_and_a_finished_agent_both_stop_the_clock() {
+        let (session, agent, mut state) = running_state();
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        assert!(state.running_tool_since.is_some());
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 2 }));
+        assert!(
+            state.running_tool_since.is_none(),
+            "the model only gets another turn once the calls are back"
+        );
+
+        let (session, agent, mut state) = running_state();
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        assert!(state.running_tool_since.is_some());
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::AgentFinished {
+                result: AgentResult::new(agent, session, ResultStatus::Completed, "done"),
+                ephemeral: false,
+            },
+        ));
+        assert!(state.running_tool_since.is_none());
+        assert_eq!(state.activity, Activity::Idle);
+    }
+
+    /// Scoping. A background agent's tool call must neither start nor stop
+    /// the clock behind the rung the operator is reading for the FOCUSED
+    /// agent -- the same `env.agent == self.focused_agent` discipline every
+    /// other focused-agent-scoped field in `apply` follows.
+    #[test]
+    fn a_background_agents_tool_call_never_touches_the_focused_clock() {
+        let (session, focused, mut state) = running_state();
+        let other = AgentId::new();
+
+        state.apply(&envelope(session, other, propose("tc_other", "bash")));
+        assert!(
+            state.running_tool_since.is_none(),
+            "an unfocused agent's dispatch must not start the focused clock"
+        );
+
+        state.apply(&envelope(session, focused, propose("tc_mine", "bash")));
+        let mine = state.running_tool_since;
+        assert!(mine.is_some());
+
+        state.apply(&envelope(session, other, propose("tc_other2", "grep")));
+        assert_eq!(
+            state.running_tool_since, mine,
+            "an unfocused agent's dispatch must not restamp the clock the operator is reading"
+        );
+        assert_eq!(state.activity, Activity::RunningTool("bash".to_string()));
+    }
+
+    /// A focus switch resets it alongside the other two clocks -- a call
+    /// belonging to the agent just switched away from is not this one's.
+    #[test]
+    fn focusing_a_different_agent_clears_the_clock() {
+        let (session, agent, mut state) = running_state();
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        assert!(state.running_tool_since.is_some());
+
+        state.focus_agent(AgentId::new());
+
+        assert!(state.running_tool_since.is_none());
+        assert_eq!(state.activity, Activity::Idle);
+    }
+
+    /// A resolution that never reached the operator (cached/pattern allow)
+    /// emits `PermissionResolved` with no prompt ever having opened. It
+    /// must not disturb the rung's clock -- only the permission clock,
+    /// which is a no-op clear in that case.
+    #[test]
+    fn a_silent_permission_resolution_leaves_the_rung_clock_alone() {
+        let (session, agent, mut state) = running_state();
+        state.apply(&envelope(session, agent, propose("tc_1", "bash")));
+        let running = state.running_tool_since;
+        assert!(running.is_some());
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::PermissionResolved {
+                call_id: "tc_1".into(),
+                decision: PermissionDecisionKind::Cached,
+            },
+        ));
+
+        assert_eq!(
+            state.running_tool_since, running,
+            "a resolution the operator never saw does not interrupt the execution it allows"
+        );
     }
 }
