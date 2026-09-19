@@ -422,6 +422,188 @@ async fn fallback_notice_and_why_name_the_skipped_candidate_with_its_numbers() {
     );
 }
 
+/// [`write_two_model_fixture`]'s sibling, and the `"plugins"` key's ABSENCE
+/// here is as load-bearing as its presence is there -- this is the
+/// operator's own default install, which names no `[plugins]` section at
+/// all, so `ConwayBuilder::build` falls through to
+/// `conway_core::routing::MinimalRouter`.
+///
+/// That router filters NOTHING: it holds no capability index and no health
+/// state, so it hands the attempt engine the whole declared chain and the
+/// headroom gate is enforced one layer down, by each candidate's own
+/// `Backend::admit` (`conway_runtime::attempt`'s "T-1, AUTHORITATIVE"
+/// module note). That is the ADMISSION-time skip path -- distinct from the
+/// router-level pre-filter `write_two_model_fixture` exercises, and the
+/// path an operator actually hits, since a default install has no
+/// `conway.routing` entry to pre-filter with.
+///
+/// `tiny`'s window is 50 tokens, far below any real request plus the
+/// default 8192-token headroom, so `admit` refuses it before any request is
+/// sent; `big` (128k) is admitted and serves the turn.
+fn write_two_model_minimal_router_fixture(base_url: &str, tiny: &str, big: &str) -> Fixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = serde_json::json!({
+        "default_role": "default",
+        "limits": { "max_steps": 10 },
+        "backends": {
+            "mock": { "kind": "openai-compat", "base_url": base_url, "dialect": "openai" }
+        },
+        "roles": {
+            "default": { "chain": [format!("mock/{tiny}"), format!("mock/{big}")] }
+        }
+    });
+    let config_path = dir.path().join("conway.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_vec(&config).expect("serialize conway.json"),
+    )
+    .expect("write conway.json");
+
+    let models_dir = dir.path().join(".conway");
+    std::fs::create_dir_all(&models_dir).expect("create .conway dir");
+    let models_json = serde_json::json!({
+        "models": {
+            format!("mock/{tiny}"): {
+                "max_context_tokens": 50,
+                "tool_calling": "streaming_validated",
+                "reasoning": false,
+                "reliability_tier": "verified",
+            },
+            format!("mock/{big}"): {
+                "max_context_tokens": 128_000,
+                "tool_calling": "streaming_validated",
+                "reasoning": false,
+                "reliability_tier": "verified",
+            },
+        }
+    });
+    std::fs::write(
+        models_dir.join("models.json"),
+        serde_json::to_vec(&models_json).expect("serialize models.json"),
+    )
+    .expect("write models.json");
+
+    Fixture { dir, config_path }
+}
+
+/// Board item `01M2TVFXE2X1SHWZS54HG9DX5A`: a fallback caused by an
+/// ADMISSION-time skip explains itself, exactly as one caused by a
+/// router-level pre-filter already did
+/// (`fallback_notice_and_why_name_the_skipped_candidate_with_its_numbers`,
+/// above -- unchanged, and still the other half of this pair).
+///
+/// **The defect this pins, reproduced live on the operator's own chain.**
+/// A role whose head could not satisfy the headroom changed models
+/// mid-session with NO notice, and `/why` answered:
+///
+/// ```text
+/// reason: fallback #1 after:
+/// attempt: 0
+/// ```
+///
+/// `attempt: 0` is the tell: nothing had been attempted, so there was no
+/// `AttemptFailure` to list, so `after` was legitimately empty and the
+/// label rendered with nothing after it. The candidate was refused at
+/// admission, and an admission refusal had nowhere to go --
+/// `conway_runtime::attempt` recorded it only on the returned
+/// `AttemptOutcome`, never on the `Event::ModelDecision` that `/why` and
+/// the mid-turn notice both read.
+///
+/// **Fails against HEAD, for a named reason.** Before
+/// `RoutingReason::Fallback::skipped` existed and before `attempt.rs`
+/// emitted an enriched reason, this fixture produced no notice at all (the
+/// notice fired only on a non-empty `after`, and `MinimalRouter`
+/// hard-codes `after: Vec::new()`), so `wait_for_since("routed to
+/// mock/big", ..)` times out; and `/why`'s reason line was the bare
+/// `fallback #1 after:` this test asserts is now followed by the skipped
+/// candidate and its numbers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admission_time_skip_produces_a_notice_and_a_legible_why() {
+    let mock = MockBackend::start(ok_script()).await;
+    // One real HTTP request: `tiny` is refused by `Backend::admit` before
+    // anything is dialed, so only the selected candidate (`big`) is served.
+    let fixture = write_two_model_minimal_router_fixture(&mock.base_url, "tiny", "big");
+
+    let cmd = common::pty_command(&[], &fixture);
+    let mut session = PtySession::spawn(cmd, 160, 45);
+    let landed = session.wait_for(LANDED, Duration::from_secs(15));
+
+    session.send("hi\r");
+    // The mid-turn notice: `tui/state.rs::fallback_notice_text`'s shape,
+    // `"routed to {chosen} — {model} skipped: {detail}"`. Awaited as a
+    // whole phrase that occurs exactly once and is emitted contiguously
+    // when the notice line is first drawn -- `mock/big` alone also appears
+    // on the status line, which is why the wait is on the full phrase and
+    // is bounded to text that arrived after `landed`.
+    let after_notice =
+        session.wait_for_since("routed to mock/big", landed, Duration::from_secs(15));
+
+    let screen = session.screen();
+    assert!(
+        screen.contains("mock/tiny skipped:"),
+        "the fallback must not be silent: the notice must name the candidate that was \
+         skipped at admission, not merely the one that was chosen. Screen:\n{screen}"
+    );
+    // The candidate's OWN window, carried structurally on
+    // `RoutingReason::HeadroomSkip` and rendered by `RoutingReason::
+    // skip_detail`. `50` is `models.json`'s declared `max_context_tokens`
+    // for `tiny`; the prompt and headroom halves vary with the wire body's
+    // size, so only the parts that cannot vary are pinned here.
+    assert!(
+        screen.contains("skipped: window 50 < required"),
+        "the skip must carry its numbers -- the candidate's window and what the request \
+         actually required. Screen:\n{screen}"
+    );
+    assert!(
+        screen.contains("headroom"),
+        "the skip must say WHICH budget overflowed the window (prompt + headroom), not \
+         just that one did. Screen:\n{screen}"
+    );
+
+    session.send("/why\r");
+    // Awaited on `reason: fallback #1` alone -- the exact prefix
+    // `fallback_notice_and_why_name_the_skipped_candidate_with_its_numbers`
+    // above already proves is emitted contiguously for this same `/why`
+    // interaction -- rather than on the whole clause. Every claim about
+    // what FOLLOWS that prefix is then a containment check bounded to the
+    // returned offset, so none of them can be satisfied by the notice's
+    // own earlier text (see `CONTRIBUTING.md`'s partial-redraw note: a
+    // `screen()` is the whole session's emissions, so an unbounded
+    // `contains` proves nothing about which surface printed it).
+    let after_why =
+        session.wait_for_since("reason: fallback #1", after_notice, Duration::from_secs(10));
+    let why_screen = session.screen();
+    let why_tail = &why_screen[after_why..];
+    // Against HEAD this line read `reason: fallback #1 after:` with
+    // nothing following it -- the literal `after: []` shape the board item
+    // was filed against. `after` is STILL empty and still correct (nothing
+    // was attempted); the skip travels beside it, in its own clause,
+    // rather than being forced into a manufactured attempt failure.
+    assert!(
+        why_tail.contains("skipped at admission:"),
+        "/why must say the candidate was skipped at ADMISSION, not report an empty \
+         `after:` list. Screen:\n{why_screen}"
+    );
+    assert!(
+        why_tail.contains("mock/tiny"),
+        "/why must name the skipped candidate, not only announce that a fallback \
+         happened. Screen:\n{why_screen}"
+    );
+    assert!(
+        why_tail.contains("window 50 < required"),
+        "/why's reason line must carry the skip's numbers too, not merely the fact of it \
+         -- a reason that is correct and useless is the defect. Screen:\n{why_screen}"
+    );
+    // `attempt: 0` is the tell from the live repro, and it is still
+    // truthful: nothing WAS attempted before `big`. What changed is that
+    // the reason line above it now explains itself.
+    assert!(
+        why_tail.contains("attempt: 0"),
+        "the attempt counter must still report zero prior attempts -- the fix explains \
+         the skip, it does not invent an attempt. Screen:\n{why_screen}"
+    );
+}
+
 /// After three `/model` switches, per-turn model attribution is still
 /// recoverable via `/why`'s bounded session history (`AppState::
 /// model_decision_history`, `render_why`'s `history.len() > 2` branch) --

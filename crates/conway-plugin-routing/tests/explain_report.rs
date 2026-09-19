@@ -483,7 +483,11 @@ fn render_text_matches_golden_file_byte_for_byte() {
 /// everything the two calls MUST agree on.
 fn normalize_reason(reason: RoutingReason) -> RoutingReason {
     match reason {
-        RoutingReason::Fallback { position, after } => RoutingReason::Fallback {
+        RoutingReason::Fallback {
+            position,
+            after,
+            skipped,
+        } => RoutingReason::Fallback {
             position,
             after: after
                 .into_iter()
@@ -492,6 +496,10 @@ fn normalize_reason(reason: RoutingReason) -> RoutingReason {
                     ..f
                 })
                 .collect(),
+            // Carries no timestamp to normalize: an admission skip records
+            // no attempt, so there is no clock read for the two calls to
+            // race on.
+            skipped,
         },
         other => other,
     }

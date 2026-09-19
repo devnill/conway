@@ -298,16 +298,40 @@ fn render_reason(reason: &RoutingReason) -> String {
         RoutingReason::PinnedByApi => "pinned by API".to_string(),
         RoutingReason::PinnedByAgentDef => "pinned by agent definition".to_string(),
         RoutingReason::AliasPrimary { alias } => format!("primary for role `{alias}`"),
-        RoutingReason::Fallback { position, after } => {
+        RoutingReason::Fallback {
+            position,
+            after,
+            skipped,
+        } => {
             let failures: Vec<String> = after
                 .iter()
                 .map(|f| format!("{}: {}", f.model, f.error))
                 .collect();
-            format!("fallback #{position} after: {}", failures.join(", "))
+            // `after` (attempted and failed) and `skipped` (refused at
+            // admission, never dialed) are rendered as separate clauses --
+            // an admission skip is not an attempt failure and must not read
+            // as one. `after:` is kept unconditionally here, unlike the
+            // TUI's `/why`, because this report's column format is
+            // position-stable across rows.
+            let base = format!("fallback #{position} after: {}", failures.join(", "));
+            if skipped.is_empty() {
+                base
+            } else {
+                let admission: Vec<String> = skipped
+                    .iter()
+                    .filter_map(|reason| reason.skip_detail())
+                    .map(|(model, detail)| format!("{model}: {detail}"))
+                    .collect();
+                format!("{base}; skipped at admission: {}", admission.join(", "))
+            }
         }
         RoutingReason::CapabilitySkip { skipped, missing } => {
             format!("skipped `{skipped}`: missing {}", missing.join(", "))
         }
+        RoutingReason::HeadroomSkip { .. } => match reason.skip_detail() {
+            Some((skipped, detail)) => format!("skipped `{skipped}`: {detail}"),
+            None => format!("{reason:?}"),
+        },
         RoutingReason::HealthSkip { skipped, breaker } => {
             let kind = breaker_kind_name(breaker);
             format!("skipped `{skipped}`: {kind} breaker open")
@@ -567,10 +591,39 @@ mod tests {
                 error: "connection refused".to_string(),
                 at: chrono::Utc::now(),
             }],
+            skipped: Vec::new(),
         };
         assert_eq!(
             render_reason(&fallback),
             "fallback #2 after: backend/model: connection refused"
+        );
+
+        // An admission-time headroom skip renders its own numbers, and a
+        // fallback caused by one names it as a SKIP, never as an attempt
+        // failure -- the `after: []` defect this variant exists to close.
+        let headroom_skip = RoutingReason::HeadroomSkip {
+            skipped: model.clone(),
+            admission: conway_core::ports::Admission {
+                est_tokens: 30_000,
+                headroom_tokens: 4_000,
+                max_context_tokens: 32_768,
+            },
+        };
+        assert_eq!(
+            render_reason(&headroom_skip),
+            "skipped `backend/model`: window 32768 < required 34000 \
+             (30000 prompt + 4000 headroom, short by 1232)"
+        );
+
+        let fallback_after_skip = RoutingReason::Fallback {
+            position: 1,
+            after: Vec::new(),
+            skipped: vec![headroom_skip],
+        };
+        assert_eq!(
+            render_reason(&fallback_after_skip),
+            "fallback #1 after: ; skipped at admission: backend/model: window 32768 < \
+             required 34000 (30000 prompt + 4000 headroom, short by 1232)"
         );
     }
 

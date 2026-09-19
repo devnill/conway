@@ -4194,20 +4194,59 @@ fn render_routing_reason(reason: &RoutingReason) -> String {
         RoutingReason::PinnedByApi => "pinned by API".to_string(),
         RoutingReason::PinnedByAgentDef => "pinned by agent definition".to_string(),
         RoutingReason::AliasPrimary { alias } => format!("primary for role `{alias}`"),
-        RoutingReason::Fallback { position, after } => format!(
-            "fallback #{position} after: {}",
-            after
-                .iter()
-                .map(|f| format!("{} ({})", f.model, f.error))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        RoutingReason::CapabilitySkip { skipped, missing } => {
-            format!("skipped `{skipped}`: missing {}", missing.join(", "))
+        // Two independently-populated lists, rendered as two clauses and
+        // never merged: `after` names candidates that were ATTEMPTED and
+        // failed; `skipped` names candidates refused at admission, which
+        // were never dialed at all. Before `RoutingReason::Fallback::
+        // skipped` existed, the second kind had nowhere to go, so the
+        // commonest real fallback -- a chain head whose window cannot hold
+        // the request -- rendered as a bare `after:` with nothing following
+        // it. An EMPTY list contributes no clause rather than an empty
+        // label: a `fallback #1` with neither list populated says only what
+        // it can honestly say.
+        RoutingReason::Fallback {
+            position,
+            after,
+            skipped,
+        } => {
+            let mut clauses: Vec<String> = Vec::new();
+            if !after.is_empty() {
+                clauses.push(format!(
+                    "after: {}",
+                    after
+                        .iter()
+                        .map(|f| format!("{} ({})", f.model, f.error))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if !skipped.is_empty() {
+                clauses.push(format!(
+                    "skipped at admission: {}",
+                    skipped
+                        .iter()
+                        .filter_map(|reason| reason.skip_detail())
+                        .map(|(model, detail)| format!("{model}: {detail}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if clauses.is_empty() {
+                format!("fallback #{position}")
+            } else {
+                format!("fallback #{position} {}", clauses.join("; "))
+            }
         }
-        RoutingReason::HealthSkip { skipped, breaker } => {
-            format!("skipped `{skipped}`: {breaker:?} breaker open")
-        }
+        // `RoutingReason::skip_detail` is `conway-core`'s single skip
+        // renderer -- the same one the mid-turn fallback notice and `conway
+        // routes explain` call -- so `/why` cannot word a shortfall
+        // differently from either of them.
+        RoutingReason::CapabilitySkip { .. }
+        | RoutingReason::HealthSkip { .. }
+        | RoutingReason::HeadroomSkip { .. } => match reason.skip_detail() {
+            Some((skipped, detail)) => format!("skipped `{skipped}`: {detail}"),
+            None => "unknown routing reason".to_string(),
+        },
         _ => "unknown routing reason".to_string(),
     }
 }
@@ -8985,6 +9024,79 @@ mod tests {
                 .iter()
                 .any(|t| t.starts_with("role:") && t.contains("->")),
             "role did not change and must render bare"
+        );
+    }
+
+    /// Board item `01M2TVFXE2X1SHWZS54HG9DX5A`: a fallback caused by an
+    /// ADMISSION-time skip renders the skipped candidate and its numbers,
+    /// not a bare `after:` with nothing following it.
+    ///
+    /// The live repro was `reason: fallback #1 after:` / `attempt: 0` --
+    /// the candidate was never dialed, so there was no `AttemptFailure` to
+    /// list and `after` was legitimately, uselessly empty. Against HEAD
+    /// this test cannot even be written: `RoutingReason::Fallback` had no
+    /// `skipped` field to put the refusal in.
+    #[tokio::test]
+    async fn why_names_a_candidate_skipped_at_admission_with_its_numbers() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let skipped = conway::ModelRef {
+            backend: "local".into(),
+            model: "qwen3.8:27b-mlx".into(),
+        };
+        state.model_decision_history.push_back(conway::Envelope {
+            seq: 1,
+            ts: chrono::Utc::now(),
+            session: SessionId::new(),
+            agent: root,
+            event: Event::ModelDecision {
+                role: "smallfirst".into(),
+                chosen: conway::ModelRef {
+                    backend: "ollama_cloud".into(),
+                    model: "glm-5.2".into(),
+                },
+                reason: RoutingReason::Fallback {
+                    position: 1,
+                    // Empty, and CORRECTLY so: nothing was attempted.
+                    after: Vec::new(),
+                    skipped: vec![RoutingReason::HeadroomSkip {
+                        skipped: skipped.clone(),
+                        admission: conway_core::ports::Admission {
+                            est_tokens: 91_808,
+                            headroom_tokens: 8_192,
+                            max_context_tokens: 32_768,
+                        },
+                    }],
+                },
+                attempt: 0,
+            },
+        });
+
+        execute(SlashCommand::Why, &mut state, &host).await;
+
+        let reason_line = state
+            .transcript
+            .iter()
+            .find_map(|e| match e {
+                Entry::Notice { text } if text.starts_with("reason:") => Some(text.clone()),
+                _ => None,
+            })
+            .expect("`/why` always renders a reason line");
+        assert!(
+            reason_line.contains("local/qwen3.8:27b-mlx"),
+            "the reason must NAME the candidate that was skipped, got: {reason_line}"
+        );
+        assert!(
+            reason_line.contains("window 32768 < required 100000"),
+            "the reason must carry the candidate's own window and what the request \
+             required, got: {reason_line}"
+        );
+        assert!(
+            !reason_line.contains("after:"),
+            "nothing was attempted, so no empty `after:` label may appear at all -- \
+             a correct-but-useless label is the defect, got: {reason_line}"
         );
     }
 

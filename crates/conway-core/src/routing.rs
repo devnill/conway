@@ -24,7 +24,9 @@ use crate::capabilities::{
 use crate::content::SamplingParams;
 use crate::error::RoutingError;
 use crate::ids::{AgentId, BackendId, EndpointId, ModelId, ModelRef, RoleAlias};
-use crate::ports::{CacheReporting, HealthRegistry, Router, RoutingExplainer, TokenCountFidelity};
+use crate::ports::{
+    Admission, CacheReporting, HealthRegistry, Router, RoutingExplainer, TokenCountFidelity,
+};
 
 fn default_headroom_tokens() -> u32 {
     DEFAULT_HEADROOM_TOKENS
@@ -75,7 +77,31 @@ pub enum RoutingReason {
     },
     Fallback {
         position: u8,
+        /// Candidates that were ATTEMPTED and failed, in the order the
+        /// failures were discovered. A candidate that was never dialed at
+        /// all does not belong here -- see `skipped`.
         after: Vec<AttemptFailure>,
+        /// Candidates refused at ADMISSION -- rejected before any request
+        /// was sent, so there is no attempt, no error, and no timestamp to
+        /// record. Each entry is itself a skip reason
+        /// ([`RoutingReason::HeadroomSkip`],
+        /// [`RoutingReason::CapabilitySkip`],
+        /// [`RoutingReason::HealthSkip`]) naming the candidate and why it
+        /// was passed over.
+        ///
+        /// This field exists because `after` alone cannot answer the
+        /// commonest real "why am I not on the model I chose": when the
+        /// head of a chain is refused on window/headroom, nothing was
+        /// attempted, so `after` is legitimately empty and the reason
+        /// rendered as a bare `after:` with nothing following it. Filling
+        /// `after` with a manufactured [`AttemptFailure`] would have made
+        /// the record claim an attempt that never happened; this field
+        /// records the skip as a skip instead.
+        ///
+        /// `#[serde(default)]`: a journal written before this field existed
+        /// still deserializes, with an empty skip list.
+        #[serde(default)]
+        skipped: Vec<RoutingReason>,
     },
     CapabilitySkip {
         skipped: ModelRef,
@@ -85,6 +111,56 @@ pub enum RoutingReason {
         skipped: ModelRef,
         breaker: BreakerKind,
     },
+    /// An admission-time skip on context size: `admission` did not fit
+    /// inside the candidate's own declared window, so the candidate was
+    /// passed over without ever being dialed.
+    ///
+    /// Sibling of [`RoutingReason::CapabilitySkip`]/
+    /// [`RoutingReason::HealthSkip`], and deliberately distinct from them:
+    /// those two say "this candidate cannot do what was asked" and "this
+    /// endpoint is currently unhealthy"; this one says "this candidate is
+    /// fine, the request is simply bigger than it can hold", and carries
+    /// the three numbers that make that checkable rather than a rendered
+    /// sentence. The arithmetic itself is [`Admission`]'s -- never restated
+    /// by a renderer.
+    HeadroomSkip {
+        skipped: ModelRef,
+        admission: Admission,
+    },
+}
+
+impl RoutingReason {
+    /// For a skip reason -- [`RoutingReason::HeadroomSkip`],
+    /// [`RoutingReason::CapabilitySkip`], [`RoutingReason::HealthSkip`] --
+    /// the candidate that was passed over plus a one-line, number-carrying
+    /// explanation. `None` for every *selection* reason (`AliasPrimary`,
+    /// `Fallback`, either pin), which names no skipped candidate at all.
+    ///
+    /// One implementation, shared by every surface that renders a skip
+    /// (`conway routes explain`, the TUI's mid-turn fallback notice, and
+    /// `/why`), so the three can never word the same fact differently.
+    pub fn skip_detail(&self) -> Option<(&ModelRef, String)> {
+        match self {
+            RoutingReason::HeadroomSkip { skipped, admission } => Some((
+                skipped,
+                format!(
+                    "window {} < required {} ({} prompt + {} headroom, short by {})",
+                    admission.max_context_tokens,
+                    admission.required_tokens(),
+                    admission.est_tokens,
+                    admission.headroom_tokens,
+                    admission.shortfall_tokens(),
+                ),
+            )),
+            RoutingReason::CapabilitySkip { skipped, missing } => {
+                Some((skipped, format!("missing {}", missing.join(", "))))
+            }
+            RoutingReason::HealthSkip { skipped, breaker } => {
+                Some((skipped, format!("{breaker:?} breaker open")))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A prior failed attempt, recorded as part of a `Fallback` reason.
@@ -339,6 +415,13 @@ fn render_skipped(reason: &RoutingReason, breaker: &BreakerSnapshot) -> String {
         RoutingReason::CapabilitySkip { missing, .. } => {
             format!("capability: {}", missing.join("; "))
         }
+        // The numbers come from `RoutingReason::skip_detail` -- the one
+        // shared skip renderer -- so this report cannot word the same
+        // shortfall differently from the TUI notice or `/why`.
+        RoutingReason::HeadroomSkip { .. } => match reason.skip_detail() {
+            Some((_, detail)) => format!("headroom: {detail}"),
+            None => "headroom: skipped".to_string(),
+        },
         RoutingReason::HealthSkip { breaker: kind, .. } => {
             // `BreakerKind` is `#[non_exhaustive]` for OTHER crates; within
             // its own defining crate (this one, now that this type moved
@@ -598,6 +681,13 @@ impl MinimalRouter {
             RoutingReason::Fallback {
                 position: position as u8,
                 after: Vec::new(),
+                // `MinimalRouter` filters nothing -- it holds no capability
+                // index and no health state -- so it has genuinely skipped
+                // nothing of its own to report. A candidate this router
+                // hands back that is later refused by `Backend::admit`
+                // gets its skip recorded by the attempt engine, which is
+                // the layer that actually discovered it.
+                skipped: Vec::new(),
             }
         }
     }
@@ -990,6 +1080,78 @@ mod tests {
         let decoded: ExplainEntry =
             serde_json::from_value(value).expect("pre-field-existing shape still decodes");
         assert_eq!(decoded.token_fidelity, None);
+    }
+
+    /// Board item `01M2TVFXE2X1SHWZS54HG9DX5A`: a session journal written
+    /// before `RoutingReason::Fallback::skipped` existed still decodes,
+    /// with an empty skip list -- the `#[serde(default)]` that field's own
+    /// doc promises. Built by serializing a live value and stripping the
+    /// key, rather than a hand-written literal, so this cannot drift from
+    /// the variant's actual wire shape.
+    #[test]
+    fn fallback_without_skipped_key_decodes_to_an_empty_list() {
+        let reason = RoutingReason::Fallback {
+            position: 1,
+            after: Vec::new(),
+            skipped: vec![RoutingReason::HeadroomSkip {
+                skipped: "local/m1".parse().unwrap(),
+                admission: Admission {
+                    est_tokens: 91_808,
+                    headroom_tokens: 8_192,
+                    max_context_tokens: 32_768,
+                },
+            }],
+        };
+        let mut value = serde_json::to_value(&reason).unwrap();
+        value
+            .as_object_mut()
+            .expect("RoutingReason serializes to an object")
+            .remove("skipped")
+            .expect("skipped key present before removal");
+
+        let decoded: RoutingReason =
+            serde_json::from_value(value).expect("pre-field-existing shape still decodes");
+        assert_eq!(
+            decoded,
+            RoutingReason::Fallback {
+                position: 1,
+                after: Vec::new(),
+                skipped: Vec::new(),
+            }
+        );
+    }
+
+    /// The one shared skip renderer names the candidate's own window, what
+    /// the request actually required, both halves of that requirement, and
+    /// the shortfall -- the numbers `conway routes explain` already printed
+    /// for the same candidate, now carried to the moment of the skip.
+    #[test]
+    fn headroom_skip_detail_names_the_window_and_the_requirement() {
+        let reason = RoutingReason::HeadroomSkip {
+            skipped: "local/qwen3.8:27b-mlx".parse().unwrap(),
+            admission: Admission {
+                est_tokens: 91_808,
+                headroom_tokens: 8_192,
+                max_context_tokens: 32_768,
+            },
+        };
+        let (model, detail) = reason.skip_detail().expect("a skip carries a detail");
+        assert_eq!(model.to_string(), "local/qwen3.8:27b-mlx");
+        assert_eq!(
+            detail,
+            "window 32768 < required 100000 (91808 prompt + 8192 headroom, short by 67232)"
+        );
+
+        // A SELECTION reason names no skipped candidate and must not
+        // pretend to.
+        assert!(RoutingReason::PinnedByApi.skip_detail().is_none());
+        assert!(RoutingReason::Fallback {
+            position: 1,
+            after: Vec::new(),
+            skipped: Vec::new(),
+        }
+        .skip_detail()
+        .is_none());
     }
 
     #[test]
