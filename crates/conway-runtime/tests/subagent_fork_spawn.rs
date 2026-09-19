@@ -20,11 +20,11 @@ use conway_core::agent::{
     SubagentSpec, ToolSelector,
 };
 use conway_core::capabilities::{
-    CacheMode, Capabilities, HeadroomPolicy, ProbeReport, ReliabilityTier, RequiredCaps,
-    StructuredOutput, ToolCallSupport,
+    CacheMode, Capabilities, HeadroomPolicy, ProbeReport, ReliabilityTier, StructuredOutput,
+    ToolCallSupport,
 };
 use conway_core::config::AgentDef;
-use conway_core::content::{ContentBlock, Role, SamplingParams, StopReason, Usage};
+use conway_core::content::{ContentBlock, Role, StopReason, Usage};
 use conway_core::error::{BackendError, RuntimeError, SubagentError, ToolError};
 use conway_core::event::Event;
 use conway_core::ids::{
@@ -37,7 +37,7 @@ use conway_core::ports::{
     GenerateResponse, LiveOwner, Router, SessionStore, StreamChunk, SubagentHandle, SubagentHost,
 };
 use conway_core::provenance::Provenance;
-use conway_core::routing::{HealthConfig, MinimalRouter, RoleConfig, RoutingConfig};
+use conway_core::routing::{MinimalRouter, RoleConfig, RoutingConfig};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime, RuntimeDeps};
 use conway_testkit::{
@@ -2909,15 +2909,13 @@ fn pin_aware_router() -> MinimalRouter {
         "planner".to_string(),
         RoleConfig {
             chain: vec![default_model_ref()],
-            required: RequiredCaps::default(),
-            params: SamplingParams::default(),
-            headroom_tokens: None,
+            ..Default::default()
         },
     );
     MinimalRouter::new(RoutingConfig {
         roles,
-        health: HealthConfig::default(),
         default_headroom_tokens: 4096,
+        ..Default::default()
     })
 }
 
@@ -3819,24 +3817,20 @@ fn build_runtime_with_panicking_reviewer(turns: usize) -> (Arc<Runtime>, Arc<Scr
         "planner".to_string(),
         RoleConfig {
             chain: vec![planner_model],
-            required: RequiredCaps::default(),
-            params: SamplingParams::default(),
-            headroom_tokens: None,
+            ..Default::default()
         },
     );
     roles.insert(
         "reviewer".to_string(),
         RoleConfig {
             chain: vec![reviewer_model],
-            required: RequiredCaps::default(),
-            params: SamplingParams::default(),
-            headroom_tokens: None,
+            ..Default::default()
         },
     );
     let router: Arc<dyn Router> = Arc::new(MinimalRouter::new(RoutingConfig {
         roles,
-        health: HealthConfig::default(),
         default_headroom_tokens: 4096,
+        ..Default::default()
     }));
 
     let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
@@ -4316,24 +4310,20 @@ fn build_runtime_with_two_roles(
         "planner".to_string(),
         RoleConfig {
             chain: vec![planner_model],
-            required: RequiredCaps::default(),
-            params: SamplingParams::default(),
-            headroom_tokens: None,
+            ..Default::default()
         },
     );
     roles.insert(
         "fast".to_string(),
         RoleConfig {
             chain: vec![fast_model],
-            required: RequiredCaps::default(),
-            params: SamplingParams::default(),
-            headroom_tokens: None,
+            ..Default::default()
         },
     );
     let router: Arc<dyn Router> = Arc::new(MinimalRouter::new(RoutingConfig {
         roles,
-        health: HealthConfig::default(),
         default_headroom_tokens: 4096,
+        ..Default::default()
     }));
 
     let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();

@@ -102,7 +102,6 @@ mod tests {
     use super::*;
     use crate::agent::ToolSelector;
     use crate::ids::{BackendId, ModelId};
-    use crate::routing::HealthConfig;
     use std::collections::BTreeMap;
 
     #[test]
@@ -158,8 +157,8 @@ mod tests {
             backends: vec![],
             routing: RoutingConfig {
                 roles: BTreeMap::new(),
-                health: HealthConfig::default(),
                 default_headroom_tokens: 8_192,
+                ..Default::default()
             },
             default_role: RoleAlias::new("planner"),
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,

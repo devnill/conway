@@ -20,8 +20,7 @@ use conway_core::error::RoutingError;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{HealthRegistry, Router, TokenCountFidelity};
 use conway_core::routing::{
-    AttemptFailure, BreakerKind, BreakerState, HealthConfig, RouteRequest, RoutingConfig,
-    RoutingReason,
+    AttemptFailure, BreakerKind, BreakerState, RouteRequest, RoutingConfig, RoutingReason,
 };
 use conway_testkit::FakeHealth;
 
@@ -67,8 +66,8 @@ fn routing_config(
     }
     RoutingConfig {
         roles: map,
-        health: HealthConfig::default(),
         default_headroom_tokens,
+        ..Default::default()
     }
 }
 

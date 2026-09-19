@@ -160,8 +160,8 @@ mod tests {
     fn config(roles: BTreeMap<String, RoleConfig>, default_headroom_tokens: u32) -> RoutingConfig {
         RoutingConfig {
             roles,
-            health: HealthConfig::default(),
             default_headroom_tokens,
+            ..Default::default()
         }
     }
 

@@ -570,7 +570,7 @@ mod tests {
         CacheMode, Capabilities, ReliabilityTier, RequiredCaps, StructuredOutput, ToolCallSupport,
     };
     use conway_core::ids::{AgentId, BackendId, ModelId};
-    use conway_core::routing::{BreakerKind, HealthConfig, RoleConfig};
+    use conway_core::routing::{BreakerKind, RoleConfig};
     use conway_testkit::FakeHealth;
 
     fn model_ref(backend: &str, model: &str) -> ModelRef {
@@ -602,8 +602,8 @@ mod tests {
         }
         RoutingConfig {
             roles: map,
-            health: HealthConfig::default(),
             default_headroom_tokens,
+            ..Default::default()
         }
     }
 

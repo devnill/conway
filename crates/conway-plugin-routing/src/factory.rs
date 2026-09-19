@@ -80,16 +80,17 @@ mod tests {
     use conway_core::ports::{
         Backend, BoxStream, CapabilityIndex, GenerateRequest, GenerateResponse, StreamChunk,
     };
-    use conway_core::routing::{
-        HealthConfig, RoleConfig, RouteRequest, RoutingConfig, RoutingReason,
-    };
+    use conway_core::routing::{RoleConfig, RouteRequest, RoutingConfig, RoutingReason};
     use std::collections::BTreeMap;
 
+    /// `RoutingConfig::default()`'s `default_headroom_tokens` is
+    /// `DEFAULT_HEADROOM_TOKENS`, which is exactly what
+    /// `HeadroomPolicy::default().default_headroom_tokens` spelled out here
+    /// before -- same value, one fewer thing to keep in sync.
     fn routing_config(roles: BTreeMap<String, RoleConfig>) -> RoutingConfig {
         RoutingConfig {
             roles,
-            health: HealthConfig::default(),
-            default_headroom_tokens: HeadroomPolicy::default().default_headroom_tokens,
+            ..Default::default()
         }
     }
 

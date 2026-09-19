@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn headroom_policy_from_routing_config_reads_per_role_override_and_global_default() {
         use crate::ids::{BackendId, ModelRef};
-        use crate::routing::{HealthConfig, RoleConfig};
+        use crate::routing::RoleConfig;
 
         let mut roles = BTreeMap::new();
         roles.insert(
@@ -774,8 +774,8 @@ mod tests {
         );
         let routing_config = RoutingConfig {
             roles,
-            health: HealthConfig::default(),
             default_headroom_tokens: 4_096,
+            ..Default::default()
         };
 
         let policy = HeadroomPolicy::from_routing_config(&routing_config);

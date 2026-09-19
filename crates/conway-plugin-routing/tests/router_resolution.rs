@@ -40,9 +40,7 @@ use conway_core::capabilities::{
 use conway_core::error::RoutingError;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{HealthRegistry, Router};
-use conway_core::routing::{
-    BreakerKind, BreakerState, HealthConfig, RouteRequest, RoutingConfig, RoutingReason,
-};
+use conway_core::routing::{BreakerKind, BreakerState, RouteRequest, RoutingConfig, RoutingReason};
 use conway_testkit::FakeHealth;
 
 use conway_plugin_routing::{CapabilityIndex, DeclarativeRouter};
@@ -83,8 +81,8 @@ fn routing_config(
     }
     RoutingConfig {
         roles: map,
-        health: HealthConfig::default(),
         default_headroom_tokens,
+        ..Default::default()
     }
 }
 
@@ -660,8 +658,8 @@ fn role_configured_capability_floor_rejects_a_candidate_that_does_not_meet_it() 
     );
     let config = RoutingConfig {
         roles,
-        health: HealthConfig::default(),
         default_headroom_tokens: 4_096,
+        ..Default::default()
     };
     let community_tier = Capabilities {
         reliability_tier: ReliabilityTier::Community,
@@ -706,8 +704,8 @@ fn role_configured_capability_floor_admits_a_candidate_that_meets_it() {
     );
     let config = RoutingConfig {
         roles,
-        health: HealthConfig::default(),
         default_headroom_tokens: 4_096,
+        ..Default::default()
     };
     let index = index_with(&[(m.clone(), caps(200_000))]);
     let router = router_from(config, Arc::new(FakeHealth::new()), index);
@@ -752,8 +750,8 @@ fn role_configured_capability_floor_does_not_reach_an_unfloored_sibling_role() {
     );
     let config = RoutingConfig {
         roles,
-        health: HealthConfig::default(),
         default_headroom_tokens: 4_096,
+        ..Default::default()
     };
     let community_tier = Capabilities {
         reliability_tier: ReliabilityTier::Community,
@@ -817,8 +815,8 @@ fn merge_test_config(m: &ModelRef) -> RoutingConfig {
     );
     RoutingConfig {
         roles,
-        health: HealthConfig::default(),
         default_headroom_tokens: 4_096,
+        ..Default::default()
     }
 }
 
