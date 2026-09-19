@@ -104,13 +104,31 @@
 //! that owns the handle, rather than being parsed independently inside each
 //! store-backed plugin.
 //!
-//! **Not yet reachable as `conway --session <id> <plugin-id>.<command>`.**
-//! The ROOT flag of that name is parsed by clap into `cli::Cli::session`
-//! and never reaches [`run`], whose signature (`main.rs`'s
-//! `Command::External` arm) carries no `Cli`. Threading it there is a
-//! `main.rs`/`cli.rs` change board item `01M2TWC242P96Z3JDXWC9F3R5E` did
-//! not own; until then the flag belongs AFTER the subcommand word, which
-//! is what this module documents and tests.
+//! **`conway --session <id> <plugin-id>.<command>` reaches this too, and
+//! means the same thing.** The ROOT flag of that name is parsed by clap
+//! into `cli::Cli::session`; `main.rs`'s `Command::External` arm forwards
+//! it here as [`run`]'s own `root_session` argument. Both spellings exist
+//! at the shell whether or not conway wants them to -- clap accepts the
+//! root flag before any subcommand word -- so an operator will type it, and
+//! until the two were reconciled the root one was silently ignored: the
+//! command ran against a freshly-minted empty session while its output
+//! claimed to answer for the one that was named. That is the same defect
+//! this whole flag exists to end, one spelling over.
+//!
+//! The post-subcommand spelling stays the canonical one this module
+//! documents. The root flag is an alias for it, resolved through the SAME
+//! `resume_target` below -- deliberately NOT with the root flag's own
+//! create-if-new behavior, because which session this dispatch runs against
+//! is settled by this module's "never creates" ruling above, not by which
+//! of two equivalent spellings the operator reached for.
+//!
+//! **Giving both is a usage error**, not a precedence rule.
+//! `conway --session A conway.checkpoint.rollback --session B 42` has no
+//! reading that is safe to guess at: the spellings are equals, so silently
+//! preferring either would act on a session the operator also named and did
+//! not get -- on a destructive command. `reconcile_session_flags` (a
+//! private fn -- plain code span, not a doc link, like `split_session_flag`
+//! above) rejects that, naming both values.
 //!
 //! ## `run_admin`: `conway plugin list|install|remove`
 //!
@@ -184,12 +202,21 @@ use crate::tui::state::PluginBrowserEntry;
 /// operator-global instructions file honours `CONWAY_CONFIG_DIR` here too
 /// (board item `01M0W5Q569F0T97HSEP6F0MPCR`), never re-read ambiently in
 /// this function.
+///
+/// `root_session` is `cli::Cli::session` -- the ROOT `--session` flag, typed
+/// BEFORE the subcommand word -- forwarded by `main.rs`'s `Command::
+/// External` arm (board item `01M2TWC242P96Z3JDXWC9F3R5E`). It names the
+/// same thing the post-subcommand `--session` names and is resolved through
+/// the same [`resume_target`], never with the root flag's own create-if-new
+/// behavior; giving both spellings at once is a usage error. See this
+/// module's own top doc for the whole reconciliation.
 pub async fn run(
     args: &[String],
     conway: &Conway,
     memory_store: Arc<dyn MemoryStore>,
     agent_names: Arc<dyn conway_plugin_names::AgentNames>,
     env: &std::collections::HashMap<String, String>,
+    root_session: Option<&str>,
 ) -> conway::Result<ExitCode> {
     let Some(full_name) = args.first() else {
         // Unreachable through clap's own `external_subcommand`, which never
@@ -200,8 +227,15 @@ pub async fn run(
         diag::error("no subcommand given");
         return Ok(ExitCode::Usage);
     };
-    let (session_ref, tail) = match split_session_flag(&args[1..]) {
+    let (post_session, tail) = match split_session_flag(&args[1..]) {
         Ok(split) => split,
+        Err(message) => {
+            diag::error(format!("{full_name}: {message}"));
+            return Ok(ExitCode::Usage);
+        }
+    };
+    let session_ref = match reconcile_session_flags(root_session, post_session) {
+        Ok(session_ref) => session_ref,
         Err(message) => {
             diag::error(format!("{full_name}: {message}"));
             return Ok(ExitCode::Usage);
@@ -439,6 +473,35 @@ fn split_session_flag(tail: &[String]) -> Result<(Option<String>, Vec<String>), 
         ));
     }
     Ok((session, rest.to_vec()))
+}
+
+/// Settles the two shell spellings of the same idea into the one session
+/// reference [`run`] resolves: the ROOT `--session` (clap's
+/// `cli::Cli::session`, typed before the subcommand word) and the
+/// post-subcommand one [`split_session_flag`] just took off the tail.
+///
+/// Either alone is that session. BOTH is a usage error naming both values
+/// -- never a precedence rule. See this module's own top doc for why
+/// guessing between two equal spellings is unacceptable on a surface that
+/// reaches `/conway.checkpoint.rollback`.
+///
+/// `Err` carries the operator-facing sentence without a `<full-name>:`
+/// prefix, matching [`split_session_flag`]'s own contract -- [`run`]'s
+/// single call site adds that.
+fn reconcile_session_flags(
+    root_session: Option<&str>,
+    post_session: Option<String>,
+) -> Result<Option<String>, String> {
+    match (root_session, post_session) {
+        (Some(root), Some(post)) => Err(format!(
+            "`{SESSION_FLAG}` was given twice -- once before the subcommand name ({root:?}) and \
+             once after it ({post:?}). They name the same thing, so conway will not guess which \
+             one you meant: pass exactly one. `conway <plugin-id>.<command> {SESSION_FLAG} \
+             <id-or-name> [args...]` is the spelling this command documents"
+        )),
+        (Some(root), None) => Ok(Some(root.to_string())),
+        (None, post) => Ok(post),
+    }
 }
 
 /// Resolves `--session`'s value the same way `conway sessions show|tree|
@@ -943,5 +1006,54 @@ mod tests {
             .expect("a quoted argument is not the flag");
         assert_eq!(session, None);
         assert_eq!(rest, tail(&["ask about --session please"]));
+    }
+
+    /// Board item `01M2TWC242P96Z3JDXWC9F3R5E`, second half: the ROOT
+    /// `--session` reaches this dispatch now, and on its own it IS the
+    /// session reference. `conway --session <id> <plugin-id>.<command>`
+    /// used to parse cleanly and then run against a freshly-minted empty
+    /// session -- silently, which is the defect this flag exists to end.
+    #[test]
+    fn the_root_session_flag_alone_is_the_session_reference() {
+        let session = reconcile_session_flags(Some("sess-root"), None)
+            .expect("the root flag alone is well-formed");
+        assert_eq!(session.as_deref(), Some("sess-root"));
+    }
+
+    /// The post-subcommand spelling alone is unchanged by the root flag's
+    /// arrival -- this function must be invisible to every invocation that
+    /// does not use the root one.
+    #[test]
+    fn the_post_subcommand_flag_alone_is_returned_untouched() {
+        let session = reconcile_session_flags(None, Some("sess-post".to_string()))
+            .expect("the post-subcommand flag alone is well-formed");
+        assert_eq!(session.as_deref(), Some("sess-post"));
+
+        let none = reconcile_session_flags(None, None).expect("neither flag is well-formed");
+        assert_eq!(none, None);
+    }
+
+    /// Both spellings at once is a named usage error quoting BOTH values,
+    /// never a silent precedence rule -- see this module's top doc.
+    #[test]
+    fn both_spellings_at_once_is_a_named_error_quoting_both() {
+        let err = reconcile_session_flags(Some("sess-root"), Some("sess-post".to_string()))
+            .expect_err("both spellings at once is an error");
+        assert!(err.contains("given twice"), "{err}");
+        assert!(err.contains("sess-root"), "{err}");
+        assert!(err.contains("sess-post"), "{err}");
+    }
+
+    /// Two spellings of the SAME id is still an error. Nothing here
+    /// compares the values: they are resolved (ULID or name, through the
+    /// names sidecar) long after this point, so "they agree" is not a fact
+    /// this function can establish -- and an equality special case would
+    /// make the rule depend on how the operator spelled an id rather than
+    /// on how many times they gave it.
+    #[test]
+    fn the_same_value_twice_is_still_an_error() {
+        let err = reconcile_session_flags(Some("sess-1"), Some("sess-1".to_string()))
+            .expect_err("the same value twice is still two flags");
+        assert!(err.contains("given twice"), "{err}");
     }
 }

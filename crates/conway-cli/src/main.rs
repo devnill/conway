@@ -861,8 +861,31 @@ async fn dispatch(
         // target; there is no seam that lets `commands::plugin::run` be
         // reached any other way. See `commands::plugin`'s own module doc
         // for what it does.
+        //
+        // `cli.session.as_deref()` is board item
+        // `01M2TWC242P96Z3JDXWC9F3R5E`'s second half. The ROOT `--session`
+        // flag is accepted by clap before ANY subcommand word, so `conway
+        // --session <id> conway.checkpoint.list` parses cleanly -- and
+        // until this argument existed, that value stopped here: `run` had
+        // no `Cli`, minted a fresh empty session, and reported on THAT one
+        // while the operator was looking at the id they had just typed.
+        // Two spellings at the shell, one of them silently wrong, is worse
+        // than either "both work" or "the root one is rejected"; forwarding
+        // it makes them the same flag, with `commands::plugin::run`'s own
+        // `reconcile_session_flags` rejecting the both-at-once case rather
+        // than guessing. Nothing else in this arm changes: the root flag's
+        // own create-if-new behavior deliberately does NOT come with it
+        // (that module's "never creates" ruling).
         Some(Command::External(args)) => {
-            commands::plugin::run(args, &conway, memory_store, agent_names, env).await
+            commands::plugin::run(
+                args,
+                &conway,
+                memory_store,
+                agent_names,
+                env,
+                cli.session.as_deref(),
+            )
+            .await
         }
         None if cli.print.is_some() => oneshot::run(cli, conway).await,
         None => {
