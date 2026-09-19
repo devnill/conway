@@ -97,22 +97,34 @@ fn empty_settings_file_loads_to_exactly_conwayconfig_baseline() {
     })
     .expect("a settings file naming nothing must still load");
 
-    // `[session].root` is the one field `load` itself resolves, at load
-    // time, using `cwd`/`env` it alone has in hand (`SessionConfig`'s own
-    // doc comment; `merge::load_impl`'s "central-default resolution" step).
-    // `ConwayConfig::baseline()` deliberately leaves it at `None` --
-    // "nothing configured" IS `None` -- so a direct, unpatched comparison
-    // against `baseline()` would fail on this one field for a reason
-    // unrelated to what this test proves. Patched here, explicitly, rather
-    // than silently excluded from the comparison.
+    // TWO fields `load` itself resolves at load time, using the `cwd`/`env`
+    // it alone has in hand (`merge::load_impl`'s "central-default
+    // resolution" step). `ConwayConfig::baseline()` deliberately carries
+    // the unresolved shape of both, so an unpatched comparison would fail
+    // on them for reasons unrelated to what this test proves. Patched
+    // explicitly rather than silently excluded.
+    //
+    // `[session].root`: baseline leaves it `None` -- "nothing configured"
+    // IS `None` (`SessionConfig`'s own doc).
+    //
+    // `cwd`: baseline carries the wire default `"."`, and board item
+    // `01M2V6JHRWWEPN690C954R0PYS` made `load` resolve it against the
+    // invocation directory. That item exists BECAUSE the literal `"."`
+    // reached every consumer: `find_enclosing_git_root(".")` could never
+    // walk up, so a subdirectory launch silently ignored the operator's
+    // `AGENTS.md`, and the model was told `cwd .` in its environment
+    // block. The wire default stays `"."` on purpose so `default_document`
+    // cannot drift -- only what `load` hands back changes, which is
+    // exactly the distinction this line encodes.
     let mut expected = ConwayConfig::baseline();
     expected.session.root = Some(discovery::session_root(&dir, None, &env));
+    expected.cwd = dir.clone();
 
     assert_eq!(
         outcome.config, expected,
         "loading a settings file with nothing in it through the production loader must \
-         resolve to exactly ConwayConfig::baseline(), modulo the one field `load` itself \
-         resolves (`session.root`)"
+         resolve to exactly ConwayConfig::baseline(), modulo the two fields `load` itself \
+         resolves (`session.root` and `cwd`)"
     );
 }
 

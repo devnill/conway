@@ -2566,8 +2566,9 @@ mod awaiting_permission_clock {
         assert_eq!(state.activity, Activity::AwaitingPermission);
         assert!(
             state.turn_started_at.is_none(),
-            "the premise of this item: no turn is in flight while a prompt is open, \
-             so `turn_started_at` cannot be the clock the wait is measured from"
+            "board item `01M2V60KWK9AYX3J7V5TPJZN7Q`'s premise: no turn is in flight \
+             while a prompt is open, so `turn_started_at` cannot be the clock the wait \
+             is measured from"
         );
         assert!(
             state.awaiting_permission_since.is_some(),
