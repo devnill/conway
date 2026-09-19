@@ -207,7 +207,7 @@ use crate::tui::state::PluginBrowserEntry;
 /// BEFORE the subcommand word -- forwarded by `main.rs`'s `Command::
 /// External` arm (board item `01M2TWC242P96Z3JDXWC9F3R5E`). It names the
 /// same thing the post-subcommand `--session` names and is resolved through
-/// the same [`resume_target`], never with the root flag's own create-if-new
+/// the same `resume_target`, never with the root flag's own create-if-new
 /// behavior; giving both spellings at once is a usage error. See this
 /// module's own top doc for the whole reconciliation.
 pub async fn run(

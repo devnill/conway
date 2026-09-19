@@ -716,7 +716,10 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
     let mut since = session.wait_for(LANDED, Duration::from_secs(15));
 
     session.send("hi\r");
-    since = session.wait_for_since("AAAA", since, Duration::from_secs(15));
+    // Offset discarded deliberately: the settle below supersedes it. The
+    // WAIT still matters -- it proves this turn produced its reply before
+    // the settle is allowed to conclude anything from silence.
+    let _ = session.wait_for_since("AAAA", since, Duration::from_secs(15));
     // Settle before sending the next command -- an earlier version of this
     // test sent `/model` immediately once the reply TEXT landed on screen,
     // which races `/model`'s own keypress against the tail of this turn's
@@ -747,7 +750,7 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
         // yet.
         since = session.wait_for_since(to, since, Duration::from_secs(15));
         session.send("hi\r");
-        since = session.wait_for_since(reply, since, Duration::from_secs(15));
+        let _ = session.wait_for_since(reply, since, Duration::from_secs(15));
         since = session.wait_until_settled(SETTLE_QUIET, Duration::from_secs(15));
     }
 
