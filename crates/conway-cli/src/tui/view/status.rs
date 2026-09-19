@@ -1071,15 +1071,28 @@ fn activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
 /// other reader of that field asks it "is a turn in flight?" and would
 /// have started lying instead.
 ///
-/// Known remaining case, deliberately NOT folded in here: `RunningTool`
-/// has the same shape (it too is only ever reached after `TurnFinished`
-/// cleared `turn_started_at`) and so also renders `0s`. It needs its own
-/// clock and a decision about what the figure means when several tool
-/// calls are in flight at once, which is a different question from this
-/// one; it is filed separately rather than guessed at here.
+/// Board item `01M2VDD6MQG7H73AHGX8HJGV2J` then closed the case that fix
+/// knowingly left open: `RunningTool` has the identical shape -- it too
+/// is only ever reached after `TurnFinished` cleared `turn_started_at`,
+/// because the binding order puts every `ToolCallProposed` after it --
+/// and so rendered `running bash… 0s` for the entire execution of every
+/// tool call on every turn. It now reads its own third clock,
+/// `AppState::running_tool_since`.
+///
+/// That case needed a decision this one did not: what the single figure
+/// means when several tool calls are in flight at once. **It is the age
+/// of the call the rung NAMES** -- `Activity::RunningTool` carries one
+/// tool name, overwritten by each proposal, so with a parallel batch the
+/// name is the last-proposed call's and the number is that same call's
+/// age. Name and clock are stamped in one place, together, and are
+/// replaced together; the figure is never the batch's age, and never
+/// another call's. The alternatives, and why "oldest in flight" would
+/// have been worse than the `0s` it replaced, are in
+/// `AppState::running_tool_since`'s own doc.
 fn activity_elapsed_secs(state: &AppState) -> u64 {
     let clock = match state.activity {
         Activity::AwaitingPermission => state.awaiting_permission_since,
+        Activity::RunningTool(_) => state.running_tool_since,
         _ => state.turn_started_at,
     };
     clock.map(|t| t.elapsed().as_secs()).unwrap_or(0)
@@ -1634,6 +1647,151 @@ mod tests {
         assert!(
             !line.contains("999s"),
             "the permission clock must never leak into an ordinary turn's figure: {line}"
+        );
+    }
+
+    // ---- Board item `01M2VDD6MQG7H73AHGX8HJGV2J`: the elapsed figure
+    // while a tool call is executing. ----
+
+    /// **The regression guard.** Against HEAD, the `running <tool>…` rung
+    /// read `turn_started_at`, which is `None` for the whole of every tool
+    /// execution (`TurnFinished`, and with it `clear_turn_state`, is
+    /// binding-ordered before any `ToolCallProposed`), so the
+    /// `unwrap_or(0)` branch rendered a literal `0s` for every call on
+    /// every turn while the spinner beside it kept advancing.
+    ///
+    /// Asserted against the render, not the pty harness, for the reason
+    /// the sibling permission test states at length: a once-per-second
+    /// counter is the canonical partial-redraw case where a `contains()`
+    /// on the accumulated emission transcript cannot match
+    /// (`CONTRIBUTING.md`).
+    #[test]
+    fn a_running_tool_renders_the_calls_real_age_not_a_literal_zero() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::RunningTool("bash".to_string());
+        // Exactly the state a real dispatch produces: the turn that
+        // proposed the call is already over...
+        state.turn_started_at = None;
+        // ...and the call itself has been running for 37 seconds.
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(37));
+
+        let line = status_line(&state);
+        assert!(
+            line.contains("running bash"),
+            "precondition -- the running-tool rung must be the one rendered: {line}"
+        );
+        assert!(
+            line.contains("37s"),
+            "the elapsed figure must be the call's real age: {line}"
+        );
+        assert!(
+            !line.contains(" 0s · +"),
+            "HEAD's literal `0s` must not be what the operator reads: {line}"
+        );
+    }
+
+    /// The same claim read back off a REAL rendered buffer rather than
+    /// pre-render span content -- `flatten`'s view can (and has) disagreed
+    /// with what a `Paragraph` actually puts on screen.
+    #[test]
+    fn the_running_tool_age_is_on_the_rendered_row_not_just_in_the_spans() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::RunningTool("bash".to_string());
+        state.turn_started_at = None;
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(37));
+
+        let rendered = render_row(&state, &Theme::default(), WIDE);
+        assert!(
+            rendered.contains("37s"),
+            "the rendered status row must carry the call's real age: {rendered:?}"
+        );
+    }
+
+    /// The counter moves with the execution: two reads of the same state
+    /// at different call ages must produce different figures. HEAD renders
+    /// `0s` for both.
+    #[test]
+    fn the_running_tool_counter_advances_with_the_execution() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::RunningTool("bash".to_string());
+        state.turn_started_at = None;
+
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(7));
+        let early = status_line(&state);
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(61));
+        let later = status_line(&state);
+
+        assert!(early.contains("7s"), "{early}");
+        assert!(later.contains("61s"), "{later}");
+        assert_ne!(
+            early, later,
+            "the elapsed figure must change as the call runs on"
+        );
+    }
+
+    /// The three clocks stay separate. A `running_tool_since` left over
+    /// from a finished call must not be borrowed for an ordinary turn's
+    /// figure or for a permission wait, and neither of the other two may
+    /// stand in for the tool rung -- the same rule
+    /// `awaiting_permission_since` and `ask_started_at` already follow.
+    #[test]
+    fn the_tool_clock_and_the_other_two_never_stand_in_for_each_other() {
+        let mut state = AppState::new(AgentId::new());
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(999));
+
+        state.activity = Activity::Thinking;
+        state.turn_started_at = Some(Instant::now() - Duration::from_secs(12));
+        let thinking = status_line(&state);
+        assert!(thinking.contains("12s"), "{thinking}");
+        assert!(
+            !thinking.contains("999s"),
+            "the tool clock must never leak into an ordinary turn's figure: {thinking}"
+        );
+
+        state.activity = Activity::AwaitingPermission;
+        state.awaiting_permission_since = Some(Instant::now() - Duration::from_secs(53));
+        let waiting = status_line(&state);
+        assert!(waiting.contains("53s"), "{waiting}");
+        assert!(
+            !waiting.contains("999s"),
+            "the tool clock must never leak into a permission wait's figure: {waiting}"
+        );
+
+        // ...and the tool rung reads neither of the others.
+        state.activity = Activity::RunningTool("bash".to_string());
+        let running = status_line(&state);
+        assert!(
+            running.contains("999s"),
+            "the running-tool rung reads its own clock: {running}"
+        );
+    }
+
+    /// The multi-call semantics, pinned at the render layer: the figure is
+    /// the age of the call the rung NAMES. A second proposal renames the
+    /// rung and restarts the number with it -- the pair is never split, so
+    /// `grep` is never shown wearing `bash`'s duration.
+    #[test]
+    fn the_figure_belongs_to_the_call_the_rung_names() {
+        let mut state = AppState::new(AgentId::new());
+        state.turn_started_at = None;
+
+        // `bash` has been running 40s; the rung names it and says so.
+        state.activity = Activity::RunningTool("bash".to_string());
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(40));
+        let first = status_line(&state);
+        assert!(first.contains("running bash"), "{first}");
+        assert!(first.contains("40s"), "{first}");
+
+        // A second call in the same batch renames the rung; the number is
+        // the NEW call's age, not the batch's 40s.
+        state.activity = Activity::RunningTool("grep".to_string());
+        state.running_tool_since = Some(Instant::now() - Duration::from_secs(2));
+        let second = status_line(&state);
+        assert!(second.contains("running grep"), "{second}");
+        assert!(second.contains("2s"), "{second}");
+        assert!(
+            !second.contains("40s"),
+            "the rung must not wear the previous call's duration: {second}"
         );
     }
 
