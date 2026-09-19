@@ -46,6 +46,24 @@
 //! each test's own comment on where the delay is the thing under test
 //! versus where a `wait_for`/`.output()` block is the thing doing the
 //! waiting).
+//!
+//! **That gap was later carried as its own board item and closed here.**
+//! The gate's no-duplicate claim was DEFERRED, not passed, when its item
+//! closed ("I think we can skip 7 for now"), and the unrun work became
+//! `01M2XN175H315FVAYRSJYE5RA5`: "no call ever executed twice" under real
+//! CPU contention. Its tests are in the "exact-once under real CPU
+//! contention" section at the bottom of this file. They burn one `sh` loop
+//! per core rather than spawning a nested `cargo build` -- a test running
+//! under `cargo test` cannot touch a source file to force recompilation,
+//! and the relink-under-test hazard (a pty test spawning a binary that a
+//! parallel build is mid-relinking) is exactly what this file's fixtures
+//! must never race -- but one burner per core saturates the machine the
+//! same way the incident's build did (load average 6/11/12, per
+//! `GRACE_CEILING_FACTOR`'s own doc), and the one-off evidence run behind
+//! the committed tests DID use a real, workspace-wide `cargo build` as the
+//! contention source against the REAL ideate plugin (that run is reported
+//! on the board item, not asserted here, because it depends on the
+//! operator's installed plugin and cannot be hermetic).
 
 mod common;
 
@@ -937,4 +955,571 @@ async fn a_crash_looping_server_eventually_stays_down() {
          than 4, that is worth its own look (a respawn that gave up early), but was not \
          observed while writing this test."
     );
+}
+
+// ---------------------------------------------------------------------
+// Exact-once under real CPU contention (`01M2XN175H315FVAYRSJYE5RA5`)
+//
+// The deferred half of gate 8. When the gate closed, the operator said
+// "I think we can skip 7 for now" -- a deliberate deferral of the
+// CPU-load reproduction this file's earlier doc discloses as "explicitly
+// not attempted". This section carries it: the checkable claim is
+// "no call ever executed twice" under load, and it is testable WITHOUT
+// the live board, because the board these tests write to is a plain
+// JSON-lines scratch store inside each test's own temp dir (the real
+// ideate board is a SQLite store under the real project root; nothing
+// here ever touches it, and every call names a scratch tenant besides).
+//
+// What these tests add over `no_call_is_ever_executed_twice_across_a_
+// respawn`, above, is the CONDITION the incident actually happened in:
+// every core busy. One `sh` spin loop per core (see `CpuBurners`), not a
+// nested `cargo build` -- see the module doc at the top of this file for
+// why a test must not build under test. The server-side execution log
+// (`mcp_fixtures::BOARD_SERVER`) is the observer: written by the server
+// process before a tool does anything, so a resend the CLIENT believed
+// was safe shows up as an extra line the client never knew to look for,
+// and the store rows are the side effects those executions had.
+//
+// P-15 (prove the checker fails before trusting it) is
+// `the_exact_once_check_fails_against_an_injected_duplicate`, below: the
+// duplicate is injected by genuinely executing the same calls a second
+// time through the whole real stack -- client, server, store -- into the
+// scratch tenant only, and the check must reject that run.
+// ---------------------------------------------------------------------
+
+/// The tenant every call in this section names. The scratch store starts
+/// empty, so a call that fell back to ideate's default tenant (`local`)
+/// would leave a row THIS verifier never expected -- and the verifier
+/// treats any `local` row in the scratch store as a failure, so the
+/// "never the live board's tenant" premise is checked, not assumed.
+const SCRATCH_TENANT: &str = "gate7-scratch";
+
+/// One spin loop per core, running for exactly the lifetime of this
+/// guard. `sh -c 'while :; do :; done'` is the cheapest full-core burner
+/// the host ships: no dependencies, no build step, ~100% of one core. One
+/// per `available_parallelism` saturates the machine the same way the
+/// incident's `cargo build --workspace` did -- the scheduler, not the
+/// data, is what goes slow.
+///
+/// Killed on drop, so a panicking test never leaves burners behind.
+struct CpuBurners {
+    children: Vec<tokio::process::Child>,
+}
+
+impl CpuBurners {
+    fn start() -> Self {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let mut children = Vec::with_capacity(cores);
+        for _ in 0..cores {
+            let child = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg("while :; do :; done")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn cpu burner");
+            children.push(child);
+        }
+        CpuBurners { children }
+    }
+
+    fn pids(&self) -> Vec<u32> {
+        self.children.iter().filter_map(|c| c.id()).collect()
+    }
+
+    fn count(&self) -> usize {
+        self.children.len()
+    }
+
+    /// Mean recent CPU usage across the burners, sampled with `ps` while
+    /// they run. EVIDENCE, not a synchronization primitive: it goes into
+    /// assertion messages so a failure report shows whether the machine
+    /// was genuinely saturated when the run it is complaining about
+    /// executed. A burner reading ~100 means it owned a core; a burner
+    /// reading near zero would mean the OS never scheduled it, which is
+    /// the one condition under which "contention" would be a fiction.
+    fn mean_cpu_percent(&self) -> Option<f64> {
+        let pids = self.pids();
+        if pids.is_empty() {
+            return None;
+        }
+        let list = pids
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let out = std::process::Command::new("ps")
+            .args(["-o", "%cpu=", "-p", &list])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let vals: Vec<f64> = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        if vals.is_empty() {
+            return None;
+        }
+        Some(vals.iter().sum::<f64>() / vals.len() as f64)
+    }
+}
+
+impl Drop for CpuBurners {
+    fn drop(&mut self) {
+        for child in &mut self.children {
+            let _ = child.start_kill();
+        }
+    }
+}
+
+/// Everything the board fixture needs, bundled: the `[plugins].mcp[]` entry
+/// plus the three on-disk artifacts the OUTSIDE verification reads.
+struct Board {
+    entry: mcp_fixtures::McpEntryCfg,
+    store: std::path::PathBuf,
+    exec_log: std::path::PathBuf,
+    spawn_counter: std::path::PathBuf,
+}
+
+/// Writes [`mcp_fixtures::BOARD_SERVER`] into `dir` (the scratch board's
+/// own root -- the store never lives anywhere the real board does) and
+/// returns the entry config naming it. `delay_ms` and `die_on_create` are
+/// the fixture's two experimental knobs (see that constant's doc).
+fn board_fixture(dir: &std::path::Path, delay_ms: u64, die_on_create: u32) -> Board {
+    let script_path = mcp_fixtures::write_script(dir, "board.py", mcp_fixtures::BOARD_SERVER);
+    let store = dir.join("board_items.jsonl");
+    let exec_log = dir.join("board_exec_log.jsonl");
+    let spawn_counter = dir.join("board_spawn_counter.txt");
+    Board {
+        entry: mcp_fixtures::McpEntryCfg {
+            id: "dogfood-board",
+            command: vec![script_path.display().to_string()],
+            timeout_ms: 50,
+            first_call_timeout_ms: 1_000,
+            env: vec![
+                ("BOARD_STORE_FILE".to_string(), store.display().to_string()),
+                (
+                    "BOARD_EXEC_LOG_FILE".to_string(),
+                    exec_log.display().to_string(),
+                ),
+                (
+                    "BOARD_SPAWN_COUNTER_FILE".to_string(),
+                    spawn_counter.display().to_string(),
+                ),
+                ("BOARD_DELAY_MS".to_string(), delay_ms.to_string()),
+                ("BOARD_DIE_ON_CREATE".to_string(), die_on_create.to_string()),
+            ],
+        },
+        store,
+        exec_log,
+        spawn_counter,
+    }
+}
+
+/// One scripted `work_create` turn's tool-call chunks.
+fn create_call(title: &str) -> Vec<Chunk> {
+    vec![
+        Chunk::ToolCall {
+            name: "work_create",
+            args: serde_json::json!({
+                "title": title,
+                "spec": format!("scratch-board evidence item: {title}"),
+                "spec_format": "plan/outline",
+                "tenant_id": SCRATCH_TENANT,
+                "actor_human": "dan",
+            }),
+        },
+        Chunk::Finish("tool_calls"),
+    ]
+}
+
+/// Reads a JSON-lines file into values; an absent file is empty (a store
+/// nobody wrote yet is a legitimate verification input, not an error).
+fn read_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("scratch board files are JSON lines"))
+        .collect()
+}
+
+/// THE EXACT-ONCE CHECK -- the outside observer every test in this section
+/// trusts. Reads the scratch store and the server-side execution log with
+/// a fresh `std::fs` read (never the plugin's own reports, never the
+/// session's transcript, never anything the SESSION wrote) and demands:
+///
+/// 1. exactly `expected_titles.len()` items in `tenant` -- no missing item
+///    (a call that silently vanished) and no extra one (a call executed
+///    twice);
+/// 2. the item titles match `expected_titles` exactly, as multisets -- a
+///    resent `work_create` creates a second row with the SAME title and a
+///    NEW id, which this catches even though both rows are individually
+///    well-formed;
+/// 3. every item id is unique within the tenant;
+/// 4. the execution log holds exactly one `work_create` execution for the
+///    tenant per expected call, with matching titles -- the server-side
+///    ground truth a client-side resend would contradict;
+/// 5. NO item in the DEFAULT tenant (`local`) exists at all -- the
+///    scratch-isolation premise, checked rather than assumed.
+fn verify_exact_once(board: &Board, tenant: &str, expected_titles: &[&str]) -> Result<(), String> {
+    let items = read_jsonl(&board.store);
+    let mine: Vec<&serde_json::Value> = items
+        .iter()
+        .filter(|i| i.get("tenant_id").and_then(|t| t.as_str()) == Some(tenant))
+        .collect();
+    if mine.len() != expected_titles.len() {
+        let expected = expected_titles.len();
+        let found = mine.len();
+        return Err(format!(
+            "expected {expected} items in tenant {tenant:?}, found {found} -- a call either \
+             never landed or executed more than once. Items: {items:?}"
+        ));
+    }
+    let mut got_titles: Vec<String> = mine
+        .iter()
+        .map(|i| {
+            i.get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    got_titles.sort();
+    let mut want: Vec<String> = expected_titles.iter().map(|t| t.to_string()).collect();
+    want.sort();
+    if got_titles != want {
+        return Err(format!(
+            "item titles do not match the calls that were made (a duplicate title means a \
+             resent create): got {got_titles:?}, want {want:?}"
+        ));
+    }
+    let mut ids: Vec<String> = mine
+        .iter()
+        .map(|i| {
+            i.get("id")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    let id_count = ids.len();
+    ids.sort();
+    ids.dedup();
+    if ids.len() != id_count {
+        return Err(format!("duplicate item id in tenant {tenant:?}: {ids:?}"));
+    }
+
+    let exec_entries = read_jsonl(&board.exec_log);
+    let execs: Vec<&serde_json::Value> = exec_entries
+        .iter()
+        .filter(|e| e.get("tool").and_then(|t| t.as_str()) == Some("work_create"))
+        .filter(|e| e.pointer("/params/tenant_id").and_then(|t| t.as_str()) == Some(tenant))
+        .collect();
+    if execs.len() != expected_titles.len() {
+        return Err(format!(
+            "expected {} server-side work_create executions in tenant {tenant:?}, the log has \
+             {} -- any excess is a call the client executed twice. Log: {execs:?}",
+            expected_titles.len(),
+            execs.len(),
+        ));
+    }
+    let mut exec_titles: Vec<String> = execs
+        .iter()
+        .map(|e| {
+            e.pointer("/params/title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    exec_titles.sort();
+    if exec_titles != want {
+        return Err(format!(
+            "server-side execution log titles do not match the calls made: got \
+             {exec_titles:?}, want {want:?}"
+        ));
+    }
+
+    let strangers: Vec<&serde_json::Value> = items
+        .iter()
+        .filter(|i| i.get("tenant_id").and_then(|t| t.as_str()) != Some(tenant))
+        .collect();
+    if !strangers.is_empty() {
+        return Err(format!(
+            "the scratch store must never hold an item outside tenant {tenant:?} -- a \
+             `local`-tenant row here would mean a call reached the default tenant (the live \
+             board's own): {strangers:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// THE OBJECTIVE HALF OF THE DEFERRED GATE, under the incident's own
+/// condition: every core busy. Five DISTINCT scripted `work_create` calls
+/// ride one real one-shot run against the scratch board while one burner
+/// per core spins; each create sleeps 60ms server-side against a 50ms
+/// ordinary per-call deadline, so every call after the first crosses its
+/// deadline INTO the grace window by construction (the first rides the
+/// 1000ms warm-up budget instead) -- the only path a resend could ever
+/// happen on. The grace WARNING is asserted, so the run provably went
+/// through that path rather than around it.
+///
+/// The outside verification then reads the store and the server-side
+/// execution log fresh: five calls, five items, five executions, exactly
+/// once each -- and nothing in the default tenant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn five_distinct_work_creates_under_full_core_contention_execute_exactly_once() {
+    let script_dir = tempfile::tempdir().expect("tempdir");
+    let board = board_fixture(script_dir.path(), 60, 0);
+    mcp_fixtures::warm(std::path::Path::new(&board.entry.command[0])).await;
+
+    let titles = [
+        "gate7 load item 1",
+        "gate7 load item 2",
+        "gate7 load item 3",
+        "gate7 load item 4",
+        "gate7 load item 5",
+    ];
+    let mut turns: Vec<Vec<Chunk>> = titles.iter().map(|t| create_call(t)).collect();
+    // The final in-session look at the board, then the run's own close.
+    turns.push(vec![
+        Chunk::ToolCall {
+            name: "work_list",
+            args: serde_json::json!({ "tenant_id": SCRATCH_TENANT }),
+        },
+        Chunk::Finish("tool_calls"),
+    ]);
+    turns.push(vec![Chunk::Text("done"), Chunk::Finish("stop")]);
+    let mock = MockBackend::start(Script(turns)).await;
+    let fixture =
+        mcp_fixtures::write_fixture_with_mcp(&mock.base_url, &mock.model, 40, &board.entry);
+
+    let burners = CpuBurners::start();
+    let cpu_note = burners.mean_cpu_percent();
+    let out = run_conway(
+        &[
+            "-p",
+            "create the five board items",
+            "--allowed-tools",
+            "work_create,work_list",
+            "-v",
+        ],
+        &fixture,
+    );
+    // Sampled while the burners were still alive, AFTER the contended run
+    // they were burning through -- the evidence the contention was real.
+    let cpu_after = burners.mean_cpu_percent();
+    let burner_count = burners.count();
+    drop(burners);
+
+    assert!(
+        out.status.success(),
+        "the run must complete under contention: grace absorbs the overshoot -- stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The slow-call path was genuinely exercised: every ordinary call
+    // (2..=5; call 1 rides the 1000ms warm-up budget) slept 60ms against a
+    // 50ms deadline, so each one warned into grace. Fewer than four means
+    // a call was killed at the ceiling instead -- which the store evidence
+    // below would still survive, but this assertion is what pins the run
+    // to the path the gate is about.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warnings = stderr.matches("exceeded its per-call deadline").count();
+    assert!(
+        warnings >= 4,
+        "each of calls 2..=5 sleeps 60ms against its own 50ms ordinary deadline, so all four \
+         must have crossed INTO grace (call 1 rides the warm-up budget and never warns). Got \
+         {warnings} warning(s), burners={burner_count}, mean burner cpu before/after the run: \
+         {cpu_note:?}/{cpu_after:?}. stderr:\n{stderr}"
+    );
+
+    // The outside verification: a fresh read of the files the SERVER wrote,
+    // never anything the session itself reported.
+    verify_exact_once(&board, SCRATCH_TENANT, &titles).unwrap_or_else(|err| {
+        panic!(
+            "EXACT-ONCE VIOLATION under {burner_count}-core contention (mean burner cpu \
+             before/after the run: {cpu_note:?}/{cpu_after:?}): {err}"
+        )
+    });
+}
+
+/// P-15: the check above is only as good as its ability to FAIL. The
+/// duplicate is injected the honest way -- the same two `work_create` calls
+/// genuinely executed a SECOND time through the whole real stack (client,
+/// server, store), against the SAME scratch store, in the scratch tenant
+/// only -- which is exactly what a resent call pair would have produced.
+/// The check must reject the doubled board, and must keep accepting it
+/// once the duplicate is removed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_exact_once_check_fails_against_an_injected_duplicate() {
+    let script_dir = tempfile::tempdir().expect("tempdir");
+    let board = board_fixture(script_dir.path(), 0, 0);
+    mcp_fixtures::warm(std::path::Path::new(&board.entry.command[0])).await;
+
+    let titles = ["gate7 p15 item 1", "gate7 p15 item 2"];
+    // Two clean runs' worth of script, served sequentially by ONE mock: the
+    // second run below replays the IDENTICAL calls against the SAME store.
+    let mut turns: Vec<Vec<Chunk>> = Vec::new();
+    for _ in 0..2 {
+        for t in titles.iter() {
+            turns.push(create_call(t));
+        }
+        turns.push(vec![Chunk::Text("done"), Chunk::Finish("stop")]);
+    }
+    let mock = MockBackend::start(Script(turns)).await;
+    let fixture =
+        mcp_fixtures::write_fixture_with_mcp(&mock.base_url, &mock.model, 40, &board.entry);
+
+    // Run 1 -- clean. The check accepts it.
+    let out = run_conway(
+        &[
+            "-p",
+            "create the two board items",
+            "--allowed-tools",
+            "work_create",
+            "-v",
+        ],
+        &fixture,
+    );
+    assert!(
+        out.status.success(),
+        "the clean run must complete -- stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    verify_exact_once(&board, SCRATCH_TENANT, &titles)
+        .unwrap_or_else(|err| panic!("the CLEAN run must pass the exact-once check: {err}"));
+
+    // THE INJECTION: run 2 executes the identical calls again -- a real
+    // duplicate execution through the real client and server, landing in
+    // the scratch tenant only. This is what a resent call would have done.
+    let out2 = run_conway(
+        &[
+            "-p",
+            "create the two board items AGAIN",
+            "--allowed-tools",
+            "work_create",
+            "-v",
+        ],
+        &fixture,
+    );
+    assert!(
+        out2.status.success(),
+        "the injecting run must complete -- stderr: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let verdict = verify_exact_once(&board, SCRATCH_TENANT, &titles);
+    assert!(
+        verdict.is_err(),
+        "P-15: the check MUST fail against the injected duplicate -- it accepted four items \
+         (two executed twice) as if nothing had happened. Store:\n{}\nExec log:\n{}",
+        std::fs::read_to_string(&board.store).unwrap_or_default(),
+        std::fs::read_to_string(&board.exec_log).unwrap_or_default(),
+    );
+    let reason = verdict.unwrap_err();
+    assert!(
+        reason.contains("duplicate title") || reason.contains("found 4"),
+        "the failure must NAME the duplication (not fail for some unrelated reason): {reason}"
+    );
+
+    // Removal: put the scratch store and log back to their clean two-line
+    // state and the same check accepts the same board again.
+    for (file, keep) in [(&board.store, 2usize), (&board.exec_log, 2usize)] {
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        let kept: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .take(keep)
+            .collect();
+        std::fs::write(file, kept.join("\n") + "\n").expect("restore scratch file");
+    }
+    verify_exact_once(&board, SCRATCH_TENANT, &titles).unwrap_or_else(|err| {
+        panic!("after removing the injected duplicate the check must pass again: {err}")
+    });
+}
+
+/// The incident's literal shape, under load: the plugin process KILLED
+/// mid-call (generation 1 executes `work_create`'s side effect, then exits
+/// without ever answering, `BOARD_DIE_ON_CREATE=1`) while every core is
+/// busy. What must hold, all at once: the item the killed call already
+/// wrote stays in the store EXACTLY ONCE (a resent call would write a
+/// second row with the same title); the run still completes; the next call
+/// lands against the respawned session; and the server-side log shows one
+/// execution per real call -- never a third.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_killed_mid_call_under_full_core_contention_never_repeats_a_side_effect() {
+    let script_dir = tempfile::tempdir().expect("tempdir");
+    let board = board_fixture(script_dir.path(), 0, 1);
+    mcp_fixtures::warm(std::path::Path::new(&board.entry.command[0])).await;
+
+    let titles = ["gate7 killed-call item 1", "gate7 killed-call item 2"];
+    let mock = MockBackend::start(Script(vec![
+        create_call(titles[0]),
+        create_call(titles[1]),
+        vec![Chunk::Text("done"), Chunk::Finish("stop")],
+    ]))
+    .await;
+    let fixture =
+        mcp_fixtures::write_fixture_with_mcp(&mock.base_url, &mock.model, 40, &board.entry);
+
+    let burners = CpuBurners::start();
+    let out = run_conway(
+        &[
+            "-p",
+            "create two board items",
+            "--allowed-tools",
+            "work_create",
+            "-v",
+        ],
+        &fixture,
+    );
+    let cpu_after = burners.mean_cpu_percent();
+    drop(burners);
+    assert!(
+        out.status.success(),
+        "a mid-call death must not end the run: the plugin respawns, the agent continues -- \
+         stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let spawn_count = std::fs::read_to_string(&board.spawn_counter)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    assert_eq!(
+        spawn_count,
+        2,
+        "exactly two server processes expected -- the original (killed mid-call) and the one \
+         respawn call 2 found in place. Got {spawn_count}: {:?}\nexec log:\n{}\nstderr:\n{}",
+        std::fs::read_to_string(&board.spawn_counter).unwrap_or_default(),
+        std::fs::read_to_string(&board.exec_log).unwrap_or_default(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // What the model was told corroborates the kill: call 1's own tool
+    // result names the transport death, never a papered-over success.
+    let requests = mock.requests();
+    assert!(
+        requests.len() >= 2,
+        "expected at least 2 requests, got {}",
+        requests.len()
+    );
+    let after_call_1 = serde_json::to_string(&requests[1]).expect("serialize request");
+    assert!(
+        after_call_1.contains("session died"),
+        "call 1's own result must show the transport death -- request 2 body: {after_call_1}"
+    );
+
+    verify_exact_once(&board, SCRATCH_TENANT, &titles).unwrap_or_else(|err| {
+        panic!(
+            "EXACT-ONCE VIOLATION after a mid-call kill under contention (burners sampled at \
+             {cpu_after:?}% mean CPU): {err}"
+        )
+    });
 }

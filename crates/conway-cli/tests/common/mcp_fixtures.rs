@@ -302,6 +302,162 @@ for line in sys.stdin:
         sys.exit(1)
 "#;
 
+/// A minimal work-state BOARD server: the ideate plugin's own tool surface,
+/// reduced to the two verbs this item's evidence needs (`work_create`,
+/// `work_list`) over a plain JSON-lines store, with the load-bearing
+/// observability `DIE_ONCE_SERVER` established -- every `tools/call` is
+/// appended to an EXECUTION LOG, server-side, before anything else happens,
+/// so a client-side resend the client believed was safe still shows up here.
+///
+/// Written for the deferred DOGFOOD gate work (`01M2XN175H315FVAYRSJYE5RA5`)
+/// the tests in `dogfood_budget_and_plugins.rs` drive: the store and the log
+/// are plain files under the test's own temp dir, so a verification run from
+/// OUTSIDE the session (a fresh `std::fs` read, never the plugin's own
+/// reports, never the session's transcript) is a genuinely independent
+/// observer. The real ideate plugin is NOT used here on purpose: this suite
+/// must stay hermetic (no dependency on an operator-installed plugin), and
+/// the exact-once claim under test is CONWAY's client behaviour, which this
+/// fixture exercises through the identical `McpPlugin`/`McpSession`/`
+/// ChildSession` path the real plugin rides.
+///
+/// Environment:
+/// - `BOARD_STORE_FILE` (required): created work items, one JSON object per
+///   line. This IS the scratch board -- a throwaway file, never the live
+///   board (the live board is a SQLite store under the real project root;
+///   nothing here ever touches it).
+/// - `BOARD_EXEC_LOG_FILE` (required): one line per executed `tools/call`
+///   (`{tool, params, executed_at}`), written BEFORE the tool's side
+///   effects -- the same discipline `DIE_ONCE_SERVER` documents.
+/// - `BOARD_SPAWN_COUNTER_FILE` (optional): one pid appended per process
+///   start, for respawn-count assertions.
+/// - `BOARD_DELAY_MS` (default 0): how long `work_create` sleeps BETWEEN
+///   writing its item and answering -- so the side effect always lands even
+///   if the client gives up (the realistic shape: the write is fast, the
+///   ANSWER is what contention delays), while the delay itself is what
+///   pushes an ordinary call past its per-call deadline into grace.
+/// - `BOARD_DIE_ON_CREATE` (default 0): if nonzero, GENERATION 1 of the
+///   server (its first process; later generations read the spawn counter to
+///   know they are respawns, the same trick `DIE_ONCE_SERVER` uses) exits(1)
+///   without answering AFTER the Nth `work_create`'s side effects have
+///   landed -- the 2026-09-07 incident's shape (plugin killed mid-call),
+///   with the item already written: a client that then resent the call
+///   would create a SECOND row with the same title, which is exactly what
+///   the outside verification looks for.
+pub const BOARD_SERVER: &str = r#"#!/usr/bin/env python3
+import sys, json, os, time, uuid
+
+STORE_FILE = os.environ["BOARD_STORE_FILE"]
+EXEC_LOG_FILE = os.environ["BOARD_EXEC_LOG_FILE"]
+DELAY_MS = float(os.environ.get("BOARD_DELAY_MS", "0"))
+DIE_ON_CREATE = int(os.environ.get("BOARD_DIE_ON_CREATE", "0"))
+SPAWN_COUNTER_FILE = os.environ.get("BOARD_SPAWN_COUNTER_FILE", "")
+generation = 0
+if SPAWN_COUNTER_FILE:
+    if os.path.exists(SPAWN_COUNTER_FILE):
+        with open(SPAWN_COUNTER_FILE) as f:
+            generation = len([l for l in f if l.strip()])
+    generation += 1
+    with open(SPAWN_COUNTER_FILE, "a") as f:
+        f.write(str(os.getpid()) + "\n")
+
+def append_line(path, entry):
+    with open(path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+def load_items():
+    items = []
+    if os.path.exists(STORE_FILE):
+        with open(STORE_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    items.append(json.loads(line))
+    return items
+
+def initialize(rid):
+    return {"jsonrpc": "2.0", "id": rid, "result": {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": "dogfood-board", "version": "0.1"},
+    }}
+
+def tools_list(rid):
+    return {"jsonrpc": "2.0", "id": rid, "result": {
+        "tools": [
+            {
+                "name": "work_create",
+                "description": "create one work item on the scratch board",
+                "inputSchema": {"type": "object"},
+                # Deliberately NO `annotations.idempotentHint` -- the real
+                # ideate plugin declares none either (checked 2026-09-19,
+                # ideate 3.2.2), so conway's own retry exception can never
+                # fire on this surface. A duplicate here can only come from
+                # a resend this client performed against its own rule.
+            },
+            {
+                "name": "work_list",
+                "description": "list the scratch board's items",
+                "inputSchema": {"type": "object"},
+            },
+        ]
+    }}
+
+creations = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method")
+    rid = req.get("id")
+    if method == "initialize":
+        sys.stdout.write(json.dumps(initialize(rid)) + "\n")
+        sys.stdout.flush()
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        sys.stdout.write(json.dumps(tools_list(rid)) + "\n")
+        sys.stdout.flush()
+    elif method == "tools/call":
+        params = req.get("params", {})
+        name = params.get("name")
+        args = params.get("arguments", {})
+        # Execution evidence FIRST -- before the tool does anything, the
+        # same order `DIE_ONCE_SERVER` logs in.
+        append_line(EXEC_LOG_FILE, {"tool": name, "params": args, "executed_at": time.time()})
+        if name == "work_create":
+            item = {
+                "id": uuid.uuid4().hex,
+                "tenant_id": args.get("tenant_id", "local"),
+                "title": args.get("title", ""),
+                "spec": args.get("spec", ""),
+                "spec_format": args.get("spec_format", ""),
+                "created_at": time.time(),
+            }
+            # The side effect lands BEFORE the slow part and BEFORE any
+            # death, so a timed-out/killed call still leaves its ONE item
+            # behind -- exactly once -- and a resent call would leave a
+            # SECOND one.
+            append_line(STORE_FILE, item)
+            creations += 1
+            time.sleep(DELAY_MS / 1000.0)
+            if DIE_ON_CREATE and creations == DIE_ON_CREATE and generation == 1:
+                sys.exit(1)
+            answer = json.dumps(item)
+        elif name == "work_list":
+            tenant = args.get("tenant_id")
+            items = [i for i in load_items()
+                     if tenant is None or i.get("tenant_id") == tenant]
+            answer = json.dumps({"items": items})
+        else:
+            answer = json.dumps({"error": "unknown tool: " + str(name)})
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {
+            "content": [{"type": "text", "text": answer}],
+            "isError": False,
+        }}) + "\n")
+        sys.stdout.flush()
+"#;
+
 /// Executes `path` once, stdin closed, discarding the result, BEFORE a
 /// timed call against it -- the identical first-exec-tax warmup
 /// `conway-plugin-mcp`'s own `tests/common::warm` performs and documents
