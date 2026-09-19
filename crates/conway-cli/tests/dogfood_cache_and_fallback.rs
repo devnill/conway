@@ -81,6 +81,16 @@ use serde_json::Value;
 
 const LANDED: &str = "Type a message, or / for commands";
 
+/// How long the child must be SILENT for `PtySession::wait_until_settled`
+/// to call a turn settled here. Three of `tui/app/run.rs`'s 125ms
+/// `ANIMATION_TICK`s, with margin -- that tick advances a ten-glyph spinner
+/// on every tick for which `should_animate(&activity)` holds, so a turn
+/// still in flight physically cannot stay quiet this long, and silence
+/// therefore means `Activity::Idle`. Derived from the product's own cadence,
+/// not fitted to a machine: it stays discriminating on a loaded runner
+/// because the animation tick does not slow down when the machine is busy.
+const SETTLE_QUIET: Duration = Duration::from_millis(400);
+
 fn ok_script() -> Script {
     Script(vec![vec![Chunk::Text("ok"), Chunk::Finish("stop")]])
 }
@@ -636,8 +646,34 @@ async fn an_admission_time_skip_produces_a_notice_and_a_legible_why() {
 /// binary genuinely populates the switch-lineage/decision-history
 /// machinery the cited unit test exercises by hand; that is what this test
 /// proves instead.
+///
+/// **Its per-turn settle is `PtySession::wait_until_settled`, and the
+/// history of that choice is worth keeping** (board item
+/// `01M2X2TT24CXBDYEB312C21746`, which `#[ignore]`d this test until it was
+/// fixed). The settle used to be `wait_for_since("idle", ..)` on the status
+/// line's activity field -- **static text at a fixed column**, which is
+/// unrecoverable by construction: `screen()` is an emission record, not a
+/// grid, and a terminal re-emits only the cells that *changed*, so once
+/// `idle` is on screen a render that leaves those cells identical emits
+/// nothing and a bounded `wait_for_since` can never match it. It passed
+/// only while field positions happened to shift between renders, and
+/// stopped the day the layout stabilised. No timeout could ever have fixed
+/// that, because the text is simply never emitted.
+///
+/// Deleting the settles is not the fix either, and that was tried: they are
+/// load-bearing for PACING. `render_why` prints its history line only when
+/// `history.len() > 2`, and `model_decision_history` is folded from the LIVE
+/// event stream (`tui/app/run.rs`), which lags the rendered text. Without a
+/// settle the test races ahead and `/why` prints no history at all -- the
+/// failure just moves to the `routing history (` wait.
+/// `wait_until_settled` is the settle that works: quiescence is *produced*
+/// by the app rather than merely true of it, and while a turn is in flight
+/// the 125ms animation tick's advancing spinner glyph makes silence
+/// impossible -- so silence implies `Activity::Idle`, which implies
+/// `TurnFinished` was folded, which (one FIFO event stream) implies this
+/// turn's `ModelDecision` was folded before it. See that method's own doc
+/// for the full chain.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on board item 01M2X2TT24CXBDYEB312C21746: this test's per-turn settle marker is `\"idle\"`, which is STATIC TEXT AT A FIXED COLUMN of the status line. A terminal re-emits only changed cells and `screen()` is an emission record, not a grid, so once `idle` is on screen a later render that leaves those cells identical emits nothing and a bounded `wait_for_since` can never match it. It passed only while field positions happened to shift between renders. The product is NOT broken -- the captured screen shows the full status line. Removing the settles is not the fix either: they are load-bearing for pacing, and without them `/why` renders no history at all. Un-ignoring this IS that item's acceptance test."]
 async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
     // Replies that share no character in any column, for the same
     // partial-redraw reason the model names below do: `on-b` -> `on-c`
@@ -681,22 +717,26 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
 
     session.send("hi\r");
     since = session.wait_for_since("AAAA", since, Duration::from_secs(15));
-    // Wait for the ACTIVITY field to return to `idle` before sending the
-    // next command -- an earlier version of this test sent `/model`
-    // immediately once the reply TEXT landed on screen, which races
-    // `/model`'s own keypress against the tail of this turn's own
-    // finish-housekeeping (the reply's content delta streams in and is
-    // drawn BEFORE `Event::TurnFinished` is fully processed --
-    // `view/status.rs::tokens_label`'s own doc: the activity field shows a
-    // spinner+word ladder "while active", "just idle while idle"). Not
-    // `" tok"` (this file's first attempt at a settle marker): that text is
-    // the STATUS LINE's own `tokens` field too (`tokens_label`, ALWAYS
-    // shown, from session start, not only after a turn finishes), so it is
-    // already on screen well before any turn completes and proves nothing.
-    // `idle` only appears once the busy -> idle transition has actually
-    // happened, which is what genuinely indicates the turn -- and every
-    // event it caused -- has settled.
-    since = session.wait_for_since("idle", since, Duration::from_secs(15));
+    // Settle before sending the next command -- an earlier version of this
+    // test sent `/model` immediately once the reply TEXT landed on screen,
+    // which races `/model`'s own keypress against the tail of this turn's
+    // finish-housekeeping (the reply's content delta is drawn BEFORE
+    // `Event::TurnFinished` has been folded out of the live event stream,
+    // and `model_decision_history` is folded from that same stream).
+    //
+    // `SETTLE_QUIET` is chosen against the product, not fitted to this
+    // machine: `tui/app/run.rs`'s `ANIMATION_TICK` is 125ms and advances a
+    // ten-glyph spinner while `should_animate(&activity)` holds, so a busy
+    // turn CANNOT go quiet for even two ticks, and `SETTLE_QUIET` is more
+    // than three. Silence for `SETTLE_QUIET`
+    // therefore means `Activity::Idle`, i.e. `TurnFinished` folded, i.e.
+    // this turn's `ModelDecision` folded before it. The two earlier markers
+    // this replaced both failed for the same structural reason and are
+    // recorded so neither is retried: `" tok"` is the status line's `tokens`
+    // field, present from session start, so it proves nothing; `"idle"` is
+    // static text at a fixed column, so a redraw that leaves it identical
+    // emits nothing and `wait_for_since` can never match it.
+    since = session.wait_until_settled(SETTLE_QUIET, Duration::from_secs(15));
 
     for (to, reply) in [("bbbbbb", "BBBB"), ("cccccc", "CCCC"), ("dddddd", "DDDD")] {
         session.send(&format!("/model mock/{to}\r"));
@@ -708,26 +748,56 @@ async fn three_model_switches_keep_per_turn_attribution_recoverable_via_why() {
         since = session.wait_for_since(to, since, Duration::from_secs(15));
         session.send("hi\r");
         since = session.wait_for_since(reply, since, Duration::from_secs(15));
-        since = session.wait_for_since("idle", since, Duration::from_secs(15));
+        since = session.wait_until_settled(SETTLE_QUIET, Duration::from_secs(15));
     }
 
     // Four decisions this session: the initial primary selection plus
     // three explicit `/model` switches -- `render_why`'s `history.len() >
     // 2` branch, proven by its own distinctive count line.
     session.send("/why\r");
+    // `since` is the settle's own returned offset: one past EVERYTHING the
+    // session had emitted when the last turn went quiet. Nothing `/why`
+    // prints can be confused with an earlier surface's output, and nothing
+    // emitted after this point can be missed, because the child was silent
+    // when it was taken.
     let why_from = since;
-    since = session.wait_for_since(
-        "routing history (4 decisions this session):",
-        since,
-        Duration::from_secs(10),
-    );
+    // Await the PREFIX, then assert the count separately. Awaiting the
+    // whole line would report "timed out waiting for [\"routing history (4
+    // decisions this session):\"]" for two completely different faults --
+    // `/why` printed no history at all, and `/why` printed a history whose
+    // count had not caught up -- which is the diagnosis this test's own
+    // board item had to make by hand. The prefix is contiguous by
+    // construction (it is freshly drawn transcript text, not a status field
+    // being partially repainted).
+    since = session.wait_for_since("routing history (", since, Duration::from_secs(10));
     let _ = since;
     // Only the bytes emitted AFTER `/why` was sent. `screen()` is the whole
     // accumulated stream, and every one of these names has already crossed
     // it once (each was the active model for a turn), so asserting against
     // the full buffer would pass no matter what `/why` printed.
     let screen = session.screen();
-    let why_output = &screen[why_from.min(screen.len())..];
+    let why_output = screen
+        .get(why_from..)
+        .expect("the settle offset must be a char boundary of the accumulated screen");
+    // Four decisions: the initial primary selection plus the three explicit
+    // switches. A lower count here is the pacing race, not a product bug --
+    // it means a `ModelDecision` had not been folded out of the live event
+    // stream yet, which is exactly what the settles above exist to prevent.
+    //
+    // Asserted as the count PHRASE rather than the whole line: the awaited
+    // prefix above already pins the surface, and a shorter span is a
+    // shorter run of cells that a redraw has to have re-emitted
+    // contiguously (an unchanged cell mid-line is skipped with a cursor
+    // move, and `strip_ansi` drops that escape without a boundary, so a
+    // split run reads as the text minus that character -- `CONTRIBUTING.
+    // md`'s partial-redraw note). Nothing but `render_why` prints this
+    // phrase.
+    assert!(
+        why_output.contains("4 decisions this session"),
+        "/why must report all four routing decisions (initial selection + three /model \
+         switches) -- a smaller count means a ModelDecision had not been folded out of the \
+         live event stream when /why rendered. /why output:\n{why_output}"
+    );
     for model in ["aaaaaa", "bbbbbb", "cccccc", "dddddd"] {
         assert!(
             why_output.contains(model),

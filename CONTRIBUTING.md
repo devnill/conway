@@ -471,7 +471,10 @@ pty's overhead.
    "verifies before landing" test) / `wait_for_any(patterns, since,
    timeout)` (branching on which of several possible prompts appeared,
    e.g. a machine with or without an OS containment primitive -- see that
-   same file's `accept_local_offer_and_land`).
+   same file's `accept_local_offer_and_land`). To let one interaction
+   finish before driving the next, use `wait_until_settled(quiet_for,
+   timeout)` -- never a token that is merely true once the app is done (see
+   "Never settle on a marker that is merely TRUE" below).
 5. Assert on `session.screen()` (or the offsets `wait_for*` already
    returned) for anything beyond "this text eventually appeared" --
    `pty.rs`'s own module doc explains exactly what `screen()` does and does
@@ -528,6 +531,50 @@ occurrences. `dogfood_cache_and_fallback.rs`'s
 `three_model_switches_keep_per_turn_attribution_recoverable_via_why` and
 `dogfood_routes_and_status.rs`'s `AAAAA`/`BBBBB` status tokens both exist in
 that shape for this reason, and say so at the fixture.
+
+**Never settle on a marker that is merely TRUE -- use
+`wait_until_settled`.** The trap above has a second, nastier form. A test
+that drives several interactions in a row usually needs to let one finish
+before starting the next, and the obvious way to express that is to await
+some token the app shows once it is done -- the status line's `idle`, say.
+That marker is **static text at a fixed column**, so the moment the layout
+stops shifting between renders the cells never change, nothing is emitted,
+and a bounded `wait_for_since` can never match it again. It passes until it
+doesn't, for reasons that have nothing to do with the claim under test.
+`three_model_switches_keep_per_turn_attribution_recoverable_via_why` was
+`#[ignore]`d for exactly this (board item `01M2X2TT24CXBDYEB312C21746`), and
+deleting its settles was not the fix either -- they were load-bearing for
+pacing, and without them the surface under test rendered nothing at all.
+**A settle marker must be something the turn newly PRODUCED, not something
+that is merely true.**
+
+`PtySession::wait_until_settled(quiet_for, timeout)` is that, asked
+directly: it blocks until the child has answered the most recent `send` and
+has then emitted **nothing at all** for `quiet_for`, and returns the byte
+offset one past everything emitted so far -- feed it straight into the next
+`wait_for_since` as `since`. Silence cannot be stale text, so it cannot fall
+into the trap.
+
+`quiet_for` is derived from the product, not fitted to the machine. The app
+loop's 125ms `ANIMATION_TICK` (`tui/app/run.rs`) advances a ten-glyph
+spinner on every tick for which `should_animate(&activity)` holds -- every
+`Activity` but `Idle` -- so **a busy turn physically cannot go quiet for
+two ticks**. Any `quiet_for` comfortably above 250ms therefore makes silence
+imply `Activity::Idle`, which `AppState::apply` sets only on
+`TurnFinished`/`AgentFinished`; and because the loop drains one FIFO event
+stream, a folded `TurnFinished` implies every earlier envelope of that turn
+is already folded too. That is why raising `quiet_for` *strengthens* the
+settle, where raising a `timeout` only gives text that is never emitted more
+time to not appear. 400ms is what the test above uses.
+
+**When to reach for which.** `wait_for_since` proves the product *printed
+X*, and stays the wait that immediately follows a keystroke;
+`wait_until_settled` proves nothing about what was rendered and is for
+separating one interaction from the next, *after* the token proving the
+first one landed has already been awaited. `wait_for_response_to_last_send`
+is the third, narrower sibling: pure liveness ("did the render loop answer
+the keystroke at all"), for proving the TUI is not blocked, with no claim
+about content or completion.
 
 **Inspecting a test that passes.** Set `CONWAY_PTY_JOURNAL=1` and run with
 `--nocapture`: every `PtySession` prints its journal on drop, pass or fail.

@@ -348,6 +348,122 @@ impl PtySession {
         }
     }
 
+    /// Blocks until the child has ANSWERED the most recent [`Self::send`]
+    /// and has then emitted nothing at all for `quiet_for`, and returns the
+    /// byte offset one past everything emitted so far -- feed it straight
+    /// into [`Self::wait_for_since`] as the next `since`.
+    ///
+    /// This is *settled* asked directly, and it exists because the obvious
+    /// alternative is unrecoverable by construction. A test that paces
+    /// itself by awaiting some token that is TRUE once a turn has finished
+    /// -- the status line's `idle`, say -- is awaiting **static text at a
+    /// fixed column**. [`Self::screen`] is an emission record, not a grid,
+    /// and a terminal re-emits only the cells that *changed*, so once that
+    /// token is on screen a later render that leaves those cells identical
+    /// emits nothing and a bounded [`Self::wait_for_since`] can never match
+    /// it again. Such a marker passes only while field positions happen to
+    /// shift between renders, and stops the day the layout stabilises (board
+    /// item `01M2X2TT24CXBDYEB312C21746`, which is exactly that failure).
+    /// **A settle marker must be something the turn newly PRODUCED, not
+    /// something that is merely true.** Quiescence is produced, always:
+    /// silence cannot be stale text.
+    ///
+    /// # What `quiet_for` must be larger than, and why this is structural
+    ///
+    /// Not a fitted sleep. In `tui/app/run.rs` the 125ms `ANIMATION_TICK`
+    /// arm marks the frame dirty on every tick for which
+    /// `state::should_animate(&activity)` holds -- true for every
+    /// `tui::state::Activity` variant except `Idle` (`src/tui/state/
+    /// status.rs`) -- and `tick_animation` advances `spinner_frame` through ten
+    /// DISTINCT braille glyphs, which the status line renders. A changed
+    /// glyph is a changed cell, so **while the focused agent is busy the
+    /// child cannot stay silent for two animation ticks**. Any `quiet_for`
+    /// comfortably above 250ms therefore makes silence imply
+    /// `Activity::Idle`, which `AppState::apply` sets only on
+    /// `TurnFinished`/`AgentFinished` -- and because the app loop drains ONE
+    /// FIFO event stream, a folded `TurnFinished` implies every earlier
+    /// envelope of that turn (its `ModelDecision`, in particular, which
+    /// `run.rs` pushes into `model_decision_history` in the same arm, before
+    /// `apply`) is already folded. That chain is what makes this a settle
+    /// rather than a guess: raising `quiet_for` strengthens the implication
+    /// instead of merely giving flaky text more time to appear, which is the
+    /// opposite of raising a `timeout` (never do that -- see the
+    /// partial-redraw note in `CONTRIBUTING.md`).
+    ///
+    /// # The returned offset
+    ///
+    /// Everything it skips was emitted BEFORE this call returned, hence
+    /// before whatever the caller sends next, so bounding a later assertion
+    /// to it can never hide the thing that assertion is about. It is also a
+    /// `char` boundary of a quiet screen: a child that has emitted nothing
+    /// for `quiet_for` is not sitting mid-escape-sequence.
+    ///
+    /// # Failure
+    ///
+    /// Panics, dumping the I/O journal, if `timeout` elapses first --
+    /// meaning either the child never answered the last keystroke (the
+    /// liveness half, same as [`Self::wait_for_response_to_last_send`]) or
+    /// it never stopped talking for `quiet_for` (a genuinely unsettled app,
+    /// e.g. a spinner that animates forever because a turn never finished).
+    /// `timeout` must exceed `quiet_for` or the call can only ever panic;
+    /// that is asserted up front rather than discovered as a mystery
+    /// timeout.
+    ///
+    /// # When NOT to reach for this
+    ///
+    /// [`Self::wait_for_since`] remains the right tool for "the product
+    /// printed X", and should still be the wait that immediately follows a
+    /// keystroke -- this one proves nothing about WHAT was rendered. Use it
+    /// to separate one interaction from the next, after the token proving
+    /// the first interaction landed has already been awaited.
+    pub fn wait_until_settled(&self, quiet_for: Duration, timeout: Duration) -> usize {
+        assert!(
+            timeout > quiet_for,
+            "wait_until_settled needs timeout ({timeout:?}) > quiet_for ({quiet_for:?}) -- \
+             otherwise the quiet window cannot fit inside the deadline and the call can only \
+             ever panic"
+        );
+        let start = Instant::now();
+        loop {
+            let (last_tx, last_rx) = {
+                let events = self.journal.lock().unwrap_or_else(|e| e.into_inner());
+                (
+                    events.iter().rev().find(|ev| ev.tx).map(|ev| ev.at),
+                    events.iter().rev().find(|ev| !ev.tx).map(|ev| ev.at),
+                )
+            };
+            // Silence only counts once the child has said SOMETHING in
+            // reply to the last keystroke. Without this, a settle called
+            // straight after a `send` would succeed on the stillness that
+            // precedes the child reacting at all -- the exact "true by
+            // coincidence" shape this method exists to replace.
+            let answered = match (last_tx, last_rx) {
+                (_, None) => None,
+                (None, Some(rx)) => Some(rx),
+                (Some(tx), Some(rx)) => (rx > tx).then_some(rx),
+            };
+            if let Some(rx) = answered {
+                if self.started.elapsed().saturating_sub(rx) >= quiet_for {
+                    return self.screen().len();
+                }
+            }
+            if start.elapsed() > timeout {
+                panic!(
+                    "timed out after {timeout:?} waiting for the child to answer the last \
+                     keystroke and then stay quiet for {quiet_for:?}.\n\n\
+                     pty I/O journal (read this FIRST -- continuous `RX <-` lines mean the app \
+                     never settled, e.g. a spinner still animating because a turn never \
+                     finished; no `RX <-` after the last `TX ->` means it never answered at \
+                     all, which is a different bug):\n{}\n\
+                     captured screen so far:\n{}",
+                    self.io_journal(),
+                    self.screen()
+                );
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
     /// The Enter key, alone, in raw terminal input: `CR` (`\r`), not `\n`.
     pub fn send_enter(&mut self) {
         self.send("\r");
