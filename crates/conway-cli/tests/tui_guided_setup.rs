@@ -256,19 +256,17 @@ async fn guided_setup_accepted_writes_settings_and_models_json_to_the_same_layer
         unrelated_dir.path(),
         Path::new("/tmp"),
     ] {
-        let headroom = routes_explain_default_headroom(&config_home, cwd);
-        // 10% of the 131072-token window this run typed at the ask prompt.
-        // NOT 104857 -- that figure comes from the original reproduction,
-        // where the model's window was 1,048,576; copying it here asserted
-        // a number this fixture never produces. What the regression is
-        // actually about is that the value is the SAME everywhere and is
-        // derived from the real window rather than collapsing to the
-        // dialect floor (8192), which is what it did before the fix.
+        let window = routes_explain_selected_window(&config_home, cwd);
+        // The window this run typed at the ask prompt. What the regression
+        // is about is that the value is the SAME from every cwd and comes
+        // from the real `models.json` rather than collapsing to the dialect
+        // floor (8192), which is what it did before the fix -- which is
+        // only true if guided setup wrote both files into the same layer.
         assert_eq!(
-            headroom,
-            "13107",
-            "headroom_tokens must be identical (and reflect the real 131072-token window, not \
-             the assumed 8192 floor) from {}",
+            window,
+            "131072",
+            "the resolved window must be identical from every cwd, and must come from the \
+             real models.json rather than the assumed 8192 dialect floor -- read from {}",
             cwd.display()
         );
     }
@@ -281,7 +279,7 @@ async fn guided_setup_accepted_writes_settings_and_models_json_to_the_same_layer
 /// somewhere OTHER than the directory guided setup happened to run in.
 /// Returns the `headroom_tokens` field's raw text out of `routes.rs`'s own
 /// `"role: {} (est_tokens={}, headroom_tokens={})"` line.
-fn routes_explain_default_headroom(config_home: &Path, cwd: &Path) -> String {
+fn routes_explain_selected_window(config_home: &Path, cwd: &Path) -> String {
     let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("conway"))
         .current_dir(cwd)
         .env("CONWAY_CONFIG_DIR", config_home)
@@ -290,14 +288,39 @@ fn routes_explain_default_headroom(config_home: &Path, cwd: &Path) -> String {
         .expect("run conway routes explain default");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // The SELECTED candidate's own resolved WINDOW, not a headroom figure.
+    //
+    // This test is about board item `01M2M68XYD5FSCNSH2Z1BMQ399`: guided
+    // setup must write `settings.json` and `models.json` into the SAME
+    // config layer, so the window resolves from the real `models.json`
+    // rather than collapsing to the dialect floor -- and resolves the same
+    // way from any cwd. It used to read `headroom_tokens=` as a PROXY for
+    // that, because headroom was derived from the window.
+    //
+    // That proxy no longer holds. Board item `01M2TVEWVMPP69TZ17XSGWEW82`
+    // made headroom resolve per candidate and stopped conway rewriting the
+    // operator's document with a derived value, so the header now carries
+    // the flat role-wide default; and this fixture's producer is
+    // `MinimalRouter`, which runs no per-candidate resolution at all, so
+    // the row carries no `headroom:` term either. Both are correct
+    // post-change and neither says anything about the layer question.
+    //
+    // The window is what the regression was always about, and it is stated
+    // directly on the row, with its provenance.
     let line = stdout
         .lines()
-        .find(|l| l.contains("headroom_tokens="))
+        .find(|l| l.contains("SELECTED") && l.contains("window: "))
         .unwrap_or_else(|| {
-            panic!("no headroom_tokens line in stdout; stdout:\n{stdout}\nstderr:\n{stderr}")
+            panic!(
+                "no SELECTED row carrying `window: ` in stdout; \
+                 stdout:\n{stdout}\nstderr:\n{stderr}"
+            )
         });
     let (_, after) = line
-        .split_once("headroom_tokens=")
-        .expect("headroom_tokens= present, checked above");
-    after.trim_end_matches(')').trim().to_string()
+        .split_once("window: ")
+        .expect("window: present, checked above");
+    after
+        .split_once(' ')
+        .map(|(n, _)| n.to_string())
+        .unwrap_or_else(|| after.trim().to_string())
 }

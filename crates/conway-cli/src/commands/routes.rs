@@ -164,10 +164,23 @@ fn print_text(
         let provenance = render_context_window_source(context_window_source);
         let cache = render_cache_reporting(entry.cache_reporting);
         let fixed_cost = render_fixed_cost(footprint, &model_ref, window_tokens);
+        // Per CANDIDATE, not the report header's single figure. Board item
+        // `01M2TVEWVMPP69TZ17XSGWEW82` made headroom resolve per candidate
+        // (operator-per-model > operator-per-role > derived-from-this
+        // candidate's own window > flat default), so the header's role-wide
+        // number is now true for at most one row -- it is kept there for
+        // decoders of an already-serialized report, and this is the figure
+        // an operator picking a model should read. Omitted, not rendered as
+        // a placeholder, when the producer ran no per-candidate resolution
+        // (MinimalRouter): a blank is honest, a zero would not be.
+        let headroom = match entry.headroom_tokens {
+            Some(n) => format!(", headroom: {n}"),
+            None => String::new(),
+        };
         println!(
             "  {marker} {model_ref:<width$}{word:<8} {reason}  (breaker: {breaker}, tokens: \
              {tokens}, window: {window} [{provenance}], cache: {cache}, fixed_cost: \
-             {fixed_cost})",
+             {fixed_cost}{headroom})",
             width = width,
         );
     }
@@ -235,6 +248,7 @@ fn entry_json(conway: &Conway, e: &ExplainEntry, footprint: &InstallFootprint) -
         "context_window_source": render_context_window_source(context_window_source),
         "cache_reporting": render_cache_reporting(e.cache_reporting),
         "fixed_cost": fixed_cost,
+        "headroom_tokens": e.headroom_tokens,
     })
 }
 
