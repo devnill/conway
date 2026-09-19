@@ -366,7 +366,7 @@ note.
 | --- | --- |
 | `sessions list [--limit N] [--label L] [--json]` | Lists sessions (id, name, created, role, origin), newest first. `--json` prints a JSON array instead of a table. Excludes ephemeral sessions; there's no flag to include them. The `NAME` column (and `--json`'s `title` field) shows an unnamed session's auto-derived title instead of staying blank — see [Where a title comes from](#where-a-title-comes-from) below. |
 | `sessions show <id-or-name> [--json]` | Prints that session's ancestry-resolved transcript — its own records plus, if it's a fork child, everything it inherited. Default output is one `--- <kind> seq=<n> ---` block per record in Rust debug form; `--json` prints one compact JSON object per line (JSONL), the same wire shape the log itself uses. |
-| `sessions show <id-or-name> --diff` | Prints the cumulative diff of every path this session's own root agent edited or wrote, one `## <path>` section per path, instead of the ordinary record dump — the headless counterpart of the TUI's `/diff` command (`docs/interactive.md`'s "Diffs, not raw JSON"); both fold the same ordered sequence of successful `edit`/`write` calls through one shared reconstruction. See the note below the table for what "against the bytes it had when the session first touched it" actually means for a session inspected well after the fact, and the current single-agent (root only) scope. |
+| `sessions show <id-or-name> --diff` | Prints the cumulative diff of every path this session's own root agent edited or wrote, one `## <path>` section per path, instead of the ordinary record dump — the headless counterpart of the TUI's `/diff` command (`docs/interactive.md`'s "Diffs, not raw JSON"); both fold the same ordered sequence of successful `edit`/`write` calls through one shared reconstruction. Any `edit`/`write` call this session proposed and never logged a *result* for — the shape a kill mid-edit leaves behind — is listed separately under `## unfinished`, never folded into the diffs above it. See the notes below the table for what the reconstructed baseline can and cannot promise, and for why "root agent only" is a smaller limitation than it sounds. |
 | `sessions tree <id-or-name>` | Prints the session's fork/spawn tree as indented text: one line per node (role), starting from `<id-or-name>` itself and indenting each descendant under its parent. |
 | `sessions export <id-or-name> [--out PATH]` | Writes the ancestry-resolved transcript as JSONL — to `PATH` if given, else stdout. Same content as `show --json`, without the interleaved per-line inspection framing. |
 | `sessions name <id-or-name> <name>` | Attaches `<name>` to a session, or — if `<id-or-name>` is itself an existing name — renames it. Refuses a `<name>` that parses as a valid ULID, and refuses one already bound to a *different* session, naming which session holds it — never a silent overwrite. A session carries at most one name; naming an already-named session moves its one name rather than adding a second. |
@@ -400,14 +400,32 @@ A few things worth knowing before you rely on the output:
 - **`--diff`'s "baseline" is reconstructed, not stored.** conway persists
   no full file snapshots — the log records each `edit`/`write` call's own
   arguments (the substring changed, or the new content), not the file's
-  bytes before or after. The first time `--diff`'s walk touches a given
-  path, it reads that path's CURRENT on-disk content and treats it as the
-  baseline, then folds every recorded call for that path on top in memory.
-  That is exactly right immediately after a session ends, against files
-  nothing else has since touched; it is a best-effort answer, not a
-  guarantee, for an old session whose files have diverged further or been
-  reverted since. `--diff` only walks the session's own **root** agent
-  today — a subagent's own `edit`/`write` calls are not yet included.
+  bytes before or after. So `--diff` reads each path's CURRENT on-disk
+  content and *un-applies* the recorded calls from it, recovering what the
+  session started from, then re-applies them to render the diff. That is
+  exact for `edit` calls and for a `write` that created a new file; it
+  overstates the change for a `write` that clobbered pre-existing content,
+  whose displaced bytes the log genuinely does not contain. It is a
+  best-effort answer, not a guarantee, for an old session whose files have
+  diverged further or been reverted since — and it never shells out to
+  `git`, because its job is to describe what *conway* did, which is exactly
+  what diverges from the tree when you have uncommitted edits of your own.
+- **`--diff` walks one agent — but one agent is one session.** conway
+  writes one session file per agent (`SessionMeta`'s `agent` field), so a
+  delegated subagent's `edit`/`write` calls are not missing, they are
+  filed under the subagent's own session id. `sessions list` shows it with
+  an `ORIGIN` of `spawn@<seq> <parent>`; `sessions show <that-id> --diff`
+  answers "what did *that* worker change" directly. What `--diff` does not
+  yet do is aggregate a parent and its children into one report.
+- **`--diff` reports unfinished calls rather than dropping them.** A
+  `ToolUse` whose `ToolResultRecord` never got written — a worker killed
+  mid-edit, a crash, a cut-off connection — appears under a trailing
+  `## unfinished` heading naming the tool and path. It is deliberately not
+  folded into the diffs: conway knows the call was proposed and does not
+  know whether it ran, and applying its arguments anyway would report bytes
+  no file may ever have held. `bash`-driven edits (`sed -i`, shell
+  redirects) remain invisible to `--diff` entirely, finished or not — no
+  tool-call record describes what they changed.
 - Values passed to `--session`/`--resume`/`--fork-from` and
   `sessions show|tree|export|name|unname|label|unlabel <id-or-name>` accept
   either a full ULID or an operator-chosen name (below) — never a
