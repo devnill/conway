@@ -1224,10 +1224,12 @@ async fn budget_max_steps_exceeded_reports_the_last_assistant_text() {
 
     let result = harness.agent_loop.run().await;
     assert!(matches!(result.status, ResultStatus::BudgetExceeded { .. }));
-    assert_eq!(
-        result.summary, "now checking a second one",
-        "the budget-exceeded summary must be the most recent turn's own text, \
-         not a bare status name"
+    assert!(
+        result.summary.starts_with("now checking a second one"),
+        "the budget-exceeded summary must LEAD with the most recent turn's own text, not a \
+         bare status name (board item 01M2V047Q99N4HGXF0Y42JVBB9 appends a derived \
+         partial-handback note after it): {:?}",
+        result.summary
     );
 }
 

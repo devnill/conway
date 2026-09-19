@@ -19,7 +19,7 @@
 //! the test suite, so a field there is a much wider change than a local.
 
 use chrono::Utc;
-use conway_core::agent::{AgentResult, DEFAULT_SUMMARY_LIMIT, Fact, ResultStatus};
+use conway_core::agent::{AgentResult, Fact, ResultStatus, DEFAULT_SUMMARY_LIMIT};
 use conway_core::content::{Artifact, ContentBlock};
 use conway_core::error::StoreError;
 use conway_core::ids::{LogSeq, SessionId, ToolName};

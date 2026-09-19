@@ -8183,9 +8183,9 @@ mod tests {
     /// hand-writes the `switch_lineage` entries it then asserts on. That
     /// test pins the draw-time predicate, which is a real and separate
     /// thing to pin -- but it writes the state under test, so a regression
-    /// in `switch_session`'s own bookkeeping (the actual defect this item
-    /// fixes: the switch site knew the `ModelRef` and recorded nothing)
-    /// would not fail it. Nothing here touches `switch_lineage` or
+    /// in `switch_session`'s own bookkeeping (the defect board item
+    /// `01M2TWAZXTVB50YGMDK7MRN2W1` fixes: the switch site knew the
+    /// `ModelRef` and recorded nothing) would not fail it. Nothing here touches `switch_lineage` or
     /// `spawn_role_or_model` by hand; every entry they hold at the
     /// assertions below was put there by a `/model` command.
     ///
