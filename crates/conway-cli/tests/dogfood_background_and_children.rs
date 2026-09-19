@@ -46,8 +46,26 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::mock_backend::{Chunk, MockBackend, Script};
+use common::mock_backend::{Chunk, MockBackend, MockHandle, Script};
+use common::pty::PtySession;
 use conway::{LogRecord, ResultStatus, SessionFilter};
+
+/// The TUI's input-line hint, rendered once the interactive session is up
+/// and accepting keystrokes -- the same landing marker every pty suite in
+/// this directory waits on.
+const LANDED: &str = "Type a message, or / for commands";
+
+/// How long the child must be SILENT for
+/// `PtySession::wait_until_settled` to call a turn settled here. Three of
+/// `tui/app/run.rs`'s 125ms `ANIMATION_TICK`s, with margin -- that tick
+/// advances a ten-glyph spinner on every tick for which
+/// `should_animate(&activity)` holds, so a turn still in flight physically
+/// cannot stay quiet this long, and silence therefore means
+/// `Activity::Idle`. Derived from the product's own cadence, not fitted to
+/// a machine: it stays discriminating on a loaded runner because the
+/// animation tick does not slow down when the machine is busy. Same value,
+/// same derivation, as `dogfood_cache_and_fallback.rs`'s own `SETTLE_QUIET`.
+const SETTLE_QUIET: Duration = Duration::from_millis(400);
 
 /// A one-entry `Script` whose only turn proposes a `bash` call, then ends
 /// the turn on `tool_calls` -- every test in this file's own shape. A
@@ -384,6 +402,223 @@ async fn sigterm_mid_work_child_persists_a_cancelled_terminal_record() {
              a dangling tool_result or anything else: {other:?}"
         ),
     }
+}
+
+// ---------------------------------------------------------------------
+// The backgrounding gate's OPERATOR-facing half (board item
+// `01M2XN174DSYKWXBZS7CE2X6NN`)
+// ---------------------------------------------------------------------
+
+/// As `tui_permission_mode.rs`'s own `write_fixture_with_bash` -- a TUI-mode
+/// fixture (the compiled binary takes its interactive branch on a pty) that
+/// ALSO registers `conway.shell`, without which a TUI session's scripted
+/// `bash` call is rejected client-side as "tool not registered" and never
+/// reaches the runtime at all (that file's own top doc records exactly that
+/// false-green history). Copied here rather than shared because each
+/// `tests/*.rs` file compiles `common/` as its own independent crate and
+/// this file needs `bash` for a DIFFERENT gate than that one does.
+fn write_tui_fixture_with_bash(mock: &MockHandle, max_steps: u32) -> common::Fixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = serde_json::json!({
+        "default_role": "default",
+        "limits": { "max_steps": max_steps },
+        "backends": {
+            "mock": { "kind": "openai-compat", "base_url": mock.base_url, "dialect": "openai" }
+        },
+        "roles": {
+            "default": { "chain": [format!("mock/{}", mock.model)] },
+            "coder": { "chain": [format!("mock/{}", mock.model)] }
+        },
+        "tools": {
+            "builtin_plugins": [
+                "conway.fs",
+                "conway.subagent",
+                "conway.report",
+                "conway.shell"
+            ]
+        }
+    });
+    let config_path = dir.path().join("conway.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_vec(&config).expect("serialize conway.json"),
+    )
+    .expect("write conway.json");
+
+    // Same `.conway/models.json` requirement as `common::write_fixture_with`
+    // -- see that function's own comment for why the router needs it.
+    let models_dir = dir.path().join(".conway");
+    std::fs::create_dir_all(&models_dir).expect("create .conway dir");
+    let models_json = serde_json::json!({
+        "models": {
+            format!("mock/{}", mock.model): {
+                "max_context_tokens": 128_000,
+                "tool_calling": "streaming_validated",
+                "reasoning": false,
+                "reliability_tier": "verified",
+            }
+        }
+    });
+    std::fs::write(
+        models_dir.join("models.json"),
+        serde_json::to_vec(&models_json).expect("serialize models.json"),
+    )
+    .expect("write models.json");
+
+    common::Fixture { dir, config_path }
+}
+
+/// The gate's literal wording, finally asserted: **"you can keep working
+/// while a backgrounded job runs."** Everything above in this file proves
+/// the MECHANISM through one-shot (`-p`) runs -- a job is spawned, its pid
+/// survives the call, the call returns fast, the result says so -- and none
+/// of it drives a live interactive session through a SECOND turn while the
+/// job is still running, which is the operator-facing property the gate
+/// actually names. Board item `01M2XN174DSYKWXBZS7CE2X6NN` split this out
+/// of the gate because the gate was closed on judgement alone ("4- Yes.
+/// pass.") without the short real run its question asked for; this test is
+/// that run, automated.
+///
+/// # The ordering assertion is the whole test
+///
+/// Turn 1 backgrounds `(sleep 20 && echo LATE_JOB_DONE > <marker>) &`,
+/// turn 2 is submitted and must COMPLETE while that job is still live.
+/// "While still live" is proven positively and negatively at the moment
+/// the second reply has arrived, not merely that both eventually finished:
+///
+/// - `pid still alive` (`child_procs::is_alive`, `kill -0`) -- the job was
+///   never waited on, let alone killed;
+/// - `marker file still absent` -- the job's own completion side effect
+///   (`echo LATE_JOB_DONE > marker`) has not happened yet;
+/// - `the result SAYS the job is still running` -- the same
+///   `background process(es) still running: pid N` wording the gate-3 test
+///   above already pins, here asserted for the TUI path.
+///
+/// A serialised implementation (the pre-fix shape `bash.rs`'s own loop
+/// comment documents: completing only once the pipes EOF, i.e. once the
+/// grandchild exits) fails this in BOTH of the two ways it can serialise:
+/// if the tool call is held until the job exits, the marker exists and the
+/// pid is dead by the time turn 2 runs; if the second prompt is blocked
+/// until the job exits, the reply cannot arrive within the wait below --
+/// whose 10s bound is DERIVED, not fitted: the job needs 20 real seconds,
+/// so any implementation that lets turn 2 wait on it cannot answer within
+/// 10s, and this stays discriminating under load because the job's floor
+/// does not move when the machine is busy. On the real build the reply
+/// lands in about a second (a mock-backend round trip), comfortably inside
+/// the bound.
+///
+/// The FIRST turn's wait, by contrast, is deliberately generous (45s) --
+/// the opposite of the second one, on purpose: the P-15 probe this was
+/// demonstrated against (temporarily re-patching `bash.rs`'s loop to the
+/// documented old shape, so the tool call holds until the job exits) must
+/// be allowed to finish turn 1 and reach the post-second-turn liveness
+/// assertions, so the failure lands on the ORDERING property itself rather
+/// than on this pacing wait. The generous bound costs the real build
+/// nothing -- turn 1 completes in about two seconds.
+///
+/// Pacing otherwise follows `CONTRIBUTING.md`'s pty section exactly:
+/// `wait_until_settled` (not a merely-true marker) separates the two turns,
+/// with the same product-derived 400ms `quiet_for` the cache suite's
+/// settled turns use; `--default-permission-mode auto_allow` (snake_case,
+/// per `cli.rs`'s own note) starts the session with the bash call
+/// un-blocked, and the status line's `AUTO-ALLOW` is awaited to prove the
+/// flag actually took before anything is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn second_turn_completes_while_a_backgrounded_job_is_still_live() {
+    let mock = MockBackend::start(Script(vec![
+        // Turn 1, request 1: background a 20-second job, echo its pid.
+        vec![
+            Chunk::ToolCall {
+                name: "bash",
+                args: serde_json::json!({
+                    "command":
+                        "(sleep 20 && echo LATE_JOB_DONE > ./late_job_marker) & echo $!"
+                }),
+            },
+            Chunk::Finish("tool_calls"),
+        ],
+        // Turn 1, request 2: the model's follow-up reply once the tool
+        // result is in -- the marker that turn 1, JOB INCLUDED, is fully
+        // finished before turn 2 is even sent.
+        vec![Chunk::Text("FIRST_TURN_DONE"), Chunk::Finish("stop")],
+        // Turn 2: the reply the whole test waits on.
+        vec![Chunk::Text("SECOND_TURN_OK"), Chunk::Finish("stop")],
+    ]))
+    .await;
+    let fixture = write_tui_fixture_with_bash(&mock, 10);
+    let marker = fixture.dir.path().join("late_job_marker");
+
+    let cmd = common::pty_command(&["--default-permission-mode", "auto_allow"], &fixture);
+    let mut session = PtySession::spawn(cmd, 160, 45);
+    let landed = session.wait_for(LANDED, Duration::from_secs(15));
+    // Prove the starting mode took before anything is sent -- the exact
+    // false-green shape `tui_permission_mode.rs`'s top doc records (a bash
+    // call that silently never reaches the runtime) would otherwise surface
+    // only as a confusing timeout two waits later.
+    let _in_auto_allow = session.wait_for_since("AUTO-ALLOW", landed, Duration::from_secs(10));
+
+    // ---- Turn 1: background the job ------------------------------------
+    session.send("start a long background job\r");
+    let _first_reply = session.wait_for_since("FIRST_TURN_DONE", landed, Duration::from_secs(45));
+    let settled = session.wait_until_settled(SETTLE_QUIET, Duration::from_secs(15));
+
+    // The pid, read from the session log the running TUI has already
+    // flushed (turn 1 is settled, so its tool_result record is on disk) --
+    // the same read-back the gate-3 test does, here against a LIVE session.
+    let conway = common::open_conway(&fixture).await;
+    let sessions = conway
+        .sessions(SessionFilter::default())
+        .await
+        .expect("list sessions");
+    assert_eq!(
+        sessions.len(),
+        1,
+        "expected exactly one session in the fixture's own store: {sessions:?}"
+    );
+    let handle = conway.resume(sessions[0].id).await.expect("resume session");
+    let records = handle
+        .transcript(handle.root())
+        .await
+        .expect("read transcript");
+    drop(conway);
+    drop(handle);
+    let (text, is_error) = first_tool_result_text(&records);
+    assert!(
+        !is_error,
+        "a successfully backgrounded job must not be an error result: {text:?}"
+    );
+    let pid = child_procs::pid_from_bash_stdout(&text);
+    let _guard = child_procs::KillOnDrop(pid);
+
+    // ---- Turn 2, WHILE the job runs ------------------------------------
+    let second_sent = Instant::now();
+    session.send("second turn while that runs\r");
+    // THE ordering wait: 10s, derived from the job's own 20s floor (see the
+    // test's doc), not from this machine's speed.
+    let _second_reply = session.wait_for_since("SECOND_TURN_OK", settled, Duration::from_secs(10));
+    let second_elapsed = second_sent.elapsed();
+
+    // ---- The property: the job was STILL LIVE when turn 2 completed ----
+    assert!(
+        !marker.exists(),
+        "the backgrounded job's own completion marker must not exist yet: turn 2 completed \
+         {second_elapsed:?} after it was sent, but the job needs 20 real seconds -- if the \
+         marker is already there, turn 2 did NOT complete while the job was running (a \
+         serialised implementation). Screen:\n{}",
+        session.screen()
+    );
+    assert!(
+        child_procs::is_alive(pid),
+        "the backgrounded job's pid must STILL be alive now that turn 2 has completed -- \
+         turn 2 finished {second_elapsed:?} after it was sent, and the job was never waited \
+         on. Screen:\n{}",
+        session.screen()
+    );
+    assert!(
+        text.contains(&format!("background process(es) still running: pid {pid}")),
+        "the tool result must SAY the job is still running, naming its pid, on the TUI path \
+         too -- the same wording the gate-3 one-shot test pins: {text:?}"
+    );
 }
 
 // ---------------------------------------------------------------------
