@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use conway_core::capabilities::{HeadroomPolicy, RequiredCaps};
+use conway_core::capabilities::{Capabilities, HeadroomPolicy, RequiredCaps};
 use conway_core::error::RoutingError;
 use conway_core::ids::{EndpointId, ModelRef, RoleAlias};
 use conway_core::ports::{Admission, CapabilityIndex, HealthRegistry, Router};
@@ -310,14 +310,24 @@ impl DeclarativeRouter {
     /// [`crate::capability::non_size_missing`] and
     /// [`crate::capability::size_missing`] are asked directly, the same two
     /// functions [`crate::capability::satisfies`] itself composes.
+    ///
+    /// `caps` is the candidate's capability-index entry (or `None`), supplied
+    /// by the caller rather than looked up here: `evaluate` must consult the
+    /// index anyway to resolve the candidate's headroom window, so passing
+    /// the entry down keeps the lookup to ONE per candidate. Each
+    /// `CapabilityIndex::get` clones the `(BackendId, ModelId)` lookup key
+    /// (two owned-`String` newtypes, no small-string optimization), so a
+    /// second lookup per candidate cost two allocations on every routed
+    /// request (board item `01M2XF13H296YSD7CKW9RTCDYN`).
     fn check_candidate(
         &self,
         model_ref: &ModelRef,
         req: &RouteRequest,
         headroom_tokens: u32,
         required: &RequiredCaps,
+        caps: Option<&Capabilities>,
     ) -> Result<(), (RoutingReason, Option<u32>)> {
-        match self.capability_index.get(model_ref) {
+        match caps {
             None => {
                 return Err((
                     RoutingReason::CapabilitySkip {
@@ -400,52 +410,57 @@ impl DeclarativeRouter {
             // Board item `01M2TVEWVMPP69TZ17XSGWEW82`: headroom is resolved
             // HERE, inside the candidate loop, against this candidate's own
             // window -- not once per role above. `role_headroom_tokens`
-            // survives only as the report header's role-wide figure.
-            let window = self
-                .capability_index
-                .get(model_ref)
-                .map(|caps| caps.max_context_tokens);
+            // survives only as the report header's role-wide figure. The
+            // index is consulted exactly ONCE per candidate (the entry feeds
+            // both the window and `check_candidate`, board item
+            // `01M2XF13H296YSD7CKW9RTCDYN`): each `get` clones its
+            // `(BackendId, ModelId)` lookup key, and a second identical
+            // lookup inside `check_candidate` cost two allocations on
+            // every routed request for no new information.
+            let caps = self.capability_index.get(model_ref);
+            let window = caps.map(|caps| caps.max_context_tokens);
             let headroom_tokens = self.headroom_for_candidate(&req.role, model_ref, window);
-            let outcome = match self.check_candidate(model_ref, req, headroom_tokens, &required) {
-                Err((reason, headroom_only_window)) => {
-                    EvalOutcome::Skipped(reason, headroom_only_window)
-                }
-                Ok(()) => {
-                    let reason = if is_pin {
-                        RoutingReason::PinnedByApi
-                    } else if position == 0 {
-                        RoutingReason::AliasPrimary {
-                            alias: req.role.clone(),
-                        }
-                    } else {
-                        // Board item A1d ("say why a turn fell back"): name
-                        // every earlier-in-chain candidate this evaluation
-                        // itself skipped, and why -- `render_reason` (this
-                        // file, already the `RoutingError::NoCandidate`
-                        // renderer) is reused verbatim so this carries no
-                        // second reason vocabulary. Candidates the ROUTER
-                        // never reached at all (this chain's own later
-                        // entries, irrelevant here since `entries` only
-                        // holds positions strictly before `position`) are
-                        // absent by construction, not silently guessed at.
-                        RoutingReason::Fallback {
-                            position: position as u8,
-                            after: skipped_so_far(&entries, now),
-                            // `RoutingReason::Fallback::skipped` records
-                            // candidates refused at ADMISSION -- i.e. by
-                            // `Backend::admit`, inside the attempt engine,
-                            // which is a layer this router never reaches.
-                            // The router's own pre-filter skips are already
-                            // carried above (`skipped_so_far`), so leaving
-                            // this empty is the honest answer here, not an
-                            // omission: nothing was admission-skipped by
-                            // the time `resolve` returned.
-                            skipped: Vec::new(),
-                        }
-                    };
-                    EvalOutcome::Selected(reason)
-                }
-            };
+            let outcome =
+                match self.check_candidate(model_ref, req, headroom_tokens, &required, caps) {
+                    Err((reason, headroom_only_window)) => {
+                        EvalOutcome::Skipped(reason, headroom_only_window)
+                    }
+                    Ok(()) => {
+                        let reason = if is_pin {
+                            RoutingReason::PinnedByApi
+                        } else if position == 0 {
+                            RoutingReason::AliasPrimary {
+                                alias: req.role.clone(),
+                            }
+                        } else {
+                            // Board item A1d ("say why a turn fell back"): name
+                            // every earlier-in-chain candidate this evaluation
+                            // itself skipped, and why -- `render_reason` (this
+                            // file, already the `RoutingError::NoCandidate`
+                            // renderer) is reused verbatim so this carries no
+                            // second reason vocabulary. Candidates the ROUTER
+                            // never reached at all (this chain's own later
+                            // entries, irrelevant here since `entries` only
+                            // holds positions strictly before `position`) are
+                            // absent by construction, not silently guessed at.
+                            RoutingReason::Fallback {
+                                position: position as u8,
+                                after: skipped_so_far(&entries, now),
+                                // `RoutingReason::Fallback::skipped` records
+                                // candidates refused at ADMISSION -- i.e. by
+                                // `Backend::admit`, inside the attempt engine,
+                                // which is a layer this router never reaches.
+                                // The router's own pre-filter skips are already
+                                // carried above (`skipped_so_far`), so leaving
+                                // this empty is the honest answer here, not an
+                                // omission: nothing was admission-skipped by
+                                // the time `resolve` returned.
+                                skipped: Vec::new(),
+                            }
+                        };
+                        EvalOutcome::Selected(reason)
+                    }
+                };
             entries.push(EvalEntry {
                 model_ref,
                 chain_position: if is_pin { None } else { Some(position as u8) },
@@ -951,24 +966,29 @@ mod tests {
         // flow. This test pins the actual measured count instead of
         // silently asserting the unreachable budget; flagged to the
         // coordinator for reconciliation with the criterion text.
-        // Was 7 until board item `01M2TVEWVMPP69TZ17XSGWEW82` (headroom
-        // resolved per candidate). The two extra allocations are NOT the
-        // per-candidate resolution itself: stubbing `headroom_for_candidate`
-        // down to a bare `self.fallback_headroom` still measures 9, and this
-        // fixture's `models` map is empty so `model_headroom_override`
-        // returns before its lookup-key `to_string`. The likeliest remaining
-        // cause is `DeclarativeRouter` now owning a `RoutingConfig`, but that
-        // is unattributed -- board item `01M2XF13H296YSD7CKW9RTCDYN` carries
-        // the measurement and the ruling-out above.
+        // Board item `01M2TVEWVMPP69TZ17XSGWEW82` (headroom resolved per
+        // candidate) briefly pushed this to 9: its per-candidate window
+        // lookup added a SECOND `CapabilityIndex::get` per candidate beside
+        // `check_candidate`'s own, and each `get` clones the
+        // `(BackendId, ModelId)` lookup key -- two owned-`String` newtype
+        // clones, i.e. exactly the two extra allocations. The per-candidate
+        // resolution itself allocated nothing (stubbing
+        // `headroom_for_candidate` down to a bare `self.fallback_headroom`
+        // still measured 9; this fixture's `models` map is empty so
+        // `model_headroom_override` returns before its lookup-key
+        // `to_string`). 01M2XF13H296YSD7CKW9RTCDYN attributed the two to
+        // `evaluate`'s duplicate index lookup (lines just above, the
+        // `let caps = ...` site -- both were the `get`'s `BackendId` and
+        // `ModelId` key clones) and reclaimed them: `evaluate` now fetches
+        // the entry once and passes it down, so the count is back at the
+        // original 7 with per-candidate headroom intact.
         //
-        // Pinned at the measured 9 rather than left failing, so the tripwire
-        // keeps catching the NEXT drift; the breakdown above still describes
-        // the original 7.
+        // Pinned at the measured 7, matching the breakdown above one for
+        // one, so the tripwire keeps catching the NEXT drift.
         assert_eq!(
-            measured, 9,
-            "measured allocation count drifted from the pinned 9 (see the note above: 7 of \
-             those are the documented breakdown, 2 are unattributed and tracked by \
-             01M2XF13H296YSD7CKW9RTCDYN); got {measured}"
+            measured, 7,
+            "measured allocation count drifted from the pinned 7 (see the note above for \
+             the line-by-line breakdown); got {measured}"
         );
     }
 
@@ -993,7 +1013,13 @@ mod tests {
 
         let req = request("planner", 34_000);
         let err = router
-            .check_candidate(&m, &req, 16_000, &req.required)
+            .check_candidate(
+                &m,
+                &req,
+                16_000,
+                &req.required,
+                router.capability_index.get(&m),
+            )
             .expect_err("40000 window can't hold 34000 + 16000");
         assert_eq!(
             err.1,
@@ -1018,7 +1044,13 @@ mod tests {
 
         let req = request("planner", 34_000);
         let err = router
-            .check_candidate(&m, &req, 16_000, &req.required)
+            .check_candidate(
+                &m,
+                &req,
+                16_000,
+                &req.required,
+                router.capability_index.get(&m),
+            )
             .expect_err("unindexed model is always rejected");
         assert_eq!(err.1, None);
     }
@@ -1046,7 +1078,13 @@ mod tests {
         req.required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
 
         let err = router
-            .check_candidate(&m, &req, 16_000, &req.required)
+            .check_candidate(
+                &m,
+                &req,
+                16_000,
+                &req.required,
+                router.capability_index.get(&m),
+            )
             .expect_err("fails both tool_calling and headroom");
         assert_eq!(err.1, None, "mixed failure must not report a window");
     }
@@ -1074,7 +1112,13 @@ mod tests {
         req.required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
 
         let err = router
-            .check_candidate(&m, &req, 16_000, &req.required)
+            .check_candidate(
+                &m,
+                &req,
+                16_000,
+                &req.required,
+                router.capability_index.get(&m),
+            )
             .expect_err("tool_calling missing");
         assert_eq!(err.1, None);
     }
