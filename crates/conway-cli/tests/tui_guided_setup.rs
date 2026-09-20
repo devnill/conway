@@ -36,6 +36,14 @@ use common::Fixture;
 
 const LANDED: &str = "Type a message, or / for commands";
 
+/// How long the child must have emitted nothing before a CR-terminated
+/// keystroke is written, and the deadline that settle wait may not exceed.
+/// Derived from the product, not fitted to the machine -- see the two call
+/// sites below for the misdelivery this closes, board item
+/// `01M2YAHHMAY3AYPPZDV90ZZA12`.
+const KEY_QUIET: Duration = Duration::from_millis(400);
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn ok_script() -> Script {
     Script(vec![vec![Chunk::Text("ok"), Chunk::Finish("stop")]])
 }
@@ -73,6 +81,39 @@ fn accept_local_offer_and_land(
     let mut session = PtySession::spawn(cmd, 200, 50);
 
     let offered = session.wait_for("found one, model", Duration::from_secs(15));
+    // Every CR this helper sends is paced behind a settle, never written
+    // the instant its question appears. Reproduced under the documented
+    // dd+sync-into-target/ contention recipe (kept log:
+    // `target/flake_logs/guided_loop_17.log`): the test's `\r` crossed the
+    // tty in the SAME millisecond the offer text was emitted, while the
+    // product sat descheduled between `println!`ing the question and
+    // `read_single_key`'s `enable_raw_mode()`. A pty in canonical mode
+    // still has ICRNL on, so the line discipline rewrote the CR to LF
+    // before queuing it; crossterm then enabled raw mode with
+    // `tcsetattr(fd, TCSANOW, ..)` -- which flushes NOTHING -- and its
+    // parser decodes an already-queued LF as Ctrl+J, not Enter
+    // (`crossterm`'s own parse.rs: `b'\r' => Enter`, but `b'\n'` only
+    // maps to Enter `if !is_raw_mode_enabled()`, else it falls into the
+    // `b'\x01'..=b'\x1A' => Char(..) + CONTROL` arm). `read_single_key`
+    // returned Char('j'), the offer's "any other key" branch fired, the
+    // flow landed in the "Pick a provider" menu 1ms after the keystroke,
+    // and its own `read_single_key` then blocked forever on an empty
+    // input queue -- the journal ends there, and so does every recovery
+    // route: the child will never emit the marker the next wait seeks,
+    // so a longer timeout could only ever have waited harder at a
+    // failure that already happened. The settle is the fix precisely
+    // because it is not a timeout: between the question's last output
+    // byte and the blocking read the product performs exactly ONE step
+    // (`enable_raw_mode`, a single no-output `tcsetattr`), so once the
+    // child has been quiet for a window comfortably above a scheduler
+    // quantum -- [`KEY_QUIET`], the same product-derived 400ms the
+    // CONTRIBUTING pty section derives from the 125ms `ANIMATION_TICK` --
+    // the toggle has completed and the CR crosses in raw mode (ICRNL
+    // off) and is decoded as Enter. The plain-char sends below ("n")
+    // need no pacing: ICRNL rewrites only CR, so a queued `n` survives
+    // the boundary untranslated and decodes correctly whichever side of
+    // the toggle it lands on.
+    session.wait_until_settled(KEY_QUIET, SETTLE_TIMEOUT);
     session.send_enter(); // "Press Enter to use it" -- the one keypress.
 
     // Context-window discovery: this fixture's `mock` answers neither
@@ -89,6 +130,12 @@ fn accept_local_offer_and_land(
         offered,
         Duration::from_secs(10),
     );
+    // Same pacing as the Enter above: here a CR crossing the canonical
+    // boundary would leave the queued digits followed by an LF that raw
+    // mode decodes as Ctrl+J -- `read_plain_line` appends the `j` to the
+    // buffer and no Enter ever arrives, so the typed window is corrupted
+    // rather than merely declined. Same settle, same derivation.
+    session.wait_until_settled(KEY_QUIET, SETTLE_TIMEOUT);
     session.send("131072\r");
 
     let verifying = session.wait_for_since(

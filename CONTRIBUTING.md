@@ -576,6 +576,26 @@ is the third, narrower sibling: pure liveness ("did the render loop answer
 the keystroke at all"), for proving the TUI is not blocked, with no claim
 about content or completion.
 
+**Pace every CR-terminated keystroke behind a settle.** A `\r` written in
+the same breath as the question it answers can cross the child's
+canonical-to-raw-mode boundary: the line discipline still has ICRNL on, so
+it rewrites the CR to LF before queueing it; the product then enables raw
+mode with `tcsetattr(fd, TCSANOW, ..)`, which flushes nothing; and
+crossterm's parser decodes an already-queued LF as Ctrl+J, not Enter, once
+raw mode is on (`b'\n'` maps to Enter only while raw mode is OFF -- raw
+mode falls through to the Ctrl+J arm). The read returns a key the flow
+treats as "any other key" (or, for a typed number followed by `\r`,
+silently corrupts the value), and the child then blocks forever on an
+empty input queue -- the awaited marker is never coming, so no timeout
+increase can help. The fix is the settle, and it is product-derived:
+between a question's last output byte and the blocking read the product
+performs exactly one no-output step (`enable_raw_mode`), so silence
+comfortably above a scheduler quantum implies the toggle has completed
+and the CR crosses in raw mode, where it decodes as Enter.
+`tui_guided_setup.rs`'s `accept_local_offer_and_land` paces its two CR
+sends this way (board item `01M2YAHHMAY3AYPPZDV90ZZA12`); plain-char
+keystrokes need no pacing, because ICRNL rewrites only CR.
+
 **Inspecting a test that passes.** Set `CONWAY_PTY_JOURNAL=1` and run with
 `--nocapture`: every `PtySession` prints its journal on drop, pass or fail.
 This is the only way to check *why* a green pty test is green without first
