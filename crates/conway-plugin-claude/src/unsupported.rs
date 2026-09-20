@@ -14,8 +14,7 @@ pub enum UnsupportedKind {
     /// wires most `commands/*.md` files up (see `crate::commands`'s own
     /// module doc); this kind now names ONLY the ones that failed to
     /// translate: an unreadable file, unterminated/malformed frontmatter,
-    /// an empty body, a raw `$ARGUMENTS` placeholder this crate refuses to
-    /// submit verbatim, or a file-stem-derived bare name that could never
+    /// an empty body, or a file-stem-derived bare name that could never
     /// be typed. See `crate::commands::CommandMapOutcome::Refused`'s own
     /// doc for the full, closed list of reasons.
     Command,

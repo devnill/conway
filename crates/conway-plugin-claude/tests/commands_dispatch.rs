@@ -191,13 +191,15 @@ async fn a_translated_claude_command_submits_its_own_body_as_a_real_turn() {
     );
 }
 
-/// A command file whose body contains a raw `$ARGUMENTS` placeholder never
-/// reaches `command_registrations()` at all -- acceptance point 4, proven
-/// against the real `discover`/`command_registrations` path (the crate's
-/// own unit suite proves the translation decision in isolation; this
-/// proves it survives the full report-to-registration trip).
-#[test]
-fn a_command_with_a_raw_arguments_placeholder_never_becomes_a_registered_command() {
+/// A command file whose body contains a raw `$ARGUMENTS` placeholder
+/// registers and substitutes the operator's arguments at invoke time --
+/// the posture change (2026-09-20, the `/ideate.refine do the thing`
+/// report): the old ruling refused such bodies outright because v1 did no
+/// interpolation; `ClaudeCommand::invoke` now carries Claude Code's own
+/// argument semantics, proven here against the real
+/// `discover`/`command_registrations` path.
+#[tokio::test]
+async fn a_command_with_a_raw_arguments_placeholder_registers_and_substitutes_its_arguments() {
     let plugin_dir = tempfile::tempdir().expect("plugin dir");
     let root = plugin_dir.path();
     std::fs::create_dir_all(root.join("commands")).unwrap();
@@ -209,9 +211,19 @@ fn a_command_with_a_raw_arguments_placeholder_never_becomes_a_registered_command
 
     let report = conway_plugin_claude::discover(root).expect("discover the plugin directory");
     assert_eq!(report.commands.len(), 1);
-    assert!(report.command_registrations().is_empty());
-    assert!(report
-        .unsupported
-        .iter()
-        .any(|u| u.name == "commands/explain.md" && u.reason.contains("$ARGUMENTS")));
+    let commands = report.command_registrations();
+    assert_eq!(commands.len(), 1, "the placeholder body translates now");
+    assert!(report.unsupported.is_empty(), "{:?}", report.unsupported);
+
+    let ctx = CommandCtx {
+        focused_agent: conway_core::ids::AgentId::new(),
+        root_agent: conway_core::ids::AgentId::new(),
+        session_id: conway_core::ids::SessionId::new(),
+        args: "the merge conflict".to_string(),
+    };
+    let outcome = commands[0].clone().invoke(ctx).await;
+    let CommandOutcome::SubmitPrompt { text } = outcome else {
+        panic!("expected CommandOutcome::SubmitPrompt, got {outcome:?}");
+    };
+    assert_eq!(text, "Explain the merge conflict in plain language.");
 }

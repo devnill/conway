@@ -162,15 +162,26 @@ impl Command for ClaudeCommand {
         }
     }
 
-    /// Always [`CommandOutcome::SubmitPrompt`] with this command's own
-    /// (frontmatter-stripped) body, verbatim -- `ctx` is read by nothing
-    /// here, the identical "v1 does no interpolation" posture
-    /// `conway_plugin_skeleton::FilePromptCommand::invoke` already
-    /// establishes for an operator-authored prompt file.
-    async fn invoke(&self, _ctx: CommandCtx) -> CommandOutcome {
-        CommandOutcome::SubmitPrompt {
-            text: self.prompt.clone(),
-        }
+    /// Always [`CommandOutcome::SubmitPrompt`], with this command's
+    /// (frontmatter-stripped) body **plus the operator's arguments**,
+    /// Claude Code's own two-branch semantics (found by the operator's
+    /// `/ideate.refine do the thing` reaching the model as just the skill
+    /// document): a body containing `$ARGUMENTS` has every occurrence
+    /// substituted with `ctx.args` verbatim (an empty `args` substitutes
+    /// an empty string, exactly Claude Code's placeholder behavior); a
+    /// body with no placeholder gets non-empty `args` appended after it as
+    /// its own paragraph. A body with no placeholder and empty `args`
+    /// submits the body unchanged -- the old "no interpolation" posture,
+    /// now only the case where there is nothing to interpolate.
+    async fn invoke(&self, ctx: CommandCtx) -> CommandOutcome {
+        let text = if self.prompt.contains("$ARGUMENTS") {
+            self.prompt.replace("$ARGUMENTS", &ctx.args)
+        } else if !ctx.args.trim().is_empty() {
+            format!("{}\n\n{}", self.prompt, ctx.args)
+        } else {
+            self.prompt.clone()
+        };
+        CommandOutcome::SubmitPrompt { text }
     }
 }
 
@@ -280,19 +291,20 @@ fn translate_one(
 
 /// Decides whether a normalized body becomes a real command's prompt.
 ///
-/// **The `$ARGUMENTS` decision, made here and nowhere else.** Three shapes
-/// were open (the item's own spec: "strip, substitute, or refuse to
-/// register such a command -- pick one, say which"). Substitution is ruled
-/// out immediately -- `CommandOutcome::SubmitPrompt`'s own doc states v1
-/// performs NO interpolation of any kind, so this module has no argument
-/// VALUE to substitute in even if it wanted to. That leaves strip-and-run
-/// versus refuse. **Refuse, chosen**: stripping `$ARGUMENTS` out of a body
-/// authored expecting it to be replaced changes that body's own MEANING
-/// (a sentence built around "run against $ARGUMENTS" reads as nonsense
-/// with the token silently deleted, worse than not running at all) --
-/// where `evaluate_body`'s sibling checks (empty body, an untypeable bare
-/// name) all refuse rather than guess, this is the same posture applied to
-/// the one shape the item's own spec calls out by name.
+/// **The `$ARGUMENTS` decision, revisited 2026-09-20.** The original v1
+/// ruling refused any body containing the placeholder, because
+/// `CommandOutcome::SubmitPrompt` performed no interpolation and submitting
+/// the raw token would have changed the body's meaning. The operator's
+/// report (`/ideate.refine do the thing` reached the model as the skill
+/// document alone, session 01M2VF323N87YTS1QDVK3W0T49's first user_turn)
+/// broke the other half of the same posture: `ClaudeCommand::invoke` now
+/// carries Claude Code's own argument semantics -- every `$ARGUMENTS`
+/// occurrence substituted (empty args included), and a placeholder-free
+/// body with non-empty args gets them appended -- so a body authored around
+/// the placeholder finally gets what its author wrote it for, and the
+/// refusal is lifted: the placeholder is an ordinary body, translated
+/// `Ready` like any other. The remaining refusals (empty body, an
+/// untypeable bare name) keep refusing rather than guess.
 fn evaluate_body(body: &str, bare_name: &str) -> CommandMapOutcome {
     if bare_name.is_empty() || bare_name.chars().any(char::is_whitespace) {
         return CommandMapOutcome::Refused {
@@ -309,15 +321,6 @@ fn evaluate_body(body: &str, bare_name: &str) -> CommandMapOutcome {
     if normalized.is_empty() {
         return CommandMapOutcome::Refused {
             reason: "this command file's body is empty -- nothing to submit".to_string(),
-        };
-    }
-    if normalized.contains("$ARGUMENTS") {
-        return CommandMapOutcome::Refused {
-            reason: "this command's prompt body contains a raw \"$ARGUMENTS\" placeholder -- \
-                     conway performs no argument interpolation (CommandOutcome::SubmitPrompt's \
-                     own v1 posture), and submitting the placeholder text verbatim into the \
-                     model's context would be worse than not registering the command at all"
-                .to_string(),
         };
     }
     CommandMapOutcome::Ready { prompt: normalized }
@@ -465,9 +468,92 @@ mod tests {
             focused_agent: conway_core::ids::AgentId::new(),
             root_agent: conway_core::ids::AgentId::new(),
             session_id: conway_core::ids::SessionId::new(),
-            args: "ignored, v1 does no interpolation".to_string(),
+            args: "the auth flow".to_string(),
         };
         let outcome = command.invoke(ctx).await;
+        assert_eq!(
+            outcome,
+            CommandOutcome::SubmitPrompt {
+                // No `$ARGUMENTS` placeholder in the body: the operator's
+                // arguments are APPENDED, Claude Code's own no-placeholder
+                // behavior -- never silently dropped.
+                text: "Review the diff for bugs.\n\nthe auth flow".to_string()
+            }
+        );
+    }
+
+    /// The placeholder branch: a body containing `$ARGUMENTS` has every
+    /// occurrence substituted, verbatim, including an empty `args`.
+    #[tokio::test]
+    async fn a_command_body_with_the_placeholder_substitutes_the_arguments() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_command(
+            dir.path(),
+            "explain.md",
+            "---\ndescription: Explain\n---\n\nExplain $ARGUMENTS in depth, then summarize $ARGUMENTS.\n",
+        );
+        let mut unsupported = Vec::new();
+        let translations = read_commands(dir.path(), &mut unsupported);
+        let command = translations[0]
+            .command()
+            .expect("a Ready translation must produce a Command");
+
+        let ctx = CommandCtx {
+            focused_agent: conway_core::ids::AgentId::new(),
+            root_agent: conway_core::ids::AgentId::new(),
+            session_id: conway_core::ids::SessionId::new(),
+            args: "the borrow checker".to_string(),
+        };
+        let outcome = command.invoke(ctx).await;
+        assert_eq!(
+            outcome,
+            CommandOutcome::SubmitPrompt {
+                text: "Explain the borrow checker in depth, then summarize the borrow checker."
+                    .to_string()
+            }
+        );
+
+        // An EMPTY args substitutes an empty string -- the placeholder is
+        // the operator's explicit opt-in, so it is honored unconditionally.
+        let outcome = command
+            .invoke(CommandCtx {
+                focused_agent: conway_core::ids::AgentId::new(),
+                root_agent: conway_core::ids::AgentId::new(),
+                session_id: conway_core::ids::SessionId::new(),
+                args: String::new(),
+            })
+            .await;
+        assert_eq!(
+            outcome,
+            CommandOutcome::SubmitPrompt {
+                text: "Explain  in depth, then summarize .".to_string()
+            }
+        );
+    }
+
+    /// The no-placeholder, no-args case: the body submits unchanged -- the
+    /// only remaining shape of the old "no interpolation" posture.
+    #[tokio::test]
+    async fn a_command_with_no_placeholder_and_no_args_submits_its_body_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_command(
+            dir.path(),
+            "review.md",
+            "---\ndescription: Review the diff\n---\n\nReview the diff for bugs.\n",
+        );
+        let mut unsupported = Vec::new();
+        let translations = read_commands(dir.path(), &mut unsupported);
+        let command = translations[0]
+            .command()
+            .expect("a Ready translation must produce a Command");
+        let outcome = command
+            .invoke(CommandCtx {
+                focused_agent: conway_core::ids::AgentId::new(),
+                root_agent: conway_core::ids::AgentId::new(),
+                session_id: conway_core::ids::SessionId::new(),
+                args: String::new(),
+            })
+            .await;
         assert_eq!(
             outcome,
             CommandOutcome::SubmitPrompt {
@@ -554,7 +640,7 @@ mod tests {
 
     /// A raw `$ARGUMENTS` placeholder is refused, never submitted verbatim.
     #[test]
-    fn a_raw_arguments_placeholder_is_refused_not_submitted() {
+    fn a_raw_arguments_placeholder_translates_instead_of_being_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_command(
             dir.path(),
@@ -564,17 +650,15 @@ mod tests {
         let mut unsupported = Vec::new();
         let translations = read_commands(dir.path(), &mut unsupported);
         assert_eq!(translations.len(), 1);
+        // The old posture refused this shape outright; invoke-time
+        // substitution makes the body meaningful again, so it translates
+        // like any other and `unsupported` stays empty.
         assert!(matches!(
             translations[0].outcome,
-            CommandMapOutcome::Refused { .. }
+            CommandMapOutcome::Ready { .. }
         ));
-        assert!(translations[0].command().is_none());
-        assert_eq!(unsupported.len(), 1);
-        assert_eq!(unsupported[0].name, "commands/explain.md");
-        assert!(
-            unsupported[0].reason.contains("$ARGUMENTS"),
-            "{unsupported:?}"
-        );
+        assert!(translations[0].command().is_some());
+        assert!(unsupported.is_empty(), "{unsupported:?}");
     }
 
     /// An empty body -- no frontmatter, no content -- is refused, not

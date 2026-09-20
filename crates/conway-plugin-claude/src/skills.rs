@@ -340,7 +340,7 @@ mod tests {
             focused_agent: conway_core::ids::AgentId::new(),
             root_agent: conway_core::ids::AgentId::new(),
             session_id: conway_core::ids::SessionId::new(),
-            args: "ignored".to_string(),
+            args: "the sounds feature".to_string(),
         };
         let outcome = command.invoke(ctx).await;
         match outcome {
@@ -349,6 +349,10 @@ mod tests {
                     text.contains(&dir.path().display().to_string()),
                     "the plugin's own absolute root must be named in the submitted prompt: {text}"
                 );
+                // The skill body has no `$ARGUMENTS` placeholder: the
+                // operator's arguments are appended after it (Claude Code's
+                // own no-placeholder behavior), never dropped.
+                assert!(text.ends_with("\n\nthe sounds feature"), "{text}");
                 assert!(text.contains("Do the refine thing."), "{text}");
             }
             other => panic!("expected SubmitPrompt, got {other:?}"),

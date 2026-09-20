@@ -105,8 +105,8 @@
 //! files into real, invokable [`conway_core::ports::Command`]s
 //! ([`commands::ClaudeCommand`]) -- see that module's own doc for the full
 //! "best effort, two things survive the relaxation" appetite (unsupported
-//! frontmatter keys named, `allowed-tools` above all; a raw `$ARGUMENTS`
-//! placeholder refused, never submitted verbatim). A `commands/*.md` file
+//! frontmatter keys named, `allowed-tools` above all; a `$ARGUMENTS`
+//! placeholder substituted at invoke time, Claude Code's own semantics). A `commands/*.md` file
 //! is now named in `unsupported` only when it did NOT translate --
 //! [`UnsupportedKind::CommandFrontmatterKey`] separately names an ignored
 //! frontmatter key even on a file that otherwise translated successfully.
