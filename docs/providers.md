@@ -588,6 +588,16 @@ context ceiling comes from"](#where-a-context-ceiling-comes-from) below for
 the full precedence story and why this matters even before you've written a
 `models.json` entry of your own.
 
+**`glm-5.3` ships the same way**, one model version later and found the
+same way: a real conway session against Ollama Cloud's `glm-5.3`
+(2026-09-20) was refused at `25075 prompt + 8192 reserved = 33,267 tokens …
+accepts at most 32,768` while the same model, probed directly,
+`POST /api/show` reported `model_info["glm_dsa_moe.context_length"] =
+1048576` and `capabilities: ["completion", "thinking", "tools"]` — the
+provider's own figure, same rule as `glm-5.2` above. Bundled
+`DEFAULTS` carries `glm-5.3` at `1,048,576` tokens with `reasoning: true`
+for exactly this reason.
+
 ### Does Ollama Cloud actually cache prefixes?
 
 A real session against `ollama_cloud/glm-5.2` (2026-09-01, agent

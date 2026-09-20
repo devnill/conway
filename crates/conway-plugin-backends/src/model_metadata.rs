@@ -216,6 +216,28 @@ max_context_tokens = 1_048_576
 reliability_tier = "community"
 tool_calling = "non_streaming"
 
+# `glm-5.3`: the same shape as the `glm-5.2` entry above, found by the same
+# discipline -- a real session against Ollama Cloud's `glm-5.3` (a beepboop
+# planning run, session 01M2VF323N87YTS1QDVK3W0T49) was refused at
+# `25075 prompt + 8192 reserved = 33267 tokens ... accepts at most 32,768
+# (short by 499)` because, like `glm-5.2` before it, `glm-5.3` had no
+# bundled declaration and fell through to the `"ollama"` profile's
+# 32,768-token floor. `POST /api/show` against a real Ollama Cloud
+# `glm-5.3` (2026-09-20) reports `model_info["glm_dsa_moe.context_length"]
+# = 1048576` and `capabilities: ["completion", "thinking", "tools"]`:
+# the window is the provider's own figure (the same rule the `glm-5.2`
+# correction above records), `reasoning = true` is the probe's own
+# "thinking" capability, and `tool_calling = "non_streaming"` mirrors the
+# working `glm-5.2` entry (that session dispatched 15 tool calls, all
+# successful, on the non-streaming generate path -- the probe says tools
+# exist but says nothing about streaming, so nothing newer is claimed).
+[[model]]
+id = "glm-5.3"
+max_context_tokens = 1_048_576
+reliability_tier = "community"
+tool_calling = "non_streaming"
+reasoning = true
+
 # Kimi K3 coding-plan models, served over an Anthropic-compatible endpoint
 # (see `docs/providers.md`). Two context variants ship as
 # separate ids because the window is selected by the model id itself, not by
@@ -415,6 +437,36 @@ mod tests {
             window > RECORDED_ACCEPTED_TOKENS,
             "glm-5.2's declared window ({window}) must exceed the recorded-accepted figure \
              ({RECORDED_ACCEPTED_TOKENS}) a real session hit"
+        );
+    }
+
+    /// The sibling regression, same shape, same discipline: a real conway
+    /// session against Ollama Cloud's `glm-5.3` was refused at
+    /// `25075 + 8192 = 33267 ... accepts at most 32,768` (session
+    /// 01M2VF323N87YTS1QDVK3W0T49, the beepboop planning run) while
+    /// `POST /api/show` reports the model's own ceiling at `1048576` --
+    /// exactly the `glm-5.2` story repeated one model version later, and
+    /// the reason this entry's reasoning comment names the probe, not a
+    /// docs page. Fails on the pre-fix DEFAULTS block.
+    #[test]
+    fn glm_5_3_default_declares_the_probed_window_and_reasoning() {
+        let store = ModelMetadataStore::defaults();
+        let glm = store
+            .get(&ModelId::new("glm-5.3"))
+            .expect("glm-5.3 must be present in bundled DEFAULTS");
+        const OLLAMA_PROFILE_FLOOR: u32 = 32_768;
+        const REFUSED_AT: u32 = 33_267;
+        const PROBED: u32 = 1_048_576;
+        assert_eq!(
+            glm.max_context_tokens,
+            Some(PROBED),
+            "glm-5.3 must declare the /api/show figure, not the ollama profile's floor \
+             ({OLLAMA_PROFILE_FLOOR}) -- the pre-fix absence refused a real session at \
+             {REFUSED_AT}"
+        );
+        assert!(
+            glm.reasoning == Some(true),
+            "the probe's `thinking` capability is a fact"
         );
     }
 
