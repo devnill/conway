@@ -212,6 +212,20 @@ binary links) and `subprocess_plugins::install` (conway's own wire).
   child. A crash-looping server still fails closed; a server that stumbled
   once is no longer a whole-session outage, and no call is ever silently
   doubled to buy that recovery unless its own tool asked for exactly that.
+
+  The same closed pipe has a mirror-image cost, the **lost-side-effect
+  window**: a server that dies *between* doing a piece of its work and
+  recording it loses that work with no trace on conway's side — the model
+  is told the session died and (correctly, since the first execution never
+  landed) re-issues the call, but whatever the dying process already wrote
+  is orphaned with nothing linking it to the call that was lost. This is
+  the price of the no-resend guarantee above, not a separate defect: over
+  stdio the host cannot know whether the server died before or after its
+  side-effect write, so it must either risk doubling it (forbidden) or
+  accept that a death inside the write window drops it (accepted). The
+  accepted remedy is disclosure and re-issue, not machinery; a tool that
+  needs at-least-once can already get it by declaring `idempotentHint:
+  true` and letting the one retry carry the re-issue.
 - **No MCP prompts or resources.** MCP defines three server-offered
   primitives — tools, prompts, and resources — and this crate speaks only
   the first: `prompts/list`, `prompts/get`, `resources/list`,
