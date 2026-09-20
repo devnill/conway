@@ -508,6 +508,25 @@ structured_output = "json_schema"
 parallel_tool_calls = false
 reliability_tier = "unknown"
 
+# VERIFIED 2026-09-20 (supersedes this profile's earlier "unverified"
+# posture): Ollama Cloud's OpenAI-compatible `/v1/chat/completions` surface
+# DOES report cached tokens, and conway's own decoder already reads them --
+# a real conway session (`ollama_cloud/glm-5.3`, the beepboop planning run,
+# session 01M2VF323N87YTS1QDVK3W0T49) recorded `cache_accounting: reported`,
+# `cache_read_tokens: 246208` in its agent_result, and per-turn footers
+# rendering "(49% cached)" from `usage.prompt_tokens_details.cached_tokens`
+# (`wire.rs` `map_usage`'s generic OpenAI-shape read). That session's model
+# had no resolved window, so it took exactly this compat path -- the
+# previously-unobserved cell of the two-endpoint matrix
+# `docs/providers.md`'s "Does Ollama Cloud actually cache prefixes?" section
+# discloses as unresolved. The native `/api/chat` path is the ONE structural
+# exception and stays as it was: its wire format has no cache field at all
+# (`ollama_native.rs`), so native-endpoint sessions still see per-turn
+# `NotReported` from their own decoder -- they render the quieter "not
+# reported" wording, the accepted cost of a static per-BACKEND declaration
+# that cannot see which endpoint a given request took.
+reports_cache_usage = true
+
 [profile.cache]
 kind = "implicit_prefix"
 min_prefix_tokens = 0
@@ -970,14 +989,17 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Board item A5.7: only `openai` (documented
-    /// `prompt_tokens_details.cached_tokens`) and `kimi` (documented
-    /// top-level `cached_tokens`) declare `reports_cache_usage` -- every
-    /// other built-in, including `ollama`, stays at the conservative
-    /// default (see `docs/providers.md`'s "Does Ollama Cloud actually cache
-    /// prefixes?" for why that one is unverified rather than a guess).
+    /// Board item A5.7, as amended 2026-09-20: `openai` (documented
+    /// `prompt_tokens_details.cached_tokens`), `kimi` (documented
+    /// top-level `cached_tokens`), and `ollama` (VERIFIED that date -- a
+    /// real conway session on the compat path reported
+    /// `cache_accounting: reported` with `cache_read_tokens: 246208`;
+    /// see the `"ollama"` profile's own TOML comment) declare
+    /// `reports_cache_usage`. Every other built-in stays at the
+    /// conservative default ("an unverified provider's wire dialect is
+    /// never assumed to carry a cache-usage field by omission").
     #[test]
-    fn only_openai_and_kimi_declare_reports_cache_usage() {
+    fn openai_kimi_and_ollama_declare_reports_cache_usage() {
         assert!(Dialect::OpenAi.profile().reports_cache_usage);
         assert!(
             ProfileStore::built_ins()
@@ -985,8 +1007,13 @@ mod tests {
                 .unwrap()
                 .reports_cache_usage
         );
+        assert!(
+            Dialect::Ollama.profile().reports_cache_usage,
+            "ollama's compat endpoint is VERIFIED to report cached tokens; \
+             only the native /api/chat path stays field-free -- see the \
+             profile's own TOML comment"
+        );
         for dialect in [
-            Dialect::Ollama,
             Dialect::VllmHermes,
             Dialect::LmStudio,
             Dialect::LlamaCppServer,

@@ -397,19 +397,27 @@ impl Backend for OpenAiCompatBackend {
     }
 
     /// **Declared from `Profile::reports_cache_usage`** (board item A5.7):
-    /// `true` only for `"openai"` (documented
-    /// `usage.prompt_tokens_details.cached_tokens`) and `"kimi"`
-    /// (documented top-level `usage.cached_tokens`, Moonshot's platform
-    /// API) -- every other built-in profile, including `"ollama"` (see
-    /// `docs/providers.md`'s "Does Ollama Cloud actually cache prefixes?"
-    /// for why that one stays unverified rather than a guess), resolves to
-    /// the honest default. One field, not a per-endpoint branch: this
-    /// backend's `use_native_ollama_chat` split changes which endpoint a
-    /// request goes to, but neither of `"ollama"`'s two endpoints has ever
-    /// been confirmed to report a cache field (`ollama_native.rs`'s own
-    /// doc: the native path's response structs expose only
-    /// `prompt_eval_count`/`eval_count`), so there is nothing for this
-    /// declaration to differentiate between.
+    /// `true` for `"openai"` (documented
+    /// `usage.prompt_tokens_details.cached_tokens`), `"kimi"` (documented
+    /// top-level `usage.cached_tokens`, Moonshot's platform API), and
+    /// `"ollama"` -- the last VERIFIED 2026-09-20 rather than assumed: a
+    /// real conway session against Ollama Cloud's OpenAI-compatible
+    /// surface (session 01M2VF323N87YTS1QDVK3W0T49) recorded
+    /// `cache_accounting: reported` with `cache_read_tokens: 246208`,
+    /// closing the exact gap `docs/providers.md`'s "Does Ollama Cloud
+    /// actually cache prefixes?" section discloses (see the `"ollama"`
+    /// profile's own TOML comment for the full evidence). One field, not a
+    /// per-endpoint branch: this backend's `use_native_ollama_chat` split
+    /// changes which endpoint a request goes to, and the native
+    /// `/api/chat` path remains the ONE structural exception -- its wire
+    /// format has no cache field at all (`ollama_native.rs`'s own doc: the
+    /// native response structs expose only
+    /// `prompt_eval_count`/`eval_count`), so a native-endpoint session's
+    /// per-turn `Usage` still reads `NotReported` from its own decoder and
+    /// renders the quieter "not reported" wording. A static per-BACKEND
+    /// declaration cannot see which endpoint a given request took; the
+    /// per-turn observation, not this declaration, is what decides a
+    /// rendered percentage.
     fn cache_reporting(&self) -> CacheReporting {
         if self.profile.reports_cache_usage {
             CacheReporting::Reported

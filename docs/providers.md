@@ -642,8 +642,24 @@ about whether there's anything to hit:
   `crates/conway-plugin-backends/src/openai_compat/mod.rs`). A model with no
   resolved window (`Unverified`) stays on the OpenAI-compatible path and
   *would* surface a `cached_tokens` field if Ollama Cloud's OpenAI-compatible
-  surface sends one — but this documentation set has not observed a real
-  response from that surface to say whether it does.
+  surface sends one.
+
+**RESOLVED 2026-09-20: the compat surface sends it.** A real conway session
+against `ollama_cloud/glm-5.3` — a model with no resolved window at the
+time, so genuinely on the OpenAI-compatible path — recorded
+`cache_accounting: reported` with `cache_read_tokens: 246208` in its
+`agent_result`, and its turn footers rendered real percentages ("49%
+cached") from `usage.prompt_tokens_details.cached_tokens`. The
+previously-unobserved cell of the two-endpoint matrix above is now
+observed, and the `"ollama"` profile declares
+`reports_cache_usage = true` (see its own TOML comment in
+`crates/conway-plugin-backends/src/profile.rs`): on a quiet compat-path
+turn the status line now renders the transient "not reported by
+`<backend>`" wording, not the structural "not supported". The native
+`/api/chat` path remains the one structural exception — its wire format
+still has no cache field, so native-endpoint sessions' per-turn `Usage`
+still reads `NotReported` from their own decoder regardless of this
+declaration.
 
 **Not established — and not guessable from source alone:** whether Ollama
 Cloud's inference service performs prefix caching *at all*, server-side,
