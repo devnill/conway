@@ -1213,3 +1213,147 @@ async fn concurrent_task_completion_and_grace_synthesis_never_double_emit_agent_
         );
     }
 }
+
+/// Board item `01M2RDGVXFJ09DE9GM982HC23A`, part two's closed half: a budget
+/// whose deadline is ALREADY IN THE PAST at the instant supervision begins.
+///
+/// No legitimate budget can arrive that way -- every producer (`oneshot::
+/// resolve_budget`, `Conway::default_budget`) composes it as
+/// `Utc::now() + limit` at run start -- so a pre-expired deadline is a bug
+/// signal (a stale or mis-derived `Budget` reached the agent), and
+/// `deadline_sleep` says so at `warn` rather than silently collapsing the
+/// negative remaining duration to a zero-length wait that is
+/// indistinguishable from a genuine expiry. The termination itself is
+/// deliberately UNCHANGED (still an immediate kill, still a
+/// `deadline=...`-naming `BudgetExceeded`): for a budget the process cannot
+/// vouch for, terminating remains the correct conservative action -- this
+/// test pins both halves of that ruling.
+///
+/// Shown failing against the pre-hardening code (`9b45ce1`'s `deadline_
+/// sleep`, whose negative-remaining collapse carried no warn -- the branch
+/// temporarily reverted to that form for the demonstration): the
+/// termination and the `deadline=` naming were byte-for-byte identical
+/// there, but the log was silent -- exactly the gap that let one rare
+/// one-shot failure be diagnosed wrongly twice before anything on it could
+/// be attributed from a captured log.
+///
+/// The log capture is a process-global subscriber installed at most once
+/// (`tracing` has no test-scoped alternative that reaches a `tokio::spawn`'d
+/// task, which a scoped `with_default` does not follow); sibling tests in
+/// this binary emit nothing that collides with this message's wording, and
+/// the assertion matches on the message's own text, not on buffer position.
+#[tokio::test]
+async fn a_deadline_already_in_the_past_terminates_and_says_it_was_stale() {
+    let capture = install_log_capture();
+
+    let bus = EventBus::new(64);
+    let tree = Arc::new(AgentTree::new(bus.clone()));
+    let agent = AgentId::new();
+    let session = SessionId::new();
+    let cancel = CancellationToken::new();
+
+    tree.attach(mk_node(
+        agent,
+        None,
+        session,
+        Budget::default(),
+        cancel.clone(),
+        None,
+    ))
+    .unwrap();
+
+    // Never completes, ignores cancellation -- same "blocked in a tool
+    // call" stand-in the two deadline tests above use, so the ONLY variable
+    // this test changes against `deadline_elapsed_while_blocked_resolves_
+    // budget_exceeded` is the deadline's sign.
+    let task: JoinHandle<AgentResult> = tokio::spawn(std::future::pending::<AgentResult>());
+    let deadline = Utc::now() - chrono::Duration::seconds(5);
+
+    supervisor::supervise(SuperviseArgs {
+        tree: tree.clone(),
+        bus: bus.clone(),
+        agent,
+        session,
+        cancel,
+        deadline: Some(deadline),
+        grace: Duration::from_millis(50),
+        task,
+        hooks: no_hooks(),
+        parent: None,
+        store: fake_store(),
+    });
+
+    let result = tokio::time::timeout(Duration::from_secs(2), tree.await_result(agent))
+        .await
+        .expect("await_result did not resolve")
+        .expect("await_result errored");
+    match &result.status {
+        ResultStatus::BudgetExceeded { limit } => assert!(
+            limit.contains("deadline="),
+            "a pre-expired budget still terminates with the deadline named, got: {limit}"
+        ),
+        other => panic!("expected BudgetExceeded, got: {other:?}"),
+    }
+
+    // The hardening's whole point: the log names the situation outright,
+    // with the offending instant and how far past it the budget already
+    // was -- no more "was it a slow backend or a bad budget?" ambiguity.
+    wait_until(|| {
+        String::from_utf8_lossy(&capture.lock().expect("capture lock poisoned"))
+            .contains("was already in the past when supervision began")
+    })
+    .await;
+    let logged =
+        String::from_utf8_lossy(&capture.lock().expect("capture lock poisoned")).into_owned();
+    assert!(
+        logged.contains("past_by_ms="),
+        "the stale-deadline warn must carry how far past the deadline already was: {logged}"
+    );
+}
+
+/// A process-global `tracing` subscriber capturing every event's formatted
+/// text into a shared buffer, installed at most once per test binary.
+/// `deadline_sleep`'s stale-deadline warn fires inside a `tokio::spawn`'d
+/// supervising task, so a thread/task-local `with_default` capture would
+/// never see it; a global one follows every thread. Returns the buffer.
+fn install_log_capture() -> Arc<Mutex<Vec<u8>>> {
+    use std::sync::OnceLock;
+
+    static CAPTURE: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+    CAPTURE
+        .get_or_init(|| {
+            let capture: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+            tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_ansi(false)
+                    .with_writer(LogCaptureWriter(capture.clone()))
+                    .finish(),
+            )
+            .expect("install the test log capture subscriber");
+            capture
+        })
+        .clone()
+}
+
+#[derive(Clone)]
+struct LogCaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("capture lock poisoned")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCaptureWriter {
+    type Writer = LogCaptureWriter;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}

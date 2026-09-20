@@ -66,3 +66,10 @@ conway-plugin-backends = { path = "../conway-plugin-backends" }
 conway-tools = { path = "../conway-tools" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }
+# Test-only edge, not an architectural one: `tests/supervisor.rs`'s
+# pre-expired-deadline test (board item `01M2RDGVXFJ09DE9GM982HC23A`)
+# captures `deadline_sleep`'s stale-budget warn, which fires inside a
+# `tokio::spawn`'d supervising task -- only a process-global subscriber
+# reaches it, and building one needs this crate. Already in `Cargo.lock`
+# via `conway-cli`, so this adds no new lock entry.
+tracing-subscriber = { workspace = true }
