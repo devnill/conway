@@ -1120,11 +1120,21 @@ async fn sigint_graceful() {
 
     send_sigint(child.id());
 
+    // Same re-anchor as the SIGTERM/SIGHUP siblings -- `full_attempt_4.log`
+    // holds this test's own contention failure (child alive at 10s). The
+    // SIGINT path cancels with reason "sigint" rather than a `signal: X`
+    // string, so the record assertion here pins only kind and status.
+    let last = wait_for_terminal_record(&mut child, &fixture);
+    assert_eq!(
+        last["result"]["status"]["status"], "cancelled",
+        "last record was: {last}"
+    );
+
     let start = Instant::now();
-    let status = wait_with_timeout(&mut child, Duration::from_secs(10))
-        .expect("conway must exit within 10s of a single SIGINT");
+    let status = wait_with_timeout(&mut child, EXIT_AFTER_RECORD)
+        .expect("conway must exit within 10s of its terminal SIGINT record");
     assert!(
-        start.elapsed() <= Duration::from_secs(10),
+        start.elapsed() <= EXIT_AFTER_RECORD,
         "took too long to exit after SIGINT"
     );
     assert_eq!(status.code(), Some(130));
@@ -1193,6 +1203,76 @@ fn wait_with_timeout(
             let _ = child.kill();
             let _ = child.wait();
             return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// How long the harness will wait for the terminal `agent_result` record to
+/// appear after a termination signal, and (via [`wait_with_timeout`]'s
+/// callers below) for the process to exit once that record exists.
+///
+/// **Why the two phases are bounded separately.** The product bounds only
+/// the SECOND leg: on a signal the run cancels the root and starts a 5s
+/// grace *after the cancellation resolves* (`oneshot.rs`'s select arms --
+/// `grace_deadline` is set on the line after `handle.cancel(root, ..).await`),
+/// then breaks and exits. The signal-to-cancellation leg is deliberately
+/// unbounded by product design -- it depends on the machine. The old shape
+/// here bounded signal-to-exit at a flat 10s (2x the grace, implicitly
+/// assuming the pre-grace leg was instant), and under the documented
+/// dd+sync-into-target contention recipe that leg alone consumed the whole
+/// margin: two full-suite runs failed with the child still alive at 10s
+/// (`target/flake_logs/full_attempt_3.log`, `full_attempt_4.log`), while
+/// six later contended attempts and every idle run passed -- the margin,
+/// not the contract, is what failed.
+///
+/// So the assertion is re-anchored on the product's own observable: the
+/// terminal record written by the single log writer. [`RECORD_LIVENESS`]
+/// bounds only the harness against a hung child (a product that never
+/// cancels never writes the record and must fail here) -- it is NOT a
+/// product deadline; the product's grace promise starts after cancellation,
+/// which this leg cannot see. [`EXIT_AFTER_RECORD`] bounds the teardown leg
+/// (`renderer.finish` + exit), which IS pure local product work and where
+/// the old 10s figure honestly belongs.
+const RECORD_LIVENESS: Duration = Duration::from_secs(30);
+const EXIT_AFTER_RECORD: Duration = Duration::from_secs(10);
+
+/// Polls the fixture's session log until its last record is a terminal
+/// `agent_result`, returning that record. Kills `child` and panics if the
+/// child exits without ever writing one, or if [`RECORD_LIVENESS`]
+/// elapses -- a hung cancellation produces no record, and that IS a
+/// failure, just a slower one than the old single 10s bound caught.
+fn wait_for_terminal_record(child: &mut std::process::Child, fixture: &Fixture) -> Value {
+    let deadline = Instant::now() + RECORD_LIVENESS;
+    loop {
+        // The log is read BEFORE the exit check: the child writes the
+        // record and exits within one poll interval, so checking
+        // `try_wait` first races the record and loses exactly when the
+        // product is fastest.
+        if let Ok(contents) = std::fs::read_to_string(only_session_file(fixture)) {
+            if let Some(line) = contents.lines().last() {
+                if let Ok(record) = serde_json::from_str::<Value>(line) {
+                    if record["kind"] == "agent_result" {
+                        return record;
+                    }
+                }
+            }
+        }
+        if let Ok(Some(_)) = child.try_wait() {
+            // Exited with no terminal record on disk (read again for the
+            // message -- the poll above may have raced the final write).
+            let last = std::fs::read_to_string(only_session_file(fixture))
+                .ok()
+                .and_then(|c| c.lines().last().map(|l| l.to_string()));
+            panic!(
+                "conway exited before writing a terminal agent_result record \
+                 (last record: {last:?})"
+            );
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("no terminal agent_result record within {RECORD_LIVENESS:?} of the signal");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -1292,14 +1372,16 @@ async fn sigterm_leaves_a_terminal_agent_result_as_the_logs_last_record() {
 
     send_signal(child.id(), nix::sys::signal::Signal::SIGTERM);
 
-    let status = wait_with_timeout(&mut child, Duration::from_secs(10))
-        .expect("conway must exit within 10s of a single SIGTERM");
-    assert_eq!(status.code(), Some(143), "documented SIGTERM exit code");
-
-    let last = last_record(&only_session_file(&fixture));
-    assert_eq!(last["kind"], "agent_result", "last record was: {last}");
+    // Re-anchored on the terminal record first (see `wait_for_terminal_record`'s
+    // derivation: the signal-to-cancellation leg is machine-dependent by
+    // design), then the teardown leg's own 10s.
+    let last = wait_for_terminal_record(&mut child, &fixture);
     assert_eq!(last["result"]["status"]["status"], "cancelled");
     assert_eq!(last["result"]["status"]["reason"], "signal: SIGTERM");
+
+    let status = wait_with_timeout(&mut child, EXIT_AFTER_RECORD)
+        .expect("conway must exit within 10s of its terminal SIGTERM record");
+    assert_eq!(status.code(), Some(143), "documented SIGTERM exit code");
 }
 
 /// The SIGHUP sibling of the test above -- same shape, the other
@@ -1332,14 +1414,16 @@ async fn sighup_leaves_a_terminal_agent_result_as_the_logs_last_record() {
 
     send_signal(child.id(), nix::sys::signal::Signal::SIGHUP);
 
-    let status = wait_with_timeout(&mut child, Duration::from_secs(10))
-        .expect("conway must exit within 10s of a single SIGHUP");
-    assert_eq!(status.code(), Some(129), "documented SIGHUP exit code");
-
-    let last = last_record(&only_session_file(&fixture));
-    assert_eq!(last["kind"], "agent_result", "last record was: {last}");
+    // Same re-anchor as the SIGTERM sibling above -- `full_attempt_3.log`
+    // holds this test's own contention failure (child alive at 10s).
+    let last = wait_for_terminal_record(&mut child, &fixture);
     assert_eq!(last["result"]["status"]["status"], "cancelled");
     assert_eq!(last["result"]["status"]["reason"], "signal: SIGHUP");
+
+    let status = wait_with_timeout(&mut child, EXIT_AFTER_RECORD)
+        .expect("conway must exit within 10s of its terminal SIGHUP record");
+    assert_eq!(status.code(), Some(129), "documented SIGHUP exit code");
+    assert_eq!(last["kind"], "agent_result", "last record was: {last}");
 }
 
 /// ACCEPTANCE 2: "A fatal backend/stream error in a one-shot run leaves
