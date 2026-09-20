@@ -9,7 +9,10 @@
 //! **T-1, AUTHORITATIVE:** each
 //! route's `GenerateRequest` is built first -- segments already carrying
 //! that specific candidate's cache hints, tools, prefix key, and resolved
-//! sampling params -- then handed to `backend.admit(&gen_req, req.headroom)`.
+//! sampling params -- then handed to `backend.admit(&gen_req, reserve)`,
+//! where the reserve is `output_cap` (see that helper): the request's own
+//! output ceiling, which is the role's declared `params.max_tokens` when it
+//! declares one, not automatically the headroom figure.
 //! `admit` is the backend's OWN dialect-aware estimate of its OWN wire body
 //! (Anthropic's Messages envelope vs. an OpenAI-compatible chat-completions
 //! body genuinely serialize to different byte counts for identical content),
@@ -132,6 +135,10 @@ pub struct AttemptRequest<'a> {
     pub est_tokens: u32,
     /// Reserved output/reasoning budget, resolved by the caller.
     /// The engine never reads config; it only performs the arithmetic.
+    /// The FLOOR of the admission reserve: when the winning route's role
+    /// declares a larger `params.max_tokens`, the reserve that reaches
+    /// `Backend::admit` is that declaration, not this figure (see
+    /// [`output_cap`]).
     pub headroom: u32,
     pub max_tokens_override: Option<u32>,
     /// TTL applied to any cache breakpoint this engine attaches (see
@@ -141,6 +148,21 @@ pub struct AttemptRequest<'a> {
     /// is a plain value handoff, not a new policy decision.
     pub cache_ttl: CacheTtl,
     pub cancel: CancellationToken,
+}
+
+/// The request's output cap, and the floor of the admission reserve: the
+/// operator's most specific declaration wins -- an engine-supplied
+/// `max_tokens_override`, then the role's own `params.max_tokens`, and only
+/// when neither exists does the headroom reserve stand in (the pre-2026-09-20
+/// behavior, which silently discarded the role declaration). The admission
+/// reserve passed to `Backend::admit` is `max(headroom, this value)`: a
+/// request that genuinely may emit `cap` tokens reserves at least `cap`,
+/// so admission stays honest about the real output ceiling in both
+/// directions -- an undersized role declaration (`Some(100)`) never
+/// understates the headroom floor, and an oversized one is charged to the
+/// window instead of being silently converted back to the headroom figure.
+fn output_cap(max_tokens_override: Option<u32>, role: Option<u32>, headroom: u32) -> u32 {
+    max_tokens_override.or(role).unwrap_or(headroom)
 }
 
 /// The result of a successful [`AttemptEngine::execute`] call.
@@ -687,7 +709,19 @@ impl AttemptEngine {
             // `admit`, over the request actually built for it. A refusal
             // skips this ONE candidate -- never a backend call, never a
             // health `Observation` -- and the chain advances.
-            if let Err(err) = backend.admit(&gen_req, req.headroom) {
+            // The admission reserve covers the request's real output
+            // ceiling: `max(headroom, output cap)` -- a role declaring a
+            // larger `params.max_tokens` reserves that, so a request that
+            // genuinely may emit it cannot be admitted against a window
+            // that cannot hold it; a smaller one never lowers the
+            // caller's headroom floor. Same `output_cap` precedence
+            // `build_request` uses for the request's own cap.
+            let reserve = req.headroom.max(output_cap(
+                req.max_tokens_override,
+                route.params.max_tokens,
+                req.headroom,
+            ));
+            if let Err(err) = backend.admit(&gen_req, reserve) {
                 // ONE reason per refusal, built once and shared by both
                 // consumers (`AttemptOutcome::skipped` and the winning
                 // route's `Fallback::skipped`), so the side-channel and the
@@ -1172,7 +1206,23 @@ impl AttemptEngine {
         model: conway_core::ids::ModelId,
     ) -> GenerateRequest {
         let mut params = route.params.clone();
-        params.max_tokens = Some(max_tokens_override.unwrap_or(headroom));
+        // The request's output cap is the operator's most specific
+        // declaration, not the headroom figure: an explicit
+        // `max_tokens_override` (engine-supplied, most specific) wins, then
+        // the role's own `params.max_tokens`, and only when the role
+        // declares nothing does the headroom reserve stand in. The old
+        // shape -- override-else-headroom, the role param never read --
+        // silently discarded a declared `roles.*.params.max_tokens` and
+        // made every request's cap the headroom figure, which a reasoning
+        // model can exhaust on thinking alone with no visible output
+        // (a real session hit exactly that; the era's system note then
+        // advised "raise the max_tokens cap" -- config conway was already
+        // ignoring). Unchanged when the role declares no `max_tokens`.
+        params.max_tokens = Some(output_cap(
+            max_tokens_override,
+            route.params.max_tokens,
+            headroom,
+        ));
         GenerateRequest {
             model,
             segments: segments.to_vec(),

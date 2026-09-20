@@ -77,6 +77,10 @@ struct RecordingBackend {
     est_tokens: u32,
     script: Mutex<VecDeque<Turn>>,
     calls: Mutex<Vec<(Method, GenerateRequest)>>,
+    /// The reserve each `admit` was handed, in call order -- what lets a
+    /// test assert the admission arithmetic's second input, not just its
+    /// verdict.
+    admits: Mutex<Vec<u32>>,
 }
 
 impl RecordingBackend {
@@ -87,6 +91,7 @@ impl RecordingBackend {
             est_tokens,
             script: Mutex::new(script.into()),
             calls: Mutex::new(Vec::new()),
+            admits: Mutex::new(Vec::new()),
         }
     }
 
@@ -115,6 +120,10 @@ impl RecordingBackend {
             .iter()
             .map(|(_, r)| r.clone())
             .collect()
+    }
+
+    fn admissions(&self) -> Vec<u32> {
+        self.admits.lock().unwrap().clone()
     }
 
     fn next_turn(&self) -> Turn {
@@ -162,6 +171,7 @@ impl Backend for RecordingBackend {
         req: &GenerateRequest,
         headroom_tokens: u32,
     ) -> Result<Admission, BackendError> {
+        self.admits.lock().unwrap().push(headroom_tokens);
         check_admission(
             req.model.clone(),
             self.est_tokens,
@@ -1530,6 +1540,77 @@ async fn max_tokens_defaults_to_headroom_and_override_passes_through_unclamped()
     req2.max_tokens_override = Some(50_000);
     fx2.engine.execute(req2).await.expect("should succeed");
     assert_eq!(a2.requests()[0].params.max_tokens, Some(50_000));
+}
+
+/// The role's declared `params.max_tokens` reaches the request as the
+/// output cap and raises the admission reserve to cover it: a role
+/// declaring 128_000 against a 4_096-token headroom gets a request capped
+/// at 128_000 and an admission reserve of 128_000 -- never the headroom
+/// figure standing in for a declaration the operator actually made (the
+/// real-session defect: a reasoning model exhausted the 8_192 headroom
+/// budget on thinking alone while the operator's 128_000 declaration was
+/// silently discarded). A declaration SMALLER than the headroom never
+/// lowers the reserve floor.
+#[tokio::test]
+async fn role_params_max_tokens_is_the_output_cap_and_raises_the_admission_reserve() {
+    let role_declares = |declared: Option<u32>| {
+        let mut r = route("a", "m1", primary("planner"));
+        r.params.max_tokens = declared;
+        r
+    };
+
+    // Declared > headroom: cap and reserve are the declaration.
+    let large = Arc::new(RecordingBackend::new(
+        "a",
+        caps(ToolCallSupport::Streaming { validated: true }, 1_000_000),
+        100,
+        vec![Turn::Respond(text_response("ok"))],
+    ));
+    let fx = fixture(backends_map(vec![("a", large.clone() as Arc<dyn Backend>)]));
+    let segments = vec![a_segment()];
+    let tools: Vec<ToolSpec> = vec![];
+    let req = base_request(
+        vec![role_declares(Some(128_000))],
+        &segments,
+        &tools,
+        100,
+        4_096,
+    );
+    fx.engine.execute(req).await.expect("should succeed");
+    assert_eq!(
+        large.requests()[0].params.max_tokens,
+        Some(128_000),
+        "the role declaration is the request's output cap, not the headroom"
+    );
+    assert_eq!(
+        large.admissions()[0],
+        128_000,
+        "the admission reserve covers the request's real output ceiling"
+    );
+
+    // Declared < headroom: the cap is the declaration, the reserve keeps
+    // the headroom floor.
+    let small = Arc::new(RecordingBackend::new(
+        "a",
+        caps(ToolCallSupport::Streaming { validated: true }, 1_000_000),
+        100,
+        vec![Turn::Respond(text_response("ok"))],
+    ));
+    let fx2 = fixture(backends_map(vec![("a", small.clone() as Arc<dyn Backend>)]));
+    let req2 = base_request(
+        vec![role_declares(Some(1_000))],
+        &segments,
+        &tools,
+        100,
+        4_096,
+    );
+    fx2.engine.execute(req2).await.expect("should succeed");
+    assert_eq!(small.requests()[0].params.max_tokens, Some(1_000));
+    assert_eq!(
+        small.admissions()[0],
+        4_096,
+        "a small declaration never lowers the headroom floor"
+    );
 }
 
 // ---------------------------------------------------------------------
