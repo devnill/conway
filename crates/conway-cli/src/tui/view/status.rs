@@ -36,8 +36,19 @@
 //!   Metadata only, never an ancestor's actual transcript content -- see
 //!   [`agent_field`]'s own doc for the fork-vs-spawn trap this was written
 //!   to sidestep.
-//! - `mode` -- `ready`/`awaiting permission`/`ask`/`intent` (the TUI's
-//!   current top-level mode).
+//! - `mode` -- `ready`/`running`/`awaiting permission`/`ask`/`intent` (the
+//!   TUI's current top-level mode). **`ready` vs. `running` (board item
+//!   `01M32ECA6SAJBEKBPDC82DZSH7`)**: `Mode::Normal` -- "no modal card owns
+//!   the screen" -- covers BOTH an idle session and a turn actively running
+//!   with no modal open, and those are not the same fact to a watcher. This
+//!   field now threads `AppState::activity` through
+//!   [`should_animate`] (the identical predicate the `activity` field's own
+//!   ladder already uses) so `Mode::Normal` renders `running` for the
+//!   duration a turn is actually working and only reads `ready` once it
+//!   genuinely is -- see [`mode_label`]'s own doc for the full "this was a
+//!   watcher-facing lie" account. Every other `Mode` variant already names
+//!   its own modal (`awaiting permission`/`ask`/`intent`/...) and is
+//!   unaffected.
 //! - `plugins` -- **NEW** (board `01M0X1B7Z41J57N6YP2JFZ2AZW`;
 //!   design `docs/vision/DESIGN-permission-modes.md` §3d/§6b). Renders
 //!   `AppState::plugin_status_contributions`'s
@@ -705,8 +716,23 @@ fn field_ladder(
 }
 
 /// The `mode` field's text.
-fn mode_label(mode: &Mode) -> String {
+///
+/// **`Mode::Normal` is UI-modal state, not agent activity (board item
+/// `01M32ECA6SAJBEKBPDC82DZSH7`).** It means only "no modal card owns the
+/// screen right now" -- true for the ENTIRE duration of an ordinary running
+/// turn, since a turn opens no modal at all. Rendering the bare UI word
+/// `ready` in that state told a watcher (human or an automated pty driver)
+/// that conway was idle while a turn was actually in flight -- the exact
+/// "a distracted operator must notice" class of lie the `AUTO-ALLOW`/`plan`
+/// labels already guard against on this same field (see [`mode_ladder`]'s
+/// own doc), except here the operator was misled the OTHER direction: told
+/// nothing was happening when something was. Gated on
+/// [`should_animate`] -- the identical predicate [`activity_ladder`] itself
+/// uses to decide whether to animate the spinner -- so `mode` and `activity`
+/// can never disagree about whether the focused agent is doing something.
+fn mode_label(mode: &Mode, activity: &Activity) -> String {
     match mode {
+        Mode::Normal if should_animate(activity) => "running".to_string(),
         Mode::Normal => "ready".to_string(),
         Mode::AwaitingPermission(_) => "awaiting permission".to_string(),
         // B5: the /ask modal owns the screen -- the status line says so.
@@ -718,6 +744,9 @@ fn mode_label(mode: &Mode) -> String {
         Mode::TrustPreview(_) => "trust".to_string(),
         // The `[p]` field editor owns the screen.
         Mode::EditingPattern(_) => "pattern".to_string(),
+        // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the session-scoped
+        // shell-prefix grant editor owns the screen.
+        Mode::EditingShellPrefix(_) => "shell prefix".to_string(),
         // Board item `01M11XWB4T8ZADNDB4M8R482MA`: the settings providers
         // section's credential prompt owns the screen.
         Mode::AddProviderCredential(_) => "add provider".to_string(),
@@ -760,8 +789,56 @@ fn mode_label(mode: &Mode) -> String {
 /// flag "not the default" without implying danger. `AUTO-ALLOW` gets
 /// `theme.fatal_error` (red + bold), the palette's one highest-alert accent
 /// (see `view/theme.rs`'s module doc).
+///
+/// **Board item `01M350FR4SM6QT0EM6M35EY5AZ`'s decision: active
+/// session-scoped shell-prefix grants (`Conway::active_shell_prefix_grants`)
+/// do NOT get a rung here, or anywhere else on the always-visible status
+/// line -- deliberately, not by omission.** The item's own brief raises the
+/// question directly: the feature's whole point is that it stops asking, so
+/// isn't a live grant exactly the "distracted operator must notice" class
+/// this ladder exists for? The answer is no, for a reason that survives
+/// that framing rather than dodging it:
+///
+/// - This ladder's two loud rungs are triggered by a **MODE** --
+///   `PermissionMode`, a single, session-wide, currently-active decision
+///   rule that reinterprets EVERY subsequent call for as long as it holds.
+///   `AUTO-ALLOW` means literally nothing prompts, of any kind, for any
+///   tool. `plan` means whole categories are denied outright. Both are
+///   properties of "how is this session currently deciding", independent
+///   of how many rules happen to be installed.
+/// - A shell-prefix grant is not a mode. It is one row in a REVIEW LIST --
+///   structurally the same kind of fact as a durable pattern `allow` grant
+///   (`Conway::active_permission_patterns`) or a structured F12 rule
+///   (`Conway::active_structured_allow_rules`), both of which ALSO
+///   silently stop future asking for whatever they cover, and NEITHER of
+///   which has ever had a status-line rung. Those grants are strictly
+///   BROADER than this class in every dimension that matters here: they
+///   can persist across restarts (a `PatternOrigin::File` grant survives
+///   this process ending, where a shell-prefix grant cannot even survive
+///   it continuing much longer -- there is no save path at all), and they
+///   can match an unbounded `When` clause, where a shell-prefix grant is
+///   restricted by construction to one non-compound command sharing an
+///   operator-edited, operator-visible prefix
+///   (`PermissionBroker::shell_prefix_grant_allows`'s own compound-command
+///   exclusion). Giving the NARROWEST, SHORTEST-LIVED grant class the
+///   ladder's loudest treatment, while the durable, unbounded ones get
+///   none, would be backwards -- it would train an operator that the
+///   quiet classes are the safe ones, which is exactly false.
+/// - The right-sized surface for "what did I authorize and can I take it
+///   back" is the review list this same board item builds
+///   (`view/settings.rs`'s `SHELL_PREFIX_GROUP`) -- reachable on demand,
+///   not forced into every frame. The status line's job is to carry facts
+///   an operator cannot safely go a whole turn without seeing (liveness,
+///   the active mode); "N grants exist" is not that kind of fact for a
+///   class this narrow, any more than "N pattern rules exist" already is
+///   for the broader class beside it.
+///
+/// If this class is ever widened (a compound-command grant, a
+/// longer-lived scope, cross-session persistence), this call is worth
+/// re-litigating -- the reasoning above is keyed on the CURRENT narrowness
+/// of the grant, not a blanket "grants never belong on the status line".
 fn mode_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
-    let ui = mode_label(&state.mode);
+    let ui = mode_label(&state.mode, &state.activity);
     match state.permission_mode {
         PermissionMode::Prompt => vec![vec![Span::raw(ui)]],
         PermissionMode::AutoAllow => vec![
@@ -1357,6 +1434,29 @@ mod tests {
         assert!(line.contains("ready"));
     }
 
+    /// Board item `01M32ECA6SAJBEKBPDC82DZSH7`: `mode` is UI-modal state,
+    /// not agent activity -- `Mode::Normal` covers an idle session AND a
+    /// turn actively running with no modal open, and a watcher (this is the
+    /// direct regression for an automated pty watcher that could not tell
+    /// the two apart) must not read `ready` for the second case. Mid-turn
+    /// (`should_animate(&state.activity)` true), `mode` must read `running`,
+    /// never `ready`.
+    #[test]
+    fn status_line_reports_running_not_ready_while_activity_is_animating() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::Thinking;
+        let line = status_line(&state);
+        assert!(
+            line.contains("running"),
+            "mid-turn, `mode` must read running: {line}"
+        );
+        assert!(
+            !line.contains("ready"),
+            "mid-turn, `mode` must never read ready -- that is the exact \
+             lie a watcher could not see past: {line}"
+        );
+    }
+
     #[test]
     fn status_line_reflects_agent_view_toggle() {
         let mut state = AppState::new(AgentId::new());
@@ -1920,6 +2020,28 @@ mod tests {
         assert!(idle < hint, "activity precedes hint: {line}");
     }
 
+    /// The running counterpart of the test above: mid-turn, the SAME
+    /// default field order still holds, but `mode` reads `running` (never
+    /// `ready`) and `activity` reads the working phrase (never `idle`) --
+    /// board item `01M32ECA6SAJBEKBPDC82DZSH7`.
+    #[test]
+    fn default_field_order_reads_running_and_the_activity_phrase_mid_turn() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::Thinking;
+        let line = status_line(&state);
+        let running = line.find("running").unwrap();
+        let ctx = line.find("ctx").unwrap();
+        let tok = line.find("0 tok").unwrap();
+        let thinking = line.find("thinking…").unwrap();
+        let hint = line.find("Ctrl-E").unwrap();
+        assert!(!line.contains("ready"), "{line}");
+        assert!(!line.contains(" idle"), "{line}");
+        assert!(running < ctx, "mode precedes ctx: {line}");
+        assert!(ctx < tok, "ctx precedes tokens: {line}");
+        assert!(tok < thinking, "tokens precedes activity: {line}");
+        assert!(thinking < hint, "activity precedes hint: {line}");
+    }
+
     #[test]
     fn each_enabled_field_renders_in_configured_order() {
         // Reverse the order and add git/cwd -- every present field must
@@ -1947,6 +2069,41 @@ mod tests {
         assert!(git < hint, "{line}");
         assert!(hint < idle, "{line}");
         assert!(idle < tok, "{line}");
+        assert!(tok < ctx, "{line}");
+        assert!(ctx < model, "{line}");
+        assert!(model < mode, "{line}");
+    }
+
+    /// The running counterpart: the same reversed custom order, mid-turn --
+    /// `mode` still reads `running`, in the same configured position, never
+    /// `ready` (board item `01M32ECA6SAJBEKBPDC82DZSH7`).
+    #[test]
+    fn each_enabled_field_renders_running_in_configured_order_mid_turn() {
+        let mut state = AppState::new(AgentId::new());
+        state.focused_model = Some("anthropic/claude-sonnet-4-6".to_string());
+        state.focused_model_max_context = Some(200_000);
+        state.focused_ctx_tokens = 50_000; // 25%
+        state.git_branch = Some("main".to_string());
+        state.cwd_display = Some("/home/user/conway".to_string());
+        state.activity = Activity::Thinking;
+        state.status_line_config = cfg(&[
+            "cwd", "git", "hint", "activity", "tokens", "ctx", "model", "mode",
+        ]);
+
+        let line = status_line(&state);
+        let cwd = line.find("/home/user/conway").unwrap();
+        let git = line.find("main").unwrap();
+        let hint = line.find("Ctrl-E").unwrap();
+        let thinking = line.find("thinking…").unwrap();
+        let tok = line.find("0 tok").unwrap();
+        let ctx = line.find("ctx 25%").unwrap();
+        let model = line.find("anthropic/claude-sonnet-4-6").unwrap();
+        let mode = line.find("running").unwrap();
+        assert!(!line.contains("ready"), "{line}");
+        assert!(cwd < git, "{line}");
+        assert!(git < hint, "{line}");
+        assert!(hint < thinking, "{line}");
+        assert!(thinking < tok, "{line}");
         assert!(tok < ctx, "{line}");
         assert!(ctx < model, "{line}");
         assert!(model < mode, "{line}");
@@ -2861,6 +3018,47 @@ mod tests {
         // -- the safety label renders whole, no truncation needed.
         let at_12 = render_row(&state, &theme, 12);
         assert_eq!(at_12.trim(), "AUTO-ALLOW", "{at_12:?}");
+    }
+
+    /// Render-level regression for board item `01M32ECA6SAJBEKBPDC82DZSH7`,
+    /// through the SAME real `Terminal<TestBackend>` path the `AUTO-ALLOW`
+    /// buffer tests above use -- not just [`flatten`]'s pre-render span
+    /// content -- so this is what an actual pty watcher reads off the
+    /// screen, not merely what the formatting logic intended. Mid-turn, the
+    /// real rendered buffer must carry `running`, never the bare `ready`
+    /// UI word.
+    #[test]
+    fn rendered_buffer_reads_running_not_ready_while_a_turn_is_active() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::RunningTool("bash".to_string());
+        let theme = Theme::default();
+
+        let rendered = render_row(&state, &theme, WIDE);
+        assert!(
+            rendered.contains("running"),
+            "the real rendered buffer must show running mid-turn: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("ready"),
+            "the real rendered buffer must never show ready mid-turn -- a \
+             pty watcher reads exactly this buffer: {rendered:?}"
+        );
+
+        // And the idle counterpart, through the identical render path: once
+        // the turn ends (`Activity::Idle`), the same buffer reads `ready`
+        // again, exactly as before this item.
+        state.activity = Activity::Idle;
+        let idle_rendered = render_row(&state, &theme, WIDE);
+        assert!(
+            idle_rendered.contains("ready"),
+            "idle, the real rendered buffer must still read ready: \
+             {idle_rendered:?}"
+        );
+        assert!(
+            !idle_rendered.contains("running"),
+            "idle, the real rendered buffer must not claim running: \
+             {idle_rendered:?}"
+        );
     }
 
     /// **Finding 2, the concrete regression guard.** `ladder_width` used to
