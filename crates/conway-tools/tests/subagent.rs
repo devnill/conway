@@ -66,16 +66,40 @@ fn fake_with_result(status: ResultStatus) -> (Arc<FakeSubagentHost>, AgentId) {
 /// `ToolCtx::subagents`. Read from outside `tools.rs` so this assertion's
 /// own literal strings aren't part of the scanned content.
 ///
-/// The line cap moved from 400 to 500 when
-/// split the single former mode-argument tool
-/// into `conway_fork`/`conway_spawn`: two independently-documented arg structs
-/// (each declaring its own `prompt` doc, per the split's whole point) plus
-/// two `Tool` impls cost real lines even though delegation logic is
-/// unchanged -- the needle list above is the guard against scope creep, not
-/// the line count, which only catches a file that has stopped being "just
-/// argument parsing and one host call" at a much coarser grain.
+/// RULING (board item `01M33Q283KW7AP1KHRFGEB4C04`), on the raw line cap
+/// this test used to also enforce (400, then 500, then 520 lines, moved
+/// twice as `tools.rs` grew): the cap is DELETED, not re-founded. The needle
+/// list below is the actual boundary enforcer -- `SessionStore`/
+/// `TranscriptResolver`/`ContextBuilder`/`conway_runtime` are conway-runtime
+/// session/transcript-management internals, and `conway-runtime` is not
+/// even a Cargo dependency of this crate (see `Cargo.toml`): any of these
+/// literals appearing here means the file has started doing session
+/// management itself rather than calling through `ToolCtx::subagents`,
+/// regardless of how many lines the file has. A raw line count answers a
+/// different question -- "how much text is here" -- which tracks
+/// documentation density and argument-struct count (both grew legitimately:
+/// the fork/spawn split gave each tool its own documented `prompt`, and
+/// `resolve_budget` grew two more return values) at least as often as it
+/// tracks a real boundary violation. Proof this ratchet had gone from
+/// coarse-but-harmless to actively harmful: implementing the second raise,
+/// the same worker chose an awkward `(Budget, bool, bool)` tuple return over
+/// a small named struct SPECIFICALLY to stay under the cap. A guard whose
+/// enforcement makes the protected code worse, without adding any coverage
+/// the needle list doesn't already provide, has gone negative -- delete it
+/// rather than re-found it a third time.
+///
+/// The applicable rule for the NEXT borderline case: a line cap on a file is
+/// only worth keeping if it catches something the file's actual invariant
+/// (stated in a needle list, a type check, a dependency-graph fact, etc.)
+/// would miss. If the invariant already has a precise, low-false-positive
+/// test -- as it does here, since `conway-runtime` isn't even linked -- a
+/// raw volume cap adds no coverage and WILL eventually be traded against
+/// good design (a worse data shape, a deleted doc comment, a merged
+/// abstraction) by whoever next has to satisfy it under time pressure.
+/// Reach for a volume cap only when no such precise invariant exists to
+/// state directly.
 #[test]
-fn tools_module_has_no_fork_spawn_or_runtime_logic_and_stays_under_500_lines() {
+fn tools_module_has_no_fork_spawn_or_runtime_logic() {
     let src = include_str!("../src/subagent/tools.rs");
     for needle in [
         "SessionStore",
@@ -89,10 +113,6 @@ fn tools_module_has_no_fork_spawn_or_runtime_logic_and_stays_under_500_lines() {
             "tools.rs unexpectedly contains {needle:?}"
         );
     }
-    assert!(
-        src.lines().count() < 500,
-        "tools.rs has grown past 500 lines"
-    );
 }
 
 #[test]
@@ -707,12 +727,24 @@ async fn budget_defaults_to_40_steps_and_ten_minute_deadline_unless_configured()
         .invoke(call("conway_fork", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    let budget = &fake.started()[0].1.knobs.budget;
+    let spec = &fake.started()[0].1;
+    let budget = &spec.knobs.budget;
     assert_eq!(budget.max_steps, 40);
     assert!(budget.max_tokens.is_none());
     let deadline = budget.deadline.expect("default deadline is set");
     assert!(deadline >= before + chrono::Duration::seconds(599));
     assert!(deadline <= before + chrono::Duration::seconds(602));
+    // Board item `01M32EC0F9S5HTZDR3DADFV9DK`: neither the call argument nor
+    // config set either dimension, so both are still eligible for an
+    // `AgentDef`'s own value to override downstream.
+    assert!(
+        spec.max_steps_unset,
+        "max_steps_unset must be true when nothing set max_steps"
+    );
+    assert!(
+        spec.deadline_unset,
+        "deadline_unset must be true when nothing set deadline_secs"
+    );
 }
 
 #[tokio::test]
@@ -730,7 +762,44 @@ async fn config_key_overrides_default_max_steps() {
         .invoke(call("conway_fork", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    assert_eq!(fake.started()[0].1.knobs.budget.max_steps, 7);
+    let spec = &fake.started()[0].1;
+    assert_eq!(spec.knobs.budget.max_steps, 7);
+    // Board item `01M32EC0F9S5HTZDR3DADFV9DK`: `PluginConfig` already claimed
+    // `max_steps`, so an `AgentDef`'s own value must NOT override it
+    // downstream -- `max_steps_unset` must be false, not just the number 7.
+    assert!(
+        !spec.max_steps_unset,
+        "max_steps_unset must be false once PluginConfig set max_steps"
+    );
+}
+
+#[tokio::test]
+async fn explicit_call_argument_max_steps_marks_it_no_longer_unset() {
+    // Board item `01M32EC0F9S5HTZDR3DADFV9DK`: the call's own `budget.
+    // max_steps` argument is the highest-precedence tier -- it must ALSO
+    // mark `max_steps_unset: false`, the same as a config key does above,
+    // so an `AgentDef`'s own value can never override an explicit
+    // model-supplied request either.
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let (fake, _scripted_id) = fake_with_result(ResultStatus::Completed);
+    let ctx = ToolCtx {
+        subagents: SubagentHandle::new(fake.clone() as Arc<dyn SubagentHost>, ctx.agent_id),
+        ..ctx
+    };
+    ForkTool::new()
+        .invoke(
+            call(
+                "conway_fork",
+                serde_json::json!({"prompt": "p", "budget": {"max_steps": 5, "deadline_secs": 30}}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    let spec = &fake.started()[0].1;
+    assert_eq!(spec.knobs.budget.max_steps, 5);
+    assert!(!spec.max_steps_unset);
+    assert!(!spec.deadline_unset);
 }
 
 #[tokio::test]

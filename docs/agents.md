@@ -564,6 +564,32 @@ budget** — it gets its own defaults and you set the rest explicitly:
   and nothing else. There is no deadline here, because a host application that
   wants one knows its own workload better than a constant would.
 
+**`max_steps` and `deadline_secs` resolve through a fourth, lower tier: the
+agent definition a delegated child was started under.** The full order is:
+(1) the explicit per-call `budget` argument, (2) the `subagent.max_steps`/
+`subagent.deadline_secs` plugin config keys, (3) that agent definition's own
+`max_steps`/`deadline_secs` frontmatter keys, (4) the hardwired default (40
+steps, 10-minute deadline). `resolve_budget`
+(`crates/conway-tools/src/subagent/tools.rs`) folds tiers 1 and 2 together
+first, producing a single "still unset" flag; only when that flag is set does
+`SubagentHost::start` (`crates/conway-runtime/src/subagent.rs`) apply tier 3,
+for a child that names an `AgentDef` directly or inherits one via a fork.
+`max_tokens` and `max_tool_calls` have no agent-def tier — they resolve
+through only tiers 1 and 2, then the hardwired default of no ceiling.
+
+**An agent definition's `max_steps`/`deadline_secs` never apply to a root or
+resumed session, even one running under that exact definition — only to a
+delegated `conway_fork`/`conway_spawn` child.** A root session is watched by
+the human running it, who can read the transcript and interrupt, so a step or
+deadline ceiling picked by whichever definition the root happens to be
+running under can only be wrong for that human — the same reasoning that
+already keeps a root's own `[limits]` step ceiling opt-in (above). Widening
+this field to also govern a root would be a silent behavior change for anyone
+who has already written an agent def's `max_steps`/`deadline_secs` on the
+assumption that it can only ever affect a delegated child.
+`Conway::default_budget` builds a root's budget solely from `ConwayConfig`'s
+own `[limits]` section, with no `agent_def` read anywhere on that path.
+
 A fan-out is where this matters: ten children with no explicit budget is ten
 independent 40-step allowances, and nothing bounds the tree as a whole.
 

@@ -646,6 +646,72 @@ pub struct SubagentSpec {
     /// spec.
     #[serde(default)]
     pub context: Option<Vec<RecordRef>>,
+    /// Set by the model-invoked `conway_fork`/`conway_spawn` tools
+    /// (`conway-tools`' `resolve_budget`, board item
+    /// `01M32EC0F9S5HTZDR3DADFV9DK`) when `knobs.budget.max_steps` is only
+    /// the hardwired fallback (`DEFAULT_MAX_STEPS`, currently 40) -- neither
+    /// the call's own `budget.max_steps` argument nor `PluginConfig`'s
+    /// `subagent.max_steps` set one -- rather than a value either tier
+    /// actually asked for.
+    ///
+    /// `conway_runtime::subagent::SubagentHost::start` consults this,
+    /// immediately after resolving `knobs.agent_def` into a real `AgentDef`,
+    /// to decide whether that def's OWN `max_steps`
+    /// (`conway_core::config::AgentDef::max_steps`) may override the
+    /// fallback already baked into `knobs.budget.max_steps`: `true` means
+    /// yes, an agent def's `max_steps` is the tier between `PluginConfig`
+    /// and the hardwired default and DOES apply; `false` means an explicit
+    /// call argument or config value already won, and the agent def's own
+    /// `max_steps` must never override it. Applied the same way whether
+    /// `agent_def` was named by this call or (a `Fork` only) inherited from
+    /// the parent -- like `tools`/`model`/the system prompt, and UNLIKE
+    /// `result_contract`, an agent def's `max_steps` describes what it
+    /// means to run under that def, not something only a call site may
+    /// declare.
+    ///
+    /// **Why this exists at all, instead of `Budget::max_steps` itself
+    /// carrying an "unset" case:** `Budget::max_steps` is a plain `u32`, not
+    /// `Option<u32>` -- see that field's own doc: `0` already means "no
+    /// ceiling" for a `[limits]`-derived root budget, a real, reachable
+    /// value this crate must not repurpose as a second "not yet decided"
+    /// sentinel. `AgentKnobs::budget` is committed to a fully-resolved
+    /// `Budget` at construction time (see that field's own doc, "no
+    /// sensible non-`Option` `AgentKnobs`-shaped default") -- well before
+    /// `conway-tools` (which has no `AgentDef` lookup surface at all; see
+    /// `ToolCtx`'s own doc) knows whether an agent def even applies. This
+    /// field is the one place the "was `max_steps` actually requested"
+    /// signal survives the trip from `conway-tools` to
+    /// `conway_runtime::subagent`.
+    ///
+    /// **Every constructor other than `conway-tools`' `conway_fork`/
+    /// `conway_spawn` (`resolve_budget`) leaves this `false`**: `fork`/
+    /// `spawn` below, `conway-tools`' `conway_ask` (`resolve_ask_budget`
+    /// uses its own separate `ask.*` config namespace, out of this item's
+    /// scope), and every root/resume path (`RootSpec`/`ResumeSpec` do not
+    /// carry a `SubagentSpec` at all, so the question never arises there).
+    /// A root or resumed session's budget is therefore NEVER widened by an
+    /// agent def's `max_steps` this way -- see `AgentDef::max_steps`'s own
+    /// doc for that decision, recorded in full.
+    ///
+    /// `#[serde(default)]` keeps already-persisted data readable: a
+    /// `SubagentSpec` serialized before this field existed still
+    /// deserializes, as `false` -- the pre-existing "an agent def's
+    /// `max_steps` is never consumed" behavior for every such spec.
+    #[serde(default)]
+    pub max_steps_unset: bool,
+    /// The `deadline_secs` sibling of [`Self::max_steps_unset`] -- same
+    /// mechanism, same reasoning, same "every OTHER constructor leaves this
+    /// `false`" rule, applied to `knobs.budget.deadline` instead of
+    /// `.max_steps`. See [`crate::config::AgentDef::deadline_secs`]'s own
+    /// doc for why this field exists at all (added on direct evidence from
+    /// board item `01M32EC0F9S5HTZDR3DADFV9DK`'s own investigation, not
+    /// speculatively).
+    ///
+    /// `#[serde(default)]` keeps already-persisted data readable: a
+    /// `SubagentSpec` serialized before this field existed still
+    /// deserializes, as `false`.
+    #[serde(default)]
+    pub deadline_unset: bool,
 }
 
 impl SubagentSpec {
@@ -729,6 +795,13 @@ impl SubagentSpec {
             tag: None,
             plugin_config: None,
             context: None,
+            // Neither `fork` nor `spawn` here knows anything about
+            // `PluginConfig`/tool-argument precedence -- both take an
+            // already-fully-resolved `Budget` -- so `max_steps_unset`/
+            // `deadline_unset` are never applicable to a spec built this
+            // way. See those fields' own docs.
+            max_steps_unset: false,
+            deadline_unset: false,
         }
     }
 
@@ -751,6 +824,9 @@ impl SubagentSpec {
             tag: None,
             plugin_config: None,
             context: None,
+            // See `fork`'s own comment just above.
+            max_steps_unset: false,
+            deadline_unset: false,
         }
     }
 }
@@ -1241,6 +1317,8 @@ mod tests {
             tag: None,
             plugin_config: None,
             context: None,
+            max_steps_unset: false,
+            deadline_unset: false,
         };
         assert!(spec.validate().is_ok());
     }

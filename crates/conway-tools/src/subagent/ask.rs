@@ -209,6 +209,14 @@ impl Tool for AskTool {
             // either -- an ask is fork+await-text, always the asker's
             // entire inherited context, unchanged.
             context: None,
+            // `resolve_ask_budget` above uses its own separate `ask.*`
+            // config namespace, not `conway_fork`/`conway_spawn`'s
+            // `subagent.*` -- board item `01M32EC0F9S5HTZDR3DADFV9DK` scopes
+            // the agent-def `max_steps`/`deadline_secs` tiers to
+            // `resolve_budget` only, so `conway_ask` never sets these. See
+            // `conway_core::agent::SubagentSpec::max_steps_unset`'s own doc.
+            max_steps_unset: false,
+            deadline_unset: false,
         };
 
         let outcome = ctx.subagents.ask(spec).await.map_err(ToolError::from)?;

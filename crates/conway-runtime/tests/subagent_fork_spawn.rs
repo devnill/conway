@@ -240,7 +240,19 @@ fn reviewer_def() -> AgentDef {
         tools: ToolSelector::All,
         skills: Vec::new(),
         max_steps: None,
+        deadline_secs: None,
         result_contract: None,
+    }
+}
+
+/// `reviewer_def()` with `max_steps`/`deadline_secs` set -- board item
+/// `01M32EC0F9S5HTZDR3DADFV9DK`'s own fixture for proving those two fields
+/// are actually CONSUMED, not merely carried on the struct.
+fn reviewer_def_with_limits(max_steps: Option<u32>, deadline_secs: Option<u64>) -> AgentDef {
+    AgentDef {
+        max_steps,
+        deadline_secs,
+        ..reviewer_def()
     }
 }
 
@@ -477,6 +489,233 @@ async fn spawn_context_has_no_inherited_segment_and_uses_agent_def_system_prompt
     ));
 }
 
+// ---------------------------------------------------------------------
+// Board item 01M32EC0F9S5HTZDR3DADFV9DK: `AgentDef::max_steps`/
+// `::deadline_secs` are the middle tier between `PluginConfig` and the
+// hardwired default for a `conway_fork`/`conway_spawn` child's `Budget` --
+// consumed by `SubagentHost::start`, not merely parsed. `spec.
+// max_steps_unset`/`::deadline_unset` (set by `conway-tools`' own
+// `resolve_budget` in production; set directly here, since this suite
+// exercises `SubagentHost::start` without going through that tool) is the
+// signal that neither a call argument nor `PluginConfig` already claimed
+// the corresponding `Budget` dimension.
+// ---------------------------------------------------------------------
+
+/// The main defect-fix proof (VERIFICATION ANCHOR): an agent def with
+/// `max_steps: Some(120)`, spawned with `max_steps_unset: true` (nothing
+/// else set it), produces a child whose `AgentNode.budget.max_steps` is
+/// 120 -- not the hardwired `DEFAULT_MAX_STEPS` (40) every model-invoked
+/// subagent got before this item.
+#[tokio::test]
+async fn agent_def_max_steps_overrides_the_hardwired_default_when_unset() {
+    let mut defs = HashMap::new();
+    defs.insert(
+        "reviewer".to_string(),
+        reviewer_def_with_limits(Some(120), None),
+    );
+    let (runtime, _store) = build_runtime(2, defs);
+    let root = start_and_finish_root(&runtime, "investigate the bug").await;
+
+    let mut spec = SubagentSpec::spawn(
+        "review this diff",
+        AgentDefRef("reviewer".to_string()),
+        Budget::default(),
+    );
+    assert_eq!(
+        spec.knobs.budget.max_steps, 40,
+        "control: Budget::default() is the hardwired fallback, not the def's 120"
+    );
+    spec.max_steps_unset = true;
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let node = runtime
+        .tree()
+        .nodes
+        .into_iter()
+        .find(|n| n.agent_id == child)
+        .expect("child attached to the tree");
+    assert_eq!(
+        node.budget.max_steps, 120,
+        "the def's own max_steps must have overridden the hardwired 40-step default"
+    );
+}
+
+/// Control: an agent def with NO `max_steps` (the ordinary case, and every
+/// def before this item) leaves the hardwired default of 40 in place even
+/// when `max_steps_unset: true` -- there is nothing for the def to
+/// override with.
+#[tokio::test]
+async fn agent_def_without_max_steps_keeps_the_hardwired_default() {
+    let mut defs = HashMap::new();
+    defs.insert("reviewer".to_string(), reviewer_def());
+    let (runtime, _store) = build_runtime(2, defs);
+    let root = start_and_finish_root(&runtime, "investigate the bug").await;
+
+    let mut spec = SubagentSpec::spawn(
+        "review this diff",
+        AgentDefRef("reviewer".to_string()),
+        Budget::default(),
+    );
+    spec.max_steps_unset = true;
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let node = runtime
+        .tree()
+        .nodes
+        .into_iter()
+        .find(|n| n.agent_id == child)
+        .expect("child attached to the tree");
+    assert_eq!(node.budget.max_steps, 40, "no frontmatter still yields 40");
+}
+
+/// Precedence: an EXPLICIT call-site `budget.max_steps` (`max_steps_unset:
+/// false`, what a real `conway_spawn` call with its own `budget.max_steps`
+/// argument produces) wins over the SAME def's `max_steps: 120` -- the def
+/// is a fallback, never an override.
+#[tokio::test]
+async fn explicit_call_site_max_steps_wins_over_the_defs_value() {
+    let mut defs = HashMap::new();
+    defs.insert(
+        "reviewer".to_string(),
+        reviewer_def_with_limits(Some(120), None),
+    );
+    let (runtime, _store) = build_runtime(2, defs);
+    let root = start_and_finish_root(&runtime, "investigate the bug").await;
+
+    let spec = SubagentSpec::spawn(
+        "review this diff",
+        AgentDefRef("reviewer".to_string()),
+        Budget {
+            max_steps: 5,
+            ..Budget::default()
+        },
+    );
+    // `SubagentSpec::spawn` leaves `max_steps_unset: false` (its own
+    // constructor default) -- exactly the "an explicit call-site budget was
+    // supplied" signal.
+    assert!(!spec.max_steps_unset);
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let node = runtime
+        .tree()
+        .nodes
+        .into_iter()
+        .find(|n| n.agent_id == child)
+        .expect("child attached to the tree");
+    assert_eq!(
+        node.budget.max_steps, 5,
+        "the explicit call-site value must win over the def's max_steps: 120"
+    );
+}
+
+/// A fork's INHERITED agent def (the call site names none; `SubagentHost::
+/// start`'s own fork-only fill supplies the PARENT's def) still applies its
+/// `max_steps` the same way a caller-named one does -- like `tools`/
+/// `model`/the system prompt, and UNLIKE `result_contract`, this describes
+/// what it means to run under the def, not something only a call site may
+/// declare (see this file's own `SubagentSpec::max_steps_unset` doc).
+#[tokio::test]
+async fn forks_inherited_agent_def_max_steps_still_applies() {
+    let mut defs = HashMap::new();
+    defs.insert(
+        "reviewer".to_string(),
+        reviewer_def_with_limits(Some(77), None),
+    );
+    let (runtime, _store) = build_runtime(3, defs);
+
+    // The ROOT itself runs under `reviewer` (named directly on the root
+    // spec, mirroring `spawn_child_declines_the_parents_agent_def...`'s own
+    // construction elsewhere in this file).
+    let mut spec = root_spec("investigate");
+    spec.knobs.agent_def = Some(AgentDefRef("reviewer".to_string()));
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(spec).await.unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // A bare fork: no `agent_def` named at the call site, so `SubagentHost::
+    // start`'s fork-only fill supplies the parent's `reviewer` def.
+    let mut child_spec = SubagentSpec::fork("look closer", Budget::default());
+    child_spec.max_steps_unset = true;
+    assert!(child_spec.knobs.agent_def.is_none());
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, child_spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let node = runtime
+        .tree()
+        .nodes
+        .into_iter()
+        .find(|n| n.agent_id == child)
+        .expect("child attached to the tree");
+    assert_eq!(
+        node.budget.max_steps, 77,
+        "a fork's inherited agent def's max_steps must apply, exactly like its inherited \
+         tools/model/system prompt"
+    );
+}
+
+/// The `deadline_secs` sibling of the main `max_steps` proof above: an
+/// agent def with `deadline_secs: Some(4321)`, spawned with
+/// `deadline_unset: true`, produces a child whose `AgentNode.budget.
+/// deadline` is `4321` seconds out (within a generous tolerance -- the
+/// exact instant depends on when `SubagentHost::start` reads the clock),
+/// not the hardwired 600-second default.
+#[tokio::test]
+async fn agent_def_deadline_secs_overrides_the_hardwired_default_when_unset() {
+    let mut defs = HashMap::new();
+    defs.insert(
+        "reviewer".to_string(),
+        reviewer_def_with_limits(None, Some(4321)),
+    );
+    let (runtime, _store) = build_runtime(2, defs);
+    let root = start_and_finish_root(&runtime, "investigate the bug").await;
+
+    let mut spec = SubagentSpec::spawn(
+        "review this diff",
+        AgentDefRef("reviewer".to_string()),
+        Budget::default(),
+    );
+    spec.deadline_unset = true;
+    let before = Utc::now();
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let node = runtime
+        .tree()
+        .nodes
+        .into_iter()
+        .find(|n| n.agent_id == child)
+        .expect("child attached to the tree");
+    let deadline = node.budget.deadline.expect("deadline must be set");
+    let elapsed_secs = (deadline - before).num_seconds();
+    assert!(
+        (4300..=4321).contains(&elapsed_secs),
+        "deadline must be ~4321s out from start, got {elapsed_secs}s"
+    );
+}
+
 /// **Relaxed (superseded):** a `Spawn` without `agent_def` used to be
 /// rejected via `SubagentSpec::validate()` (§5.2's original "agent_def
 /// required for spawn" rule). A recorded design decision relaxes that: it is
@@ -510,6 +749,8 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         tag: None,
         plugin_config: None,
         context: None,
+        max_steps_unset: false,
+        deadline_unset: false,
     };
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, spec)
@@ -1850,6 +2091,8 @@ fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
         tag: None,
         plugin_config: None,
         context: None,
+        max_steps_unset: false,
+        deadline_unset: false,
     }
 }
 
@@ -2740,6 +2983,7 @@ fn restricted_def() -> AgentDef {
         tools: ToolSelector::Only(vec!["marker".to_string()]),
         skills: Vec::new(),
         max_steps: None,
+        deadline_secs: None,
         result_contract: None,
     }
 }
@@ -3255,6 +3499,8 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
         tag: None,
         plugin_config: None,
         context: None,
+        max_steps_unset: false,
+        deadline_unset: false,
     };
     assert!(child_spec.knobs.agent_def.is_none());
 
@@ -4206,6 +4452,8 @@ async fn spawn_child_inherits_plugin_instruction_fragments_still_gated_by_tool_i
         tag: None,
         plugin_config: None,
         context: None,
+        max_steps_unset: false,
+        deadline_unset: false,
     };
 
     let mut stream = runtime.subscribe();

@@ -189,6 +189,7 @@ fn reviewer_def() -> AgentDef {
         tools: conway_core::agent::ToolSelector::All,
         skills: Vec::new(),
         max_steps: None,
+        deadline_secs: None,
         result_contract: None,
     }
 }

@@ -5,6 +5,7 @@ role: coder
 tools: [read, grep]
 model: anthropic/claude-sonnet-4-6
 max_steps: 20
+deadline_secs: 900
 skills: [review-checklist]
 result_contract:
   type: object

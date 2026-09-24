@@ -83,6 +83,8 @@ fn fully_populated_spec() -> SubagentSpec {
             session: "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse::<SessionId>().unwrap(),
             seq: LogSeq(3),
         }]),
+        max_steps_unset: true,
+        deadline_unset: true,
     }
 }
 

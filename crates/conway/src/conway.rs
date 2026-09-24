@@ -430,6 +430,46 @@ impl Conway {
         )
     }
 
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: installs a session-scoped
+    /// shell-command PREFIX grant -- an interactive, IN-MEMORY-ONLY allow
+    /// for future `RenderKind::ShellCommand` calls sharing `prefix`, at
+    /// `scope`, that vanishes with this process.
+    ///
+    /// **Deliberately not [`Self::grant_permission_rule`]/[`Self::
+    /// grant_permission_pattern`].** Those install a durable
+    /// [`conway_core::permission_pattern::Rule`]/[`conway_core::
+    /// permission_pattern::PatternRule`], which `Rule::gate_allows`
+    /// refuses outright for a `ShellCommand` tool by design (board item
+    /// `01KZDDPC5MMD49F6JPV9CW4TVM`) -- this method never constructs one,
+    /// so that refusal is untouched. There is correspondingly no
+    /// `origin_path`/`PatternOrigin` parameter here at all: unlike every
+    /// other `grant_*`/`revoke_*` method on this type, nothing this method
+    /// installs can ever be written to a permissions file, reach
+    /// `Self::active_structured_allow_rules`/`Self::
+    /// revoke_structured_allow_rule`, or be seen by `validate_rule_
+    /// registration` -- see `conway_runtime::permission::PermissionBroker::
+    /// remember_shell_prefix_grant`'s own doc for the full reasoning,
+    /// which this facade method does nothing but forward to.
+    ///
+    /// Returns `false` (installing nothing) for a blank `prefix` or one
+    /// [`conway_core::permission_pattern::shell_command_is_compound`]
+    /// reports as compound -- a prefix is a single command's leading
+    /// tokens, nothing more; see that function's own doc for why a
+    /// compound prefix is refused rather than silently narrowed or
+    /// widened. The caller (the TUI's `[p]` editor) is expected to have
+    /// already refused to submit one, so this is a second, independent
+    /// enforcement of the same rule, not the only one.
+    pub fn grant_session_shell_prefix(
+        &self,
+        prefix: String,
+        scope: conway_core::agent::PermissionScope,
+        granting_agent: conway_core::ids::AgentId,
+    ) -> bool {
+        self.rt
+            .permission_broker()
+            .remember_shell_prefix_grant(prefix, scope, granting_agent)
+    }
+
     /// Installs a DENY rule loaded from a permissions file at
     /// `origin_path`. Unlike the allow-side methods above, there is no
     /// trust precondition here at all -- `deny` applies immediately,
@@ -632,6 +672,33 @@ impl Conway {
         conway_core::permission_pattern::PatternOrigin,
     )> {
         self.rt.permission_broker().active_structured_prompt_rules()
+    }
+
+    /// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: every active session-scoped
+    /// shell-prefix grant (`Conway::grant_session_shell_prefix`), paired
+    /// with the [`crate::GrantScope`] it was granted at -- the review
+    /// surface this in-memory-only class was missing since it shipped
+    /// (`01M32EBPWZZG6EA77ZG5KYC8KQ`). Unlike every other review list on
+    /// this type, there is no `PatternOrigin` here at all: this class has
+    /// exactly one possible origin (the interactive `[p]` editor), so
+    /// carrying one would be a field that is always the same value, never
+    /// informative -- see `PermissionBroker::shell_prefix_grants`'s own
+    /// field doc for why this class can never have a `File`/`Plugin`
+    /// origin even in principle.
+    ///
+    /// Returns [`conway_core::agent::GrantScope`], not
+    /// `conway_runtime::permission::GrantScope` -- mirrors
+    /// [`Self::active_structured_allow_rules`]'s own boundary conversion,
+    /// for the identical reason (the facade's own module doc denies
+    /// exposing `conway-runtime` types publicly, Stage 2b, board item
+    /// `01KZVYZM7BZRQ54RRB8P814KV9`).
+    pub fn active_shell_prefix_grants(&self) -> Vec<(String, conway_core::agent::GrantScope)> {
+        self.rt
+            .permission_broker()
+            .active_shell_prefix_grants()
+            .into_iter()
+            .map(|(prefix, scope)| (prefix, scope.into()))
+            .collect()
     }
 
     /// Every currently-installed DENY-CAPABLE hook-backed rule -- every `pre_tool_use` hook, then every
@@ -926,6 +993,53 @@ impl Conway {
             path,
             crate::permissions::rewrite_permission_file_removing_structured(path, rule),
         )
+    }
+
+    /// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: revokes exactly ONE
+    /// session-scoped shell-prefix grant, addressed by the same
+    /// `(prefix, scope)` pair [`Self::active_shell_prefix_grants`] hands
+    /// the review surface -- the same "what the operator saw is what is
+    /// revoked" identity [`Self::revoke_permission_pattern`]'s own doc
+    /// argues for its class.
+    ///
+    /// **No [`RevokeOutcome`] here, unlike every other `revoke_*` method
+    /// on this type.** Every one of those addresses a grant that MIGHT be
+    /// persisted to a file (`PatternOrigin::File`), so their return type
+    /// has to distinguish "revoked, and the file rewrite succeeded/failed/
+    /// there was no file" as genuinely different outcomes an operator
+    /// needs to know about. This class can never be persisted at all --
+    /// see `PermissionBroker::shell_prefix_grants`'s own field doc for why
+    /// there is no `PatternOrigin` here even in principle -- so there is
+    /// only ever one bit of information to report: was a grant matching
+    /// this `(prefix, scope)` found and dropped. A plain `bool` says that
+    /// honestly; wrapping it in `RevokeOutcome` would force every caller to
+    /// match arms (`RevokedAndPersisted`, `RevokedButPersistFailed`, ...)
+    /// that can never actually occur on this path, which is a worse lie
+    /// than an honest narrower type.
+    ///
+    /// Takes [`conway_core::agent::GrantScope`], not
+    /// `conway_runtime::permission::GrantScope` -- mirrors
+    /// [`Self::revoke_structured_allow_rule`]'s own boundary conversion,
+    /// converted back to the runtime's own type here, at the boundary,
+    /// before addressing `PermissionBroker::revoke_shell_prefix_grant`.
+    pub fn revoke_shell_prefix_grant(
+        &self,
+        prefix: &str,
+        scope: &conway_core::agent::GrantScope,
+    ) -> bool {
+        let rt_scope: conway_runtime::permission::GrantScope = (*scope).into();
+        self.rt
+            .permission_broker()
+            .revoke_shell_prefix_grant(prefix, &rt_scope)
+    }
+
+    /// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: drops every session-scoped
+    /// shell-prefix grant at once -- the "revoke all" counterpart to
+    /// [`Self::revoke_shell_prefix_grant`], mirroring [`Self::
+    /// revoke_permission_grants`]'s own shape for this class. Pure
+    /// in-memory removal; there is nothing to persist or un-persist.
+    pub fn revoke_all_shell_prefix_grants(&self) {
+        self.rt.permission_broker().revoke_all_shell_prefix_grants();
     }
 
     /// Loads permissions files project-first then global
@@ -1232,6 +1346,12 @@ impl Conway {
     /// `config.limits` resolved into a `Budget`. Every dimension follows the
     /// same convention: a `0` in config means "no ceiling" and maps to
     /// `None`, since `Budget`'s own optionality is what the runtime gates on.
+    ///
+    /// Never reads `AgentDef::max_steps`, even when `new_session` names one:
+    /// that field only ever governs a `conway_fork`/`conway_spawn` CHILD
+    /// started under it, deliberately not the root itself -- see that
+    /// field's own doc (board item `01M32EC0F9S5HTZDR3DADFV9DK`) for the
+    /// decision recorded in full.
     fn default_budget(&self) -> Budget {
         let limits = &self.config.limits;
         Budget {

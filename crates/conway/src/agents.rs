@@ -52,6 +52,7 @@ struct RawFrontmatter {
     tools: Option<Vec<String>>,
     model: Option<String>,
     max_steps: Option<u32>,
+    deadline_secs: Option<u64>,
     result_contract: Option<serde_json::Value>,
     skills: Option<Vec<String>>,
 }
@@ -322,6 +323,7 @@ fn load_one_third_party(path: &Path) -> Result<AgentDef> {
         tools,
         skills: raw.skills.unwrap_or_default(),
         max_steps: raw.max_steps,
+        deadline_secs: raw.deadline_secs,
         result_contract: None,
     })
 }
@@ -358,6 +360,7 @@ struct ThirdPartyRawFrontmatter {
     tools: Option<ThirdPartyToolsField>,
     model: Option<String>,
     max_steps: Option<u32>,
+    deadline_secs: Option<u64>,
     skills: Option<Vec<String>>,
 }
 
@@ -474,6 +477,7 @@ fn parse_agent_def(content: &str, stem: &str, path: &Path) -> Result<AgentDef> {
         tools,
         skills: raw.skills.unwrap_or_default(),
         max_steps: raw.max_steps,
+        deadline_secs: raw.deadline_secs,
         result_contract,
     })
 }
@@ -577,6 +581,7 @@ mod tests {
             tools: ToolSelector::All,
             skills: Vec::new(),
             max_steps: None,
+            deadline_secs: None,
             result_contract: None,
         }
     }

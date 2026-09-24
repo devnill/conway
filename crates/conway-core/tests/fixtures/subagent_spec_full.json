@@ -14,8 +14,10 @@
     }
   ],
   "cwd": "/tmp/child",
+  "deadline_unset": true,
   "ephemeral": true,
   "keep_alive": false,
+  "max_steps_unset": true,
   "mode": "fork",
   "pin": {
     "backend": "anthropic",

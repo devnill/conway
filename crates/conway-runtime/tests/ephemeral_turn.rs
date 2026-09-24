@@ -212,6 +212,8 @@ fn spawn_spec(prompt: &str) -> SubagentSpec {
         tag: None,
         plugin_config: None,
         context: None,
+        max_steps_unset: false,
+        deadline_unset: false,
     }
 }
 

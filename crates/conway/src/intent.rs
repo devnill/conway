@@ -303,6 +303,12 @@ pub(crate) async fn classify(
         // clean-slate spawn, unchanged (see `SubagentSpec::context`'s own
         // doc).
         context: None,
+        // `agent_def: None` above always -- there is no def whose
+        // `max_steps` could ever apply to this internal classification
+        // child, so this stays `false` like every non-`conway_fork`/
+        // `conway_spawn` constructor.
+        max_steps_unset: false,
+        deadline_unset: false,
     };
 
     // `caller` and `parent` are both `parent` -- classification always

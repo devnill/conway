@@ -316,6 +316,261 @@ mod result_contract_via_def {
     }
 }
 
+// ---------------------------------------------------------------------
+// End-to-end: `AgentDef::max_steps`/`AgentDef::deadline_secs`, loaded from a
+// REAL on-disk def file, actually govern a `conway_fork`/`conway_spawn`
+// child's `Budget` (board item `01M32EC0F9S5HTZDR3DADFV9DK`). Same
+// discipline as `result_contract_via_def` above (this file's own module
+// doc): drives the real loader AND the real runtime, never a hand-built
+// `AgentDef` fed straight to `AgentSpec` -- a hand-built one proves only
+// that the field is populated, not that anything reads it (P-15). The
+// `well_formed_fixture_parses_all_fields` test below this module already
+// proves PARSING for `max_steps` (`reviewer.md`'s `max_steps: 20`); this
+// module is what was missing -- proof of CONSUMPTION.
+mod max_steps_via_def {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use conway_core::agent::{
+        AgentDefRef, AgentKnobs, Budget, PermissionDecision, ResultStatus, SubagentSpec,
+    };
+    use conway_core::capabilities::HeadroomPolicy;
+    use conway_core::capabilities::{
+        CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
+    };
+    use conway_core::error::RoutingError;
+    use conway_core::ids::{AgentId, BackendId, ModelId, RoleAlias};
+    use conway_core::ports::{Backend, HealthRegistry, Plugin, Router, SessionStore, SubagentHost};
+    use conway_core::routing::{Route, RouteRequest, RoutingReason};
+    use conway_runtime::events::EventBus;
+    use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
+    use conway_testkit::{
+        text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeStore,
+        ScriptedBackend, ScriptedTurn,
+    };
+
+    use super::{dir_with_fixtures, load_agent_defs};
+
+    fn caps_ok() -> Capabilities {
+        Capabilities {
+            tool_calling: ToolCallSupport::Streaming { validated: true },
+            cache: CacheMode::None,
+            parallel_tool_calls: true,
+            structured_output: StructuredOutput::None,
+            max_context_tokens: 1_000_000,
+            reasoning: false,
+            reliability_tier: ReliabilityTier::Verified,
+        }
+    }
+
+    /// Mirrors `result_contract_via_def::RoleRouter` exactly -- see that
+    /// type's own doc for why the parent and the def-spawned child route to
+    /// distinct backends.
+    struct RoleRouter {
+        parent: Route,
+        child: Route,
+    }
+
+    impl Router for RoleRouter {
+        fn resolve(&self, req: &RouteRequest) -> Result<Vec<Route>, RoutingError> {
+            if req.role.as_str() == "child" {
+                Ok(vec![self.child.clone()])
+            } else {
+                Ok(vec![self.parent.clone()])
+            }
+        }
+    }
+
+    /// Mirrors `result_contract_via_def::build_runtime_with_def` exactly
+    /// (duplicated rather than shared -- see this file's own precedent: that
+    /// module's `RoleRouter` is itself a duplicate of `conway-runtime`'s).
+    async fn build_runtime_with_def(
+        label: &str,
+        fixture: &str,
+        child_script: Vec<ScriptedTurn>,
+    ) -> (Arc<Runtime>, AgentId, Arc<dyn SessionStore>) {
+        let dir = dir_with_fixtures(label, &[fixture]);
+        let agent_defs = load_agent_defs(&dir).expect("real def file loads");
+        assert!(
+            !agent_defs.is_empty(),
+            "fixture must parse into at least one AgentDef"
+        );
+
+        let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+        let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
+
+        let parent_backend = Arc::new(
+            ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("parent turn"))])
+                .with_id(BackendId::new("parent-backend"))
+                .with_capabilities(caps_ok()),
+        );
+        let child_backend = Arc::new(
+            ScriptedBackend::new(child_script)
+                .with_id(BackendId::new("child-backend"))
+                .with_capabilities(caps_ok()),
+        );
+        let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+        backends.insert(parent_backend.id(), parent_backend);
+        backends.insert(child_backend.id(), child_backend);
+
+        let router = Arc::new(RoleRouter {
+            parent: Route {
+                backend: BackendId::new("parent-backend"),
+                model: ModelId::new("m"),
+                params: Default::default(),
+                reason: RoutingReason::AliasPrimary {
+                    alias: RoleAlias::new("parent"),
+                },
+            },
+            child: Route {
+                backend: BackendId::new("child-backend"),
+                model: ModelId::new("m"),
+                params: Default::default(),
+                reason: RoutingReason::AliasPrimary {
+                    alias: RoleAlias::new("child"),
+                },
+            },
+        });
+
+        let runtime = Runtime::new(RuntimeDeps {
+            store: store.clone(),
+            path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
+            router,
+            health,
+            backends,
+            plugins: Vec::<Arc<dyn Plugin>>::new(),
+            gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+            agent_defs,
+            instructions: Vec::new(),
+            skills: Default::default(),
+            event_bus: EventBus::new(1024),
+            headroom: Arc::new(HeadroomPolicy::default()),
+            tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
+
+            session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+            capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
+        });
+        let parent = runtime
+            .start_root(RootSpec {
+                session: None,
+                knobs: AgentKnobs {
+                    agent_def: None,
+                    role: Some(RoleAlias::new("parent")),
+                    model: None,
+                    tools: None,
+                    budget: Budget::default(),
+                    result_contract: None,
+                    keep_alive: false,
+                },
+                cwd: PathBuf::from("/tmp"),
+                root: None,
+                prompt: Some("go".to_string()),
+                system_prompt_override: None,
+                labels: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        (runtime, parent, store)
+    }
+
+    /// The main defect-fix proof: `max_steps_child.md`'s `max_steps: 27` --
+    /// loaded through the real on-disk def path -- ends up on the SPAWNED
+    /// CHILD's own `AgentNode.budget.max_steps`, not the hardwired
+    /// `DEFAULT_MAX_STEPS` (40) every model-invoked subagent got before this
+    /// item. `spec.max_steps_unset: true` here stands in for what
+    /// `conway-tools`' `resolve_budget` sets when a real `conway_spawn` call
+    /// leaves `budget.max_steps` unspecified (this test drives
+    /// `SubagentHost::start` directly -- `conway-tools` is a sibling crate
+    /// this one cannot depend on -- but that boundary is exactly what
+    /// `conway-tools/tests/subagent.rs` and the `conway-runtime` suite pin
+    /// from their own side; see `AgentNode::budget`'s own doc trail).
+    #[tokio::test]
+    async fn def_max_steps_is_applied_to_the_spawned_child_end_to_end() {
+        let (runtime, parent, _store) = build_runtime_with_def(
+            "def-max-steps-e2e",
+            "max_steps_child.md",
+            vec![ScriptedTurn::Respond(text_response("child turn"))],
+        )
+        .await;
+
+        let mut spec = SubagentSpec::spawn(
+            "do the child's work",
+            AgentDefRef("max_steps_child".to_string()),
+            Budget::default(),
+        );
+        assert_eq!(
+            spec.knobs.budget.max_steps, 40,
+            "Budget::default() is this test's own control: the hardwired fallback, not the \
+             def's 27, so a passing assertion below cannot be an accident of construction"
+        );
+        spec.max_steps_unset = true;
+
+        let child = SubagentHost::start(&*runtime, parent, parent, spec)
+            .await
+            .unwrap();
+
+        let node = runtime
+            .tree()
+            .nodes
+            .into_iter()
+            .find(|n| n.agent_id == child)
+            .expect("child attached to the tree");
+        assert_eq!(
+            node.budget.max_steps, 27,
+            "the def's own max_steps must have overridden the hardwired 40-step default"
+        );
+
+        let result = SubagentHost::await_result(&*runtime, parent, child)
+            .await
+            .unwrap();
+        assert_eq!(result.status, ResultStatus::Completed);
+    }
+
+    /// Precedence control: an EXPLICIT call-site `budget.max_steps`
+    /// (`spec.max_steps_unset: false`, what a real `conway_spawn` call with
+    /// its own `budget.max_steps` argument produces) wins over the SAME
+    /// def's `max_steps: 27` -- the def is a fallback, never an override.
+    #[tokio::test]
+    async fn explicit_call_site_max_steps_wins_over_the_defs_value() {
+        let (runtime, parent, _store) = build_runtime_with_def(
+            "def-max-steps-precedence",
+            "max_steps_child.md",
+            vec![ScriptedTurn::Respond(text_response("child turn"))],
+        )
+        .await;
+
+        let spec = SubagentSpec::spawn(
+            "do the child's work",
+            AgentDefRef("max_steps_child".to_string()),
+            Budget {
+                max_steps: 5,
+                ..Budget::default()
+            },
+        );
+        // `SubagentSpec::spawn` leaves `max_steps_unset: false` (its own
+        // constructor default) -- exactly the "an explicit call-site budget
+        // was supplied" signal, unlike the test above.
+        assert!(!spec.max_steps_unset);
+
+        let child = SubagentHost::start(&*runtime, parent, parent, spec)
+            .await
+            .unwrap();
+
+        let node = runtime
+            .tree()
+            .nodes
+            .into_iter()
+            .find(|n| n.agent_id == child)
+            .expect("child attached to the tree");
+        assert_eq!(
+            node.budget.max_steps, 5,
+            "the explicit call-site value must win over the def's max_steps: 27"
+        );
+    }
+}
+
 /// Each test gets its own scratch directory (no external `tempfile`
 /// dependency, matching `tests/support/mod.rs`'s existing convention) so
 /// fixtures with deliberately conflicting/broken content never interfere
@@ -395,6 +650,7 @@ fn well_formed_fixture_parses_all_fields() {
         })
     );
     assert_eq!(def.max_steps, Some(20));
+    assert_eq!(def.deadline_secs, Some(900));
     assert!(def.result_contract.is_some());
     assert_eq!(def.skills, vec!["review-checklist".to_string()]);
     assert_eq!(
@@ -419,6 +675,7 @@ fn minimal_fixture_parses_with_only_name() {
     assert_eq!(def.tools, ToolSelector::All);
     assert_eq!(def.model, None);
     assert_eq!(def.max_steps, None);
+    assert_eq!(def.deadline_secs, None);
     assert_eq!(def.result_contract, None);
     assert!(def.skills.is_empty());
     assert_eq!(def.system_prompt, "Minimal system prompt.");

@@ -646,6 +646,7 @@ fn proposer_def() -> conway_core::config::AgentDef {
         tools: ToolSelector::All,
         skills: Vec::new(),
         max_steps: None,
+        deadline_secs: None,
         result_contract: None,
     }
 }

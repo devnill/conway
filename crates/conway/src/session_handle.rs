@@ -369,6 +369,15 @@ impl SessionHandle {
             // context" behavior unchanged -- see `SubagentSpec::context`'s
             // own doc.
             context: None,
+            // `budget` above is always `Budget::default()` (the "disclosed
+            // simplification" noted on this method's own doc), never
+            // resolved through `conway-tools`' call-argument/`PluginConfig`
+            // precedence -- so there is no "was max_steps requested"
+            // question for an agent def to settle either way. `false`
+            // matches `conway_core::agent::SubagentSpec::
+            // max_steps_unset`'s own "every OTHER constructor" default.
+            max_steps_unset: false,
+            deadline_unset: false,
         };
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).

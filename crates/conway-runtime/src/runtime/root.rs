@@ -635,6 +635,14 @@ impl Runtime {
             tools,
             role: role.clone(),
             pin,
+            // `agent_def.max_steps` is deliberately NEVER consulted here,
+            // even though `agent_def` (just resolved above) may have one --
+            // a root's budget is threaded straight through from
+            // `spec.knobs.budget` (ultimately `Conway::default_budget`'s
+            // `[limits]`-derived value), unchanged. See
+            // `conway_core::config::AgentDef::max_steps`'s own doc for that
+            // decision recorded in full (board item
+            // `01M32EC0F9S5HTZDR3DADFV9DK`).
             budget: spec.knobs.budget.clone(),
             // Deliberately `None`, not a gap: `ContextBuilder::build` runs
             // before routing resolves a concrete model, so this can only

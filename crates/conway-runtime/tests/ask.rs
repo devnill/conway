@@ -262,6 +262,8 @@ fn ask_fork_spec(prompt: &str) -> SubagentSpec {
         tag: None,
         plugin_config: None,
         context: None,
+        max_steps_unset: false,
+        deadline_unset: false,
     }
 }
 
@@ -638,6 +640,7 @@ fn restrictive_asker_def() -> conway_core::config::AgentDef {
         tools: conway_core::agent::ToolSelector::Only(vec!["marker".to_string()]),
         skills: Vec::new(),
         max_steps: None,
+        deadline_secs: None,
         result_contract: None,
     }
 }

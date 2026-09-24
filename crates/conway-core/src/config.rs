@@ -30,7 +30,57 @@ pub struct AgentDef {
     pub model: Option<ModelRef>,
     pub tools: ToolSelector,
     pub skills: Vec<String>,
+    /// A ceiling on this def's own agent's step count -- consumed ONLY by a
+    /// `conway_fork`/`conway_spawn` CHILD started under this def (board item
+    /// `01M32EC0F9S5HTZDR3DADFV9DK`): `conway_runtime::subagent::
+    /// SubagentHost::start` applies it as the tier between `PluginConfig`'s
+    /// `subagent.max_steps` and the hardwired `DEFAULT_MAX_STEPS` (40)
+    /// fallback, and ONLY when neither the call's own `budget.max_steps`
+    /// argument nor that config key already set one -- see
+    /// `conway_core::agent::SubagentSpec::max_steps_unset`'s own doc for the
+    /// full four-tier precedence this implements.
+    ///
+    /// **Deliberately NEVER consulted for a ROOT (or resumed) session,
+    /// even one started under this exact def** -- a decision recorded here,
+    /// not an oversight. `Conway::default_budget` (the facade) builds a
+    /// root's budget solely from `ConwayConfig`'s own `[limits]` section;
+    /// `conway_runtime::runtime::root::start_root`/`resume_root` thread that
+    /// budget straight through (`spec.knobs.budget.clone()`) with no
+    /// `agent_def.max_steps` read anywhere on that path, exactly as before
+    /// this item. The reasoning is the same one `Budget`'s own doc already
+    /// gives for why an operator's `[limits].max_steps` of `0` (unlimited)
+    /// is the sane root default while a subagent's hardwired `40` is not: an
+    /// interactive root is watched by the human running it, who can read the
+    /// transcript and interrupt, so a step ceiling picked by whichever def
+    /// the root happens to be running under can only be wrong for that
+    /// human -- exactly the class of "an arbitrary fixed ceiling can only be
+    /// wrong" reasoning that already keeps a root's OWN config-derived
+    /// ceiling opt-in. Widening this field to also govern a root would be a
+    /// silent behavior change for anyone who has already written an
+    /// `agent_def` with a `max_steps` on the assumption (true up to this
+    /// item, and still true after it) that it can only ever affect a
+    /// delegated child, never the session they are watching themselves.
     pub max_steps: Option<u32>,
+    /// A wall-clock deadline, in seconds from a `conway_fork`/`conway_spawn`
+    /// child's start, consumed the SAME way as [`Self::max_steps`] just
+    /// above -- the tier between `PluginConfig`'s `subagent.deadline_secs`
+    /// and the hardwired `DEFAULT_DEADLINE_SECS` (600s) fallback, applied
+    /// ONLY when neither the call's own `budget.deadline_secs` argument nor
+    /// that config key already set one. See [`Self::max_steps`]'s own doc
+    /// for the full precedence and the "never widens a root" decision, both
+    /// identical here.
+    ///
+    /// **Added on direct evidence, not speculatively**: board item
+    /// `01M32EC0F9S5HTZDR3DADFV9DK`'s own investigation of the 2026-09-20
+    /// proxy run (conway session `01M3042Y...`, three `ideate` reviewer
+    /// subagents spawned ~2026-09-21T05:42 UTC) found every one of them
+    /// ended `budget_exceeded`/`cancelled` with a `limit`/`reason` string
+    /// reading `deadline=<timestamp>` -- NEVER `max_steps=...` -- and
+    /// `steps_taken` of `0` and `5`, far short of the 40-step default. The
+    /// DEADLINE tripped, not the step count; this field exists because that
+    /// evidence was conclusive, not because `max_steps` needed a sibling on
+    /// principle.
+    pub deadline_secs: Option<u64>,
     /// Applied to a child that spawns/forks FROM this def -- i.e. a call
     /// site (a `conway_fork`/`conway_spawn` argument, or an embedder's
     /// `ForkSpec`/`SpawnSpec` builder field) that NAMES this def, and left
@@ -131,6 +181,7 @@ mod tests {
             tools: ToolSelector::Only(vec!["read".into(), "search".into()]),
             skills: vec!["review".into()],
             max_steps: Some(20),
+            deadline_secs: Some(900),
             result_contract: None,
         };
         let json = serde_json::to_string(&def).unwrap();

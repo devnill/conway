@@ -147,6 +147,17 @@ use crate::permission::derive_fs_root_config;
 use crate::runtime::Runtime;
 use crate::tree::AgentNode;
 
+/// Mirrors `conway-tools`' `subagent::tools::MAX_DEADLINE_SECS` exactly (same
+/// value, same "well under `chrono::Duration::seconds`'s i64 nanosecond
+/// bound, well over any sane deadline" reasoning) -- duplicated rather than
+/// imported because `conway-tools` is a sibling crate this one does not (and
+/// should not) depend on, and because that constant range-checks a
+/// MODEL-supplied argument while this one range-checks an
+/// OPERATOR-authored `AgentDef::deadline_secs` (board item
+/// `01M32EC0F9S5HTZDR3DADFV9DK`) -- two different trust boundaries that just
+/// happen to need the same bound.
+const MAX_AGENT_DEF_DEADLINE_SECS: u64 = 1_576_800_000; // 50 * 365 * 86_400
+
 #[async_trait]
 impl SubagentHost for Runtime {
     /// Fork or spawn `spec` under `parent`, per architecture §5.1/§5.2:
@@ -486,6 +497,55 @@ impl SubagentHost for Runtime {
             .agent_def
             .as_ref()
             .and_then(|r| self.agent_defs().get(r.0.as_str()));
+
+        // Board item `01M32EC0F9S5HTZDR3DADFV9DK`: an agent def's own
+        // `max_steps` is the tier between `PluginConfig` and the hardwired
+        // default for a `conway_fork`/`conway_spawn` child's budget --
+        // `spec.max_steps_unset` (set by `conway-tools`' `resolve_budget`,
+        // which has no `AgentDef` lookup surface of its own) says whether
+        // neither the call argument nor config already claimed
+        // `spec.knobs.budget.max_steps`; only then does this def's
+        // `max_steps`, if it has one, override the hardwired fallback
+        // already baked in. An explicit call argument or config value is
+        // never touched here. Applied for BOTH a caller-named def and a
+        // fork's inherited one (`def_was_inherited` above, already folded
+        // into `agent_def` by this point) -- unlike `result_contract`
+        // below, `max_steps` describes what it means to run under a def,
+        // not something only a call site may declare. See
+        // `SubagentSpec::max_steps_unset`'s own doc for the full picture.
+        if spec.max_steps_unset {
+            if let Some(def_max_steps) = agent_def.and_then(|d| d.max_steps) {
+                spec.knobs.budget.max_steps = def_max_steps;
+            }
+        }
+        // The `deadline_secs` sibling of the `max_steps` override just
+        // above -- same gating (`spec.deadline_unset`), same "applies
+        // whether the def was named or fork-inherited" reasoning. Recomputed
+        // from `AgentDef::deadline_secs` relative to THIS agent's own start
+        // (`now`, a few instructions below `resolve_budget`'s own clock read
+        // in `conway-tools` -- the drift is negligible and irrelevant to
+        // what a deadline governs), range-checked the same way
+        // `conway-tools`' `deadline_from_secs` checks a model-supplied one:
+        // an `AgentDef` is operator-authored config, not untrusted model
+        // input, but a nonsensical value here would otherwise panic deep
+        // inside `chrono::Duration::seconds` instead of failing the spawn
+        // with a clear, typed error.
+        if spec.deadline_unset {
+            if let Some(def_deadline_secs) = agent_def.and_then(|d| d.deadline_secs) {
+                if def_deadline_secs > MAX_AGENT_DEF_DEADLINE_SECS {
+                    return Err(invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "agent def '{}' deadline_secs ({def_deadline_secs}) exceeds the \
+                             maximum ({MAX_AGENT_DEF_DEADLINE_SECS} seconds, ~50 years)",
+                            agent_def.map(|d| d.name.as_str()).unwrap_or_default()
+                        ),
+                    }));
+                }
+                spec.knobs.budget.deadline =
+                    Some(Utc::now() + chrono::Duration::seconds(def_deadline_secs as i64));
+            }
+        }
+
         let role = spec
             .knobs
             .role

@@ -307,6 +307,15 @@ impl From<ForkSpec> for SubagentSpec {
             // Mapped straight through -- see [`ForkSpec::context`]'s own
             // doc.
             context: spec.context,
+            // `ForkSpec::budget` defaults to `Budget::default()` directly
+            // (this struct's own `budget` builder doc), never through
+            // `conway-tools`' call-argument/`PluginConfig` precedence --
+            // there is no tool call here for either tier to come from. An
+            // agent def's own `max_steps` therefore never overrides an
+            // embedder-built fork's budget; see
+            // `conway_core::agent::SubagentSpec::max_steps_unset`'s own doc.
+            max_steps_unset: false,
+            deadline_unset: false,
         }
     }
 }
@@ -518,6 +527,11 @@ impl From<SpawnSpec> for SubagentSpec {
             // Mapped straight through -- see [`SpawnSpec::context`]'s own
             // doc.
             context: spec.context,
+            // See the identical note in `From<ForkSpec>` above:
+            // `SpawnSpec::budget` also defaults to `Budget::default()`
+            // directly, never through `conway-tools`' precedence.
+            max_steps_unset: false,
+            deadline_unset: false,
         }
     }
 }

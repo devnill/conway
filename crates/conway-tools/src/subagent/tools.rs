@@ -235,19 +235,43 @@ pub(super) fn deadline_from_secs(secs: u64) -> Result<chrono::DateTime<chrono::U
     Ok(chrono::Utc::now() + chrono::Duration::seconds(secs as i64))
 }
 
+/// `resolve_budget`'s return value. A named struct rather than a
+/// `(Budget, bool, bool)` tuple deliberately (board item
+/// `01M33Q283KW7AP1KHRFGEB4C04`, reversing the tuple the previous board item
+/// chose to stay under this file's now-deleted line cap): two adjacent
+/// `bool` fields of the same type are a transposition hazard at the call
+/// site (a future edit swapping them compiles silently), and this struct is
+/// consumed at exactly one call site, so the extra lines buy real
+/// call-site safety rather than ceremony for its own sake.
+struct BudgetResolution {
+    budget: Budget,
+    /// `max_steps` came from neither the call's `budget` argument nor
+    /// `ctx.config`'s `subagent.max_steps` key -- still just the hardwired
+    /// fallback, for an `AgentDef` tier this crate can't apply itself -- see
+    /// `SubagentSpec::max_steps_unset`'s own doc.
+    max_steps_unset: bool,
+    /// Same as `max_steps_unset`, for `deadline_secs`.
+    deadline_unset: bool,
+}
+
 /// Precedence: the call's `budget` argument, then `ctx.config`'s
 /// `subagent.*` keys, then the defaults (40 steps, 10-minute deadline).
-fn resolve_budget(arg: Option<BudgetArg>, config: &PluginConfig) -> Result<Budget, ToolError> {
-    let max_steps = arg
+fn resolve_budget(
+    arg: Option<BudgetArg>,
+    config: &PluginConfig,
+) -> Result<BudgetResolution, ToolError> {
+    let explicit_max_steps = arg
         .as_ref()
         .and_then(|b| b.max_steps)
-        .or_else(|| config_u32(config, "subagent.max_steps"))
-        .unwrap_or(DEFAULT_MAX_STEPS);
-    let deadline_secs = arg
+        .or_else(|| config_u32(config, "subagent.max_steps"));
+    let max_steps_unset = explicit_max_steps.is_none();
+    let max_steps = explicit_max_steps.unwrap_or(DEFAULT_MAX_STEPS);
+    let explicit_deadline_secs = arg
         .as_ref()
         .and_then(|b| b.deadline_secs)
-        .or_else(|| config_u64(config, "subagent.deadline_secs"))
-        .unwrap_or(DEFAULT_DEADLINE_SECS);
+        .or_else(|| config_u64(config, "subagent.deadline_secs"));
+    let deadline_unset = explicit_deadline_secs.is_none();
+    let deadline_secs = explicit_deadline_secs.unwrap_or(DEFAULT_DEADLINE_SECS);
     let max_tokens = arg
         .as_ref()
         .and_then(|b| b.max_tokens)
@@ -257,11 +281,15 @@ fn resolve_budget(arg: Option<BudgetArg>, config: &PluginConfig) -> Result<Budge
         .and_then(|b| b.max_tool_calls)
         .or_else(|| config_u32(config, "subagent.max_tool_calls"));
 
-    Ok(Budget {
-        max_steps,
-        deadline: Some(deadline_from_secs(deadline_secs)?),
-        max_tokens,
-        max_tool_calls,
+    Ok(BudgetResolution {
+        budget: Budget {
+            max_steps,
+            deadline: Some(deadline_from_secs(deadline_secs)?),
+            max_tokens,
+            max_tool_calls,
+        },
+        max_steps_unset,
+        deadline_unset,
     })
 }
 
@@ -328,6 +356,11 @@ async fn start_and_maybe_await(
             detail: format!("result_contract: {e}"),
         })?;
 
+    let BudgetResolution {
+        budget,
+        max_steps_unset,
+        deadline_unset,
+    } = resolve_budget(req.budget, &ctx.config)?;
     let spec = SubagentSpec {
         mode,
         prompt: req.prompt,
@@ -340,7 +373,7 @@ async fn start_and_maybe_await(
             // never something the model itself can invoke on its own behalf.
             model: None,
             tools: req.tools.map(ToolSelector::Only),
-            budget: resolve_budget(req.budget, &ctx.config)?,
+            budget,
             result_contract,
             // The model-invoked `conway_fork`/`conway_spawn` tools are
             // always the autonomous, one-shot fork/spawn primitives
@@ -386,6 +419,8 @@ async fn start_and_maybe_await(
         // not built here -- see `conway_core::agent::SubagentSpec::
         // context`'s own doc.
         context: None,
+        max_steps_unset,
+        deadline_unset,
     };
 
     let child = ctx.subagents.start(spec).await.map_err(ToolError::from)?;
