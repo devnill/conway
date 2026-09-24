@@ -163,6 +163,15 @@ impl Tool for WriteTool {
 /// complete new one (rename succeeded, which -- on every platform this
 /// workspace targets -- replaces the destination as a single filesystem
 /// operation).
+///
+/// When `path` ALREADY exists, its unix mode is copied onto the temp file
+/// before the rename (`copy_existing_mode`, below), so editing a file
+/// keeps its mode -- a script's exec bit, a keyfile's 0600. A mode-copy
+/// failure degrades to a tracing warning, never a write failure; a
+/// not-yet-existing destination keeps the temp file's umask-derived mode,
+/// unchanged from before this copy existed. The confined write path
+/// (`beneath::write_file_atomic_confined_with`) does the same through
+/// `cap_std`'s `Dir::set_permissions` -- see that module's own doc.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     atomic_write_with(
         path,
@@ -195,6 +204,7 @@ fn atomic_write_with<F: DurableWrite, D: DurableSync>(
 
     let write_result: std::io::Result<()> = (|| {
         let mut file = open_tmp(&tmp)?;
+        copy_existing_mode(path, &tmp);
         file.write_all(bytes)?;
         file.sync_all()?;
         Ok(())
@@ -254,6 +264,113 @@ trait DurableSync {
 impl DurableSync for std::fs::File {
     fn sync_all(&self) -> std::io::Result<()> {
         std::fs::File::sync_all(self)
+    }
+}
+
+/// The unix mode bits `copy_existing_mode` (below) and
+/// `beneath::copy_existing_mode_confined` are willing to copy onto a temp
+/// file the model just wrote content into: read/write/execute for
+/// owner/group/other, EXCLUDING setuid (`04000`), setgid (`02000`), and
+/// sticky (`01000`).
+///
+/// # Why this is a shared constant, not re-derived in each branch
+///
+/// `Permissions` on unix carries the WHOLE mode word, not just these
+/// ordinary bits. Copying it wholesale (what this code used to do, before
+/// board item `01M38MDYH52CHXXKAE972ZZ0FJ`) means an existing setuid- or
+/// setgid-marked file, edited through this path, gets its ELEVATED bit
+/// reapplied on top of content the model just wrote -- turning a
+/// mode-preservation convenience into a live privilege-escalation path: the
+/// operator's setuid helper keeps its setuid bit, but its bytes are now
+/// entirely model-authored. Before mode preservation existed at all, an
+/// edit produced a `File::create`-fresh, umask-derived mode, which
+/// (accidentally) DROPPED any elevated bit -- safe by coincidence, not by
+/// design. This mask restores that safety on purpose, while still keeping
+/// the actual point of mode preservation: an ordinary exec bit or a
+/// restrictive `0600` still survives unchanged.
+///
+/// Both the unconfined path (this module) and the confined,
+/// `cap_std`-based path (`beneath::copy_existing_mode_confined`) must apply
+/// the identical mask (P-14: one implementation of safety-critical logic,
+/// not two that can drift) -- so it is defined once, here, and imported by
+/// both rather than re-derived.
+pub(crate) const ORDINARY_PERMISSION_BITS: u32 = 0o777;
+
+/// Copies an existing destination's unix mode onto the temp file that is
+/// about to be renamed over it, so editing an existing file keeps its mode
+/// (most visibly: a script's exec bit) -- MASKED to
+/// [`ORDINARY_PERMISSION_BITS`] first, so a setuid/setgid/sticky bit on the
+/// existing destination is never reapplied to the (entirely model-authored)
+/// new content; see that constant's own doc for why. The temp file
+/// `File::create` produces carries only the umask-derived default; without
+/// this copy the rename would silently REPLACE the destination's inode --
+/// and its ordinary mode bits with it -- every write.
+///
+/// Degradation posture: a failure to `set_permissions` is a WARNING, never
+/// a write failure -- the content is already correct and durably flushed at
+/// this point (the copy runs before `write_all`/`sync_all` so the fsync
+/// covers the mode change too, but the copy itself is best effort), and a
+/// missing destination (the ordinary new-file case) takes the unchanged
+/// umask-default path. A destination stat that fails for any OTHER reason
+/// (mode indeterminable) warns and proceeds, same as a failed
+/// `set_permissions`.
+///
+/// A THIRD case also warns, deliberately, even though nothing here
+/// "failed": when the existing destination's mode carried a bit outside
+/// [`ORDINARY_PERMISSION_BITS`], that bit is silently dropped rather than
+/// reapplied -- and dropping it is a real, meaningful change to a file the
+/// operator owns, not a no-op. The existing code already treats a failed
+/// mode copy as warning-worthy; a SUCCESSFUL copy that quietly produces a
+/// less-privileged file than the one that existed a moment ago is at least
+/// as worth surfacing; staying silent here would hide the one case an
+/// operator would most want to know about (their setuid file just lost its
+/// setuid bit).
+fn copy_existing_mode(path: &Path, tmp: &Path) {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = meta.permissions().mode();
+                let masked = std::fs::Permissions::from_mode(mode & ORDINARY_PERMISSION_BITS);
+                if let Err(err) = std::fs::set_permissions(tmp, masked) {
+                    tracing::warn!(
+                        "wrote {} but could not preserve its existing file mode: {err}",
+                        path.display()
+                    );
+                } else if mode & !ORDINARY_PERMISSION_BITS != 0 {
+                    tracing::warn!(
+                        "wrote {}: its previous mode ({mode:#o}) carried a setuid, \
+                         setgid, or sticky bit; dropping it rather than reapplying it \
+                         to newly-written, model-authored content",
+                        path.display()
+                    );
+                }
+            }
+            // Non-unix targets have no setuid/setgid/sticky concept in
+            // `std::fs::Permissions` to begin with, so the whole-object copy
+            // this code always did is not the same hazard there -- kept
+            // unchanged.
+            #[cfg(not(unix))]
+            {
+                if let Err(err) = std::fs::set_permissions(tmp, meta.permissions()) {
+                    tracing::warn!(
+                        "wrote {} but could not preserve its existing file mode: {err}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        // The ordinary new-file case: nothing to preserve, the temp file
+        // keeps its umask-derived mode.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::warn!(
+                "wrote {} but could not stat the previous file to preserve its \
+                 mode: {err}",
+                path.display()
+            );
+        }
     }
 }
 
@@ -651,5 +768,240 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(fs::read(&dest).unwrap(), b"payload");
+    }
+
+    // ---- mode preservation across the rename ----
+
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_preserves_an_existing_files_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("script.sh");
+        fs::write(&target, b"#!/bin/sh\necho old\n").unwrap();
+        let mut perms = fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&target, perms).unwrap();
+
+        atomic_write(&target, b"#!/bin/sh\necho new\n").unwrap();
+
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "editing a file through the atomic write path must keep its mode \
+             (the exec bit survives an edit)"
+        );
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "#!/bin/sh\necho new\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_preserves_a_restrictive_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("secret.key");
+        fs::write(&target, b"old secret").unwrap();
+        let mut perms = fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&target, perms).unwrap();
+
+        atomic_write(&target, b"new secret").unwrap();
+
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "a restrictive mode must survive an atomic overwrite"
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new secret");
+    }
+
+    /// This is the deliberate-break case the pre-existing mode tests above
+    /// did not cover -- none of them ever set a high bit, so the masking
+    /// defect this test guards against could (and did) survive them
+    /// undetected. Drives the same production entry point (`atomic_write`,
+    /// the canonical sync core every other mode test in this module also
+    /// calls), asserting on the FINAL destination, matching this item's
+    /// acceptance criterion literally ("edited through the write path
+    /// yields a destination without the setuid bit").
+    ///
+    /// IMPORTANT CAVEAT, found while writing this test: on this platform
+    /// (and, per the identical POSIX convention, Linux too), an
+    /// UNPRIVILEGED process's `write(2)` to a file whose mode already
+    /// carries setuid/setgid clears those bits as a kernel-level security
+    /// measure -- independent of anything this crate does. Since
+    /// `atomic_write_with` calls `copy_existing_mode` (which sets the
+    /// temp file's mode) BEFORE `file.write_all` (which supplies the
+    /// model-authored bytes), that kernel behavior ALSO strips the bit
+    /// here, for a non-root test process, regardless of whether this
+    /// item's masking fix is present or reverted -- confirmed by manually
+    /// reverting `ORDINARY_PERMISSION_BITS` to `0o7777` (a no-op mask) and
+    /// observing this test still pass. It is NOT this test that proves the
+    /// fix; `copy_existing_mode_drops_an_existing_setuid_bit`, immediately
+    /// below, isolates the actual masking step from that OS behavior and is
+    /// the one that fails under that same deliberate break. This test is
+    /// kept anyway because it is still a true, valuable statement of the
+    /// end-to-end guarantee -- one that would matter on its own if this
+    /// process ever ran as root (where the kernel does NOT clear the bit,
+    /// per `CAP_FSETID`), which the OS-level protection alone would not
+    /// cover.
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_drops_an_existing_setuid_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("helper");
+        fs::write(&target, b"old").unwrap();
+        let mut perms = fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o4755);
+        fs::set_permissions(&target, perms).unwrap();
+
+        atomic_write(&target, b"new, model-authored content").unwrap();
+
+        let mode = fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o755,
+            "the ordinary permission bits must still survive"
+        );
+        assert_eq!(
+            mode & 0o7000,
+            0,
+            "a setuid bit on the previous file must NOT be reapplied to \
+             newly-written content -- that would run model-authored bytes \
+             with elevated privilege"
+        );
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "new, model-authored content"
+        );
+    }
+
+    /// The setgid mirror of the test above -- same defect, same fix, same
+    /// production entry point, same OS-level-clearing caveat (see that
+    /// test's own doc); `copy_existing_mode_drops_an_existing_setgid_bit`,
+    /// below, is this pairing's actually-discriminating test.
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_drops_an_existing_setgid_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("helper");
+        fs::write(&target, b"old").unwrap();
+        let mut perms = fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o2755);
+        fs::set_permissions(&target, perms).unwrap();
+
+        atomic_write(&target, b"new, model-authored content").unwrap();
+
+        let mode = fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+        assert_eq!(
+            mode & 0o7000,
+            0,
+            "a setgid bit on the previous file must NOT be reapplied to \
+             newly-written content"
+        );
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "new, model-authored content"
+        );
+    }
+
+    /// THE load-bearing test for the setuid case: calls `copy_existing_mode`
+    /// -- the exact function this item's spec names as the defect site --
+    /// directly, with a REAL destination file and a REAL, freshly `File::
+    /// create`d temp file (exactly as `atomic_write_with` creates its own),
+    /// so `fs::metadata`/`fs::set_permissions` both run for real; nothing
+    /// about the mode being checked is hand-built. Checked on the temp file
+    /// BEFORE anything is written to it, which is what makes this test
+    /// actually discriminate the fix: `atomic_write_drops_an_existing_
+    /// setuid_bit`, above, checks the same property after a full round
+    /// trip, but an unrelated kernel protection (clearing setuid on an
+    /// unprivileged `write(2)`) launders the result there regardless of
+    /// this function's own correctness -- confirmed by manually reverting
+    /// `ORDINARY_PERMISSION_BITS` to `0o7777` and observing this test (and
+    /// only this one, of the setuid pair) fail.
+    #[test]
+    #[cfg(unix)]
+    fn copy_existing_mode_drops_an_existing_setuid_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("helper");
+        fs::write(&target, b"old").unwrap();
+        let mut perms = fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o4755);
+        fs::set_permissions(&target, perms).unwrap();
+
+        let tmp = dir.path().join("helper.tmp");
+        fs::File::create(&tmp).unwrap();
+        copy_existing_mode(&target, &tmp);
+
+        let mode = fs::metadata(&tmp).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o755,
+            "the ordinary permission bits must still be copied"
+        );
+        assert_eq!(
+            mode & 0o7000,
+            0,
+            "a setuid bit on the previous file must NOT be copied onto the \
+             temp file that is about to receive model-authored content"
+        );
+    }
+
+    /// The setgid mirror of the test above -- same reasoning, same
+    /// discriminating power (also confirmed to fail under the identical
+    /// `ORDINARY_PERMISSION_BITS = 0o7777` break).
+    #[test]
+    #[cfg(unix)]
+    fn copy_existing_mode_drops_an_existing_setgid_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("helper");
+        fs::write(&target, b"old").unwrap();
+        let mut perms = fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o2755);
+        fs::set_permissions(&target, perms).unwrap();
+
+        let tmp = dir.path().join("helper.tmp");
+        fs::File::create(&tmp).unwrap();
+        copy_existing_mode(&target, &tmp);
+
+        let mode = fs::metadata(&tmp).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+        assert_eq!(
+            mode & 0o7000,
+            0,
+            "a setgid bit on the previous file must NOT be copied onto the \
+             temp file that is about to receive model-authored content"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_new_file_keeps_the_umask_default_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // A control file created the ordinary `File::create` way pins the
+        // umask-derived default this process would give a fresh file --
+        // whatever this process's umask happens to be -- without having to
+        // read or change the (process-global, racy) umask itself.
+        let control = dir.path().join("control.bin");
+        fs::write(&control, b"control").unwrap();
+        let expected = fs::metadata(&control).unwrap().permissions().mode() & 0o777;
+
+        let target = dir.path().join("fresh.json");
+        atomic_write(&target, b"payload").unwrap();
+
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            expected,
+            "a not-previously-existing destination keeps the temp file's \
+             umask-derived mode, unchanged"
+        );
     }
 }

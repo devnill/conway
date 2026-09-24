@@ -251,7 +251,14 @@ pub(crate) async fn read_file(ctx: &ToolCtx, candidate: &Path) -> Result<ReadOut
 /// `write.rs`'s private `DurableSync` seam, which is not `pub` and could
 /// not be reused across the crate-module boundary even if the two
 /// implementations were otherwise mergeable (they are not -- see module
-/// doc). The two paths' durability guarantees are now equal.
+/// doc). The two paths' durability guarantees are now equal. The two
+/// paths' mode-preservation guarantees are equal too: like
+/// `write.rs::atomic_write`, an already-existing destination has its unix
+/// mode copied onto the temp file before the rename (`copy_existing_mode_
+/// confined`, below) so an edit keeps a script's exec bit or a keyfile's
+/// 0600, with failures degrading to a tracing warning rather than failing
+/// the write, and a not-yet-existing destination keeping the temp file's
+/// umask-derived mode.
 pub(crate) async fn write_file_atomic(
     ctx: &ToolCtx,
     candidate: &Path,
@@ -325,6 +332,7 @@ fn write_file_atomic_confined_with(
 
     let write_result: io::Result<u64> = (|| {
         let mut file = dir.create(&tmp_relative)?;
+        copy_existing_mode_confined(&dir, relative, &tmp_relative, candidate);
         file.write_all(content.as_bytes())?;
         file.flush()?;
         file.sync_all()?;
@@ -374,6 +382,86 @@ fn write_file_atomic_confined_with(
     }
 
     Ok(bytes)
+}
+
+/// Copies an existing destination's unix mode onto the confined branch's
+/// temp file before `dir.rename` replaces the destination's inode -- the
+/// confined mirror of `write.rs::copy_existing_mode`, kept inside the
+/// capability: the stat and the mode set both go through the SAME
+/// [`cap_std::fs::Dir`] (`Dir::metadata`, `Dir::set_permissions`), never a
+/// fresh ambient open, exactly like every other filesystem step in
+/// [`write_file_atomic_confined_with`].
+///
+/// MASKED to `write::ORDINARY_PERMISSION_BITS` first, exactly like the
+/// unconfined copy -- see that constant's own doc for why (a setuid/setgid
+/// destination must not have that bit reapplied on top of model-authored
+/// content) and for why the mask itself lives in ONE place shared by both
+/// branches rather than being re-derived here.
+///
+/// Same degradation posture as the unconfined copy (and the sync-parent
+/// step below): a failure to `set_permissions` warns and proceeds, never
+/// fails the write -- the content is already correct and still gets
+/// durably flushed by the following `sync_all` (which therefore also
+/// covers the mode change, as in the unconfined path). A missing
+/// destination -- the ordinary new-file case -- takes the unchanged
+/// umask-default path silently; any OTHER stat failure (mode
+/// indeterminable) warns and proceeds, same as a failed `set_permissions`.
+/// A THIRD case also warns, deliberately, even though the copy itself
+/// succeeded: when the existing destination's mode carried a bit outside
+/// `write::ORDINARY_PERMISSION_BITS`, that bit is silently dropped rather
+/// than reapplied -- see `write::copy_existing_mode`'s own doc for the full
+/// reasoning (identical here: dropping a setuid/setgid/sticky bit is a
+/// real, meaningful change to a file the operator owns, worth surfacing
+/// exactly like a failed copy is).
+fn copy_existing_mode_confined(dir: &Dir, relative: &Path, tmp_relative: &Path, candidate: &Path) {
+    match dir.metadata(relative) {
+        Ok(meta) => {
+            #[cfg(unix)]
+            {
+                use cap_std::fs::PermissionsExt;
+                let mode = meta.permissions().mode();
+                let masked = cap_std::fs::Permissions::from_mode(
+                    mode & super::write::ORDINARY_PERMISSION_BITS,
+                );
+                if let Err(err) = dir.set_permissions(tmp_relative, masked) {
+                    tracing::warn!(
+                        "wrote {} but could not preserve its existing file mode: {err}",
+                        candidate.display()
+                    );
+                } else if mode & !super::write::ORDINARY_PERMISSION_BITS != 0 {
+                    tracing::warn!(
+                        "wrote {}: its previous mode ({mode:#o}) carried a setuid, \
+                         setgid, or sticky bit; dropping it rather than reapplying it \
+                         to newly-written, model-authored content",
+                        candidate.display()
+                    );
+                }
+            }
+            // Non-unix targets have no setuid/setgid/sticky concept in
+            // `cap_std::fs::Permissions` to begin with, so the whole-object
+            // copy this code always did is not the same hazard there --
+            // kept unchanged.
+            #[cfg(not(unix))]
+            {
+                if let Err(err) = dir.set_permissions(tmp_relative, meta.permissions()) {
+                    tracing::warn!(
+                        "wrote {} but could not preserve its existing file mode: {err}",
+                        candidate.display()
+                    );
+                }
+            }
+        }
+        // The ordinary new-file case: nothing to preserve, the temp file
+        // keeps its umask-derived mode.
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::warn!(
+                "wrote {} but could not stat the previous file to preserve its \
+                 mode: {err}",
+                candidate.display()
+            );
+        }
+    }
 }
 
 /// Production `sync_parent` for [`write_file_atomic_confined_with`]:
@@ -906,6 +994,246 @@ mod tests {
             "sync_parent hook never ran"
         );
         assert_eq!(std::fs::read_to_string(&candidate).unwrap(), "hi");
+    }
+
+    // ---- mode preservation across the rename ----
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn write_file_atomic_confined_preserves_an_existing_files_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (ctx, _h) = confined_ctx(tmp.path(), tmp.path());
+        let target = tmp.path().join("script.sh");
+        std::fs::write(&target, b"#!/bin/sh\necho old\n").unwrap();
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&target, perms).unwrap();
+
+        write_file_atomic(&ctx, &target, "#!/bin/sh\necho new\n")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "editing a file through the confined atomic write path must keep \
+             its mode (the exec bit survives an edit)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "#!/bin/sh\necho new\n"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn write_file_atomic_confined_preserves_a_restrictive_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (ctx, _h) = confined_ctx(tmp.path(), tmp.path());
+        let target = tmp.path().join("secret.key");
+        std::fs::write(&target, b"old secret").unwrap();
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&target, perms).unwrap();
+
+        write_file_atomic(&ctx, &target, "new secret")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "a restrictive mode must survive a confined atomic overwrite"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new secret");
+    }
+
+    /// The confined-path mirror of `write::tests::
+    /// atomic_write_drops_an_existing_setuid_bit` -- same defect
+    /// (`copy_existing_mode_confined` used to copy the whole mode word,
+    /// including setuid/setgid/sticky, onto model-authored content), same
+    /// fix, and the SAME caveat that test's own doc records: an
+    /// unprivileged `write(2)` to a file whose mode already carries setuid
+    /// clears that bit as a kernel-level protection, independent of this
+    /// crate, which launders this particular (full round-trip) assertion
+    /// in a non-root test run regardless of whether the fix below is
+    /// present -- confirmed by reverting `write::ORDINARY_PERMISSION_BITS`
+    /// to `0o7777` and observing this test still pass.
+    /// `copy_existing_mode_confined_drops_an_existing_setuid_bit`, further
+    /// below, isolates the masking step from that OS behavior and is the
+    /// one that actually fails under that break. This test is kept anyway
+    /// as a true end-to-end statement that would matter if this process
+    /// ever ran as root (where the kernel does not clear the bit).
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn write_file_atomic_confined_drops_an_existing_setuid_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (ctx, _h) = confined_ctx(tmp.path(), tmp.path());
+        let target = tmp.path().join("helper");
+        std::fs::write(&target, b"old").unwrap();
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o4755);
+        std::fs::set_permissions(&target, perms).unwrap();
+
+        write_file_atomic(&ctx, &target, "new, model-authored content")
+            .await
+            .unwrap();
+
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o755,
+            "the ordinary permission bits must still survive"
+        );
+        assert_eq!(
+            mode & 0o7000,
+            0,
+            "a setuid bit on the previous file must NOT be reapplied to \
+             newly-written content through the confined write path either"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "new, model-authored content"
+        );
+    }
+
+    /// The setgid mirror of the test above -- same defect, same fix, same
+    /// production entry point, same OS-level-clearing caveat;
+    /// `copy_existing_mode_confined_drops_an_existing_setgid_bit`, further
+    /// below, is this pairing's actually-discriminating test.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn write_file_atomic_confined_drops_an_existing_setgid_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (ctx, _h) = confined_ctx(tmp.path(), tmp.path());
+        let target = tmp.path().join("helper");
+        std::fs::write(&target, b"old").unwrap();
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o2755);
+        std::fs::set_permissions(&target, perms).unwrap();
+
+        write_file_atomic(&ctx, &target, "new, model-authored content")
+            .await
+            .unwrap();
+
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+        assert_eq!(
+            mode & 0o7000,
+            0,
+            "a setgid bit on the previous file must NOT be reapplied to \
+             newly-written content through the confined write path either"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "new, model-authored content"
+        );
+    }
+
+    /// THE load-bearing test for the confined setuid case: calls
+    /// `copy_existing_mode_confined` -- the exact function this item's spec
+    /// names as the confined-path defect site -- directly, through a REAL
+    /// `cap_std::fs::Dir` opened at a real temp directory, with a REAL,
+    /// freshly `dir.create`d temp file (exactly as `write_file_atomic_
+    /// confined_with` creates its own), so `Dir::metadata`/`Dir::
+    /// set_permissions` both run for real; nothing about the mode being
+    /// checked is hand-built. Checked on the temp file BEFORE anything is
+    /// written to it -- see `write::tests::
+    /// copy_existing_mode_drops_an_existing_setuid_bit`'s own doc for why
+    /// that ordering is what actually discriminates the fix from the
+    /// unrelated kernel protection that launders the full-round-trip test
+    /// above: reverting `write::ORDINARY_PERMISSION_BITS` to `0o7777`
+    /// fails this test but not that one.
+    #[test]
+    #[cfg(unix)]
+    fn copy_existing_mode_confined_drops_an_existing_setuid_bit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target_relative = Path::new("helper");
+        let target_path = tmp.path().join(target_relative);
+        std::fs::write(&target_path, b"old").unwrap();
+        let mut perms = std::fs::metadata(&target_path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o4755);
+        std::fs::set_permissions(&target_path, perms).unwrap();
+
+        let dir = Dir::open_ambient_dir(tmp.path(), ambient_authority()).unwrap();
+        let tmp_relative = Path::new("helper.tmp");
+        dir.create(tmp_relative).unwrap();
+
+        copy_existing_mode_confined(&dir, target_relative, tmp_relative, &target_path);
+
+        let mode =
+            cap_std::fs::PermissionsExt::mode(&dir.metadata(tmp_relative).unwrap().permissions());
+        assert_eq!(
+            mode & 0o777,
+            0o755,
+            "the ordinary permission bits must still be copied"
+        );
+        assert_eq!(
+            mode & 0o7000,
+            0,
+            "a setuid bit on the previous file must NOT be copied onto the \
+             temp file that is about to receive model-authored content"
+        );
+    }
+
+    /// The setgid mirror of the test above -- same reasoning, same
+    /// discriminating power (also confirmed to fail under the identical
+    /// `ORDINARY_PERMISSION_BITS = 0o7777` break).
+    #[test]
+    #[cfg(unix)]
+    fn copy_existing_mode_confined_drops_an_existing_setgid_bit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target_relative = Path::new("helper");
+        let target_path = tmp.path().join(target_relative);
+        std::fs::write(&target_path, b"old").unwrap();
+        let mut perms = std::fs::metadata(&target_path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o2755);
+        std::fs::set_permissions(&target_path, perms).unwrap();
+
+        let dir = Dir::open_ambient_dir(tmp.path(), ambient_authority()).unwrap();
+        let tmp_relative = Path::new("helper.tmp");
+        dir.create(tmp_relative).unwrap();
+
+        copy_existing_mode_confined(&dir, target_relative, tmp_relative, &target_path);
+
+        let mode =
+            cap_std::fs::PermissionsExt::mode(&dir.metadata(tmp_relative).unwrap().permissions());
+        assert_eq!(mode & 0o777, 0o755);
+        assert_eq!(
+            mode & 0o7000,
+            0,
+            "a setgid bit on the previous file must NOT be copied onto the \
+             temp file that is about to receive model-authored content"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn write_file_atomic_confined_new_file_keeps_the_umask_default_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (ctx, _h) = confined_ctx(tmp.path(), tmp.path());
+        // A control file created the ordinary `File::create` way pins the
+        // umask-derived default this process would give a fresh file --
+        // whatever this process's umask happens to be -- without having to
+        // read or change the (process-global, racy) umask itself.
+        let control = tmp.path().join("control.bin");
+        std::fs::write(&control, b"control").unwrap();
+        let expected = std::fs::metadata(&control).unwrap().permissions().mode() & 0o777;
+
+        let target = tmp.path().join("fresh.json");
+        write_file_atomic(&ctx, &target, "payload").await.unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            expected,
+            "a not-previously-existing destination keeps the temp file's \
+             umask-derived mode, unchanged"
+        );
     }
 
     // ---- confined_metadata ----
