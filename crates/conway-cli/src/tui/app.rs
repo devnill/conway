@@ -309,6 +309,11 @@ impl App {
                             self.conway.active_structured_deny_rules();
                         self.state.structured_prompt_rules =
                             self.conway.active_structured_prompt_rules();
+                        // Board item `01M350FR4SM6QT0EM6M35EY5AZ`:
+                        // refreshed on the SAME seam as the flat/structured
+                        // allow mirrors above -- this class was missing a
+                        // review surface entirely until this item.
+                        self.state.shell_prefix_grants = self.conway.active_shell_prefix_grants();
                         // the fourth mirror, refreshed on the SAME seam as
                         // the four above -- see this block's own doc for
                         // why the refresh lives here rather than anywhere
@@ -1048,7 +1053,17 @@ mod tests {
 
         // Buffer-asserting half (this crate's binding TUI test convention):
         // the operator can actually READ the sections on screen.
-        let text = crate::tui::test_support::render_text(&app.state, 200, 50);
+        //
+        // Board item `01M350FR4SM6QT0EM6M35EY5AZ`: height bumped from 50 to
+        // 56 -- the new "shell prefixes" section (its own group header plus
+        // an "no active shell-prefix grants" row, always rendered, the same
+        // "say so honestly" shape every other empty review list on this
+        // menu already uses) sits between `allow` and `deny`, pushing the
+        // deny/prompt sections this test asserts on two rows further down.
+        // A taller viewport, not a narrower assertion: the rows this test
+        // cares about are still exactly as visible as before, just lower
+        // on an unchanged-width screen.
+        let text = crate::tui::test_support::render_text(&app.state, 200, 56);
         for needle in [
             "deny",
             "prompt",
@@ -1169,7 +1184,12 @@ mod tests {
         assert!(joined.contains("deny-prompts"), "{joined}");
         assert!(!joined.contains("log-every-call"), "{joined}");
 
-        let text = crate::tui::test_support::render_text(&app.state, 200, 50);
+        // Board item `01M350FR4SM6QT0EM6M35EY5AZ`: height bumped from 50 to
+        // 56 for the identical reason
+        // `untrusted_file_deny_and_prompt_rules_are_visible_in_settings`'s
+        // own comment gives -- the new "shell prefixes" section pushes the
+        // `hooks` section (further down still) past the old viewport.
+        let text = crate::tui::test_support::render_text(&app.state, 200, 56);
         assert!(text.contains("hooks"), "{text}");
         assert!(text.contains("deny-writes"), "{text}");
     }

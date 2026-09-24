@@ -278,6 +278,18 @@ pub(crate) enum RegistrationCheck {
 /// exact rejection/notice split at each match arm below -- (1) and (2) are
 /// copied unchanged from this function's original home on `Conway` (that
 /// move was a relocation, not a rewrite); (3) is new.
+///
+/// **Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`'s session-scoped shell-prefix
+/// grant never reaches this function, by construction.** That grant
+/// (`Conway::grant_session_shell_prefix` -> `PermissionBroker::
+/// remember_shell_prefix_grant`) takes a plain prefix `String`, never a
+/// [`Rule`]/[`conway_core::permission_pattern::PatternRule`] -- there is no
+/// value of that class this function, `persist_permission_rule`/
+/// `persist_permission_structured_rule` (`conway-cli`'s app loop), or
+/// `rewrite_permission_file_removing[_structured]` below could ever be
+/// handed, so none of them need (and none of them have) a special case for
+/// it. This is a structural absence, not a filter someone has to remember
+/// to keep in sync.
 pub(crate) fn validate_rule_registration(rt: &Runtime, rule: &Rule) -> Option<RegistrationCheck> {
     match (&rule.select, &rule.when) {
         // (1) + (3): `command_prefix` on a Structured-rendering tool is

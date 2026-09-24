@@ -680,6 +680,37 @@ impl App {
                                         .transcript
                                         .push(Entry::Notice { text });
                                 }
+                                // Board item `01M350FR4SM6QT0EM6M35EY5AZ`:
+                                // revoke exactly the one shell-prefix grant
+                                // the operator selected. Pure in-memory
+                                // removal -- this class is never persisted
+                                // (`Conway::revoke_shell_prefix_grant`'s own
+                                // doc), so unlike the two arms above there
+                                // is only a `bool` to report, not an enum
+                                // of outcomes.
+                                Action::RevokeShellPrefixGrant(prefix, scope) => {
+                                    let revoked =
+                                        self.conway.revoke_shell_prefix_grant(&prefix, &scope);
+                                    self.state.shell_prefix_grants =
+                                        self.conway.active_shell_prefix_grants();
+                                    let text = if revoked {
+                                        format!("revoked shell-prefix grant: `{prefix}`")
+                                    } else {
+                                        "that grant was already gone".to_string()
+                                    };
+                                    self.state
+                                        .transcript
+                                        .push(Entry::Notice { text });
+                                }
+                                // Board item `01M350FR4SM6QT0EM6M35EY5AZ`:
+                                // drop every shell-prefix grant at once --
+                                // the "revoke all" counterpart to the arm
+                                // above, mirroring `Action::
+                                // RevokePermissionGrants`'s own shape.
+                                Action::RevokeAllShellPrefixGrants => {
+                                    self.conway.revoke_all_shell_prefix_grants();
+                                    self.state.shell_prefix_grants.clear();
+                                }
                                 // // revoke exactly the one hook-backed rule
                                 // the operator selected. `Conway::
                                 // revoke_hook_rule` mutates the broker/
@@ -1015,6 +1046,44 @@ impl App {
                                             &rule,
                                         );
                                     }
+                                    self.state.resolve_current_prompt(
+                                        conway::PermissionDecision::AllowOnce,
+                                    );
+                                }
+                                Action::GrantSessionShellPrefix(prefix, scope) => {
+                                    // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`:
+                                    // the session-scoped, IN-MEMORY-ONLY
+                                    // shell-prefix grant. The granting agent
+                                    // is the prompt's requester (not
+                                    // `focused_agent`), same reasoning as
+                                    // the flat-pattern/structured-rule arms
+                                    // above. Deliberately NO persistence
+                                    // call here at all, for ANY scope --
+                                    // unlike `GrantPermissionPattern`/
+                                    // `GrantPermissionRule`, which each
+                                    // persist for `PermissionScope::Session`,
+                                    // this grant must NEVER reach
+                                    // `permissions.json`: it dies with this
+                                    // process by design (see
+                                    // `PermissionBroker::
+                                    // remember_shell_prefix_grant`'s own
+                                    // doc). `permission_grant_scope` still
+                                    // reads back to `Session` by default and
+                                    // still cycles via `Ctrl-S` while the
+                                    // editor is open, exactly like the other
+                                    // two grant flows -- what differs is
+                                    // only whether ANYTHING is written to
+                                    // disk afterward, which for this class
+                                    // is never.
+                                    let agent = self
+                                        .state
+                                        .pending_permission_agent()
+                                        .unwrap_or(self.state.focused_agent);
+                                    self.conway.grant_session_shell_prefix(
+                                        prefix,
+                                        scope,
+                                        agent,
+                                    );
                                     self.state.resolve_current_prompt(
                                         conway::PermissionDecision::AllowOnce,
                                     );

@@ -320,6 +320,24 @@ pub enum PermissionDecisionRecordKind {
     /// fired, not merely that some rule did (and is never a steering-store
     /// id: a `Rule` has no relationship to that store at all).
     Rule { id: String },
+    /// Authorized by a session-scoped shell-command PREFIX grant (board
+    /// item `01M32EBPWZZG6EA77ZG5KYC8KQ`): an INTERACTIVE, IN-MEMORY-ONLY
+    /// grant the operator accepted at the gate for a
+    /// [`crate::ports::RenderKind::ShellCommand`] call, covering later
+    /// calls in the same session whose rendered text shares the accepted
+    /// prefix.
+    ///
+    /// **Deliberately distinct from [`Self::Pattern`].** `Pattern` names a
+    /// DURABLE prefix-pattern `allow` [`crate::permission_pattern::Rule`]
+    /// match -- a shape that can never exist for a `ShellCommand` tool at
+    /// all ([`crate::permission_pattern::Rule::gate_allows`] refuses every
+    /// allow rule for one, board item `01KZDDPC5MMD49F6JPV9CW4TVM`, a
+    /// refusal this grant does not touch). Folding this into `Pattern`
+    /// would misreport a run-scoped, never-persisted grant as that
+    /// durable, file-persistable mechanism. A call resolved this way never
+    /// built a [`crate::permission_pattern::Rule`]/`PatternRule` at all,
+    /// and is never written to `permissions.json`.
+    ShellPrefixGrant,
 }
 
 /// WHO/WHAT resolved one call, as opposed to WHAT was decided
@@ -335,8 +353,10 @@ pub enum PermissionDecisionSource {
     Operator,
     /// Resolved without reaching the gate this time: a prefix-pattern
     /// `allow`/`deny` rule matched, a cached `AllowAlways` grant from
-    /// earlier in this session covered the call, or (for a bare `Deny`
-    /// with no [`PermissionDecisionRecordKind::Rule`] payload) this agent's
+    /// earlier in this session covered the call, a session-scoped
+    /// shell-prefix grant ([`PermissionDecisionRecordKind::
+    /// ShellPrefixGrant`]) covered it, or (for a bare `Deny` with no
+    /// [`PermissionDecisionRecordKind::Rule`] payload) this agent's
     /// confinement root refused it outright.
     Rule,
     /// Resolved by an installed `pre_tool_use` hook, before the gate, the

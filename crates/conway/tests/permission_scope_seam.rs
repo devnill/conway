@@ -36,6 +36,18 @@
 //! verified (temporarily mapping `PermissionScope::Agent` to
 //! `GrantScope::Session` in `grant_scope_for` makes it fail immediately;
 //! see this item's completion report for the output).
+//!
+//! **The session-scope child-coverage case (board item
+//! `01M32EBVQR3QKHK9FF3JHBFS2F`).** The file's negative cases pin what a
+//! grant must NOT cover; its newest test pins the session-scope positive
+//! the 2026-09-20 proxy run's architect re-prompts turned on: a
+//! session-scope PATTERN grant must cover a SPAWNED child -- different
+//! `agent_id`, `agent_path` under the parent -- for a DIFFERENT argument
+//! value than the call that prompted the grant. That different-value half
+//! is what separates a pattern grant (matched by rule, any args) from an
+//! exact-args `AllowAlways` cache entry (`CacheKey`), so the test's gate
+//! answers `AllowOnce` throughout and no cache entry ever exists: the
+//! pattern grant is the only mechanism that CAN spare the child's prompt.
 #![cfg(feature = "builtin-tools")]
 
 use std::sync::{Arc, Mutex};
@@ -43,10 +55,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use conway::test_support::{base_config, build_conway_with_builtins, scripted_backend};
-use conway::{Conway, PatternRule, SessionSpec};
+use conway::{Conway, PatternRule, SessionSpec, SpawnSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
-use conway_core::content::{StopReason, ToolCall, Usage};
+use conway_core::content::{StopReason, ToolCall, ToolResult, Usage};
 use conway_core::ids::{AgentId, ToolName};
+use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, PermissionGate, RenderKind};
 use conway_testkit::{text_response, ScriptedTurn};
 
@@ -263,6 +276,164 @@ async fn a_subtree_scoped_pattern_grant_does_not_authorize_an_agent_outside_the_
         1,
         "a subtree grant rooted at the requesting agent must cover it \
          (or the negative case above proves nothing)"
+    );
+}
+
+/// **The session-scope positive case, proven through a SPAWNED child.**
+/// A session-scope pattern grant installed in the shared broker must
+/// authorize a spawned subagent -- a different `agent_id`, whose
+/// `agent_path` sits under the parent's -- for a call with a DIFFERENT
+/// argument value than the one that prompted the grant. The gate answers
+/// `AllowOnce` throughout, so no `AllowAlways` cache entry ever exists and
+/// the pattern grant is the only mechanism that can spare any prompt after
+/// the first: a second green prompt proves the grant is not inert, and the
+/// child's prompt-free, differently-argued read proves the shared broker
+/// carries it across the spawn boundary (board item
+/// `01M32EBVQR3QKHK9FF3JHBFS2F`).
+#[tokio::test]
+async fn a_session_scoped_pattern_grant_authorizes_a_spawned_childs_differently_argued_call() {
+    let gate = RecordingGate::new();
+    let mut script = read_cargo_toml_script("p1"); // the root's first call: reaches the gate
+    script.extend(read_cargo_toml_script("p2")); // the root's second call: the grant's positive control
+                                                 // The child's call: same tool, DIFFERENT argument value -- the shape no
+                                                 // exact-args cache entry could ever cover (and none exists here at all).
+                                                 // (`Cargo.toml` is the file the root's own scripted calls read, so
+                                                 // `src/lib.rs` -- a real file under the test crate, the cwd `cargo test`
+                                                 // runs in -- is the differently-argued call.)
+    script.push(ScriptedTurn::Respond(tool_call_response(
+        "p3",
+        "read",
+        serde_json::json!({ "path": "src/lib.rs" }),
+    )));
+    script.push(ScriptedTurn::Respond(text_response("done")));
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(script),
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    // The root's first `read` reaches the gate -- which is also how the
+    // test learns the granting agent's real id (the spawned child's
+    // `agent_path` will root at this agent, exactly as `SubagentHost::
+    // start` builds it).
+    let session = live_session(&conway).await;
+    prompt_once(&session).await;
+    let requests = gate.requests();
+    assert_eq!(requests.len(), 1, "the first call must reach the gate");
+    let parent = requests[0].agent_id;
+
+    // The grant, installed at session scope via the same facade method the
+    // TUI's `p`-at-session-scope installs it with.
+    conway.grant_permission_pattern(
+        PatternRule::parse("read:*").expect("valid rule"),
+        PermissionScope::Session,
+        parent,
+    );
+
+    // Positive control: the granting agent's own later call is covered.
+    prompt_once(&session).await;
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the granting agent's own matching call must NOT re-consult the gate \
+         (or the grant is simply inert and the child case below proves nothing)"
+    );
+
+    // The case itself: a SPAWNED child -- different agent_id, its
+    // `agent_path` under the parent's -- makes a call with a DIFFERENT
+    // argument value than either of the root's. Only a rule-matched pattern
+    // grant can authorize this; no cache entry exists to confuse the two
+    // mechanisms.
+    let child = session
+        .spawn(session.root(), SpawnSpec::new("read the other source file"))
+        .await
+        .expect("spawn should succeed");
+    assert_ne!(
+        child, parent,
+        "the child must genuinely be a DIFFERENT agent -- otherwise this test \
+         proves nothing about cross-agent coverage"
+    );
+    let _ = tokio::time::timeout(Duration::from_secs(10), session.await_agent(child))
+        .await
+        .expect("child turn must not hang")
+        .expect("await_agent should resolve Ok");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the spawned child's differently-argued call must be authorized by the \
+         session-scope pattern grant in the shared broker, never reaching the gate"
+    );
+
+    // And the authorized read actually ran: the child's own tool result
+    // must be a success, not a denial recorded after a gate the test never
+    // saw.
+    let records = session
+        .transcript(child)
+        .await
+        .expect("transcript should resolve");
+    let result: &ToolResult = records
+        .iter()
+        .rev()
+        .find_map(|r| match r {
+            LogRecord::ToolResultRecord { result, .. } => Some(result),
+            _ => None,
+        })
+        .expect("the child's transcript must contain a ToolResultRecord");
+    assert!(
+        !result.is_error,
+        "the covered read must have actually succeeded: {:?}",
+        result.blocks
+    );
+}
+
+/// **The `[p]` field editor's own grant shape, through a spawned child.**
+/// The proxy run's operator grant was NOT the flat form above: the TUI's
+/// `[p]` field editor submits a structured `When::ArgsMatch` rule via
+/// `Conway::grant_permission_rule` (board item `01M32EBVQR3QKHK9FF3JHBFS2F`'s
+/// verdict). With NO fields pinned -- the all-wildcard default -- that rule
+/// is the `tool:*` equivalent, and it must cover a spawned child's
+/// differently-argued call exactly like the flat form, or the editor's
+/// "any call" promise is a lie for every agent but the granter.
+#[tokio::test]
+async fn the_p_field_editors_structured_any_call_grant_covers_a_spawned_child() {
+    let gate = RecordingGate::new();
+    let mut script = read_cargo_toml_script("q1");
+    script.push(ScriptedTurn::Respond(tool_call_response(
+        "q2",
+        "read",
+        serde_json::json!({ "path": "src/lib.rs" }),
+    )));
+    script.push(ScriptedTurn::Respond(text_response("done")));
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(script),
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    let session = live_session(&conway).await;
+    prompt_once(&session).await;
+    let parent = gate.requests()[0].agent_id;
+
+    let installed = conway.grant_permission_rule(
+        conway::Rule::args_match_allow_rule("read", std::collections::BTreeMap::new()),
+        PermissionScope::Session,
+        parent,
+    );
+    assert!(installed, "the structured any-call rule must install");
+
+    let child = session
+        .spawn(session.root(), SpawnSpec::new("read the other source file"))
+        .await
+        .expect("spawn should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(10), session.await_agent(child))
+        .await
+        .expect("child turn must not hang")
+        .expect("await_agent should resolve Ok");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the child's differently-argued read must be covered by the structured \
+         any-call rule installed the way the TUI's `[p]` editor installs it"
     );
 }
 

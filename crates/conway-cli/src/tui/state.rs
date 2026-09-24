@@ -203,6 +203,126 @@ impl EditingPatternState {
             cursor: 0,
         }
     }
+
+    /// Board item `01M331DN5YF9J1T12QRASZCHV7`: the rule THIS editor's
+    /// current field state would submit right now, byte-identical to what
+    /// [`super::AppState::submit_editing_pattern`] actually builds --
+    /// same `pinned` filter, same field order (`BTreeMap` sorts by key, so
+    /// the fields' own on-screen order does not matter), same
+    /// [`conway::Rule::args_match_allow_rule`] constructor. Read by the
+    /// view to render [`conway::Rule::describe`]'s own human-readable
+    /// summary ("any `tool` call" / "`tool` with path=… pinned") BEFORE
+    /// `Enter`, not just after -- the disclosure this board item exists to
+    /// add. A pure read: does not consume or mutate `self`, unlike the
+    /// submit path it mirrors, so the view can call it every frame.
+    pub fn preview_rule(&self) -> conway::Rule {
+        let mut pinned: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        for f in self.fields.iter().filter(|f| f.pinned) {
+            pinned.insert(f.name.clone(), f.value.clone());
+        }
+        conway::Rule::args_match_allow_rule(&self.tool, pinned)
+    }
+}
+
+/// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the state carried by
+/// [`Mode::EditingShellPrefix`] -- the session-scoped shell-prefix grant
+/// editor, opened from `AwaitingPermission` for a `RenderKind::
+/// ShellCommand` prompt (mirroring [`EditingPatternState`]'s "prompt moved
+/// out of `AwaitingPermission`, since [`PendingPrompt`] is not `Clone`"
+/// shape exactly -- cancel restores it, submit resolves it). Unlike the
+/// `[p]` field editor's per-field pin/wildcard rows, this is a single
+/// free-text line the operator can edit character by character: `input`/
+/// `cursor` follow the identical char-index convention
+/// [`crate::tui::state::modal::DenyFeedbackState::input`]/`cursor` and
+/// [`crate::tui::state::modal::AddProviderCredentialState::input`]/`cursor`
+/// already use. `input` starts at [`conway::permission_pattern::
+/// default_shell_prefix`]'s own proposal for the pending call's rendered
+/// text -- narrow by construction (two tokens, never a bare program name)
+/// -- and the operator edits from there; nothing installs it un-reviewed.
+///
+/// The grant scope is NOT carried here, mirroring [`EditingPatternState`]'s
+/// own doc on the identical point: it lives on [`super::AppState`] as
+/// `permission_grant_scope` (cycled by `Ctrl-S` while this editor is open,
+/// the SAME field the prompt's own `s` key and the `[p]` field editor's `s`
+/// key cycle), so every remembered-grant surface shares one scope source.
+///
+/// `error` is set by [`super::AppState::submit_editing_shell_prefix`] when
+/// [`conway::permission_pattern::shell_command_is_compound`] refuses the
+/// (trimmed) `input` -- the editor stays open with the reason shown,
+/// mirroring [`crate::tui::state::modal::AddProviderCredentialState::
+/// error`]'s own "a rejected attempt is shown, never silently re-prompted"
+/// contract, rather than silently discarding the keystroke or installing a
+/// grant nothing could actually cover.
+pub struct EditingShellPrefixState {
+    pub prompt: PendingPrompt,
+    pub input: String,
+    pub cursor: usize,
+    pub error: Option<String>,
+}
+
+impl std::fmt::Debug for EditingShellPrefixState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EditingShellPrefixState")
+            .field("input", &self.input)
+            .field("cursor", &self.cursor)
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+impl PartialEq for EditingShellPrefixState {
+    fn eq(&self, other: &Self) -> bool {
+        self.input == other.input && self.cursor == other.cursor && self.error == other.error
+    }
+}
+
+impl EditingShellPrefixState {
+    /// Seeds `input` from [`conway::permission_pattern::
+    /// default_shell_prefix`] applied to the pending call's own rendered
+    /// text -- the operator sees this exact proposal and can widen or
+    /// narrow it before accepting; nothing here installs a grant.
+    ///
+    /// `error` is pre-populated (rather than left `None` for the operator
+    /// to discover only on `Enter`) on the rare candidate whose FIRST TWO
+    /// WHITESPACE-DELIMITED TOKENS already embed a compound construct with
+    /// no surrounding space -- e.g. `git;rm -rf /` tokenizes to
+    /// `["git;rm", "-rf", ...]`, so the two-token default itself is
+    /// `git;rm -rf` and `shell_command_is_compound` correctly refuses it.
+    /// This is NOT the common case (an ordinary `&&`/`|`/`;` a few tokens
+    /// further into the command, e.g. `git status && rm -rf /`, seeds a
+    /// perfectly fine `git status` default -- the compound construct sits
+    /// past the two tokens this function ever looks at) but it is a real
+    /// one, and the operator should not have to press `Enter` once to
+    /// discover a proposal this editor already knew was unusable.
+    pub fn from_prompt(prompt: PendingPrompt) -> Self {
+        let input = conway::permission_pattern::default_shell_prefix(&prompt.request.rendered);
+        let cursor = input.chars().count();
+        let error = if conway::permission_pattern::shell_command_is_compound(&input) {
+            Some(compound_prefix_refusal_message().to_string())
+        } else {
+            None
+        };
+        Self {
+            prompt,
+            input,
+            cursor,
+            error,
+        }
+    }
+}
+
+/// The refusal message shown by both [`EditingShellPrefixState::
+/// from_prompt`] (a pre-populated default) and [`super::AppState::
+/// submit_editing_shell_prefix`] (a submitted `Enter`) -- one wording, so
+/// the operator sees the identical explanation regardless of which path
+/// triggered it.
+fn compound_prefix_refusal_message() -> &'static str {
+    // Deliberately does NOT quote the refused text back at the operator --
+    // they can already see it, unchanged, in the input line directly
+    // above this message; quoting it here would cost this short, one-row
+    // message the width budget `draw_editing_shell_prefix`'s own doc
+    // explains it needs to stay visible without a scroll.
+    "refused -- a grant covers one simple command only, nothing chained, piped, or substituted"
 }
 
 /// One `[plugins].subprocess[]` or `[plugins].mcp[]` entry, exactly as
@@ -410,6 +530,19 @@ pub struct AppState {
     /// from the broker's `active_structured_prompt_rules()` -- the
     /// structured half of [`Self::permission_prompts`].
     pub structured_prompt_rules: Vec<(conway::Rule, conway::PatternOrigin)>,
+    /// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: the active session-scoped
+    /// shell-prefix grants (board item `01M32EBPWZZG6EA77ZG5KYC8KQ`),
+    /// mirrored from the broker's `active_shell_prefix_grants()` for the
+    /// review list this class was missing since it shipped -- an operator
+    /// who granted three prefixes over a long day had no list, no count,
+    /// and no revoke, only memory. Rendered in the SAME allow section as
+    /// [`Self::permission_grants`]/[`Self::structured_allow_rules`] and
+    /// likewise REVOCABLE, addressed by its own `(prefix, scope)` pair
+    /// through `Conway::revoke_shell_prefix_grant` (this class has no
+    /// `PatternRule`/`Rule` identity to reuse either flat revoke's key).
+    /// Refreshed alongside `permission_grants` when `/settings` opens and
+    /// after any revoke.
+    pub shell_prefix_grants: Vec<(String, conway::GrantScope)>,
     /// The fourth review list --
     /// every currently-installed DENY-CAPABLE hook-backed rule
     /// (`pre_tool_use` and `prompt_submitted`; see [`conway::Conway::
@@ -1625,6 +1758,7 @@ impl AppState {
             permission_prompts: Vec::new(),
             structured_deny_rules: Vec::new(),
             structured_prompt_rules: Vec::new(),
+            shell_prefix_grants: Vec::new(),
             hook_rules: Vec::new(),
             plugin_browser: Vec::new(),
             subprocess_plugins: Vec::new(),
@@ -1925,6 +2059,11 @@ impl AppState {
     /// key handler to wrap in an `Action::GrantPermissionRule`. Returns
     /// `None` if no editor is open. The grant covers FUTURE calls; THIS
     /// call is resolved separately by the dispatch arm as `AllowOnce`.
+    ///
+    /// Board item `01M331DN5YF9J1T12QRASZCHV7`: builds the rule via
+    /// [`EditingPatternState::preview_rule`] rather than re-deriving it
+    /// here, so the rule this method actually submits can never drift from
+    /// the one the view previewed to the operator one frame earlier.
     pub fn submit_editing_pattern(&mut self) -> Option<(conway::Rule, conway::PermissionScope)> {
         if !matches!(self.mode, Mode::EditingPattern(_)) {
             return None;
@@ -1932,14 +2071,96 @@ impl AppState {
         let Mode::EditingPattern(ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
             unreachable!()
         };
-        let mut pinned: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-        for f in ed.fields.iter().filter(|f| f.pinned) {
-            pinned.insert(f.name.clone(), f.value.clone());
-        }
-        let rule = conway::Rule::args_match_allow_rule(&ed.tool, pinned);
+        let rule = ed.preview_rule();
         self.mode = Mode::AwaitingPermission(ed.prompt);
         self.modal_scroll = 0;
         Some((rule, self.permission_grant_scope))
+    }
+
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: opens the session-scoped
+    /// shell-prefix grant editor from a permission prompt. Only callable
+    /// while a prompt is showing (`Mode::AwaitingPermission`) AND the
+    /// pending call declares `RenderKind::ShellCommand` -- the exact
+    /// complement of [`Self::offer_editing_pattern`]'s own "only for
+    /// `Structured`" gate, so the two editors partition every tool's
+    /// `render_kind` between them and never both offer for the same call.
+    /// The [`PendingPrompt`] is MOVED out of `mode` (it is not `Clone`), so
+    /// cancel restores it, submit resolves it -- mirroring
+    /// `offer_editing_pattern`'s own non-stacking shape exactly.
+    pub fn offer_editing_shell_prefix(&mut self) {
+        let Mode::AwaitingPermission(pending) = &self.mode else {
+            return;
+        };
+        if pending.request.render_kind != conway::RenderKind::ShellCommand {
+            return;
+        }
+        let Mode::AwaitingPermission(prompt) = std::mem::replace(&mut self.mode, Mode::Normal)
+        else {
+            unreachable!()
+        };
+        self.mode = Mode::EditingShellPrefix(EditingShellPrefixState::from_prompt(prompt));
+        self.modal_scroll = 0;
+    }
+
+    /// Cancels the shell-prefix editor and returns the prompt to the
+    /// screen unresolved -- the operator can press `y`/`a`/`n`/`p` again.
+    /// Mirrors [`Self::cancel_editing_pattern`] exactly.
+    pub fn cancel_editing_shell_prefix(&mut self) {
+        if !matches!(self.mode, Mode::EditingShellPrefix(_)) {
+            return;
+        }
+        let Mode::EditingShellPrefix(ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            unreachable!()
+        };
+        self.mode = Mode::AwaitingPermission(ed.prompt);
+        self.modal_scroll = 0;
+    }
+
+    /// Submits the shell-prefix editor: takes the operator's (possibly
+    /// edited) `input` verbatim as the prefix, restores the prompt to
+    /// `AwaitingPermission` (so the app loop's dispatch can resolve it with
+    /// the existing `resolve_current_prompt` path), and returns the prefix
+    /// + scope for the key handler to wrap in an
+    /// `Action::GrantSessionShellPrefix`. Returns `None` if no editor is
+    /// open. The grant covers FUTURE calls; THIS call is resolved
+    /// separately by the dispatch arm as `AllowOnce` -- mirrors
+    /// [`Self::submit_editing_pattern`]'s own shape exactly. A blank
+    /// `input` (after trim) still returns `Some` -- the APP LOOP's
+    /// `PermissionBroker::remember_shell_prefix_grant` is what refuses an
+    /// empty prefix (see that method's own doc); this layer does not
+    /// duplicate that check, it only reports what the operator actually
+    /// typed.
+    ///
+    /// **The compound-command exclusion is enforced HERE too, before the
+    /// call ever leaves this layer.** If `conway::permission_pattern::
+    /// shell_command_is_compound` refuses the (trimmed) `input`, this sets
+    /// `EditingShellPrefixState::error` (shown by the view, mirroring
+    /// [`crate::tui::state::modal::AddProviderCredentialState::error`]'s
+    /// own contract), returns `None`, and leaves the editor OPEN --
+    /// exactly like a rejected credential, never a silent no-op and never
+    /// an `AllowOnce` this method has no business granting on a refused
+    /// submission. This is a SECOND enforcement of the SAME rule
+    /// `PermissionBroker::remember_shell_prefix_grant`/`shell_prefix_grant_
+    /// allows` apply -- the broker's own check is the one that cannot be
+    /// bypassed; this one exists so the operator finds out immediately,
+    /// in the editor, rather than by the grant quietly failing to cover
+    /// anything later.
+    pub fn submit_editing_shell_prefix(&mut self) -> Option<(String, conway::PermissionScope)> {
+        let Mode::EditingShellPrefix(ed) = &mut self.mode else {
+            return None;
+        };
+        let trimmed = ed.input.trim();
+        if conway::permission_pattern::shell_command_is_compound(trimmed) {
+            ed.error = Some(compound_prefix_refusal_message().to_string());
+            return None;
+        }
+        let Mode::EditingShellPrefix(ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            unreachable!()
+        };
+        let prefix = ed.input.clone();
+        self.mode = Mode::AwaitingPermission(ed.prompt);
+        self.modal_scroll = 0;
+        Some((prefix, self.permission_grant_scope))
     }
 
     /// The single mutation entry point: applies one envelope's effect to

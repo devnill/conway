@@ -293,16 +293,20 @@ tool prompts the same way:
 ```
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
 │echo pong                                                        │
-│[y] allow once  [a] allow always  [n] deny  [Esc] deny w/ feedback│
+│[y] once  [a] always  [p] prefix  [n] deny  [Esc] deny w/ feedback│
+│  [p] proposes: "echo pong" (session only, never saved)          │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
 The first line is the command as it would actually run (below it, not
 shown above, the box also names the tool, its category, and the agent
-path proposing the call). Note there is no `[p]` here: a `bash` call never
-offers a pattern grant at all, at any scope — see `permissions.md`'s Limits
-section for why. A structured tool (`read`, `write`, `grep`, …) offers
-`[p]` instead:
+path proposing the call). `bash` (and every other `ShellCommand` tool)
+never offers the DURABLE pattern grant a structured tool's `[p]` installs
+— see `permissions.md`'s Limits section for why that refusal is permanent
+— but it does offer something narrower and temporary of its own: a
+**session-scoped shell-prefix grant** (`[p]`), covered below. A structured
+tool (`read`, `write`, `grep`, …) still offers the durable field editor
+exactly as before:
 
 ```
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
@@ -318,7 +322,8 @@ Your options:
 | --- | --- |
 | `y` | Allow this one call. |
 | `a` | Allow this call, and remember the decision for the rest of the session. |
-| `p` | Opens a field editor over the call's structured arguments — every field starts wildcard; `space` pins the selected field to its exact value, `↑`/`↓`/`tab` move, `s` cycles the grant scope, `Enter` installs an allow rule covering future calls whose pinned fields match (unpinned fields stay wildcard) and allows this call, `Esc` cancels back to this prompt. Granting with nothing pinned is the broadest offer — any call to that tool. Never offered for a `bash` call. |
+| `p` (structured tool) | Opens a field editor over the call's structured arguments — every field starts wildcard; `space` pins the selected field to its exact value, `↑`/`↓`/`tab` move, `s` cycles the grant scope, `Enter` installs an allow rule covering future calls whose pinned fields match (unpinned fields stay wildcard) and allows this call, `Esc` cancels back to this prompt. Granting with nothing pinned is the broadest offer — any call to that tool. |
+| `p` (shell command) | Opens a free-text editor seeded with a narrow, two-token default (e.g. `git status` from `git status --short`, never the bare `git`) — type to widen or narrow it, `Ctrl-S` cycles the grant scope, `Enter` grants a **session-scoped, in-memory-only** prefix covering future shell commands sharing it and allows this call, `Esc` cancels back to this prompt. See "The shell-prefix grant" below. |
 | `n` | Deny this call. |
 | `Esc` | Deny this call, and tell the model to try a different approach. |
 | `PageUp` / `PageDown` | Scroll a long command's own display. |
@@ -327,12 +332,55 @@ Your options:
 revoked are covered in full in [`permissions.md`](permissions.md) — this
 prompt is the one place you'll meet them, but that page is where the
 depth lives. One thing worth knowing here rather than only there: at
-session scope, a `[p]` grant is also appended to the project's
+session scope, a structured `[p]` grant is also appended to the project's
 `permissions.json` (its structured `rules` array, not the flat `allow`
 list a plain pattern grant uses) — so it survives a restart the same way
 any other session-scope grant does, once you `/trust permissions` if the
 file wasn't already trusted. A per-agent or per-subtree grant is never
 written to a file, at any scope.
+
+### The shell-prefix grant
+
+A shell command's `[p]` is a different, narrower mechanism from a
+structured tool's — not a smaller version of the same thing. A durable
+prefix-pattern grant is refused outright for any `ShellCommand` tool,
+permanently, regardless of what the prefix says (`permissions.md`'s Limits
+section): judging a shell command means predicting what a shell will make
+of a string, and conway does not do that. What `[p]` offers here instead
+is a grant that only ever lives in memory, for the rest of THIS session,
+and is offered so you never have to re-type the same handful of prefixes
+(`git status`, `cargo test`, …) dozens of times in one long-running task.
+
+Accepting it (`Enter`) authorizes later shell commands whose text starts
+with the SAME whitespace-aligned tokens — `git status` covers `git status
+--short` but not `git push` or `git statusfoo` — at whichever scope you
+chose (including a spawned subagent under an `AgentSubtree` grant). It:
+
+- **Is never persisted, at any scope.** It does not touch
+  `permissions.json`; a session-scope shell-prefix grant behaves exactly
+  like an agent/subtree structured grant in that one respect, even though
+  its default scope reads `Session` the same way the other grants' does.
+- **Is gone the moment the process exits.** A fresh `conway` run — even
+  against the identical project, the identical command — starts with none
+  of it; there is nothing to `/trust` and nothing to revoke on disk.
+- **Is reviewable and revocable for the rest of THIS session**, board item
+  `01M350FR4SM6QT0EM6M35EY5AZ`: `/settings` → permissions → "shell
+  prefixes" lists every grant exactly as you granted it, with its scope.
+  `Enter` on a row revokes just that one; a "revoke all shell-prefix
+  grants" row clears every one. A revoked grant cannot come back on its
+  own — the next matching command prompts again.
+- **Is exactly as narrow as what you see on screen.** The editor never
+  proposes anything broader than the two-token default, and never installs
+  anything other than the text you left in the editor when you pressed
+  `Enter` — narrow it further, or widen it, before accepting.
+- **Never covers a compound command.** `git status` covers `git status
+  --short`, but never `git status && rm -rf /`, `git status | sh`, `git
+  status; rm -rf /`, a trailing `git status &`, an embedded newline, `git
+  status $(rm -rf /)`, backticks, or `<(...)`/`>(...)` — any of those still
+  prompt normally, exactly as they would with no grant at all. The same
+  rule applies to what you type into the editor: a prefix containing one
+  of those constructs is refused, with the reason shown right there,
+  rather than installed.
 
 ### Diffs, not raw JSON
 
@@ -896,7 +944,7 @@ session | lineage | mode | model | ctx | tokens | activity | hint
 | --- | --- | --- |
 | `session` | `session <id>@<seq>` | The session's root agent's short id, plus its own persisted log's current head sequence once known (`@<seq>` is omitted before the first authoritative read). Always renders. The `<seq>` is what `/conway.history.rewind <seq>` (`conway-plugin-history`, if installed) takes. |
 | `lineage` | `agent <id> via root → fork @seq 3 → @reviewer` | How the focused agent was created. Omitted while you're focused on the session's own root. |
-| `mode` | `ready`, `awaiting permission`, `ask`, or `intent` | The TUI's current top-level state. When your permission mode isn't the default, this field also names it: `ready · plan` or `ready · AUTO-ALLOW`. `AUTO-ALLOW` is the one thing on this line guaranteed to keep showing even on a very narrow terminal — it's a genuine safety signal, and the field most likely to matter if you've forgotten you're in it. |
+| `mode` | `ready`, `running`, `awaiting permission`, `ask`, or `intent` | The TUI's current top-level state. `ready` and `running` are the same underlying "no modal card is open" state, split by whether a turn is actually working — `Mode::Normal` used to always render `ready`, which told a watcher (human or automated) nothing was happening for the entire span of a running turn; it now reads `running` while `activity` is animating and `ready` only once it genuinely is idle. When your permission mode isn't the default, this field also names it: `running · plan` or `ready · AUTO-ALLOW`. `AUTO-ALLOW` is the one thing on this line guaranteed to keep showing even on a very narrow terminal — it's a genuine safety signal, and the field most likely to matter if you've forgotten you're in it. |
 | `model` | `anthropic/claude-sonnet-4-6` | The focused agent's serving model. Omitted until its first turn has routed. |
 | `ctx` | `ctx 42%`, or `ctx 12.3k` when the model's context window isn't known | Cumulative context-window occupancy for the focused agent, from the same resolved `(backend, model)` capability index [`conway routes explain`](routing.md#asking-why-a-route-was-chosen) reads. When the window itself is only a `floor (assumed)` — the model's own dialect declares no sourced figure, so this is not a fact about this specific model — the figure carries that same marker: `ctx 31% floor (assumed)`. A `verified` (compiled-in table, or a dialect's own documented per-provider figure), `models.json` (an operator-editable override), or `probed` window never carries it. |
 | `tokens` | `1.4k tok (88% cached)`, or `1.4k tok (cache: not reported by ollama)` | The focused agent's cumulative token spend; the cached-percentage parenthetical is the prompt-cache hit rate — `cache_read / (input + cache_read + cache_write)`. **Declaration honesty**: the percentage shows whenever the backend actually reported cache figures for at least one cache-relevant token — including a genuine `0% cached` — and is omitted only when the denominator itself is 0 (no cache-relevant tokens processed yet). When the backend's wire format carries no cache field at all (e.g. Ollama's native `/api/chat` path, see [providers.md](providers.md)), the field instead shows `cache: not reported by <backend>` — a `0%` here would claim an observation the backend never made. |

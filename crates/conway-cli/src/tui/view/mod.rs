@@ -70,7 +70,8 @@ use ratatui::Frame;
 
 use super::state::{
     AddProviderContextWindowState, AddProviderCredentialState, AppState, AskModal,
-    DenyFeedbackState, EditingPatternState, IntentConfirm, Mode, TrustPreviewCard, UiFormState,
+    DenyFeedbackState, EditingPatternState, EditingShellPrefixState, IntentConfirm, Mode,
+    TrustPreviewCard, UiFormState,
 };
 pub use theme::Theme;
 
@@ -167,6 +168,17 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
 
     if let Mode::EditingPattern(ed) = &state.mode {
         draw_editing_pattern(
+            frame,
+            areas.transcript,
+            ed,
+            state.permission_grant_scope,
+            state.modal_scroll,
+            theme,
+        );
+    }
+
+    if let Mode::EditingShellPrefix(ed) = &state.mode {
+        draw_editing_shell_prefix(
             frame,
             areas.transcript,
             ed,
@@ -575,6 +587,15 @@ fn draw_permission_overlay(
         &req.rendered,
         req.render_kind,
     );
+    // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the session-scoped
+    // shell-prefix grant editor's own offer -- `Some` exactly when
+    // `offered` (the durable pattern offer, above) is `None` for a
+    // `ShellCommand` call, since the two are mutually exclusive by
+    // `render_kind` (`AppState::offered_permission_rule`/
+    // `offered_shell_prefix_default` partition every tool between them).
+    // Computed directly from `req`, not read off `AppState`, so this
+    // free function stays pure exactly as its own module doc requires.
+    let shell_prefix_offered = req.render_kind == conway::RenderKind::ShellCommand;
     // The decision keys must all stay legible on a narrow terminal --
     // losing `[Esc] deny with feedback` off the right edge would hide a
     // decision the operator may want. So the keys go on their own line and
@@ -582,6 +603,8 @@ fn draw_permission_overlay(
     // on the offer line's tail when there is room.
     let hint = if offered.is_some() {
         "[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback"
+    } else if shell_prefix_offered {
+        "[y] once  [a] always  [p] prefix  [n] deny  [Esc] deny w/ feedback"
     } else {
         "[y] allow once  [a] allow always  [n] deny  [Esc] deny with feedback"
     };
@@ -614,6 +637,35 @@ fn draw_permission_overlay(
     // under the key hint so it is not separated from the `[p]` it explains.
     if let Some(rule) = &offered {
         footer_lines.push(Line::from(format!("  [p] grants: {}", rule.describe())));
+    } else if shell_prefix_offered {
+        // A `default_shell_prefix` proposal can, in principle, be as long
+        // as the rendered command itself (a command with no whitespace at
+        // all is a single "token", the whole string) -- capped here to a
+        // SHORT preview so this one footer line can never wrap onto a
+        // second physical row and blow out the fixed-height footer's own
+        // line budget (see `PERMISSION_FOOTER_ROWS`'s own doc on the
+        // ALREADY-accepted "6 logical lines against a 5-line budget"
+        // clip -- that accounting assumes one logical line is one physical
+        // row, an assumption only THIS line's variable length could ever
+        // break). The full, untruncated proposal is what actually seeds
+        // `Mode::EditingShellPrefix` (`EditingShellPrefixState::
+        // from_prompt`); nothing about this preview reaches the real
+        // editable value.
+        const FOOTER_PREFIX_PREVIEW_CHARS: usize = 20;
+        let default_prefix = conway::permission_pattern::default_shell_prefix(&req.rendered);
+        let preview: String = if default_prefix.chars().count() > FOOTER_PREFIX_PREVIEW_CHARS {
+            let mut truncated: String = default_prefix
+                .chars()
+                .take(FOOTER_PREFIX_PREVIEW_CHARS)
+                .collect();
+            truncated.push('…');
+            truncated
+        } else {
+            default_prefix
+        };
+        footer_lines.push(Line::from(format!(
+            "  [p] proposes: \"{preview}\" (session only, never saved)"
+        )));
     }
     footer_lines.push(Line::from(format!(
         "tool: {}  category: {:?}",
@@ -1167,6 +1219,35 @@ const EDITING_PATTERN_FOOTER_ROWS: u16 = 2;
 /// hint footer. The grant scope (cycled by the prompt's `s` key, shared with
 /// this modal) is shown in the footer so the operator sees the breadth of
 /// the grant before pressing `Enter`.
+///
+/// Board item `01M331DN5YF9J1T12QRASZCHV7`: **Space is a wildcard/pin
+/// TOGGLE and every field starts wildcard** -- an operator who presses
+/// Space believing it means "wildcard this field" silently PINS it
+/// instead, and nothing before this fix showed the resulting rule's
+/// breadth before `Enter` committed it (proven from a real session: a
+/// `read:*` grant the operator believed they had asked for came out as an
+/// exact-args rule on one file). The per-row `[pinned]`/`[wildcard]`
+/// marker already named each field's own state; what was missing was the
+/// CONSEQUENCE -- what rule those markers, taken together, actually
+/// submit. This adds two disclosures, both already-established idioms
+/// elsewhere in this same view rather than a new shape:
+/// - a "grants: {`Rule::describe`}" line, the SAME wording and the SAME
+///   method [`draw_permission_overlay`]'s own `[p] grants: {}` footer line
+///   already uses for the durable-pattern offer, computed via
+///   [`EditingPatternState::preview_rule`] from the CURRENT field state so
+///   it updates live as Space is pressed -- this is the "read:* vs one
+///   file, exact-args" distinction made visible before Enter, not after;
+/// - a legend line stating plainly that Space is a toggle and fields
+///   start wildcard, so the trap this board item exists to close ("Space
+///   reads as 'wildcard it'") cannot recur even for an operator who never
+///   looks at the per-row markers.
+///
+/// A dedicated confirm step (shape option 1 in the board item) was
+/// rejected: this editor already re-renders every frame as fields are
+/// toggled, so a live summary line costs one row and zero new modal
+/// state, where a confirm step would add a second screen, a new `Mode`
+/// variant, and a place for `Esc` semantics to diverge from every other
+/// editor in this module.
 fn draw_editing_pattern(
     frame: &mut Frame,
     transcript_area: Rect,
@@ -1210,6 +1291,26 @@ fn draw_editing_pattern(
             }
         }
     }
+    // Board item `01M331DN5YF9J1T12QRASZCHV7`: the disclosure this item
+    // adds -- the rule breadth Enter would actually submit RIGHT NOW,
+    // recomputed from the live field state every frame via
+    // `EditingPatternState::preview_rule`, plus a legend stating what
+    // Space does. Both survive to `Enter`: neither the summary line nor
+    // the legend is conditioned on `ed.fields` being non-empty, so an
+    // all-wildcard `tool:*` grant (no structured fields, or every field
+    // left wildcard) states its own breadth exactly as plainly as a
+    // pinned one -- the trap this item closes is an operator reading
+    // silence as "wildcard", so silence is exactly what must not remain
+    // for either state.
+    body_lines.push(Line::from(""));
+    body_lines.push(Line::from(Span::styled(
+        format!("grants: {}", ed.preview_rule().describe()),
+        theme.emphasized,
+    )));
+    body_lines.push(Line::from(Span::styled(
+        "space toggles a field between wildcard and pinned -- fields start wildcard",
+        theme.dim,
+    )));
     let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
     let content_rows = body
         .line_count(modal::body_width(transcript_area))
@@ -1233,6 +1334,105 @@ fn draw_editing_pattern(
         "[↑↓/tab] move  [space] pin/wildcard  [enter] grant  [s] scope  [esc] cancel  [PageUp/PageDown] scroll"
     } else {
         "[↑↓/tab] move  [space] pin/wildcard  [enter] grant  [s] scope  [esc] cancel"
+    };
+    let footer_lines = vec![Line::from(hint), Line::from("")];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
+/// [`EDITING_PATTERN_FOOTER_ROWS`]'s own sibling for
+/// [`draw_editing_shell_prefix`].
+const EDITING_SHELL_PREFIX_FOOTER_ROWS: u16 = 2;
+
+/// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the session-scoped shell-prefix
+/// grant editor (`Mode::EditingShellPrefix`) -- a single free-text line the
+/// operator can edit, seeded from [`conway::permission_pattern::
+/// default_shell_prefix`]'s own narrow two-token proposal. Renders
+/// `ed.input` IN THE CLEAR (a shell-command prefix is not a secret, unlike
+/// [`draw_add_provider_credential`]'s masked input) with a `│` cursor
+/// marker at `ed.cursor`'s char position, mirroring how the main input box
+/// itself marks its own cursor. States the grant scope in words before the
+/// operator presses `Enter`, and states plainly that this grant is
+/// SESSION-ONLY -- it dies with the process, never written to
+/// `permissions.json`, regardless of which scope is selected -- so the
+/// operator cannot mistake this for the durable `[a]`/`[p]` grants shown
+/// on the underlying prompt. Renders `ed.error`, when set, as its own
+/// styled line -- the compound-command exclusion's own refusal reason
+/// (`AppState::submit_editing_shell_prefix`/`EditingShellPrefixState::
+/// from_prompt`), shown rather than silently discarded, mirroring
+/// `draw_add_provider_credential`'s identical contract for a rejected
+/// credential.
+fn draw_editing_shell_prefix(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    ed: &EditingShellPrefixState,
+    scope: conway::PermissionScope,
+    scroll: u16,
+    theme: &Theme,
+) {
+    let scope_label = match scope {
+        conway::PermissionScope::Session => "session",
+        conway::PermissionScope::Agent => "this agent",
+        conway::PermissionScope::AgentSubtree => "this agent's subtree",
+        _ => "scope",
+    };
+    let cursor_idx = ed.cursor.min(ed.input.chars().count());
+    let mut chars: Vec<char> = ed.input.chars().collect();
+    chars.insert(cursor_idx, '│');
+    let input_with_cursor: String = chars.into_iter().collect();
+    let mut body_lines = vec![
+        Line::from(Span::styled(
+            format!("shell-command prefix (edit, then Enter) -- grant scope: {scope_label}"),
+            theme.emphasized,
+        )),
+        Line::from(""),
+        Line::from(input_with_cursor),
+    ];
+    // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`'s compound-command
+    // exclusion: a refused (compound) prefix stays on screen with the
+    // reason shown, mirroring `draw_add_provider_credential`'s own
+    // "a rejected attempt is shown, never silently re-prompted" contract.
+    // The blank separator line before the disclosure below is deliberately
+    // SKIPPED when an error is present (never both) -- this card's fixed
+    // content is already sized to land exactly at this modal's own height
+    // cap (`modal::DEFAULT_CAP_DENOMINATOR`) on an ordinary terminal
+    // without an error; adding a whole extra row on top of the error's own
+    // (short, one-row) message would push it past that cap and require a
+    // scroll to see the one piece of information this render exists to
+    // surface, defeating the whole point of showing it at all.
+    if ed.error.is_none() {
+        body_lines.push(Line::from(""));
+    }
+    body_lines.push(Line::from(Span::styled(
+        "in-memory for this session only -- never written to permissions.json, at any scope",
+        theme.dim,
+    )));
+    if let Some(err) = &ed.error {
+        body_lines.push(Line::from(Span::styled(format!("error: {err}"), theme.dim)));
+    }
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        EDITING_SHELL_PREFIX_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " SESSION SHELL PREFIX ",
+        theme.border_accent,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[type] edit  [enter] grant for this run  [Ctrl-S] scope  [esc] cancel  [PageUp/PageDown] scroll"
+    } else {
+        "[type] edit  [enter] grant for this run  [Ctrl-S] scope  [esc] cancel"
     };
     let footer_lines = vec![Line::from(hint), Line::from("")];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
@@ -1852,12 +2052,17 @@ mod tests {
 
         let text = render_text(&state, 80, 24);
 
+        // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: a `bash` call now offers
+        // the session-scoped shell-prefix grant (`[p]`), so this row uses
+        // the SAME abbreviated key labels the pattern-offer row already
+        // used before this item -- there being an offer to fit is what
+        // triggers the abbreviation, not which offer it is.
         assert!(
-            text.contains("[y] allow once"),
+            text.contains("[y] once"),
             "the [y] hint must never be clipped off-screen: {text}"
         );
         assert!(
-            text.contains("[a] allow always"),
+            text.contains("[a] always"),
             "the [a] hint must never be clipped off-screen: {text}"
         );
         assert!(
@@ -1865,7 +2070,7 @@ mod tests {
             "the [n] hint must never be clipped off-screen: {text}"
         );
         assert!(
-            text.contains("[Esc] deny with feedback"),
+            text.contains("[Esc] deny w/ feedback"),
             "the [Esc] hint must never be clipped off-screen: {text}"
         );
         assert!(
@@ -1891,12 +2096,15 @@ mod tests {
         // extreme" scenario this fix targets.
         let text = render_text(&state, 80, 7);
 
+        // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: see the sibling
+        // "never_clips" test above for why this is now the abbreviated
+        // form.
         assert!(
-            text.contains("[y] allow once"),
+            text.contains("[y] once"),
             "the [y] hint must survive a small-viewport footer: {text}"
         );
         assert!(
-            text.contains("[a] allow always"),
+            text.contains("[a] always"),
             "the [a] hint must survive a small-viewport footer: {text}"
         );
         assert!(
@@ -1920,8 +2128,12 @@ mod tests {
             "the tail of a huge command must not already be visible with no scrolling: {before}"
         );
         // Still true at the top: the hint is visible even before any
-        // scrolling happens (the main invariant this test guards).
-        assert!(before.contains("[y] allow once"));
+        // scrolling happens (the main invariant this test guards). Board
+        // item `01M32EBPWZZG6EA77ZG5KYC8KQ`: a `bash` call now offers the
+        // shell-prefix grant, so this is the abbreviated form -- see
+        // `permission_overlay_never_clips_the_action_key_hint_for_a_huge_command`'s
+        // own comment.
+        assert!(before.contains("[y] once"));
 
         // Page down generously -- `draw_permission_overlay` clamps the
         // scroll to the command's own real wrapped height, so overshooting
@@ -1941,8 +2153,8 @@ mod tests {
         );
         // The hint must STILL be visible after scrolling -- pinned, not
         // part of the scrolled region.
-        assert!(after.contains("[y] allow once"));
-        assert!(after.contains("[a] allow always"));
+        assert!(after.contains("[y] once"));
+        assert!(after.contains("[a] always"));
         assert!(after.contains("[n] deny"));
         assert!(after.contains("[Esc]"));
     }
@@ -1955,28 +2167,31 @@ mod tests {
 
         let text = render_text(&state, 80, 24);
         assert!(text.contains("bash: ls"));
-        // The key labels had been ABBREVIATED ("deny w/ feedback")
-        // specifically to fit `[p]` into this row. With `[p]` gone for
-        // shell commands, the row has the space back and renders the full
-        // label again -- so this asserts the long form. Either way the
-        // point is unchanged: deny-with-feedback must not be pushed off
-        // the edge.
+        // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the key labels are
+        // ABBREVIATED ("deny w/ feedback") because `bash` now has
+        // something to offer again -- the session-scoped shell-prefix
+        // grant, `[p]`, took the durable pattern offer's old place in this
+        // row's layout. The point is unchanged: deny-with-feedback must
+        // not be pushed off the edge.
         assert!(text.contains("[y]"), "{text}");
         assert!(text.contains("[a]"), "{text}");
         assert!(text.contains("[n] deny"), "{text}");
         assert!(
-            text.contains("[Esc] deny with feedback"),
+            text.contains("[Esc] deny w/ feedback"),
             "the deny-with-feedback key must not be pushed off the edge: {text}"
         );
-        // `bash` is a `ShellCommand` tool, so there is no pattern grant to
-        // offer and the `[p]` key must be absent. This assertion was
-        // inverted until the metacharacter gate was removed: the row used
-        // to carry `[p]` plus a "commands starting with" breadth line. The
-        // remaining keys are what this test is actually about, and they
-        // still resolve unchanged.
+        // `bash` is a `ShellCommand` tool, so the DURABLE pattern grant is
+        // still never offered (`Rule::gate_allows` refuses it
+        // unconditionally, board `01KZDDPC5MMD49F6JPV9CW4TVM`) -- only the
+        // separate, in-memory-only shell-prefix grant is.
         assert!(
             !text.contains("[p] pattern") && !text.contains("[p] grants:"),
-            "a shell command must not be offered a pattern grant: {text}"
+            "a shell command must never be offered the DURABLE pattern grant: {text}"
+        );
+        assert!(
+            text.contains("[p] prefix"),
+            "a shell command must be offered the session-scoped shell-prefix grant instead: \
+             {text}"
         );
 
         let action = input::handle_key(
@@ -3200,6 +3415,114 @@ mod tests {
         );
     }
 
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the durable `[p] pattern`
+    /// offer above is gone for a `ShellCommand` tool, but the operator
+    /// still sees a DIFFERENT offer in its place -- the session-scoped,
+    /// in-memory-only shell-prefix grant -- with wording that plainly
+    /// states its own narrower, non-persistent nature.
+    #[test]
+    fn the_shell_prefix_offer_appears_in_place_of_the_removed_pattern_offer() {
+        let state = awaiting_permission("git status --short");
+        let text = render_text(&state, 100, 24);
+
+        assert!(
+            text.contains("[p] prefix"),
+            "a ShellCommand prompt must offer the session-scoped prefix grant: {text}"
+        );
+        assert!(
+            text.contains("git status") && text.contains("session only, never saved"),
+            "the offer must state its own narrow default and its non-persistence honestly: \
+             {text}"
+        );
+        assert_eq!(
+            state.offered_shell_prefix_default().as_deref(),
+            Some("git status"),
+            "the state helper backing the overlay must agree with what was rendered"
+        );
+    }
+
+    /// The editor itself renders: the seeded default, the cursor marker,
+    /// the grant-scope label, and the "never written to disk" disclosure
+    /// -- all in one screen, without panicking.
+    #[test]
+    fn the_shell_prefix_editor_renders_the_seeded_default_and_scope() {
+        let mut state = awaiting_permission("git status --short");
+        state.offer_editing_shell_prefix();
+        assert!(matches!(state.mode, Mode::EditingShellPrefix(_)));
+
+        let text = render_text(&state, 100, 24);
+        assert!(
+            text.contains("git status"),
+            "the editor must show the seeded default prefix: {text}"
+        );
+        assert!(
+            text.contains("session"),
+            "the default grant scope must be stated in words: {text}"
+        );
+        assert!(
+            text.contains("never written to permissions.json"),
+            "the editor must plainly disclose it is never persisted: {text}"
+        );
+    }
+
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`'s compound-command
+    /// exclusion, end to end at the render site: once the editor has
+    /// refused a compound submission, the reason is visible on screen --
+    /// never a silent no-op.
+    #[test]
+    fn the_shell_prefix_editor_shows_the_compound_refusal_reason() {
+        let mut state = awaiting_permission("git status");
+        state.offer_editing_shell_prefix();
+        for c in " && rm -rf /".chars() {
+            match &mut state.mode {
+                Mode::EditingShellPrefix(ed) => {
+                    ed.input.push(c);
+                    ed.cursor += 1;
+                }
+                other => panic!("expected Mode::EditingShellPrefix, got {other:?}"),
+            }
+        }
+        let submitted = state.submit_editing_shell_prefix();
+        assert_eq!(submitted, None, "a compound submission must be refused");
+
+        let text = render_text(&state, 100, 24);
+        assert!(
+            text.contains("error:"),
+            "the refusal must be shown on screen: {text}"
+        );
+        assert!(
+            text.contains("one simple command only"),
+            "the refusal must state the positive rule, not just fail silently: {text}"
+        );
+    }
+
+    /// The stronger complement: a `Structured` tool keeps the pre-existing
+    /// `[p] pattern` wording and never shows the shell-prefix wording --
+    /// the two offers are mutually exclusive by `render_kind`.
+    #[test]
+    fn the_shell_prefix_offer_never_appears_for_a_structured_tool() {
+        let state = {
+            let root = AgentId::new();
+            let mut state = AppState::new(root);
+            let (prompt, _rx) = PendingPrompt::new_for_test(sample_structured_request(
+                r#"report({"summary":"ok"})"#,
+            ));
+            state.mode = Mode::AwaitingPermission(prompt);
+            state
+        };
+        let text = render_text(&state, 100, 24);
+
+        assert!(
+            text.contains("[p] pattern"),
+            "a Structured tool must keep its pre-existing pattern offer: {text}"
+        );
+        assert!(
+            !text.contains("[p] prefix") && !text.contains("session only, never saved"),
+            "a Structured tool must never show the shell-prefix wording: {text}"
+        );
+        assert_eq!(state.offered_shell_prefix_default(), None);
+    }
+
     /// Axis A, end to end at the OFFER site: a `Structured` tool's
     /// JSON-dump rendering is full of shell metacharacters, but they are
     /// not shell risk -- the prompt must still offer a pattern grant, and
@@ -3265,6 +3588,89 @@ mod tests {
             state.permission_grant_scope,
             conway::PermissionScope::Session,
             "a third `s` press wraps back to the session default"
+        );
+    }
+
+    /// Board item `01M331DN5YF9J1T12QRASZCHV7`: opens the `[p]` field
+    /// editor on a `Structured` prompt with one `path` field, exactly the
+    /// shape the 2026-09-20 proxy session hit -- every field starts
+    /// wildcard.
+    fn editing_pattern_state() -> AppState {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let request = PermissionRequest {
+            arguments: serde_json::json!({ "path": "ARCHITECTURE.md" }),
+            ..sample_structured_request(r#"report({"path":"ARCHITECTURE.md"})"#)
+        };
+        let (prompt, _rx) = PendingPrompt::new_for_test(request);
+        state.mode = Mode::AwaitingPermission(prompt);
+        state.offer_editing_pattern();
+        state
+    }
+
+    /// The disclosure this board item adds, in the WILDCARD state (no
+    /// `Space` pressed): the field's own row already said `[wildcard]`
+    /// before this fix; this asserts the NEW summary line -- `Rule::
+    /// describe`'s "any call" wording -- and the legend line stating Space
+    /// is a toggle, both landing in the real rendered buffer through the
+    /// same `Terminal<TestBackend>` harness every other render test in
+    /// this module uses (via `render_text`).
+    #[test]
+    fn editing_pattern_wildcard_state_discloses_any_call_and_the_toggle_legend() {
+        let state = editing_pattern_state();
+
+        let text = render_text(&state, 100, 24);
+
+        assert!(
+            text.contains("[wildcard]"),
+            "the field's own pin/wildcard marker must still show: {text}"
+        );
+        assert!(
+            text.contains("grants: report (any call)"),
+            "an all-wildcard field state must disclose the resulting rule \
+             breadth as an unrestricted grant, not stay silent about it: {text}"
+        );
+        assert!(
+            text.contains("space toggles a field between wildcard and pinned"),
+            "the legend stating Space is a toggle (not a one-way wildcard \
+             action) must be on screen: {text}"
+        );
+    }
+
+    /// The disclosure's PINNED companion case: after `Space` toggles the
+    /// one field, the marker flips to `[pinned]` AND the summary line
+    /// switches to naming the exact value pinned -- proving the summary is
+    /// live-recomputed from the current field state (via
+    /// `EditingPatternState::preview_rule`), not a static string. This is
+    /// the exact trap the board item names: an operator who pressed Space
+    /// believing it would widen the grant must see, before `Enter`, that
+    /// it narrowed to one exact value instead.
+    #[test]
+    fn editing_pattern_pinned_state_discloses_the_exact_value_pinned() {
+        let mut state = editing_pattern_state();
+
+        input::handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+
+        let text = render_text(&state, 100, 24);
+
+        assert!(
+            text.contains("[pinned]"),
+            "the field's own pin marker must flip to pinned after Space: {text}"
+        );
+        assert!(
+            !text.contains("[wildcard]"),
+            "the single field must no longer show wildcard once pinned: {text}"
+        );
+        assert!(
+            text.contains(r#"grants: report with path="ARCHITECTURE.md" pinned"#),
+            "the summary must name the exact pinned value, not stay generic: {text}"
+        );
+        assert!(
+            text.contains("space toggles a field between wildcard and pinned"),
+            "the toggle legend must still be shown in the pinned state too: {text}"
         );
     }
 }

@@ -78,6 +78,19 @@ pub enum Action {
     /// pinned-field grant the operator asked for is the grant the broker
     /// records -- never a hardcoded scope or an all-wildcard default.
     GrantPermissionRule(conway::Rule, PermissionScope),
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the operator accepted the
+    /// session-scoped shell-prefix grant editor (`Mode::
+    /// EditingShellPrefix`), carrying the (possibly edited) prefix text and
+    /// the `PermissionScope` the prompt's `s`/editor's `Ctrl-S` had cycled
+    /// to. The app loop installs it via `Conway::grant_session_shell_
+    /// prefix` -- an IN-MEMORY-ONLY grant, never persisted, regardless of
+    /// scope -- and resolves THIS call as `AllowOnce` (the grant covers
+    /// FUTURE calls; this one is decided separately). Deliberately not
+    /// `Action::GrantPermissionPattern`/`Action::GrantPermissionRule`:
+    /// those both persist for `PermissionScope::Session` (`persist_
+    /// permission_rule`/`persist_permission_structured_rule`); this
+    /// variant's own app-loop arm must never call either.
+    GrantSessionShellPrefix(String, PermissionScope),
     /// V2b: cycle prompt -> plan -> AUTO-ALLOW. The app loop writes the
     /// broker (the authority) and refreshes the display mirror together.
     /// Board item `01M0WX62C2VGJTXSR7XJBGMM9J`: reachable both from the
@@ -104,6 +117,17 @@ pub enum Action {
     /// the mirror for display only; the revoke key is `(rule, origin)`,
     /// exactly as the flat path's is.
     RevokeStructuredAllowRule(conway::Rule, conway::PatternOrigin, conway::GrantScope),
+    /// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: revoke exactly ONE
+    /// session-scoped shell-prefix grant, carrying the same `(prefix,
+    /// scope)` identity the settings row itself rendered (from
+    /// `state.shell_prefix_grants`) -- never a bare index, mirroring
+    /// [`Action::RevokePermissionPattern`]'s own reasoning.
+    RevokeShellPrefixGrant(String, conway::GrantScope),
+    /// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: drop every session-scoped
+    /// shell-prefix grant at once -- the "revoke all" counterpart to
+    /// [`Action::RevokeShellPrefixGrant`], mirroring [`Action::
+    /// RevokePermissionGrants`]'s own shape for this class.
+    RevokeAllShellPrefixGrants,
     /// Revoke exactly ONE hook-backed
     /// rule, carrying the same `(event, id)` identity the settings row
     /// itself rendered -- never a bare index, so the app loop's call into
@@ -337,6 +361,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::IntentConfirm(_) => handle_intent_confirm_key(state, key),
         Mode::TrustPreview(_) => handle_trust_preview_key(state, key),
         Mode::EditingPattern(_) => handle_editing_pattern_key(state, key),
+        Mode::EditingShellPrefix(_) => handle_editing_shell_prefix_key(state, key),
         Mode::AddProviderCredential(_) => handle_add_provider_credential_key(state, key),
         Mode::AddProviderContextWindow(_) => handle_add_provider_context_window_key(state, key),
         Mode::UiForm(_) => handle_ui_form_key(state, key),
@@ -536,6 +561,21 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                         origin.clone(),
                         *scope,
                     ));
+                }
+            } else if id == super::view::settings::LEAF_REVOKE_ALL_SHELL_PREFIX_GRANTS {
+                return Some(Action::RevokeAllShellPrefixGrants);
+            } else if let Some(idx) = id
+                .strip_prefix(super::view::settings::LEAF_REVOKE_SHELL_PREFIX_PREFIX)
+                .and_then(|rest| rest.parse::<usize>().ok())
+            {
+                // Board item `01M350FR4SM6QT0EM6M35EY5AZ`: resolved against
+                // `state.shell_prefix_grants` in the SAME call that built
+                // this tree -- a DISTINCT id space from the two allow
+                // prefixes above and the hook prefix below, exactly like
+                // the reasoning those arms already give for their own
+                // mirror.
+                if let Some((prefix, scope)) = state.shell_prefix_grants.get(idx) {
+                    return Some(Action::RevokeShellPrefixGrant(prefix.clone(), *scope));
                 }
             } else if let Some(idx) = id
                 .strip_prefix(super::view::settings::LEAF_REVOKE_HOOK_PREFIX)
@@ -1123,6 +1163,78 @@ fn handle_editing_pattern_key(state: &mut AppState, key: KeyEvent) -> Action {
     }
 }
 
+/// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the session-scoped shell-prefix
+/// grant editor's key handling (`Mode::EditingShellPrefix`). Unlike
+/// [`handle_editing_pattern_key`]'s field navigation, this is FREE-TEXT
+/// editing -- `Char`/`Backspace`/`Left`/`Right` edit
+/// `EditingShellPrefixState::input`/`cursor` directly, exactly the shape
+/// [`handle_add_provider_credential_key`]/[`handle_deny_feedback_key`]
+/// already use (`byte_index`/`char_count`, the same char-index
+/// convention). Because the prefix text itself can contain any letter --
+/// including `s` -- the grant-scope cycle key CANNOT be a bare `s` the way
+/// the field editor's is: it is `Ctrl-S` instead, checked in the SAME
+/// `KeyModifiers::CONTROL` block that already intercepts `Ctrl-C`/`Ctrl-D`,
+/// so a bare `s` keystroke always inserts the character. `Enter` submits
+/// (`AppState::submit_editing_shell_prefix`) as
+/// `Action::GrantSessionShellPrefix { prefix, scope }`; `Esc` cancels back
+/// to the prompt with nothing installed, mirroring
+/// [`handle_editing_pattern_key`]'s own cancel arm.
+fn handle_editing_shell_prefix_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            // The grant-scope cycle key, chorded so it never collides with
+            // typing the letter `s` into the prefix text -- the edit
+            // modal and the prompt share one scope source
+            // (`AppState::permission_grant_scope`), same as the field
+            // editor's own `s` key.
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                state.cycle_permission_grant_scope();
+                return Action::None;
+            }
+            _ => {}
+        }
+    }
+    let Mode::EditingShellPrefix(ed) = &mut state.mode else {
+        return Action::None;
+    };
+    match key.code {
+        KeyCode::Esc => {
+            state.cancel_editing_shell_prefix();
+            Action::None
+        }
+        KeyCode::Enter => match state.submit_editing_shell_prefix() {
+            Some((prefix, scope)) => Action::GrantSessionShellPrefix(prefix, scope),
+            None => Action::None,
+        },
+        KeyCode::Backspace => {
+            if ed.cursor > 0 {
+                let end = byte_index(&ed.input, ed.cursor);
+                let start = byte_index(&ed.input, ed.cursor - 1);
+                ed.input.replace_range(start..end, "");
+                ed.cursor -= 1;
+            }
+            Action::None
+        }
+        KeyCode::Left => {
+            ed.cursor = ed.cursor.saturating_sub(1);
+            Action::None
+        }
+        KeyCode::Right => {
+            ed.cursor = (ed.cursor + 1).min(char_count(&ed.input));
+            Action::None
+        }
+        KeyCode::Char(c) => {
+            let idx = byte_index(&ed.input, ed.cursor);
+            ed.input.insert(idx, c);
+            ed.cursor += 1;
+            Action::None
+        }
+        _ => Action::None,
+    }
+}
+
 /// The settings providers section's credential prompt
 /// (`Mode::AddProviderCredential`, board item `01M11XWB4T8ZADNDB4M8R482MA`):
 /// a minimal, self-contained single-line editor -- `Char`/`Backspace`/
@@ -1366,16 +1478,26 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
     // call as `AllowOnce`. Today's all-wildcard default preserves the
     // old `[p]`-then-grant = `tool:*` semantics; the operator narrows
     // from there. Offered only for `RenderKind::Structured` tools (where
-    // `suggested_rule` returns `Some`): a shell command gets no offer
-    // and this key does nothing, rather than granting a text prefix the
-    // gate refuses to honor (board 01KZDDPC5MMD49F6JPV9CW4TVM) or
-    // pretending a JSON dump is a prefix.
+    // `suggested_rule` returns `Some`).
+    //
+    // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the SAME key now opens the
+    // session-scoped shell-prefix grant editor for a
+    // `RenderKind::ShellCommand` prompt instead of doing nothing -- the
+    // two offers are mutually exclusive by `render_kind`
+    // (`offered_permission_rule`/`offered_shell_prefix_default` partition
+    // every tool between them), so exactly one of the two `if` bodies ever
+    // runs for a given prompt. A shell command never gets the durable
+    // `[p]` rule (the gate refuses to honor a text prefix rule for it,
+    // board 01KZDDPC5MMD49F6JPV9CW4TVM); it gets this separate, in-memory-
+    // only mechanism instead.
     if state
         .keybindings
         .matches(Context::Permission, "edit_pattern", key)
     {
         if state.offered_permission_rule().is_some() {
             state.offer_editing_pattern();
+        } else if state.offered_shell_prefix_default().is_some() {
+            state.offer_editing_shell_prefix();
         }
         return Action::None;
     }
@@ -3267,6 +3389,299 @@ mod tests {
         );
     }
 
+    // ---- Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the session-scoped
+    // shell-prefix grant editor ----
+
+    /// `[p]` on a `ShellCommand` prompt opens `Mode::EditingShellPrefix`
+    /// (never `EditingPattern`, which offers nothing for this
+    /// `render_kind`), seeded with `default_shell_prefix`'s own narrow
+    /// two-token proposal for the pending call's rendered text.
+    #[test]
+    fn edit_pattern_key_opens_the_shell_prefix_editor_for_a_shell_command() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({ "command": "git status --short" }),
+                rendered: "git status --short".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        let action = handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        assert_eq!(
+            action,
+            Action::None,
+            "`p` opens the editor -- it never grants immediately"
+        );
+        match &state.mode {
+            Mode::EditingShellPrefix(ed) => {
+                assert_eq!(
+                    ed.input, "git status",
+                    "the editor must seed the narrow two-token default, not the whole command"
+                );
+            }
+            other => panic!("expected Mode::EditingShellPrefix, got {other:?}"),
+        }
+    }
+
+    /// Typing edits the seeded default in place, and `Enter` submits the
+    /// EDITED text verbatim as the grant's prefix, carrying whatever scope
+    /// the operator cycled to.
+    #[test]
+    fn typing_edits_the_default_and_enter_grants_the_edited_text() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({ "command": "git status --short" }),
+                rendered: "git status --short".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        // Cycle the scope BEFORE typing -- Ctrl-S must not touch `input`.
+        handle_key(&mut state, ctrl_key(KeyCode::Char('s')));
+        assert_eq!(state.permission_grant_scope, PermissionScope::Agent);
+
+        // Widen the seeded "git status" to "git" by deleting " status"
+        // (backspace 7 times), then narrow it back down with real typing.
+        for _ in 0.." status".len() {
+            handle_key(&mut state, key(KeyCode::Backspace));
+        }
+        for c in " push".chars() {
+            handle_key(&mut state, key(KeyCode::Char(c)));
+        }
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::GrantSessionShellPrefix("git push".to_string(), PermissionScope::Agent),
+            "the grant must carry exactly what the operator edited it to, and the scope \
+             cycled to before typing"
+        );
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "submitting restores AwaitingPermission so the app loop's existing \
+             Action::PermissionDecision arm can resolve THIS call"
+        );
+    }
+
+    /// A bare `s` while the editor is open must insert the LETTER `s` into
+    /// the prefix text, never cycle the grant scope -- the prefix is
+    /// free-text and can legitimately contain that letter (`ssh`, `rsync`,
+    /// `git status`). Only the CHORDED `Ctrl-S` cycles scope.
+    #[test]
+    fn a_bare_s_inserts_a_character_it_never_cycles_scope() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({ "command": "ssh host" }),
+                rendered: "ssh host".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        assert_eq!(state.permission_grant_scope, PermissionScope::Session);
+
+        handle_key(&mut state, key(KeyCode::Char('s')));
+
+        assert_eq!(
+            state.permission_grant_scope,
+            PermissionScope::Session,
+            "a bare `s` keystroke must never cycle the scope while free text is being edited"
+        );
+        match &state.mode {
+            Mode::EditingShellPrefix(ed) => {
+                assert_eq!(
+                    ed.input, "ssh hosts",
+                    "a bare `s` must be inserted as a literal character at the cursor"
+                );
+            }
+            other => panic!("expected Mode::EditingShellPrefix, got {other:?}"),
+        }
+    }
+
+    /// `Esc` cancels the shell-prefix editor with no action and no grant --
+    /// the prompt returns to the screen unresolved, mirroring the `[p]`
+    /// field editor's own cancel.
+    #[test]
+    fn esc_cancels_the_shell_prefix_editor_with_no_grant() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({ "command": "git status" }),
+                rendered: "git status".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        assert!(matches!(state.mode, Mode::EditingShellPrefix(_)));
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(action, Action::None, "Esc cancels with no action");
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "Esc restores the prompt to the screen unresolved"
+        );
+    }
+
+    /// `[p]` on a `Structured` prompt still opens the pre-existing field
+    /// editor, never the shell-prefix editor -- the two are mutually
+    /// exclusive by `render_kind`.
+    #[test]
+    fn edit_pattern_key_still_opens_the_field_editor_for_a_structured_tool() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("report"),
+                category: conway::ToolCategory::Read,
+                arguments: serde_json::json!({"summary": "ok"}),
+                rendered: r#"report({"summary":"ok"})"#.to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::Structured,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+
+        assert!(matches!(state.mode, Mode::EditingPattern(_)));
+    }
+
+    // ---- board item `01M32EBPWZZG6EA77ZG5KYC8KQ`'s compound-command
+    // exclusion, required before the shell-prefix grant could ship ----
+
+    /// Submitting a prefix containing `&&` is refused: no
+    /// `Action::GrantSessionShellPrefix` is produced, the editor stays
+    /// open (not restored to `AwaitingPermission`), and the reason is
+    /// shown on `EditingShellPrefixState::error`.
+    #[test]
+    fn submitting_a_compound_prefix_is_refused_and_the_editor_stays_open_with_an_error() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({ "command": "git status" }),
+                rendered: "git status".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        assert!(matches!(state.mode, Mode::EditingShellPrefix(_)));
+
+        // Widen the seeded "git status" into a compound command by typing
+        // " && rm -rf /" onto the end.
+        for c in " && rm -rf /".chars() {
+            handle_key(&mut state, key(KeyCode::Char(c)));
+        }
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(
+            action,
+            Action::None,
+            "a refused (compound) submission must produce no grant action"
+        );
+        match &state.mode {
+            Mode::EditingShellPrefix(ed) => {
+                assert_eq!(ed.input, "git status && rm -rf /");
+                assert!(
+                    ed.error.is_some(),
+                    "the refusal reason must be shown, not silently discarded"
+                );
+            }
+            other => panic!("the editor must stay open on a refused submission, got {other:?}"),
+        }
+    }
+
+    /// The stronger complement: an ordinary (non-compound) submission
+    /// still grants exactly as before -- the new compound-command guard
+    /// narrows only the compound case, never the ordinary one.
+    #[test]
+    fn submitting_a_non_compound_prefix_still_grants_as_before() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({ "command": "git status" }),
+                rendered: "git status".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(
+            action,
+            Action::GrantSessionShellPrefix("git status".to_string(), PermissionScope::Session)
+        );
+        assert!(matches!(state.mode, Mode::AwaitingPermission(_)));
+    }
+
+    /// A prompt whose call is itself compound in a way that poisons even
+    /// the seeded TWO-TOKEN default (no whitespace before the construct,
+    /// e.g. `git;rm`) opens the editor with the error ALREADY shown --
+    /// the operator does not have to press `Enter` once just to discover
+    /// the proposal was unusable.
+    #[test]
+    fn a_poisoned_default_shows_its_error_immediately_on_open() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({ "command": "git;rm -rf /" }),
+                rendered: "git;rm -rf /".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+
+        match &state.mode {
+            Mode::EditingShellPrefix(ed) => {
+                assert!(
+                    ed.error.is_some(),
+                    "a poisoned two-token default must show its refusal immediately: {ed:?}"
+                );
+            }
+            other => panic!("expected Mode::EditingShellPrefix, got {other:?}"),
+        }
+    }
+
     /// The scope choice is per-prompt: a narrowing chosen for one call must
     /// not silently carry over to the next prompt (the same reason
     /// `modal_scroll` resets per surface).
@@ -4532,6 +4947,61 @@ mod tests {
             )),
             "must name the SECOND row's own event/id, not the first"
         );
+    }
+
+    /// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: `Enter` on a shell-prefix
+    /// grant row resolves to `Action::RevokeShellPrefixGrant` carrying that
+    /// EXACT row's `(prefix, scope)` -- never a bare index -- resolved
+    /// against `state.shell_prefix_grants` in the same call that built the
+    /// tree, mirroring `enter_on_a_hook_row_yields_revoke_hook_rule_with_
+    /// its_event_and_id`'s own reasoning.
+    #[test]
+    fn enter_on_a_shell_prefix_grant_row_yields_revoke_shell_prefix_grant_with_its_prefix_and_scope(
+    ) {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        let agent = AgentId::new();
+        state.shell_prefix_grants = vec![
+            ("git status".to_string(), conway::GrantScope::Session),
+            ("cargo build".to_string(), conway::GrantScope::Agent(agent)),
+        ];
+
+        let rows = crate::tui::view::settings::build_tree(&state).rows();
+        let idx = rows
+            .iter()
+            .position(|r| r.label.contains("cargo build"))
+            .expect("the second shell-prefix row must render");
+        state.settings_selected = idx;
+
+        let action = activate_settings_selection(&mut state);
+        assert_eq!(
+            action,
+            Some(Action::RevokeShellPrefixGrant(
+                "cargo build".to_string(),
+                conway::GrantScope::Agent(agent),
+            )),
+            "must name the SECOND row's own prefix/scope, not the first"
+        );
+    }
+
+    /// `Enter` on the shell-prefix section's "revoke all" row resolves to
+    /// `Action::RevokeAllShellPrefixGrants` -- the class's own revoke-all,
+    /// distinct from `Action::RevokePermissionGrants`.
+    #[test]
+    fn enter_on_the_shell_prefix_revoke_all_row_yields_revoke_all_shell_prefix_grants() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.shell_prefix_grants = vec![("git status".to_string(), conway::GrantScope::Session)];
+
+        let rows = crate::tui::view::settings::build_tree(&state).rows();
+        let idx = rows
+            .iter()
+            .position(|r| r.label.contains("revoke all shell-prefix grants"))
+            .expect("the revoke-all row must render");
+        state.settings_selected = idx;
+
+        let action = activate_settings_selection(&mut state);
+        assert_eq!(action, Some(Action::RevokeAllShellPrefixGrants));
     }
 
     /// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: `Enter` on the plugins

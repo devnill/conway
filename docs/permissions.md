@@ -128,8 +128,9 @@ and the command as it would actually run:
 | --- | --- | --- |
 | `y` | This exact call, once. | Nothing — the identical call asks again next time. |
 | `a` | This exact call — same tool, byte-identical (canonicalized) arguments — remembered at the current grant scope (see `s` below). A different argument to the same tool is a different call and asks again. | In memory only. Gone at restart; never written to a file. |
-| `p` | Opens a field editor over the call's top-level structured argument fields (only offered when the tool's rendering is a structured JSON dump, not a shell command — `read`, `report`, `grep`, … ). Every field starts **wildcard**; `space` pins the selected field to its exact (canonicalized-JSON) value, `↑`/`↓`/`tab` move between fields, `s` cycles the grant scope (shared with `a` above), `Enter` builds an allow rule from the pinned fields — a pinned field must match exactly, an unpinned one is wildcard, and every field must match (AND) — grants it, and resolves this call as allowed; `Esc` cancels back to this prompt with no decision made. Granting with nothing pinned is the broadest the editor can produce: any call to that tool — the same breadth the old immediate `tool:*` grant offered, and what the footer's `[p] grants:` line states before you press anything. **`[p]` is never offered at all for a shell command (`bash`).** A durable pattern grant does not exist for a shell-rendered tool at all — see Limits — so there is nothing honest to offer; `[y]`/`[a]` (a one-shot or exact-call grant), `[n]`/`Esc`, or a confinement root are what remain for `bash`. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the project-scoped `permissions.json`'s structured `rules` array (best-effort, silent either way — a write failure loses only the file durability, never the in-session grant; matched by rule equality, so granting the identical rule twice never duplicates the entry). Same trust-digest consequence as `[a]`'s sibling flat-pattern write: that write changes the file's bytes, so a *previously untrusted* file gains a rule that still won't take effect on its own until you `/trust permissions`. A per-agent or per-subtree grant is never written to a file, for the same reason as the flat form: it names live agent ids, meaningless at the next launch. |
-| `s` | Not a decision — cycles the scope the two remembered-grant keys (`a` and `p`) grant at: **this session** (the default; every agent in the session) → **this agent only** → **this agent and its subtree**. The prompt states the current scope in words next to the keys. The choice resets to *this session* for every new prompt, so narrowing is always a deliberate, per-prompt act. | n/a |
+| `p` (structured tool) | Opens a field editor over the call's top-level structured argument fields (only offered when the tool's rendering is a structured JSON dump, not a shell command — `read`, `report`, `grep`, … ). Every field starts **wildcard**; `space` pins the selected field to its exact (canonicalized-JSON) value, `↑`/`↓`/`tab` move between fields, `s` cycles the grant scope (shared with `a` above), `Enter` builds an allow rule from the pinned fields — a pinned field must match exactly, an unpinned one is wildcard, and every field must match (AND) — grants it, and resolves this call as allowed; `Esc` cancels back to this prompt with no decision made. Granting with nothing pinned is the broadest the editor can produce: any call to that tool — the same breadth the old immediate `tool:*` grant offered, and what the footer's `[p] grants:` line states before you press anything. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the project-scoped `permissions.json`'s structured `rules` array (best-effort, silent either way — a write failure loses only the file durability, never the in-session grant; matched by rule equality, so granting the identical rule twice never duplicates the entry). Same trust-digest consequence as `[a]`'s sibling flat-pattern write: that write changes the file's bytes, so a *previously untrusted* file gains a rule that still won't take effect on its own until you `/trust permissions`. A per-agent or per-subtree grant is never written to a file, for the same reason as the flat form: it names live agent ids, meaningless at the next launch. |
+| `p` (shell command, e.g. `bash`) | Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`. A **different** mechanism from the row above, not a smaller version of it: opens a free-text editor seeded with a narrow, two-token default (`git status` from `git status --short`; never the bare `git`) — type to widen or narrow it, `Ctrl-S` (not bare `s`, since the prefix text can itself contain the letter) cycles the grant scope, `Enter` grants it and resolves this call as allowed, `Esc` cancels back to this prompt. Accepting authorizes a LATER command whose text starts with the SAME whitespace-aligned tokens (`git status` covers `git status --short`, not `git push` or `git statusfoo`) — the identical token-alignment rule the durable mechanism's own `command_prefix` used before board `01KZDDPC5MMD49F6JPV9CW4TVM` closed that door for `ShellCommand` permanently. This is the SEPARATE, additive mechanism that door's own closure explicitly did not rule out: see "The shell-prefix grant" below. | **In memory only, for this class specifically, regardless of scope.** Never appended to `permissions.json`, at ANY scope — including `Session`, unlike the structured `[p]` row above. Gone the moment this process exits; nothing to `/trust`, nothing to revoke on disk. |
+| `s` | Not a decision — cycles the scope the remembered-grant keys (`a` and both `p` rows above) grant at: **this session** (the default; every agent in the session) → **this agent only** → **this agent and its subtree**. The prompt states the current scope in words next to the keys. The choice resets to *this session* for every new prompt, so narrowing is always a deliberate, per-prompt act. While the shell-prefix editor is open specifically, this is `Ctrl-S` rather than a bare `s` — see that row's own note. | n/a |
 | `n` | Denies this call, once. | Nothing. |
 | `Esc` | Denies this call and tells the model to try a different approach (rather than just failing silently). | Nothing. |
 
@@ -142,6 +143,73 @@ the granting one — both are proven end to end in
 `crates/conway/tests/permission_scope_seam.rs`, and a grant whose scope you
 did not intend is best avoided by reading the scope line before pressing a
 remembered-grant key.
+
+### The shell-prefix grant
+
+Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`. A shell command's `[p]` is a
+different, narrower mechanism from a structured tool's `[p]` — not a
+smaller version of the same thing, and it does not reopen the door "Limits"
+below closes ("a durable pattern grant does not exist for `bash` … at all —
+not a narrower one, none"). That refusal is about a DURABLE grant — one
+that could outlive this process, in `permissions.json` or a
+plugin-contributed rule. The mechanism here is neither: it lives
+entirely in `PermissionBroker`'s own memory, for the rest of THIS session,
+and answers a real, separately-reproduced problem — one real task driven
+through conway issued roughly 70 individual prompts, nearly all shell
+commands differing only in their arguments, because the only "allow
+always" available for `bash` keys on the exact command string (`[a]`,
+above) and nothing coarser existed.
+
+Accepting it (`Enter`) authorizes a later shell command whose rendered
+text starts with the SAME whitespace-aligned tokens the editor held when
+you pressed `Enter` — `git status` covers `git status --short` but not
+`git push` or `git statusfoo`, the identical `prefix_matches` alignment
+rule `command_prefix` itself uses. What makes the interactive,
+session-scoped version an acceptable trade where a DURABLE one is not is
+that it requires an explicit, informed, per-session act by the person at
+the keyboard — never a standing file another session, another day, or
+another person reads back unreviewed.
+
+It is, deliberately:
+
+- **Never persisted, at any scope** — including `Session`, unlike every
+  other remembered-grant key on this page. It never touches
+  `permissions.json`.
+- **Gone at restart.** A fresh `conway` process — even against the
+  identical project and the identical command — starts with none of it.
+- **Reviewable and revocable, board item `01M350FR4SM6QT0EM6M35EY5AZ`.**
+  `/settings` → permissions → "shell prefixes" lists every grant this
+  session has installed, exactly as granted, with its scope — this class
+  was the one MOST easily forgotten, since the whole point of granting it
+  is that it stops asking. `Enter` on a row revokes just that grant; a
+  "revoke all shell-prefix grants" row clears every one at once. Either
+  way the removal is pure in-memory bookkeeping (there was never a file to
+  rewrite), and a revoked grant cannot come back on its own — the next
+  matching command prompts again, exactly as it would have with no grant
+  ever installed. This does NOT get a status-line indicator the way
+  `AUTO-ALLOW`/`plan` do — see `view/status.rs::mode_ladder`'s own doc in
+  the `conway-cli` source for the full "narrowest, shortest-lived grant
+  class, not the loudest" reasoning.
+- **Never broader than what the editor showed you.** The proposed default
+  is always two tokens (`git status`, never the bare `git`, which would
+  admit every subcommand of that program from one keystroke) — you widen
+  or narrow it yourself before `Enter` ever installs anything.
+- **Subtree-aware.** An `AgentSubtree` grant covers a spawned child under
+  the granting agent exactly as the durable per-subtree grants do
+  (`GrantScope::covers`, the same evaluator, reused verbatim so the two
+  mechanisms cannot silently disagree about who a subtree grant reaches).
+- **Never covers a COMPOUND command, in either direction.** `git status`
+  covers `git status --short`, but NOT `git status && rm -rf /`, `git
+  status | sh`, `git status; rm -rf /`, a trailing `git status &`, an
+  embedded newline, `git status $(rm -rf /)`, backticks, or
+  `<(...)`/`>(...)` process substitution — any of those still reach the
+  ordinary prompt, exactly as they would with no grant installed at all.
+  The identical rule applies to the PREFIX itself: typing `git status &&
+  rm` into the editor and pressing `Enter` is refused outright, with the
+  reason shown right there, rather than installing a grant that could
+  never have covered anything safely. See "Limits" below for the full
+  "scope limit, not a safety scanner" account of why this is checked
+  structurally rather than by judging what a command might do.
 
 ## Permission decisions
 
@@ -159,8 +227,8 @@ Each record carries:
 | --- | --- |
 | `call_id` | The tool call this decision resolved. |
 | `tool` | The tool name. |
-| `decision` | What was decided: `allow`, `allow_always`, `pattern`, `deny`, `deny_with_feedback`, `auto`, `plan_denied`, `hook_denied`, or `rule` (naming the specific `deny` rule that matched). |
-| `source` | How it was resolved: `operator` (you were shown a prompt, just now), `rule` (a pattern grant, a cached "always allow" from earlier in the session, or this agent's confinement root), `hook`, or `mode` (`AutoAllow` authorizing, or `Plan` refusing a category it doesn't permit). |
+| `decision` | What was decided: `allow`, `allow_always`, `pattern`, `shell_prefix_grant` (the session-scoped shell-prefix mechanism above — deliberately distinct from `pattern`, which names the durable mechanism this one is not), `deny`, `deny_with_feedback`, `auto`, `plan_denied`, `hook_denied`, or `rule` (naming the specific `deny` rule that matched). |
+| `source` | How it was resolved: `operator` (you were shown a prompt, just now), `rule` (a pattern grant, a cached "always allow" from earlier in the session, a session-scoped shell-prefix grant, or this agent's confinement root), `hook`, or `mode` (`AutoAllow` authorizing, or `Plan` refusing a category it doesn't permit). |
 | `waited_ms` | How long the prompt sat in front of you, in milliseconds — present only when `source` is `operator`; absent (never a fabricated `0`) for every other source, since nothing was ever waiting. |
 | `feedback` | The human-readable reason, for any denial — your own typed message from `Esc`, or the rendered explanation any other deny path already gives the model. Absent for an allow. |
 
@@ -820,6 +888,47 @@ does:
   page describes, because no shell is ever involved in running one. See
   "Working with bash day to day," above, for what to actually do about
   this day to day: session `AutoAllow` plus `conway.confine`.
+- **The session-scoped shell-prefix grant (`[p]` on a `bash` prompt, board
+  item `01M32EBPWZZG6EA77ZG5KYC8KQ`) excludes compound commands by
+  construction — it does NOT inherit the bullet above's prefix-matching
+  limit.** An earlier version of this mechanism did: `prefix_matches` alone
+  returns `true` the instant a grant's own tokens are exhausted, so a
+  `git status` grant would have silently covered `git status && rm -rf /`,
+  `git status | sh`, `git status $(rm -rf /)`, and anything else sharing
+  that start — the exact defect the durable mechanism above was
+  permanently closed for, which inheriting into a second mechanism would
+  not have been a smaller version of, only the same one shipped again.
+  `conway_core::permission_pattern::shell_command_is_compound` is checked
+  BEFORE any prefix match, against both the candidate call and the
+  proposed grant's own prefix: a candidate that chains (`&&`/`||`/`;`/a
+  bare newline), pipes (`|`), backgrounds (`&`), or substitutes another
+  command (`$(...)`/backticks/`<(...)`/`>(...)`) is never covered by ANY
+  shell-prefix grant and prompts normally — exactly as it would with no
+  grant installed at all — and a prefix containing one of those constructs
+  is refused at creation, with the reason shown right in the editor. This
+  refusal also covers a REAL embedded newline/carriage-return/any other
+  control character, not just the ones spelled out above: every candidate's
+  rendered text has already passed through a sanitizer that rewrites a
+  control character into a single, space-flanked placeholder before this
+  check (or any other part of conway) ever sees it, and a naive scan for a
+  literal `\n`/`\r` — or a naive prefix match — would find nothing wrong
+  with the laundered result even though the shell that actually runs the
+  ORIGINAL, unsanitized argument still sees the real newline and executes a
+  second command. `conway_core::permission_pattern::
+  rendered_evidence_is_untrustworthy` (also used on the deny side) refuses
+  the grant outright whenever that placeholder, or a raw control character,
+  is present, rather than trusting the sanitized text's own tokenization —
+  board item `01M38MDGCNVF2GE3JEQTRXSN2S`, filed after this exact laundering
+  path was found to silently authorize a chained command through this
+  mechanism. This is a SCOPE LIMIT, not the shell-metacharacter safety net
+  this page's own Limits section already rules out elsewhere: a plain redirect
+  (`>out.txt`) or an ordinary variable expansion (`$BRANCH`) does not
+  introduce a second command, so neither trips it, no matter how the rest
+  of the command reads. See "The shell-prefix grant" above for the full
+  account of what this mechanism DOES still ask you to trust: an explicit,
+  per-session, informed act at the keyboard, authorizing nothing beyond
+  THIS session, never written anywhere another session — or another
+  person — could read back unreviewed.
 - **A `[p]` field-editor grant is written to `permissions.json`'s
   structured `rules` array, not the flat `allow` list.** Every other
   session-scope grant this page describes (a flat pattern, or any rule

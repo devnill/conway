@@ -12,7 +12,8 @@ use std::collections::HashMap;
 
 use conway_core::permission_mode::PermissionMode;
 use conway_core::permission_pattern::{
-    ArgsMatchSpec, PatternOrigin, PatternRule, Rule, Then, When,
+    prefix_matches, rendered_evidence_is_untrustworthy, shell_command_is_compound, ArgsMatchSpec,
+    PatternOrigin, PatternRule, Rule, Then, When,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -818,6 +819,52 @@ pub struct PermissionBroker {
     /// `remember_*_rule` companions take a [`Rule`] directly, for the
     /// structured form the flat syntax cannot express.
     prompt_patterns: RwLock<Vec<(Rule, Option<CanonicalRoot>, PatternOrigin)>>,
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: session-scoped shell-command
+    /// PREFIX grants -- an interactive, IN-MEMORY-ONLY allow for future
+    /// `RenderKind::ShellCommand` calls sharing an operator-accepted,
+    /// operator-editable prefix. Each entry is a plain prefix string (never
+    /// a [`Rule`]/[`PatternRule`] -- there is no durable object to install,
+    /// register, or persist) paired with the [`GrantScope`] it was granted
+    /// at, reusing `GrantScope`/`grant_scope_for` VERBATIM so this class
+    /// cannot drift from the cache's or the durable patterns' own scope
+    /// semantics.
+    ///
+    /// **Why a separate `Vec`, not a `command_prefix` entry in `patterns`
+    /// above.** `patterns` stores [`Rule`]s, and `Rule::gate_allows`
+    /// refuses EVERY allow `Rule` for a `ShellCommand` tool by design
+    /// (board item `01KZDDPC5MMD49F6JPV9CW4TVM`) -- reusing that store
+    /// would mean either bypassing `gate_allows` for entries from this
+    /// class specifically (a special case inside the evaluator every
+    /// future reader of `pattern_allows` would have to know about) or
+    /// building a `Rule` this broker then has to remember was never really
+    /// one (reachable by `Self::active_structured_allow_rules`, an F12
+    /// review surface, and by `Conway::revoke_structured_allow_rule` --
+    /// both would have to learn to hide it, and a future edit to either
+    /// could forget). A structurally separate store makes "this class
+    /// never appears in the pattern-rule review/revoke surfaces, and never
+    /// reaches `validate_rule_registration`" true by construction rather
+    /// than by a filter someone has to remember to keep in sync.
+    ///
+    /// **Never durable.** No `PatternOrigin` is carried (there is no
+    /// `File`/`Plugin` origin this class can ever have -- see
+    /// [`Self::remember_shell_prefix_grant`]'s own doc), so nothing here
+    /// can reach `conway`'s `persist_permission_rule`/
+    /// `persist_permission_structured_rule` or
+    /// `rewrite_permission_file_removing[_structured]` even in principle:
+    /// those functions take a [`PatternRule`]/[`Rule`] value, and this
+    /// store never produces one.
+    ///
+    /// **Board item `01M350FR4SM6QT0EM6M35EY5AZ`: this class now has its
+    /// OWN review/revoke surface** ([`Self::active_shell_prefix_grants`],
+    /// [`Self::revoke_shell_prefix_grant`], [`Self::
+    /// revoke_all_shell_prefix_grants`]) -- the "never appears in the
+    /// pattern-rule review/revoke surfaces" claim two paragraphs up is
+    /// still true (those three methods never read or write THIS field, and
+    /// this field never reaches theirs), it simply no longer means "has no
+    /// surface at all". An in-memory-only grant class still needs SOME
+    /// place an operator can see what they authorized this session and
+    /// take it back -- exactly the gap this board item closed.
+    shell_prefix_grants: RwLock<Vec<(String, GrantScope)>>,
     /// The injected `pre_tool_use`
     /// hook dispatcher. `None` (the default) means the hook-check step in
     /// `Self::decide` is a byte-for-byte no-op -- see
@@ -920,6 +967,7 @@ impl PermissionBroker {
             patterns: RwLock::new(Vec::new()),
             deny_patterns: RwLock::new(Vec::new()),
             prompt_patterns: RwLock::new(Vec::new()),
+            shell_prefix_grants: RwLock::new(Vec::new()),
             hook_runner: RwLock::new(None),
             pre_tool_use_hooks: RwLock::new(Vec::new()),
             store: RwLock::new(None),
@@ -1084,6 +1132,155 @@ impl PermissionBroker {
             "permission patterns poisoned",
             |rule, canonical| (rule, canonical, grant, origin),
         )
+    }
+
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: installs a session-scoped
+    /// shell-command PREFIX grant -- an interactive, IN-MEMORY-ONLY allow
+    /// for future `RenderKind::ShellCommand` calls whose rendered text
+    /// starts with `prefix`, aligned on whitespace-delimited tokens
+    /// exactly as [`conway_core::permission_pattern::prefix_matches`]
+    /// (the SAME tokenizer `When::CommandPrefix` uses everywhere else)
+    /// defines "starts with".
+    ///
+    /// **Deliberately NOT [`Self::remember_pattern_rule`]/
+    /// [`Self::remember_pattern`].** Those install a durable [`Rule`]/
+    /// [`PatternRule`], which [`Rule::gate_allows`] refuses outright for a
+    /// `ShellCommand` tool by design (board item
+    /// `01KZDDPC5MMD49F6JPV9CW4TVM`) -- that refusal is untouched by this
+    /// method, which never constructs a `Rule`/`PatternRule` at all. This
+    /// installs into [`Self::shell_prefix_grants`] instead -- see that
+    /// field's own doc for the full "never durable, never in a review/
+    /// revoke surface, never reaches `validate_rule_registration`"
+    /// reasoning, which holds here by construction (there is no
+    /// `PatternOrigin` parameter to even mislabel) rather than by a filter
+    /// applied afterward.
+    ///
+    /// Reuses [`grant_scope_for`]/[`GrantScope::covers`] VERBATIM -- the
+    /// identical `Session`/`Agent`/`AgentSubtree` semantics the exact-args
+    /// cache and the durable patterns already use, so this class cannot
+    /// drift into a fourth meaning of "scope".
+    ///
+    /// A blank (post-`trim`) `prefix` installs nothing: an empty pattern's
+    /// token iterator is immediately exhausted, so `prefix_matches` would
+    /// report a match against ANY rendered command -- exactly the
+    /// un-editable, unbounded "allow always" this item's own security
+    /// posture rules out offering by accident. Deduplicates on insert, the
+    /// same reasoning [`Self::remember`]'s own doc gives for the exact-args
+    /// cache: a concurrent `decide` racing to install the identical
+    /// `(prefix, scope)` pair twice must not grow this list forever.
+    ///
+    /// **A `prefix` for which [`conway_core::permission_pattern::
+    /// shell_command_is_compound`] is `true` installs nothing either,
+    /// returning `false`.** A prefix is a single command's leading tokens,
+    /// nothing more -- "same rule for the prefix itself" as the candidate-
+    /// side check [`Self::shell_prefix_grant_allows`] applies, and the
+    /// SAME function, so an operator who somehow typed `git status && rm
+    /// -rf /` into the editor is refused at the door rather than handed a
+    /// grant [`Self::shell_prefix_grant_allows`] would then have to refuse
+    /// to honor for every candidate anyway.
+    ///
+    /// Returns `true` if the grant is now in effect (freshly installed, or
+    /// an identical one already was), `false` if it was refused (blank or
+    /// compound) and nothing changed.
+    pub fn remember_shell_prefix_grant(
+        &self,
+        prefix: String,
+        scope: PermissionScope,
+        granting_agent: AgentId,
+    ) -> bool {
+        let prefix = prefix.trim().to_string();
+        if prefix.is_empty() {
+            return false;
+        }
+        if shell_command_is_compound(&prefix) {
+            return false;
+        }
+        let grant = grant_scope_for(scope, granting_agent);
+        let mut grants = self
+            .shell_prefix_grants
+            .write()
+            .expect("shell prefix grants poisoned");
+        if !grants.iter().any(|(p, g)| *p == prefix && *g == grant) {
+            grants.push((prefix, grant));
+        }
+        true
+    }
+
+    /// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: every active session-scoped
+    /// shell-prefix grant [`Self::remember_shell_prefix_grant`] installed,
+    /// exactly as granted -- the review-list counterpart this class was
+    /// missing since it shipped (`01M32EBPWZZG6EA77ZG5KYC8KQ`). Mirrors
+    /// [`Self::active_patterns`]'s own shape: an operator must be able to
+    /// see what they authorized, and this class is the one MOST easily
+    /// forgotten, because the whole point of granting it is that it stops
+    /// asking.
+    ///
+    /// Returns the stored `(prefix, scope)` pairs verbatim, in installation
+    /// order -- the prefix is never re-rendered or re-parsed, so what this
+    /// returns is byte-for-byte what an operator typed/edited and confirmed
+    /// at grant time, the same "what you saw is what is installed" property
+    /// [`Self::active_structured_allow_rules`]'s own doc argues for.
+    pub fn active_shell_prefix_grants(&self) -> Vec<(String, GrantScope)> {
+        self.shell_prefix_grants
+            .read()
+            .expect("shell prefix grants poisoned")
+            .clone()
+    }
+
+    /// Revokes exactly ONE installed shell-prefix grant, addressed by the
+    /// same `(prefix, scope)` pair [`Self::active_shell_prefix_grants`]
+    /// hands the review surface -- never a bare index, for the identical
+    /// "what the operator saw is what is revoked" reasoning
+    /// [`Self::revoke_pattern`]'s own doc gives for its class (a concurrent
+    /// `remember_shell_prefix_grant` call, from another agent's permission
+    /// prompt answered mid-session, could otherwise insert ahead of the row
+    /// the operator is looking at and shift an index out from under them).
+    ///
+    /// Removes the FIRST entry whose prefix and scope both compare equal --
+    /// `remember_shell_prefix_grant` already deduplicates on insert, so in
+    /// practice there is ever at most one, but "first" keeps this total
+    /// rather than panicking on a hypothetical duplicate.
+    ///
+    /// Pure in-memory removal, matching the class's own "never durable"
+    /// contract (`shell_prefix_grants`'s own field doc): there is no file
+    /// to rewrite, no `PatternOrigin` to resolve, nothing else to keep in
+    /// sync. Once removed, [`Self::shell_prefix_grant_allows`] can never
+    /// see it again -- it reads this exact store, live, on every call; a
+    /// revoked grant cannot resurrect through a cache, because this class
+    /// has none (`Self::decide`'s exact-args `cache` is checked, and can be
+    /// populated, only for a call ALREADY allowed by some other authority;
+    /// see that method's own step order).
+    ///
+    /// Returns whether anything was removed.
+    pub fn revoke_shell_prefix_grant(&self, prefix: &str, scope: &GrantScope) -> bool {
+        let mut grants = self
+            .shell_prefix_grants
+            .write()
+            .expect("shell prefix grants poisoned");
+        match grants.iter().position(|(p, g)| p == prefix && g == scope) {
+            Some(idx) => {
+                grants.remove(idx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drops every installed shell-prefix grant at once -- the "revoke all"
+    /// counterpart to [`Self::revoke_shell_prefix_grant`], mirroring
+    /// [`Self::revoke_all_grants`]'s own "escape hatch" shape for this
+    /// class. Deliberately does NOT touch `patterns`/`cache`/`deny_patterns`/
+    /// `prompt_patterns` -- this is a narrow revoke for exactly the one
+    /// store this item added a surface for, the same "each class gets its
+    /// own revoke-all, never a shared one that reaches into a sibling
+    /// class's store" shape [`Self::revoke_all_grants`]'s own doc already
+    /// argues for (that method, symmetrically, never touches this store
+    /// either).
+    pub fn revoke_all_shell_prefix_grants(&self) {
+        self.shell_prefix_grants
+            .write()
+            .expect("shell prefix grants poisoned")
+            .clear();
     }
 
     /// Installs a DENY rule, attributed to `origin`. Unlike
@@ -1569,6 +1766,141 @@ impl PermissionBroker {
             .any(|(rule, canonical, grant, _origin)| {
                 grant.covers(ctx) && rule_allows(ctx, call, rule, canonical.as_ref())
             })
+    }
+
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: whether an installed
+    /// session-scoped shell-prefix grant ([`Self::
+    /// remember_shell_prefix_grant`]) covers this call. Checked in
+    /// [`Self::decide`] between the exact-args cache
+    /// ([`Self::cached_grant_covers`]) and the durable pattern-allow step
+    /// ([`Self::pattern_allows`]).
+    ///
+    /// Only ever consulted for a `RenderKind::ShellCommand` call -- this
+    /// grant class exists specifically because `pattern_allows` (and,
+    /// beneath it, `Rule::gate_allows`) can never authorize one; a
+    /// `Structured` call has no reliable token boundary for a
+    /// human-edited prefix to align against and is refused here
+    /// unconditionally, the identical reasoning `suggested_rule`'s own doc
+    /// already gives for offering a `Structured` tool the `[p]` field
+    /// editor instead of a prefix.
+    ///
+    /// **The compound-command exclusion (required before this grant class
+    /// could ship): a grant covers ONE simple command, never a compound
+    /// one.** `prefix_matches` alone would happily report a match against
+    /// `git status && rm -rf /` for a `git status` grant -- it returns
+    /// `true` the instant the pattern's tokens are exhausted and says
+    /// nothing about what follows them. `[conway_core::permission_pattern::
+    /// shell_command_is_compound]` is checked FIRST, against `call.
+    /// rendered` itself, before any prefix is even consulted: a candidate
+    /// that chains (`&&`/`||`/`;`/newline), pipes (`|`), backgrounds (`&`),
+    /// or substitutes another command (`$(...)`/backticks/`<(...)`/
+    /// `>(...)`) is refused unconditionally, regardless of what prefix is
+    /// installed or how narrow it is -- the call falls through to the gate
+    /// exactly as it would with no grant installed at all. See that
+    /// function's own doc for the full "scope limit, not a safety scanner"
+    /// reasoning -- this is the SAME function [`Self::
+    /// remember_shell_prefix_grant`] applies to the proposed PREFIX at
+    /// install time, so the two can never disagree about what counts as
+    /// "one simple command."
+    /// ## Sanitizer laundering (board item `01M38MDGCNVF2GE3JEQTRXSN2S`):
+    /// a SECOND hole, closed here
+    ///
+    /// The compound-command exclusion above reasons over `call.rendered` --
+    /// but by the time `decide()` sees `call`, `rendered` has already been
+    /// through `conway_runtime::tools::runner::sanitize_rendered`
+    /// (`conway_core::text::sanitize_control_chars`), which rewrites every
+    /// control character -- INCLUDING a real embedded `\n`/`\r` -- to
+    /// `conway_core::text::SANITIZED_CONTROL_PLACEHOLDER`. `\n`/`\r` are
+    /// two of the constructs `shell_command_is_compound` scans for
+    /// directly, so against a SANITIZED string those two branches are
+    /// unreachable: `git status \n rm -rf /` sanitizes to `git status
+    /// \u{FFFD} rm -rf /`, whose placeholder token (surrounded by the
+    /// original spaces) is invisible to whitespace-delimited
+    /// `prefix_matches` too -- `git status` still matches the first two
+    /// tokens and the call is silently authorized, while `BashTool::invoke`
+    /// goes on to run `call.arguments`' UNSANITIZED, newline-intact
+    /// original. Every unit test guarding this function before this item
+    /// built its `AuthorizedCall` fixture by hand (`bash_call`, this
+    /// module's own test helper, sets `rendered` verbatim) and so never
+    /// routed through the real sanitizing seam -- exactly why prior
+    /// mutation checks passed while this was open: nothing exercised the
+    /// seam that actually launders the evidence in production.
+    ///
+    /// **The fix taken: fail toward restriction on untrustworthy evidence,
+    /// reusing [`rendered_evidence_is_untrustworthy`] -- NOT resolving from
+    /// `call.arguments`.** The item that found this defect names both
+    /// options and leans toward the `arguments`-based fix as structurally
+    /// cleaner (it is what root confinement already does, and what this
+    /// crate's own stated principle for security-relevant values --
+    /// resolve from `call.arguments`, never the lossy `call.rendered` --
+    /// already argues for). That option was rejected FOR THIS CALL SITE,
+    /// deliberately:
+    ///
+    /// - There is no tool-declared field, analogous to `PathArgs` for a
+    ///   path argument, naming WHICH key of an arbitrary
+    ///   `RenderKind::ShellCommand` tool's `arguments` holds its command
+    ///   text -- `bash`'s is `"command"`, but nothing on `AuthorizedCall`
+    ///   or the `Tool` trait says so generically, and this grant class is
+    ///   not `bash`-specific by construction. The only generic way to
+    ///   recover the real text is the tool's own `render()`, called a
+    ///   second time on `call.arguments` -- which the broker cannot do at
+    ///   all (it has no `PluginRegistry`/`Tool` access; that is precisely
+    ///   why `rendered` is handed to it as a field in the first place).
+    ///   Doing this properly means a NEW field on `AuthorizedCall` carrying
+    ///   the pre-sanitization render, threaded through
+    ///   `conway_runtime::tools::runner::execute_one`/`render_call` -- a
+    ///   real, warranted change, but real new plumbing and a new "never let
+    ///   this leak to a prompt's display text" invariant to maintain, for a
+    ///   hazard `rendered_evidence_is_untrustworthy` already closes
+    ///   completely at this site with a one-line, already-trusted check.
+    /// - Reusing `rendered_evidence_is_untrustworthy` is not a fresh
+    ///   restatement of resolution logic (the P-14 hazard this defect is
+    ///   itself an instance of) -- it is the SAME function
+    ///   `PatternRule::matches_deny` already calls for the structurally
+    ///   identical problem on the deny side ("rendered is lossy, so fail
+    ///   toward the safe answer when it shows laundering evidence"), called
+    ///   a second time rather than reimplemented. This function already
+    ///   reasons about `rendered` for the compound check two lines below
+    ///   regardless of which fix is chosen, so this adds no new dependency
+    ///   on lossy evidence that was not already there.
+    /// - It closes every case the acceptance criteria name -- a real
+    ///   embedded newline, a carriage return, and (unlike a twelfth literal
+    ///   added to `shell_command_is_compound`'s own scan, which this item
+    ///   explicitly rules out) every OTHER control character the sanitizer
+    ///   rewrites, because the check is "any control character or the
+    ///   placeholder", not an enumerated list.
+    ///
+    /// This is recorded here as the FLOOR, not dismissed: a future
+    /// `RenderKind::ShellCommand` tool whose `render()` legitimately needs
+    /// to differ from `arguments` in some way `rendered_evidence_is_
+    /// untrustworthy` cannot see through would be the trigger to revisit
+    /// the `arguments`-based design instead. Nothing about today's `bash`
+    /// (the only shipped `ShellCommand` tool) needs that; this floor is
+    /// airtight for it.
+    ///
+    /// Checked BEFORE the compound-command exclusion, not after: a
+    /// candidate whose evidence cannot be trusted might not even trip
+    /// `shell_command_is_compound` (see the placeholder-fuses-a-token case
+    /// above, where the compound scan finds nothing to object to either),
+    /// so ordering the untrustworthy check first means the compound
+    /// check's own literal `\n`/`\r` branches stay meaningful documentation
+    /// of intent rather than the ONLY thing standing between this bug and
+    /// production.
+    fn shell_prefix_grant_allows(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> bool {
+        if call.render_kind != RenderKind::ShellCommand {
+            return false;
+        }
+        if rendered_evidence_is_untrustworthy(&call.rendered) {
+            return false;
+        }
+        if shell_command_is_compound(&call.rendered) {
+            return false;
+        }
+        self.shell_prefix_grants
+            .read()
+            .expect("shell prefix grants poisoned")
+            .iter()
+            .any(|(prefix, grant)| grant.covers(ctx) && prefix_matches(prefix, &call.rendered))
     }
 
     /// The first installed `deny` rule that refuses this call, if any.
@@ -2118,6 +2450,35 @@ impl PermissionBroker {
                 return PermissionOutcome::Allow;
             }
 
+            // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: a session-scoped
+            // shell-prefix grant -- checked BEFORE the durable pattern-allow
+            // step immediately below, since that step can never fire for a
+            // `ShellCommand` call at all (`Rule::gate_allows`) and this is
+            // the mechanism that fills the gap for exactly that case.
+            // Recorded as `ShellPrefixGrant`, never `Pattern` -- see that
+            // record kind's own doc for why folding the two together would
+            // misreport a run-scoped, never-persisted grant as the durable
+            // mechanism.
+            if self.shell_prefix_grant_allows(ctx, call) {
+                self.emit(
+                    ctx,
+                    Event::PermissionResolved {
+                        call_id: call.call_id.clone(),
+                        decision: PermissionDecisionKind::Cached,
+                    },
+                );
+                self.record_decision(
+                    ctx,
+                    call,
+                    PermissionDecisionRecordKind::ShellPrefixGrant,
+                    PermissionDecisionSource::Rule,
+                    None,
+                    None,
+                )
+                .await;
+                return PermissionOutcome::Allow;
+            }
+
             // A pattern grant spares the operator a prompt -- but never for
             // a call whose tool declares `RenderKind::ShellCommand`:
             // `PatternRule::matches_render` refuses those unconditionally
@@ -2377,6 +2738,7 @@ mod tests {
     use conway_core::ids::SeqRange;
     use conway_core::log::SessionMeta;
     use conway_core::permission_pattern::{PatternOrigin, PatternRule, Select};
+    use conway_core::text::sanitize_control_chars;
     use conway_testkit::FakeStore;
 
     use super::*;
@@ -4046,6 +4408,702 @@ mod tests {
 
             assert_eq!(outcome, PermissionOutcome::Allow);
             assert_eq!(gate.call_count(), 1);
+        }
+    }
+
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the session-scoped
+    /// shell-command prefix grant -- an interactive, IN-MEMORY-ONLY allow
+    /// for future `RenderKind::ShellCommand` calls sharing an operator-
+    /// accepted prefix.
+    mod shell_prefix_grant {
+        use super::*;
+
+        async fn seeded_session(store: &dyn SessionStore, agent: AgentId) -> SessionId {
+            let session = SessionId::new();
+            store
+                .create(SessionMeta {
+                    id: session,
+                    agent_id: agent,
+                    origin: None,
+                    agent_def: None,
+                    role: None,
+                    created: Utc::now(),
+                    cwd: PathBuf::from("/tmp"),
+                    labels: vec![],
+                    ephemeral: false,
+                    ask_origin: None,
+                    root: None,
+                    plugin_config: conway_core::ports::PluginConfig::default(),
+                })
+                .await
+                .expect("fresh session id never collides");
+            session
+        }
+
+        /// Headline acceptance: a session-scoped prefix grant accepted at
+        /// the prompt authorizes a LATER call sharing that prefix, without
+        /// ever reaching the operator's own gate again.
+        #[tokio::test]
+        async fn a_session_scoped_prefix_grant_covers_a_later_matching_command() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+            let ctx = test_ctx(agent, SessionId::new());
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            let outcome = broker
+                .decide(&ctx, &bash_call("c1", "git status --short"))
+                .await;
+
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                0,
+                "a covered call must never reach the operator's own gate"
+            );
+        }
+
+        /// A non-matching-prefix command still prompts -- the grant is
+        /// narrow, not a blanket auto-allow for the whole tool.
+        #[tokio::test]
+        async fn a_non_matching_command_still_reaches_the_gate() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+            let ctx = test_ctx(agent, SessionId::new());
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            let outcome = broker
+                .decide(&ctx, &bash_call("c2", "git push --force"))
+                .await;
+
+            // `RecordingGate` always answers `AllowOnce`, so the outcome
+            // itself is `Allow` either way -- what this test pins is that
+            // the call actually REACHED the gate, not that it was denied.
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                1,
+                "a non-matching command must reach the gate, not be silently covered"
+            );
+        }
+
+        /// An `AgentSubtree` grant covers a spawned descendant of the
+        /// granting agent -- the acceptance criteria's own "including in
+        /// spawned subagents under the subtree" -- but not an unrelated
+        /// agent, reusing `GrantScope::covers` verbatim (the identical
+        /// semantics the exact-args cache and the durable patterns already
+        /// use).
+        #[tokio::test]
+        async fn agent_subtree_scope_covers_a_descendant_not_a_stranger() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let granter = AgentId::new();
+            let child = AgentId::new();
+            let stranger = AgentId::new();
+            let session = SessionId::new();
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::AgentSubtree,
+                granter,
+            );
+
+            let child_ctx = PermissionCtx {
+                agent_id: child,
+                agent_path: vec![granter, child],
+                session,
+                cwd: PathBuf::from("/tmp"),
+                root: AgentRoot::Unconfined,
+            };
+            let outcome = broker
+                .decide(&child_ctx, &bash_call("c3", "git status"))
+                .await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                0,
+                "a spawned subtree child must be covered by its ancestor's grant"
+            );
+
+            let stranger_ctx = PermissionCtx {
+                agent_id: stranger,
+                agent_path: vec![stranger],
+                session,
+                cwd: PathBuf::from("/tmp"),
+                root: AgentRoot::Unconfined,
+            };
+            let outcome = broker
+                .decide(&stranger_ctx, &bash_call("c4", "git status"))
+                .await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                1,
+                "an agent outside the granting subtree must still be asked"
+            );
+        }
+
+        /// A fresh broker -- standing in for the process restarting --
+        /// carries none of an earlier broker's grants: the whole premise
+        /// of "in-memory only, dies with the process."
+        #[tokio::test]
+        async fn a_fresh_broker_carries_no_grant_from_an_earlier_one() {
+            let agent = AgentId::new();
+
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+            let ctx = test_ctx(agent, SessionId::new());
+            let outcome = broker.decide(&ctx, &bash_call("c5", "git status")).await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(gate.call_count(), 0);
+
+            let fresh_gate = RecordingGate::new();
+            let fresh_broker = PermissionBroker::new(fresh_gate.clone(), EventBus::new(64));
+            let fresh_ctx = test_ctx(agent, SessionId::new());
+            let outcome = fresh_broker
+                .decide(&fresh_ctx, &bash_call("c6", "git status"))
+                .await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                fresh_gate.call_count(),
+                1,
+                "the earlier broker's grant must not have survived into a fresh one"
+            );
+        }
+
+        /// The grant is consulted only for a `RenderKind::ShellCommand`
+        /// call -- a `Structured` call whose rendered text happens to share
+        /// the installed prefix must still reach the gate.
+        #[tokio::test]
+        async fn the_grant_never_covers_a_structured_call() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+            let ctx = test_ctx(agent, SessionId::new());
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            let mut call = bash_call("c7", "git status");
+            call.tool = ToolName::new("report");
+            call.render_kind = RenderKind::Structured;
+
+            let outcome = broker.decide(&ctx, &call).await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                1,
+                "a Structured call must never be covered by a shell-prefix grant"
+            );
+        }
+
+        /// A blank (post-`trim`) prefix installs nothing -- accepting one
+        /// must never silently become an unbounded "allow everything"
+        /// grant.
+        #[tokio::test]
+        async fn a_blank_prefix_installs_nothing() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+            let ctx = test_ctx(agent, SessionId::new());
+
+            broker.remember_shell_prefix_grant("   ".into(), PermissionScope::Session, agent);
+
+            let outcome = broker.decide(&ctx, &bash_call("c8", "git status")).await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                1,
+                "a blank prefix must not silently become an allow-everything grant"
+            );
+        }
+
+        /// The persisted decision record uses the new `ShellPrefixGrant`
+        /// kind -- never folded into `Pattern`, which names the DURABLE
+        /// mechanism this grant is deliberately not.
+        #[tokio::test]
+        async fn decide_records_the_shell_prefix_grant_kind_not_pattern() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+            let agent = AgentId::new();
+            let session = seeded_session(store.as_ref(), agent).await;
+            broker.set_store(store.clone());
+            let ctx = test_ctx(agent, session);
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            let outcome = broker
+                .decide(&ctx, &bash_call("c9", "git status --short"))
+                .await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+
+            let records = store.read(&ctx.session, SeqRange::full()).await.unwrap();
+            let permission_records: Vec<&LogRecord> = records
+                .iter()
+                .filter(|r| r.kind_str() == "permission_decision")
+                .collect();
+            assert_eq!(permission_records.len(), 1, "{records:#?}");
+            match permission_records[0] {
+                LogRecord::PermissionDecisionRecord {
+                    decision,
+                    source,
+                    waited_ms,
+                    ..
+                } => {
+                    assert_eq!(*decision, PermissionDecisionRecordKind::ShellPrefixGrant);
+                    assert_eq!(*source, PermissionDecisionSource::Rule);
+                    assert_eq!(
+                        *waited_ms, None,
+                        "a no-prompt path must never report a fabricated wait"
+                    );
+                }
+                other => panic!("expected a PermissionDecisionRecord for c9, got {other:?}"),
+            }
+        }
+
+        /// Installing the identical `(prefix, scope)` pair twice must not
+        /// grow the store forever -- mirrors [`PermissionBroker::remember`]'s
+        /// own dedup-on-insert reasoning for the exact-args cache.
+        #[tokio::test]
+        async fn installing_the_same_grant_twice_does_not_duplicate() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            assert_eq!(
+                broker
+                    .shell_prefix_grants
+                    .read()
+                    .expect("shell prefix grants poisoned")
+                    .len(),
+                1,
+                "an identical (prefix, scope) pair installed twice must not duplicate"
+            );
+        }
+
+        // ---- the compound-command exclusion, required before this grant
+        // class could ship ----
+
+        /// The stronger, ordinary-case sibling of the headline acceptance
+        /// test above, stated with the exact wording the exclusion's own
+        /// acceptance criteria uses: `git status` still covers `git status
+        /// --short --branch` -- the exclusion must narrow nothing about
+        /// the ordinary case, only compound candidates.
+        #[tokio::test]
+        async fn the_grant_still_covers_the_ordinary_case() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+            let ctx = test_ctx(agent, SessionId::new());
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            let outcome = broker
+                .decide(&ctx, &bash_call("c10", "git status --short --branch"))
+                .await;
+
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                0,
+                "the ordinary case (extra arguments, nothing compound) must still be covered"
+            );
+        }
+
+        /// One table, one row per construct the item's own acceptance list
+        /// names: a `git status` grant must NOT cover a candidate that
+        /// chains, pipes, backgrounds, or substitutes another command onto
+        /// it -- each candidate must still reach the operator's own gate,
+        /// exactly as it would with no grant installed at all.
+        #[tokio::test]
+        async fn a_grant_never_covers_a_compound_candidate() {
+            let cases: &[(&str, &str)] = &[
+                ("&&", "git status && rm -rf /"),
+                ("||", "git status || rm -rf /"),
+                (";", "git status; rm -rf /"),
+                ("|", "git status | sh"),
+                ("trailing &", "git status &"),
+                ("an embedded newline", "git status\nrm -rf /"),
+                ("$(...)", "git status $(rm -rf /)"),
+                ("backticks", "git status `rm -rf /`"),
+                ("<(...)", "git status <(rm -rf /)"),
+                (">(...)", "git status >(rm -rf /)"),
+            ];
+            for (label, rendered) in cases {
+                let gate = RecordingGate::new();
+                let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+                let agent = AgentId::new();
+                let ctx = test_ctx(agent, SessionId::new());
+
+                broker.remember_shell_prefix_grant(
+                    "git status".into(),
+                    PermissionScope::Session,
+                    agent,
+                );
+
+                let outcome = broker.decide(&ctx, &bash_call("c11", rendered)).await;
+
+                // `RecordingGate` always answers `AllowOnce`, so the
+                // OUTCOME is `Allow` either way -- what this test pins is
+                // that the call actually reached the gate, i.e. the grant
+                // did NOT silently cover it.
+                assert_eq!(outcome, PermissionOutcome::Allow);
+                assert_eq!(
+                    gate.call_count(),
+                    1,
+                    "a compound candidate ({label}) must reach the gate, not be covered by a \
+                     `git status` grant: {rendered:?}"
+                );
+            }
+        }
+
+        /// Board item `01M38MDGCNVF2GE3JEQTRXSN2S`: the headline regression
+        /// for this grant class. `bash_call` (this module's own fixture,
+        /// used by every test above) sets `rendered` VERBATIM -- it never
+        /// routes through `conway_runtime::tools::runner::render_call`/
+        /// `sanitize_rendered`, so every test above proved the compound
+        /// exclusion holds against a string that was never actually
+        /// laundered. This test builds `rendered` the way the real seam
+        /// does -- the shared `sanitize_control_chars` applied to a raw
+        /// string carrying a genuine embedded control character -- and
+        /// proves the grant still declines to cover the result. See
+        /// `crates/conway/tests/shell_prefix_grant_newline_seam.rs` for the
+        /// fully end-to-end counterpart of this proof, driving the actual
+        /// `bash` `Tool` and the actual `render_call`/`sanitize_rendered`
+        /// call site (not this file, which has no access to either) rather
+        /// than calling the shared sanitizer directly as this test does --
+        /// see that file's own module doc for why it is the load-bearing
+        /// one of the two.
+        #[tokio::test]
+        async fn a_grant_never_covers_a_candidate_laundered_by_the_real_sanitizer() {
+            let cases: &[(&str, &str)] = &[
+                ("newline", "git status \n rm -rf /tmp/should-never-run"),
+                (
+                    "carriage return",
+                    "git status \r rm -rf /tmp/should-never-run",
+                ),
+                ("bell", "git status \x07 rm -rf /tmp/should-never-run"),
+                ("escape", "git status \x1b rm -rf /tmp/should-never-run"),
+            ];
+            for (label, raw) in cases {
+                let sanitized = sanitize_control_chars(raw);
+                // Prove the fixture is actually exercising laundering --
+                // otherwise this test would pass for the wrong reason (an
+                // un-laundered string the compound scan's own literal `\n`/
+                // `\r` branches would already catch on their own).
+                assert!(
+                    sanitized.contains('\u{FFFD}') && !sanitized.chars().any(|c| c.is_control()),
+                    "fixture must actually be laundered by the real sanitizer: \
+                     {raw:?} -> {sanitized:?}"
+                );
+
+                let gate = RecordingGate::new();
+                let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+                let agent = AgentId::new();
+                let ctx = test_ctx(agent, SessionId::new());
+
+                broker.remember_shell_prefix_grant(
+                    "git status".into(),
+                    PermissionScope::Session,
+                    agent,
+                );
+
+                let outcome = broker.decide(&ctx, &bash_call("c13", &sanitized)).await;
+
+                assert_eq!(outcome, PermissionOutcome::Allow);
+                assert_eq!(
+                    gate.call_count(),
+                    1,
+                    "a candidate whose control character was laundered by the real \
+                     sanitizer ({label}) must still reach the gate, not be silently \
+                     covered by a `git status` grant: {raw:?} -> {sanitized:?}"
+                );
+            }
+        }
+
+        /// The same rule applies to the PREFIX itself at install time:
+        /// attempting to create a grant from a prefix containing `&&`
+        /// (or any other compound construct) is refused -- `false` is
+        /// returned and nothing is installed.
+        #[tokio::test]
+        async fn installing_a_compound_prefix_is_refused() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+
+            let installed = broker.remember_shell_prefix_grant(
+                "git status && rm -rf /".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            assert!(
+                !installed,
+                "a compound prefix must be refused, not installed"
+            );
+            assert_eq!(
+                broker
+                    .shell_prefix_grants
+                    .read()
+                    .expect("shell prefix grants poisoned")
+                    .len(),
+                0,
+                "a refused prefix must not appear in the store at all"
+            );
+
+            // And, end to end: with nothing installed, even the exact
+            // (compound) text the operator tried to grant still prompts.
+            let ctx = test_ctx(agent, SessionId::new());
+            let outcome = broker
+                .decide(&ctx, &bash_call("c12", "git status && rm -rf /"))
+                .await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                1,
+                "with nothing installed, the call must prompt"
+            );
+        }
+
+        /// A non-compound prefix is installed exactly as before -- the
+        /// exclusion narrows only the compound case, never the ordinary
+        /// one.
+        #[tokio::test]
+        async fn installing_an_ordinary_prefix_still_succeeds() {
+            let broker = PermissionBroker::new(RecordingGate::new(), EventBus::new(64));
+            let agent = AgentId::new();
+
+            let installed = broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            assert!(installed, "an ordinary prefix must install successfully");
+        }
+
+        // ---- board item `01M350FR4SM6QT0EM6M35EY5AZ`: the review/revoke
+        // surface this class was missing since it shipped ----
+
+        /// Headline acceptance: granting two prefixes then reading the
+        /// review surface lists both, with their scopes, exactly as
+        /// granted.
+        #[tokio::test]
+        async fn active_shell_prefix_grants_lists_every_installed_grant_with_its_scope() {
+            let broker = PermissionBroker::new(RecordingGate::new(), EventBus::new(64));
+            let agent = AgentId::new();
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+            broker.remember_shell_prefix_grant("cargo build".into(), PermissionScope::Agent, agent);
+
+            let active = broker.active_shell_prefix_grants();
+            assert_eq!(
+                active,
+                vec![
+                    ("git status".to_string(), GrantScope::Session),
+                    ("cargo build".to_string(), GrantScope::Agent(agent)),
+                ],
+                "the review surface must list every installed grant, with its exact prefix \
+                 text and scope"
+            );
+        }
+
+        /// An empty broker's review surface is an empty list, not a
+        /// sentinel or a panic.
+        #[tokio::test]
+        async fn active_shell_prefix_grants_is_empty_when_nothing_is_granted() {
+            let broker = PermissionBroker::new(RecordingGate::new(), EventBus::new(64));
+            assert_eq!(broker.active_shell_prefix_grants(), Vec::new());
+        }
+
+        /// Revoking exactly one grant leaves the other installed and still
+        /// authorizing calls -- the single-grant half of the acceptance
+        /// list.
+        #[tokio::test]
+        async fn revoke_shell_prefix_grant_removes_only_the_addressed_one() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+            let ctx = test_ctx(agent, SessionId::new());
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+            broker.remember_shell_prefix_grant(
+                "cargo build".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            let revoked = broker.revoke_shell_prefix_grant("git status", &GrantScope::Session);
+            assert!(revoked, "revoking an installed grant must report success");
+
+            assert_eq!(
+                broker.active_shell_prefix_grants(),
+                vec![("cargo build".to_string(), GrantScope::Session)],
+                "the untouched grant must remain listed"
+            );
+
+            // And the untouched grant still actually authorizes a matching
+            // call -- listing is not enough on its own.
+            let outcome = broker
+                .decide(&ctx, &bash_call("c20", "cargo build --release"))
+                .await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                0,
+                "the surviving grant must still cover its own matching command"
+            );
+        }
+
+        /// Revoking a grant that was never installed (or already revoked)
+        /// reports `false` and changes nothing.
+        #[tokio::test]
+        async fn revoke_shell_prefix_grant_returns_false_when_nothing_matches() {
+            let broker = PermissionBroker::new(RecordingGate::new(), EventBus::new(64));
+            let agent = AgentId::new();
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            let revoked = broker.revoke_shell_prefix_grant("cargo build", &GrantScope::Session);
+            assert!(!revoked, "revoking an absent grant must report false");
+            assert_eq!(
+                broker.active_shell_prefix_grants(),
+                vec![("git status".to_string(), GrantScope::Session)],
+                "an unmatched revoke must change nothing"
+            );
+        }
+
+        /// The `GrantScope` is part of the revoke key, exactly like
+        /// `revoke_pattern_rule`'s own reasoning: an identical prefix
+        /// installed at two different scopes is two distinguishable rows,
+        /// and revoking one must not touch the other.
+        #[tokio::test]
+        async fn revoke_shell_prefix_grant_is_scope_specific() {
+            let broker = PermissionBroker::new(RecordingGate::new(), EventBus::new(64));
+            let agent_a = AgentId::new();
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent_a,
+            );
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Agent,
+                agent_a,
+            );
+
+            let revoked = broker.revoke_shell_prefix_grant("git status", &GrantScope::Session);
+            assert!(revoked);
+
+            assert_eq!(
+                broker.active_shell_prefix_grants(),
+                vec![("git status".to_string(), GrantScope::Agent(agent_a))],
+                "revoking the Session-scoped row must leave the Agent-scoped row untouched"
+            );
+        }
+
+        /// Revoking all at once drops every grant, and a previously-covered
+        /// command prompts again -- the all-grants half of the acceptance
+        /// list, plus the "never resurrects" guarantee: `decide` reads the
+        /// live store on every call, so there is no cache path that could
+        /// re-authorize a dropped grant.
+        #[tokio::test]
+        async fn revoke_all_shell_prefix_grants_drops_every_grant_and_the_command_prompts_again() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+            let ctx = test_ctx(agent, SessionId::new());
+
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+            broker.remember_shell_prefix_grant(
+                "cargo build".into(),
+                PermissionScope::Session,
+                agent,
+            );
+
+            // Sanity: covered before revocation.
+            let outcome = broker
+                .decide(&ctx, &bash_call("c21", "git status --short"))
+                .await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(gate.call_count(), 0);
+
+            broker.revoke_all_shell_prefix_grants();
+
+            assert_eq!(
+                broker.active_shell_prefix_grants(),
+                Vec::new(),
+                "revoke-all must drop every grant"
+            );
+
+            // The identical command that was covered a moment ago must now
+            // reach the gate -- it must never resurrect through any cache
+            // path.
+            let outcome = broker
+                .decide(&ctx, &bash_call("c22", "git status --short"))
+                .await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                1,
+                "a revoked grant must never resurrect -- the identical command must prompt \
+                 again"
+            );
         }
     }
 }

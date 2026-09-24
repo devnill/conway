@@ -413,6 +413,18 @@ pub enum Mode {
     /// `AwaitingPermission`, and cancel returns there, submit restores
     /// there (the dispatch arm then resolves the prompt).
     EditingPattern(EditingPatternState),
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the session-scoped
+    /// shell-prefix grant editor (opened from `AwaitingPermission` for a
+    /// `RenderKind::ShellCommand` tool -- the case `EditingPattern` above
+    /// offers nothing for). While this is the mode, the input line is
+    /// inert and `input.rs::handle_editing_shell_prefix_key` swallows every
+    /// key except free-text editing (`Char`/`Backspace`/`Left`/`Right`),
+    /// `Ctrl-S` (cycle the shared `permission_grant_scope`), `Enter`
+    /// (grant) and `Esc` (cancel), plus the quit keys. Mirrors
+    /// `EditingPattern`'s own non-stacking guarantee exactly: it opens only
+    /// from `AwaitingPermission`, cancel returns there, submit restores
+    /// there (the dispatch arm then resolves the prompt as `AllowOnce`).
+    EditingShellPrefix(EditingShellPrefixState),
     /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: the settings providers
     /// section's one-line credential prompt (see
     /// [`AddProviderCredentialState`]'s own doc for why this exists and why
@@ -507,6 +519,9 @@ impl std::fmt::Debug for Mode {
             }
             Mode::EditingPattern(ed) => {
                 write!(f, "EditingPattern(tool={})", ed.tool)
+            }
+            Mode::EditingShellPrefix(ed) => {
+                write!(f, "EditingShellPrefix(input={})", ed.input)
             }
             Mode::AddProviderCredential(cred) => {
                 write!(f, "AddProviderCredential(choice_id={})", cred.choice_id)
@@ -1061,6 +1076,26 @@ impl AppState {
             &pending.request.rendered,
             pending.request.render_kind,
         )
+    }
+
+    /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the default prefix Conway
+    /// would propose for the session-scoped shell-prefix grant editor, if
+    /// the pending permission prompt is a `RenderKind::ShellCommand` call
+    /// -- `None` for every other `render_kind`, the exact complement of
+    /// [`Self::offered_permission_rule`]'s own "`Structured` only" gate.
+    /// The `[p]` key handler in `input.rs` uses this to decide which of
+    /// the two editors (if either) to open; the overlay uses it to decide
+    /// whether to show `[p]` at all for a shell-shaped prompt.
+    pub fn offered_shell_prefix_default(&self) -> Option<String> {
+        let Mode::AwaitingPermission(pending) = &self.mode else {
+            return None;
+        };
+        if pending.request.render_kind != conway::RenderKind::ShellCommand {
+            return None;
+        }
+        Some(conway::permission_pattern::default_shell_prefix(
+            &pending.request.rendered,
+        ))
     }
 
     pub fn open_settings(&mut self) {

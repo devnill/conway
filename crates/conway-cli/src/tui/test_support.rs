@@ -112,10 +112,26 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         Action::ExpandSessionPickerAllProjects
         | Action::GrantPermissionPattern(_, _)
         | Action::GrantPermissionRule(_, _)
+        // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: mirrors
+        // `GrantPermissionRule` immediately above -- installing the
+        // session-scoped shell-prefix grant needs the live facade
+        // (`Conway::grant_session_shell_prefix`) this terminal-free
+        // harness does not have, so it too is applied only in
+        // `app/run.rs`'s run loop; a test asserts on the ACTION alone.
+        | Action::GrantSessionShellPrefix(_, _)
         | Action::CyclePermissionMode
         | Action::RevokePermissionGrants
         | Action::RevokePermissionPattern(_, _)
         | Action::RevokeStructuredAllowRule(_, _, _)
+        // Board item `01M350FR4SM6QT0EM6M35EY5AZ`: mirrors
+        // `RevokeStructuredAllowRule` immediately above for the identical
+        // reason -- revoking a shell-prefix grant needs the live facade
+        // (`Conway::revoke_shell_prefix_grant`/`Conway::
+        // revoke_all_shell_prefix_grants`) this terminal-free harness does
+        // not have, so both are applied only in `app/run.rs`'s run loop; a
+        // test asserts on the ACTION alone.
+        | Action::RevokeShellPrefixGrant(_, _)
+        | Action::RevokeAllShellPrefixGrants
         | Action::RevokeHookRule(_, _)
         // Board item `01M0KARX71A64NTSYTDBVANVPF`: writing
         // settings.json needs a real filesystem path, not a live

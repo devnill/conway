@@ -320,6 +320,23 @@ pub(crate) const LEAF_REVOKE_GRANT_PREFIX: &str = "revoke_grant:";
 /// OWN mirror in the same call that built this tree, exactly as the flat
 /// path does -- see that function's own doc).
 pub(crate) const LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX: &str = "revoke_structured_allow:";
+/// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: drops every session-scoped
+/// shell-prefix grant at once -- the "revoke all" leaf for this class, kept
+/// SEPARATE from [`LEAF_REVOKE_GRANTS`] (which only ever clears the two
+/// pattern-grant stores) because this class lives in its own broker store
+/// (`PermissionBroker::shell_prefix_grants`) with its own revoke-all method
+/// (`Conway::revoke_all_shell_prefix_grants`) -- a shared leaf would force
+/// one of the two `Action`s to secretly clear a store its own name does not
+/// mention.
+pub(crate) const LEAF_REVOKE_ALL_SHELL_PREFIX_GRANTS: &str = "revoke_all_shell_prefix_grants";
+/// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: prefix for one shell-prefix
+/// grant's own leaf id, `"{LEAF_REVOKE_SHELL_PREFIX_PREFIX}{index}"` where
+/// `index` is the row's position in `state.shell_prefix_grants` at the
+/// moment this tree was built -- a DISTINCT id space from
+/// [`LEAF_REVOKE_GRANT_PREFIX`]/[`LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX`],
+/// resolved against its own mirror the same way `input::
+/// activate_settings_selection` already resolves those two.
+pub(crate) const LEAF_REVOKE_SHELL_PREFIX_PREFIX: &str = "revoke_shell_prefix:";
 /// Prefix for one hook-backed rule's
 /// own leaf id, `"{LEAF_REVOKE_HOOK_PREFIX}{index}"` where `index` is the
 /// row's position in `state.hook_rules` at the moment this tree was built --
@@ -366,6 +383,22 @@ const PERMISSIONS_GROUP: &str = "permissions";
 /// undifferentiated list would misrepresent the model -- each gets its own
 /// collapsible section.
 const ALLOW_GROUP: &str = "allow";
+/// Board item `01M350FR4SM6QT0EM6M35EY5AZ`: the session-scoped shell-prefix
+/// grants' own sub-section (board item `01M32EBPWZZG6EA77ZG5KYC8KQ`) --
+/// deliberately SEPARATE from [`ALLOW_GROUP`], not merged into it. A
+/// shell-prefix grant is not a `PatternRule`/`Rule` at all (`Rule::
+/// gate_allows` refuses every allow rule for a `ShellCommand` tool by
+/// design -- `PermissionBroker::shell_prefix_grants`'s own field doc), it
+/// carries no `PatternOrigin` (there is exactly one possible origin, the
+/// interactive `[p]` editor, so a per-row origin label would be constant
+/// noise -- `Conway::active_shell_prefix_grants`'s own doc), it can never
+/// be persisted to a file, and it composes by a DIFFERENT rule (a
+/// whitespace-token PREFIX match against one non-compound rendered
+/// command, never `When`/`Then`). Folding it into `ALLOW_GROUP` would
+/// misrepresent all four of those differences as sameness. Mirrors
+/// `HOOKS_GROUP`'s own precedent: a grant class that composes differently
+/// gets its own section rather than being squeezed into an existing one.
+const SHELL_PREFIX_GROUP: &str = "shell prefixes";
 const DENY_GROUP: &str = "deny";
 const PROMPT_GROUP: &str = "prompt";
 /// The fourth review-list sub-section:
@@ -586,6 +619,44 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                         ));
                     }
                     allow
+                }),
+                // Board item `01M350FR4SM6QT0EM6M35EY5AZ`: the
+                // session-scoped shell-prefix grants' own section --
+                // see `SHELL_PREFIX_GROUP`'s own doc for why this is
+                // separate from `ALLOW_GROUP`. Each row shows the prefix
+                // EXACTLY as granted (`Conway::active_shell_prefix_grants`
+                // returns it verbatim, never re-rendered) and its scope --
+                // annotated only when it is NOT the whole session, the
+                // same "constant noise otherwise" reasoning the structured
+                // allow rows just above already apply. No `[origin]`
+                // label: this class has exactly one possible origin (the
+                // interactive `[p]` editor), so one would always read the
+                // same thing on every row.
+                group_node(SHELL_PREFIX_GROUP, state, {
+                    if state.shell_prefix_grants.is_empty() {
+                        vec![MenuNode::static_row("no active shell-prefix grants")]
+                    } else {
+                        let mut rows: Vec<MenuNode> = state
+                            .shell_prefix_grants
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (prefix, scope))| {
+                                let scope_note = match scope {
+                                    conway::GrantScope::Session => String::new(),
+                                    other => format!(" (scope: {})", other.describe()),
+                                };
+                                MenuNode::leaf(
+                                    format!("granted: `{prefix}`{scope_note} (Enter to revoke)"),
+                                    format!("{LEAF_REVOKE_SHELL_PREFIX_PREFIX}{i}"),
+                                )
+                            })
+                            .collect();
+                        rows.push(MenuNode::leaf(
+                            "revoke all shell-prefix grants (Enter)".to_string(),
+                            LEAF_REVOKE_ALL_SHELL_PREFIX_GRANTS,
+                        ));
+                        rows
+                    }
                 }),
                 group_node(DENY_GROUP, state, {
                     let mut deny: Vec<MenuNode> = state
@@ -1067,6 +1138,107 @@ mod tests {
         assert!(grant_rows[1]
             .label
             .contains("/repo/.conway/permissions.json"));
+    }
+
+    // ---- Board item `01M350FR4SM6QT0EM6M35EY5AZ`: shell-prefix grants
+    // are their own section, revocable individually and all at once ----
+
+    /// Headline: with no shell-prefix grants installed, the section says so
+    /// honestly (mirrors `the_permissions_group_shows_mode_and_grants`'s own
+    /// "no active grants" reasoning); with two installed, both list, with
+    /// their scopes, exactly as granted.
+    #[test]
+    fn shell_prefix_grants_section_shows_an_honest_empty_state_then_every_granted_row() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+
+        let text = plain_rows(&state);
+        assert!(
+            text.contains("no active shell-prefix grants"),
+            "an empty grant list says so rather than rendering nothing: {text}"
+        );
+
+        let agent = AgentId::new();
+        state.shell_prefix_grants = vec![
+            ("git status".to_string(), conway::GrantScope::Session),
+            ("cargo build".to_string(), conway::GrantScope::Agent(agent)),
+        ];
+        let text = plain_rows(&state);
+        assert!(
+            text.contains("granted: `git status` (Enter to revoke)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("granted: `cargo build` (scope: "),
+            "a non-session scope must be annotated, unlike the default: {text}"
+        );
+        assert!(
+            !text.contains("`git status` (scope:"),
+            "a session-wide grant is the default -- annotating it would be noise: {text}"
+        );
+        assert!(
+            text.contains("revoke all shell-prefix grants"),
+            "revoke-all appears only once there is something to revoke: {text}"
+        );
+    }
+
+    /// Each shell-prefix grant row is a selectable leaf, addressed by its
+    /// position in `state.shell_prefix_grants` at build time -- mirrors
+    /// `each_grant_row_is_a_selectable_leaf_addressed_by_its_index`'s own
+    /// reasoning for the flat pattern-grant rows.
+    #[test]
+    fn each_shell_prefix_grant_row_is_a_selectable_leaf_addressed_by_its_index() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.shell_prefix_grants = vec![
+            ("git status".to_string(), conway::GrantScope::Session),
+            ("cargo build".to_string(), conway::GrantScope::Session),
+        ];
+
+        let rows = build_tree(&state).rows();
+        let grant_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.label.starts_with("granted: `"))
+            .collect();
+        assert_eq!(grant_rows.len(), 2);
+        assert_eq!(
+            grant_rows[0].kind,
+            menu::MenuRowKind::Leaf {
+                id: format!("{LEAF_REVOKE_SHELL_PREFIX_PREFIX}0")
+            }
+        );
+        assert_eq!(
+            grant_rows[1].kind,
+            menu::MenuRowKind::Leaf {
+                id: format!("{LEAF_REVOKE_SHELL_PREFIX_PREFIX}1")
+            }
+        );
+    }
+
+    /// The revoke-all leaf for this class is its OWN id, distinct from
+    /// `LEAF_REVOKE_GRANTS` -- see `SHELL_PREFIX_GROUP`'s own doc for why
+    /// the two stores each get their own revoke-all rather than sharing
+    /// one.
+    #[test]
+    fn shell_prefix_revoke_all_leaf_is_a_distinct_id_from_the_pattern_grants_one() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.shell_prefix_grants = vec![("git status".to_string(), conway::GrantScope::Session)];
+        state.permission_grants = vec![(
+            conway::PatternRule::parse("bash:git status").expect("valid rule"),
+            conway::PatternOrigin::Interactive,
+        )];
+
+        let rows = build_tree(&state).rows();
+        assert!(rows.iter().any(|r| r.kind
+            == menu::MenuRowKind::Leaf {
+                id: LEAF_REVOKE_ALL_SHELL_PREFIX_GRANTS.to_string()
+            }));
+        assert!(rows.iter().any(|r| r.kind
+            == menu::MenuRowKind::Leaf {
+                id: LEAF_REVOKE_GRANTS.to_string()
+            }));
+        assert_ne!(LEAF_REVOKE_ALL_SHELL_PREFIX_GRANTS, LEAF_REVOKE_GRANTS);
     }
 
     /// The mode label in the menu tracks `AppState`, so it cannot show a
