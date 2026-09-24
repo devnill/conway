@@ -171,6 +171,77 @@ pub use conway::plugin::DEFAULT_FIRST_CALL_TIMEOUT_MS;
 /// ever, no matter how they are spaced in time.
 pub const MAX_AUTO_RESPAWNS: u32 = 3;
 
+/// The MCP tool argument name this crate auto-fills with the dispatching
+/// [`ToolCall::call_id`] when a tool DECLARES this property in its own
+/// `inputSchema` and the caller's arguments did not already supply a
+/// (non-null) value for it (board item `01M32ECKYKN1GBP51J3Z91RA5X`).
+///
+/// **The gap this closes.** A tool whose side effect should happen at most
+/// once per logical call -- ideate's `record_append` is the motivating case,
+/// where a permission-approval race retried a call and minted a second,
+/// duplicate record -- needs a STABLE identity threaded through a retry to
+/// fold on. `ToolCall::call_id` already IS that identity at conway's own
+/// dispatch layer: a retried call, wherever the retry originates (this
+/// crate's own bounded respawn-and-resend for an `idempotentHint: true`
+/// tool, or a higher layer resending after some other transient failure),
+/// carries the SAME `call_id` both times. Stamping it into a conventional
+/// argument name -- rather than this crate inventing any protocol of its
+/// own -- lets an MCP server fold a retry into its first result using
+/// nothing but standard JSON Schema and ordinary argument validation.
+///
+/// **Opaque and tool-agnostic, exactly this crate's own posture toward
+/// every other argument.** This crate never knows what `record_append`
+/// or any other MCP tool DOES with this field -- it only checks whether
+/// the tool's OWN declared schema asked for a property with this exact
+/// name (see [`McpTool::invoke`]'s own call site) and, if so, fills it in
+/// when absent. A tool that never declares this property is never touched:
+/// no stray field is ever added to arguments a server did not ask for.
+///
+/// **Never overrides a caller-supplied value.** A model (or any upstream
+/// caller) that already set this field to something specific -- its own
+/// chosen retry key, unrelated to `call_id` -- is respected untouched; the
+/// stamp only fills a gap, never overwrites a decision already made.
+const IDEMPOTENCY_KEY_ARG: &str = "idempotency_key";
+
+/// Whether `schema`'s top-level JSON Schema object declares a property
+/// named [`IDEMPOTENCY_KEY_ARG`] -- the ONE thing that gates
+/// [`stamp_idempotency_key`]: a tool that never asked for this field is
+/// never touched.
+fn declares_idempotency_key(schema: &schemars::schema::RootSchema) -> bool {
+    schema
+        .schema
+        .object
+        .as_ref()
+        .is_some_and(|object| object.properties.contains_key(IDEMPOTENCY_KEY_ARG))
+}
+
+/// If `spec`'s schema declares [`IDEMPOTENCY_KEY_ARG`] (see
+/// [`declares_idempotency_key`]) and `arguments` does not already carry a
+/// non-null value there, stamps `call_id` in as that field's value --
+/// otherwise leaves `arguments` exactly as it was. Called ONCE per
+/// `McpTool::invoke`, before the retry loop, so a call that IS retried
+/// sends the identical stamped value both times (the fold this exists to
+/// enable depends on that).
+fn stamp_idempotency_key(spec: &ToolSpec, arguments: &mut serde_json::Value, call_id: &str) {
+    if !declares_idempotency_key(&spec.schema) {
+        return;
+    }
+    let serde_json::Value::Object(map) = arguments else {
+        // An MCP tool's arguments are always a JSON object by the schema
+        // this same host compiled and validated `call.arguments` against
+        // before `invoke` was ever reached -- this branch is defensive,
+        // never exercised in practice.
+        return;
+    };
+    let already_set = map.get(IDEMPOTENCY_KEY_ARG).is_some_and(|v| !v.is_null());
+    if !already_set {
+        map.insert(
+            IDEMPOTENCY_KEY_ARG.to_string(),
+            serde_json::Value::String(call_id.to_string()),
+        );
+    }
+}
+
 /// One operator-configured MCP-over-stdio plugin entry: the command to spawn
 /// (the external MCP server), how long any single framed JSON-RPC round-trip
 /// is allowed to run before this host kills it, and the explicit environment
@@ -1065,7 +1136,15 @@ impl Tool for McpTool {
         }
 
         let name = self.spec.name.to_string();
-        let arguments = call.arguments;
+        let mut arguments = call.arguments;
+        // Board item 01M32ECKYKN1GBP51J3Z91RA5X: fill the conventional
+        // `idempotency_key` argument from this call's own stable `call_id`
+        // when `self.spec`'s schema asked for it and the caller left it
+        // unset -- see `stamp_idempotency_key`'s own doc. Done ONCE here,
+        // before the retry loop below, so a call that IS retried (this
+        // crate's own bounded respawn-and-resend, or any other retry that
+        // reaches a second `invoke`) sends the IDENTICAL value both times.
+        stamp_idempotency_key(&self.spec, &mut arguments, &call.call_id);
         // Read ONCE, before any attempt: whether `name` declared
         // `annotations.idempotentHint: true` in the `tools/list` answer this
         // plugin was originally discovered with (`SessionSlot::

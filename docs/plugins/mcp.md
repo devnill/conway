@@ -129,6 +129,40 @@ crate has no `first_call_timeout_ms` config knob of its own, since it has
 no equivalent "warm-up" concept — see
 [`subprocess-plugins.md`](subprocess-plugins.md)).
 
+## Idempotency: a property your tool's schema can opt into
+
+**If your `inputSchema` declares a property named `idempotency_key`, conway
+fills it in for you.** This is a convention, not a protocol extension —
+nothing new on the wire, no MCP capability to negotiate, just an ordinary
+JSON Schema property your tool asks for like any other argument. Declare
+it and you get retry-folding for free; leave it out and nothing about your
+tool changes.
+
+What conway actually does, exactly: at the start of every `tools/call` for
+a tool whose `inputSchema` has a top-level property named
+`idempotency_key`, conway checks whether the caller's arguments already
+carry a non-null value there. If they do, conway leaves it alone — a
+caller-supplied value (a model's own chosen key, or anything else) is
+never overridden. If they don't, conway stamps in the dispatching call's
+own stable per-call identity, `ToolCall::call_id` — the same identity two
+sends of a genuinely-retried call share, whether the retry is this crate's
+own bounded respawn-and-resend for an `idempotentHint: true` tool (see
+above) or a resend originating at some higher layer. A tool that never
+declares the property is never touched: conway adds no stray field to
+arguments a server did not ask for.
+
+What your tool is expected to do with the value: treat a repeated
+`idempotency_key` as the same logical call arriving twice, and fold the
+repeat into the first result rather than performing the side effect again.
+conway hands you the identity; recognizing and folding a repeat is your
+tool's own job — conway does not, and cannot, deduplicate on your behalf.
+
+**The worked example is ideate's `record_append`.** Its motivating
+incident was a permission-approval race that retried a call and minted a
+second, duplicate record; declaring `idempotency_key` in its schema and
+folding on it is what closes that gap. Copy its schema shape if you want
+the same protection for your own side-effecting tool.
+
 ## How this differs from a subprocess plugin
 
 `conway-plugin-subprocess` speaks conway's **own** wire protocol

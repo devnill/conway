@@ -46,6 +46,17 @@ fn call(tool: &str, arguments: serde_json::Value) -> ToolCall {
     }
 }
 
+/// Like [`call`], with an explicit `call_id` — used by the idempotency-key
+/// tests below to prove two DIFFERENT calls (different `call_id`s) are
+/// treated as genuinely distinct, never folded together.
+fn call_with_id(call_id: &str, tool: &str, arguments: serde_json::Value) -> ToolCall {
+    ToolCall {
+        call_id: call_id.to_string(),
+        name: conway::ToolName::new(tool),
+        arguments,
+    }
+}
+
 /// The text content of a `ToolOutput`'s first `Text` block, or a panic if the
 /// output has no text block. Keeps the success-path assertions one-liners.
 fn first_text(out: &conway::plugin::ToolOutput) -> String {
@@ -1132,5 +1143,182 @@ async fn a_server_that_never_becomes_ready_still_fails_closed() {
     assert!(
         matches!(err, McpPluginError::TimedOut { .. }),
         "expected TimedOut on the STARTUP deadline, got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Idempotency-key stamping (board item 01M32ECKYKN1GBP51J3Z91RA5X): a tool
+// that declares an `idempotency_key` property gets `ToolCall::call_id`
+// auto-filled when the caller omitted it, so a call retried with the SAME
+// `call_id` folds into the server's original answer instead of minting a
+// second one.
+// ---------------------------------------------------------------------
+
+/// Parses a `store_append` (or `echo_args`) response's single text block as
+/// JSON.
+fn parse_json_result(out: &conway::plugin::ToolOutput) -> serde_json::Value {
+    serde_json::from_str(&first_text(out)).expect("store_append/echo_args answers JSON")
+}
+
+/// THE acceptance test: a call retried with the SAME `call_id` reaches the
+/// server's store once (the second answer names the ORIGINAL id and
+/// `already_present: true`, never a freshly minted one) — proving conway's
+/// transport stamps a stable identity into a retry without either side
+/// needing to invent its own protocol for it.
+#[tokio::test]
+async fn a_call_retried_with_the_same_call_id_folds_into_the_original_answer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec =
+        common::spec_for_warmed(dir.path(), "idem.py", common::IDEMPOTENT_STORE_SERVER).await;
+    let plugin = McpPlugin::discover(spec).await.expect("discover");
+    let store_append = plugin
+        .tools()
+        .into_iter()
+        .find(|t| t.spec().name == conway::ToolName::new("store_append"))
+        .expect("store_append tool");
+
+    // Neither call supplies `idempotency_key` itself — conway's transport
+    // must fill it from `call.call_id`, which `call()` fixes at "call-1" for
+    // both invocations, exactly modeling a retry of the identical call.
+    let first = store_append
+        .invoke(
+            call("store_append", serde_json::json!({"content": "hello"})),
+            ctx(),
+        )
+        .await
+        .expect("first dispatch must succeed");
+    let first_body = parse_json_result(&first);
+    assert_eq!(first_body["already_present"], false);
+    assert_eq!(first_body["idempotency_key"], "call-1");
+    let original_id = first_body["id"].clone();
+
+    let retried = store_append
+        .invoke(
+            call(
+                "store_append",
+                serde_json::json!({"content": "hello, again"}),
+            ),
+            ctx(),
+        )
+        .await
+        .expect("the retried dispatch must succeed");
+    let retried_body = parse_json_result(&retried);
+    assert_eq!(
+        retried_body["already_present"], true,
+        "a retry with the SAME call_id must fold into the ORIGINAL server answer"
+    );
+    assert_eq!(
+        retried_body["id"], original_id,
+        "the retried dispatch must get the ORIGINAL record's id back, never a fresh one"
+    );
+    assert_eq!(retried_body["idempotency_key"], "call-1");
+}
+
+/// The negative half of the same property: two DISTINCT calls (different
+/// `call_id`s) must mint two DISTINCT ids — no content-hash fuzzing, no
+/// time-window dedup, just the call identity.
+#[tokio::test]
+async fn two_distinct_call_ids_never_fold_together() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec =
+        common::spec_for_warmed(dir.path(), "idem.py", common::IDEMPOTENT_STORE_SERVER).await;
+    let plugin = McpPlugin::discover(spec).await.expect("discover");
+    let store_append = plugin
+        .tools()
+        .into_iter()
+        .find(|t| t.spec().name == conway::ToolName::new("store_append"))
+        .expect("store_append tool");
+
+    let a = store_append
+        .invoke(
+            call_with_id(
+                "call-A",
+                "store_append",
+                serde_json::json!({"content": "a"}),
+            ),
+            ctx(),
+        )
+        .await
+        .expect("call A must succeed");
+    let b = store_append
+        .invoke(
+            call_with_id(
+                "call-B",
+                "store_append",
+                serde_json::json!({"content": "b"}),
+            ),
+            ctx(),
+        )
+        .await
+        .expect("call B must succeed");
+
+    let a_body = parse_json_result(&a);
+    let b_body = parse_json_result(&b);
+    assert_eq!(a_body["already_present"], false);
+    assert_eq!(b_body["already_present"], false);
+    assert_ne!(
+        a_body["id"], b_body["id"],
+        "two genuinely distinct calls must mint two distinct ids"
+    );
+}
+
+/// A caller (model) that already set `idempotency_key` itself is never
+/// overridden by `call_id` — the stamp only fills a gap, never overwrites a
+/// decision already made.
+#[tokio::test]
+async fn a_caller_supplied_idempotency_key_is_never_overridden() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec =
+        common::spec_for_warmed(dir.path(), "idem.py", common::IDEMPOTENT_STORE_SERVER).await;
+    let plugin = McpPlugin::discover(spec).await.expect("discover");
+    let store_append = plugin
+        .tools()
+        .into_iter()
+        .find(|t| t.spec().name == conway::ToolName::new("store_append"))
+        .expect("store_append tool");
+
+    let out = store_append
+        .invoke(
+            call(
+                "store_append",
+                serde_json::json!({"idempotency_key": "model-chosen", "content": "x"}),
+            ),
+            ctx(),
+        )
+        .await
+        .expect("must succeed");
+    let body = parse_json_result(&out);
+    assert_eq!(
+        body["idempotency_key"], "model-chosen",
+        "a caller-supplied idempotency_key must reach the server untouched, not call_id"
+    );
+}
+
+/// A tool that never declared `idempotency_key` in its OWN schema never gets
+/// one injected — the stamp is schema-gated, not applied blindly to every
+/// MCP tool call this crate makes.
+#[tokio::test]
+async fn a_tool_without_the_idempotency_key_property_is_never_stamped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec =
+        common::spec_for_warmed(dir.path(), "idem.py", common::IDEMPOTENT_STORE_SERVER).await;
+    let plugin = McpPlugin::discover(spec).await.expect("discover");
+    let echo = plugin
+        .tools()
+        .into_iter()
+        .find(|t| t.spec().name == conway::ToolName::new("echo_args"))
+        .expect("echo_args tool");
+
+    let out = echo
+        .invoke(
+            call("echo_args", serde_json::json!({"content": "hi"})),
+            ctx(),
+        )
+        .await
+        .expect("must succeed");
+    let echoed = parse_json_result(&out);
+    assert!(
+        echoed.get("idempotency_key").is_none(),
+        "echo_args declares no idempotency_key property, so none may be injected — got {echoed:?}"
     );
 }

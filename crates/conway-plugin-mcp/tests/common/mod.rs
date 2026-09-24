@@ -818,6 +818,124 @@ for line in sys.stdin:
     sys.stdout.flush()
 "#;
 
+/// An MCP server exercising board item `01M32ECKYKN1GBP51J3Z91RA5X` (record
+/// idempotency): declares `store_append` (an `idempotency_key` string
+/// property, arbitrary and OPTIONAL per its own schema -- this fixture is the
+/// SERVER side of the contract, so it decides what to do with the field, not
+/// this crate) and `echo_args` (NO `idempotency_key` property at all -- the
+/// control case proving this crate's stamp is schema-gated, never applied to
+/// a tool that never asked for it).
+///
+/// `store_append` keeps an in-memory dict, `{idempotency_key: minted_id}`,
+/// alive for the whole life of this ONE persistent child process (exactly
+/// the "one child shared by every call" property [`PID_SERVER`] proves): a
+/// call whose `idempotency_key` is already a dict key answers with the
+/// ORIGINAL minted id and `already_present: true`, WITHOUT minting a new
+/// one; a call with an absent or previously-unseen key mints a fresh id,
+/// records it (if the key was present), and answers `already_present:
+/// false`. A call with NO `idempotency_key` at all (the key absent from
+/// `arguments` entirely) never touches the dict and always mints fresh --
+/// exactly the "two genuinely distinct appends still mint distinct ids"
+/// property this item requires elsewhere.
+///
+/// The `idempotency_key` this fixture actually received rides back on every
+/// `store_append` response (`"idempotency_key"`, possibly `null`) so a test
+/// can assert exactly what value conway's transport supplied, without a
+/// separate log file.
+pub const IDEMPOTENT_STORE_SERVER: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+STORE = {}
+NEXT_ID = [1000]
+
+def initialize(rid):
+    return {
+        "jsonrpc": "2.0", "id": rid, "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "ref-idempotent-store", "version": "0.1"},
+        }
+    }
+
+def tools_list(rid):
+    return {
+        "jsonrpc": "2.0", "id": rid, "result": {
+            "tools": [
+                {
+                    "name": "store_append",
+                    "description": "idempotent append keyed by an optional idempotency_key",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "idempotency_key": {"type": "string"},
+                            "content": {"type": "string"},
+                        },
+                    },
+                },
+                {
+                    "name": "echo_args",
+                    "description": "echoes back the exact arguments object it received, as JSON — declares NO idempotency_key property",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"content": {"type": "string"}},
+                    },
+                },
+            ]
+        }
+    }
+
+def tools_call(rid, params):
+    name = params.get("name", "")
+    args = params.get("arguments", {}) or {}
+    if name == "store_append":
+        key = args.get("idempotency_key")
+        if key is not None and key in STORE:
+            record_id = STORE[key]
+            already = True
+        else:
+            record_id = NEXT_ID[0]
+            NEXT_ID[0] += 1
+            if key is not None:
+                STORE[key] = record_id
+            already = False
+        body = {"id": record_id, "already_present": already, "idempotency_key": key}
+        result = {"jsonrpc": "2.0", "id": rid, "result": {
+            "content": [{"type": "text", "text": json.dumps(body)}],
+            "isError": False,
+        }}
+    elif name == "echo_args":
+        result = {"jsonrpc": "2.0", "id": rid, "result": {
+            "content": [{"type": "text", "text": json.dumps(args)}],
+            "isError": False,
+        }}
+    else:
+        result = {"jsonrpc": "2.0", "id": rid, "result": {
+            "content": [{"type": "text", "text": f"unknown tool: {name}"}],
+            "isError": True,
+        }}
+    return result
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method")
+    rid = req.get("id")
+    if method == "initialize":
+        resp = initialize(rid)
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        resp = tools_list(rid)
+    elif method == "tools/call":
+        resp = tools_call(rid, req.get("params", {}))
+    else:
+        resp = {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": f"method not found: {method}"}}
+    sys.stdout.write(json.dumps(resp) + "\n")
+    sys.stdout.flush()
+"#;
+
 /// An MCP server that reports its OWN `os.getpid()` as the `tools/call` result
 /// -- the load-bearing fixture for "every tool shares ONE child process": two
 /// sequential calls must return the SAME pid (the child was reused), not a
