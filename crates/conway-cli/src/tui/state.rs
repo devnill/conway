@@ -206,7 +206,7 @@ impl EditingPatternState {
 
     /// Board item `01M331DN5YF9J1T12QRASZCHV7`: the rule THIS editor's
     /// current field state would submit right now, byte-identical to what
-    /// [`super::AppState::submit_editing_pattern`] actually builds --
+    /// [`AppState::submit_editing_pattern`] actually builds --
     /// same `pinned` filter, same field order (`BTreeMap` sorts by key, so
     /// the fields' own on-screen order does not matter), same
     /// [`conway::Rule::args_match_allow_rule`] constructor. Read by the
@@ -241,12 +241,12 @@ impl EditingPatternState {
 /// -- and the operator edits from there; nothing installs it un-reviewed.
 ///
 /// The grant scope is NOT carried here, mirroring [`EditingPatternState`]'s
-/// own doc on the identical point: it lives on [`super::AppState`] as
+/// own doc on the identical point: it lives on [`AppState`] as
 /// `permission_grant_scope` (cycled by `Ctrl-S` while this editor is open,
 /// the SAME field the prompt's own `s` key and the `[p]` field editor's `s`
 /// key cycle), so every remembered-grant surface shares one scope source.
 ///
-/// `error` is set by [`super::AppState::submit_editing_shell_prefix`] when
+/// `error` is set by [`AppState::submit_editing_shell_prefix`] when
 /// [`conway::permission_pattern::shell_command_is_compound`] refuses the
 /// (trimmed) `input` -- the editor stays open with the reason shown,
 /// mirroring [`crate::tui::state::modal::AddProviderCredentialState::

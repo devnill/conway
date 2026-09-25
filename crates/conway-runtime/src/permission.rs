@@ -1148,14 +1148,14 @@ impl PermissionBroker {
     /// `ShellCommand` tool by design (board item
     /// `01KZDDPC5MMD49F6JPV9CW4TVM`) -- that refusal is untouched by this
     /// method, which never constructs a `Rule`/`PatternRule` at all. This
-    /// installs into [`Self::shell_prefix_grants`] instead -- see that
+    /// installs into `Self::shell_prefix_grants` instead -- see that
     /// field's own doc for the full "never durable, never in a review/
     /// revoke surface, never reaches `validate_rule_registration`"
     /// reasoning, which holds here by construction (there is no
     /// `PatternOrigin` parameter to even mislabel) rather than by a filter
     /// applied afterward.
     ///
-    /// Reuses [`grant_scope_for`]/[`GrantScope::covers`] VERBATIM -- the
+    /// Reuses `grant_scope_for`/`GrantScope::covers` VERBATIM -- the
     /// identical `Session`/`Agent`/`AgentSubtree` semantics the exact-args
     /// cache and the durable patterns already use, so this class cannot
     /// drift into a fourth meaning of "scope".
@@ -1165,7 +1165,7 @@ impl PermissionBroker {
     /// report a match against ANY rendered command -- exactly the
     /// un-editable, unbounded "allow always" this item's own security
     /// posture rules out offering by accident. Deduplicates on insert, the
-    /// same reasoning [`Self::remember`]'s own doc gives for the exact-args
+    /// same reasoning `Self::remember`'s own doc gives for the exact-args
     /// cache: a concurrent `decide` racing to install the identical
     /// `(prefix, scope)` pair twice must not grow this list forever.
     ///
@@ -1173,10 +1173,10 @@ impl PermissionBroker {
     /// shell_command_is_compound`] is `true` installs nothing either,
     /// returning `false`.** A prefix is a single command's leading tokens,
     /// nothing more -- "same rule for the prefix itself" as the candidate-
-    /// side check [`Self::shell_prefix_grant_allows`] applies, and the
+    /// side check `Self::shell_prefix_grant_allows` applies, and the
     /// SAME function, so an operator who somehow typed `git status && rm
     /// -rf /` into the editor is refused at the door rather than handed a
-    /// grant [`Self::shell_prefix_grant_allows`] would then have to refuse
+    /// grant `Self::shell_prefix_grant_allows` would then have to refuse
     /// to honor for every candidate anyway.
     ///
     /// Returns `true` if the grant is now in effect (freshly installed, or
@@ -1244,7 +1244,7 @@ impl PermissionBroker {
     /// Pure in-memory removal, matching the class's own "never durable"
     /// contract (`shell_prefix_grants`'s own field doc): there is no file
     /// to rewrite, no `PatternOrigin` to resolve, nothing else to keep in
-    /// sync. Once removed, [`Self::shell_prefix_grant_allows`] can never
+    /// sync. Once removed, `Self::shell_prefix_grant_allows` can never
     /// see it again -- it reads this exact store, live, on every call; a
     /// revoked grant cannot resurrect through a cache, because this class
     /// has none (`Self::decide`'s exact-args `cache` is checked, and can be

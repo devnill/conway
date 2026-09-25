@@ -138,7 +138,7 @@ pub struct AttemptRequest<'a> {
     /// The FLOOR of the admission reserve: when the winning route's role
     /// declares a larger `params.max_tokens`, the reserve that reaches
     /// `Backend::admit` is that declaration, not this figure (see
-    /// [`output_cap`]).
+    /// `output_cap`).
     pub headroom: u32,
     pub max_tokens_override: Option<u32>,
     /// TTL applied to any cache breakpoint this engine attaches (see
