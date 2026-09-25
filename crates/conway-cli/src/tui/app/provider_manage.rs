@@ -1,7 +1,7 @@
 //! `App::apply_add_provider_choice`/`apply_add_provider_credential`/
 //! `apply_remove_provider` -- board item `01M11XWB4T8ZADNDB4M8R482MA`'s
 //! write half, factored out of `run.rs`'s own giant `select!` match arm the
-//! same way [`super::plugin_toggle::App::apply_plugin_toggle`] is, for the
+//! same way [`super::App::apply_plugin_toggle`] is, for the
 //! identical reason (directly testable, no real terminal/`select!` loop
 //! needed).
 //!

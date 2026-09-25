@@ -47,7 +47,7 @@
 //! "the seam gap that shapes it", written when this port had exactly the
 //! one method above). It is deliberately NOT a second permission gate: it
 //! returns nothing, so it cannot deny, cancel, or alter the call either --
-//! the same observation-only posture as [`Self::after_tool_call`], just
+//! the same observation-only posture as [`ToolObserver::after_tool_call`], just
 //! timed differently. `PermissionGate` remains the one place a call is
 //! allowed or denied; this method runs strictly AFTER that decision has
 //! already resolved to allow, so a denied call never reaches it and never

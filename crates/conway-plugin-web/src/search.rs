@@ -89,9 +89,12 @@ pub struct WebSearchTool {
     config: SearchConfig,
     /// The provider endpoint this tool calls -- [`SearchProvider::
     /// default_endpoint`] in production ([`Self::new`]); overridden by
-    /// [`Self::with_endpoint`] so this crate's own tests can point at a
-    /// local `wiremock` server instead of a real provider, without this
-    /// tool's own code branching on "am I in a test".
+    /// `Self::with_endpoint` (a plain code span here, deliberately not an
+    /// intra-doc link: that method is itself `#[cfg(test)]`-gated, so it
+    /// does not exist at all in the default build this doc comment is
+    /// compiled under) so this crate's own tests can point at a local
+    /// `wiremock` server instead of a real provider, without this tool's
+    /// own code branching on "am I in a test".
     endpoint: String,
 }
 

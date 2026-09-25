@@ -170,7 +170,14 @@ gate_ideate_record_layout() {
 }
 
 gate_doc() {
-  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+  # --document-private-items: a broken intra-doc link inside a private item
+  # is invisible to the public-only build above -- the page it would appear
+  # on is never generated, so it is never checked. This renders (and checks)
+  # every item, public and private, catching exactly the contributor-facing
+  # link the public-only run would silently pass. Board item
+  # `01M3CFAYQZ3WDS5HC4TG3RM28N`.
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features &&
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
 }
 
 gate_clippy() {

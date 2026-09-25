@@ -228,7 +228,7 @@ impl AppState {
     }
 
     /// T4: append a reasoning-trace delta (from `Event::ThinkingDelta`),
-    /// mirroring [`append_assistant_text`]. Creates a new
+    /// mirroring [`Self::append_assistant_text`]. Creates a new
     /// [`Entry::Reasoning`] on the first delta of a run (stamping the
     /// serving model + envelope timestamp), or appends to the last
     /// `Reasoning` entry if one is already in progress. Reasoning is

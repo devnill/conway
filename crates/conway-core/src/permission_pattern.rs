@@ -295,10 +295,10 @@ pub struct PatternRule {
     pub command_prefix: String,
 }
 
-/// The `category` [`Self::matches_render`]/[`Self::matches_deny`] pass to
+/// The `category` [`PatternRule::matches_render`]/[`PatternRule::matches_deny`] pass to
 /// [`Rule::matches_allow_render`]/[`Rule::matches_deny_render`] on behalf of
 /// a flat rule, which carries no category of its own. Any variant would do
-/// -- [`Self::to_rule`] only ever produces `Select::Tools` (whose
+/// -- [`PatternRule::to_rule`] only ever produces `Select::Tools` (whose
 /// `select_matches` arm never reads `category`) paired with `When::Always`
 /// or `When::CommandPrefix` (neither of whose match arms read it either);
 /// `When::CategoryIn` and `Select::Categories`, the only places `category`

@@ -10,7 +10,7 @@ impl AppState {
     /// T4: stamp the turn-end summary (`1m 6s · 1.4k tok (88% cached)`)
     /// onto the last `Entry::Assistant` or `Entry::Reasoning` block in the
     /// transcript. Called from the `TurnFinished` arm BEFORE
-    /// [`clear_turn_state`] zeroes `turn_started_at` (the elapsed figure
+    /// [`Self::clear_turn_state`] zeroes `turn_started_at` (the elapsed figure
     /// reads `turn_started_at.elapsed()`). A no-op if THIS TURN produced no
     /// Assistant/Reasoning block to attach to (e.g. a turn that produced
     /// only tool calls)
@@ -54,7 +54,7 @@ impl AppState {
 
 /// T4: compact token-count formatting for the turn-end summary. `< 1000`
 /// renders as-is; `>= 1000` renders as `{k}.{tenths}k` (e.g. `12345` ->
-/// `12.3k`). Mirrors [`crate::tui::view::status::compact_tokens`] (which is
+/// `12.3k`). Mirrors `crate::tui::view::status::compact_tokens` (which is
 /// private to the status module); duplicated here rather than made `pub` to
 /// keep the status module's helpers private to the status line's own
 /// rendering surface, matching the existing module boundaries.
@@ -79,7 +79,7 @@ fn compact_tokens(n: u64) -> String {
 /// `crate::tui::usage_format::cache_suffix`'s own doc for which of the
 /// three wordings each combination picks). Elapsed is `1m 6s` for >= 60s,
 /// else `{secs}s`. Tokens is the sum of every `Usage` field (matching
-/// [`crate::tui::view::status::spent_tokens`]); the cache suffix itself is
+/// `crate::tui::view::status::spent_tokens`); the cache suffix itself is
 /// [`crate::tui::usage_format::cache_suffix`] -- shared with the status
 /// line's `tokens` field so the two can never render this differently.
 fn format_turn_summary(

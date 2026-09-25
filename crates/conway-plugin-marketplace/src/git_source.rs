@@ -19,20 +19,20 @@
 //!
 //! # No archive support -- still, deliberately
 //!
-//! [`fetch_git_source`] fetches exactly the three kinds
+//! [`crate::git_source::fetch_git_source`] fetches exactly the three kinds
 //! [`crate::manifest::PluginSource`] can represent as fetchable
 //! (`GitSubdir`/`Github`/`RelativePath` -- the last resolved to an
-//! effective `github`-shaped clone URL via [`clone_url`]'s own new match
+//! effective `github`-shaped clone URL via `clone_url`'s own new match
 //! arm, board item `01M1A9J9C9YRH3YPTGD335HZPZ`'s defect 1);
 //! [`crate::manifest::PluginSource::Unsupported`] refuses by name via
-//! [`clone_url`] before invoking `git` at all -- an archive-requiring
+//! `clone_url` before invoking `git` at all -- an archive-requiring
 //! source kind never reaches a subprocess.
 //!
 //! # A relative source resolves against the marketplace's OWN repository
 //!
 //! `RelativePath` (a plain-string `source`, e.g. `"./"`) names no git
 //! remote of its own -- it means "the repository the marketplace manifest
-//! was itself reached through". [`clone_url`] resolves this via
+//! was itself reached through". `clone_url` resolves this via
 //! [`crate::manifest::github_repo_from_url`] against the literal
 //! `marketplace_url` [`crate::install::install_entry`] was called with (the
 //! same string the operator typed, or `App::apply_marketplace_install`'s
@@ -47,19 +47,19 @@
 //!
 //! # Bounded, never a hang (P-10)
 //!
-//! [`GIT_TIMEOUT`] bounds the whole clone -- generous for a real
+//! [`crate::git_source::GIT_TIMEOUT`] bounds the whole clone -- generous for a real
 //! repository over a slow connection, but an unreachable git remote must be
 //! an ordinary reported failure, never a hang, exactly like this crate's
 //! own HTTP client's 20-second bound (`manifest::client`'s own doc) applied
 //! to a transport that can legitimately take longer. "Bounded" means the
 //! CHILD PROCESS itself, not merely this module's own `.await`:
-//! [`run_git_clone`] holds the spawned `git`'s [`tokio::process::Child`]
+//! `run_git_clone` holds the spawned `git`'s [`tokio::process::Child`]
 //! for its whole run (never `Child::wait_with_output`, which consumes it)
 //! specifically so that on timeout it can `child.kill().await` BEFORE
 //! returning the timeout error -- `.kill_on_drop(true)` is set too, as a
 //! floor, but is not relied on alone: a merely-dropped, not explicitly
 //! killed, child can keep running and keep writing into `checkout_dir`
-//! while [`fail_cleaning_up`]'s `remove_dir_all` is concurrently deleting
+//! while `fail_cleaning_up`'s `remove_dir_all` is concurrently deleting
 //! it, a live race an orphaned `git clone` would otherwise create.
 //!
 //! # A git checkout can contain a symlink too (P-10)
@@ -68,7 +68,7 @@
 //! argument bounds a DIFFERENT surface than this one. A git checkout is not
 //! an archive, but it is still untrusted, network-supplied content, and
 //! nothing stops a malicious repository from committing a symlink that
-//! resolves outside its own tree. [`validate_checkout_tree`] refuses the
+//! resolves outside its own tree. `validate_checkout_tree` refuses the
 //! WHOLE install if the checked-out plugin root contains any symlink
 //! anywhere -- never followed, never partially accepted -- before a single
 //! byte is copied into conway's own plugin store. This is "a narrower
@@ -76,15 +76,15 @@
 //! hazard CLASS P-10 names is real here, just smaller than an arbitrary
 //! archive format's.
 //!
-//! **The plugin root itself is not a "descendant" [`validate_checkout_tree`]
+//! **The plugin root itself is not a "descendant" `validate_checkout_tree`
 //! ever visits -- it is where the walk STARTS.** `Path::is_dir` and
 //! `std::fs::read_dir` both FOLLOW a symlink they are given directly, so a
 //! `git-subdir` entry naming `path: "plugin"` where the repository commits
 //! `plugin` itself as a symlink (git's own mode `120000` blob) to an
 //! arbitrary absolute path would previously have its TARGET walked and
 //! copied, unnoticed, by code whose own doc claimed every symlink
-//! "anywhere" was refused. [`validate_plugin_root`] closes this before
-//! [`validate_checkout_tree`] ever runs: `std::fs::symlink_metadata` (never
+//! "anywhere" was refused. `validate_plugin_root` closes this before
+//! `validate_checkout_tree` ever runs: `std::fs::symlink_metadata` (never
 //! followed) on the resolved root itself, PLUS canonicalizing both
 //! `checkout_dir` and the resolved root and requiring the second to start
 //! with the first -- the second check is what catches a symlink in an
@@ -98,7 +98,7 @@
 //! network-supplied, untrusted. Passed to `git clone` unchecked, it could
 //! name one of git's OTHER transports (`ext::<command>`, `fd::<n>`, a bare
 //! local path) rather than a network remote at all; `ext::` in particular
-//! runs an arbitrary shell command as this crate's own operator. [`clone_url`]
+//! runs an arbitrary shell command as this crate's own operator. `clone_url`
 //! refuses any `git-subdir` URL that is not `http://`/`https://` before
 //! invoking `git` at all (`MarketplaceError::UnsafeGitUrl`) -- an ALLOW-by-
 //! prefix, not a deny-by-prefix: everything not on the allow-list is
@@ -108,7 +108,7 @@
 //! network-supplied text passed through verbatim: this module BUILDS it
 //! from `owner/repo`, always `https://github.com/<repo>.git`.
 //!
-//! [`clone_url`] also refuses a `git-subdir` URL whose authority embeds
+//! `clone_url` also refuses a `git-subdir` URL whose authority embeds
 //! userinfo (`https://user:pass@host/...`) outright, rather than stripping
 //! it and proceeding: a legitimate public marketplace has no reason to ask
 //! this crate to carry a credential through a clone, and the credential
@@ -333,7 +333,7 @@ fn normalize_relative_source(
 /// filesystem) and copies its plugin root (`subdir`, or the repository
 /// root itself for `github`) into `staging_dir`, which the caller
 /// ([`crate::install::install_entry`]) has already ensured is empty or
-/// nonexistent -- mirrors [`crate::install::stage_files`]'s own contract
+/// nonexistent -- mirrors `crate::install::stage_files`'s own contract
 /// exactly, so `install_entry` treats a git-sourced entry and a files-map
 /// entry identically once this returns `Ok`.
 ///

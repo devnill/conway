@@ -1166,7 +1166,10 @@ pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -
 /// tolerating as declared incoherence, would convert that inherited
 /// incoherence into a hard `WouldOrphan` refusal. That breaks the module's
 /// governing invariant -- `derive` refuses only orphans the DERIVATION
-/// introduced (see [`validate_coherence`]'s doc) -- for a derivation that may
+/// introduced (see `validate_coherence`'s doc -- a plain code span here,
+/// deliberately not an intra-doc link: that function is itself
+/// `#[cfg(test)]`-gated, so it does not exist at all in the default build
+/// this doc comment is compiled under) -- for a derivation that may
 /// carry no ops at all.
 ///
 /// Ruling 3 still holds: a curator that resolves BOTH halves and `Include`s

@@ -1,5 +1,5 @@
 //! What THIS host offers to plugins -- the host-side counterpart to
-//! [`conway_core::ports::plugin::HostCapability`]'s plugin-declared
+//! [`conway_core::ports::HostCapability`]'s plugin-declared
 //! requirements. Constructed at BUILD time from the configuration (see
 //! [`HostCaps::from_config`]) and consulted once per installed plugin at the
 //! registration seam in [`crate::ConwayBuilder::build`]: any cap a plugin

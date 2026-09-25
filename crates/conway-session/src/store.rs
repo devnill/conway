@@ -532,7 +532,7 @@ impl JsonlSessionStore {
     /// The body of [`SessionStore::append`] starting from an already
     /// acquired per-session handle. Factored out so the `removed`-flag
     /// regression tests can drive the append path through a stale,
-    /// pre-cloned handle Arc (see [`append_via_raw_handle`]) instead of
+    /// pre-cloned handle Arc (see [`Self::append_via_raw_handle`]) instead of
     /// relying on the probabilistic barrier race.
     async fn append_with_handle(
         &self,

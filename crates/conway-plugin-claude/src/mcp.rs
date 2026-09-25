@@ -67,13 +67,13 @@ impl TranslatedMcpServer {
 /// reported, never silently dropped from the list). `Ok((vec![], vec![]))`
 /// when the file is simply absent -- a plugin directory naming no MCP
 /// servers at all is ordinary, not an error.
-/// The bare name of the plugin-root variable -- [`PLUGIN_ROOT_TOKEN`] is the
+/// The bare name of the plugin-root variable -- [`crate::hooks::PLUGIN_ROOT_TOKEN`] is the
 /// `${...}` interpolation form of this same name, and they must not drift.
 const PLUGIN_ROOT_TOKEN_NAME: &str = "CLAUDE_PLUGIN_ROOT";
 
 /// Substitutes `${CLAUDE_PLUGIN_ROOT}` in one translated `.mcp.json` string.
 ///
-/// Uses `hooks`' own [`PLUGIN_ROOT_TOKEN`] rather than a second spelling of
+/// Uses `hooks`' own [`crate::hooks::PLUGIN_ROOT_TOKEN`] rather than a second spelling of
 /// the same literal (steering P-14): hook commands and MCP argvs are the two
 /// places a Claude Code plugin writes this token, and a translation that
 /// resolved it in one and not the other is exactly the defect this fixes.

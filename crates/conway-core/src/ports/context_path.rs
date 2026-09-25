@@ -33,12 +33,12 @@
 //!
 //! # Read surface, deliberately wider than `set_head`'s write surface
 //!
-//! [`Self::resolve_records`] takes an arbitrary slice of [`RecordRef`]s,
+//! [`ContextPathHost::resolve_records`] takes an arbitrary slice of [`RecordRef`]s,
 //! each naming ANY session, not just the caller's own -- mirroring
 //! `CurateCtx::store`'s own "a curator may reference any record in the
 //! store" grant (§11.5) and `CommandOutcome::Checkout`'s own "deliberately
-//! widens what a command can name" precedent. [`Self::default_path`] and
-//! [`Self::set_head`], by contrast, are narrowed to ONE session by
+//! widens what a command can name" precedent. [`ContextPathHost::default_path`] and
+//! [`ContextPathHost::set_head`], by contrast, are narrowed to ONE session by
 //! [`ContextPathHandle`] below -- a tool composes and freezes only the
 //! calling session's own head, never another session's.
 //!

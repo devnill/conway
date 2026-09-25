@@ -39,10 +39,10 @@
 //!
 //! ## GP-03
 //!
-//! Like [`Plugin::tools`]/[`Plugin::context_hooks`], curators install through
+//! Like [`crate::ports::plugin::Plugin::tools`]/[`crate::ports::plugin::Plugin::context_hooks`], curators install through
 //! the SAME `with_plugin`/`install_selected` surface every other plugin
 //! capability uses -- no privileged first-party channel. See
-//! [`Plugin::curators`] for the full GP-03 argument.
+//! [`crate::ports::plugin::Plugin::curators`] for the full GP-03 argument.
 //!
 //! ## Why `Arc<dyn SessionStore>` is cycle-safe
 //!

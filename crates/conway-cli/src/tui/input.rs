@@ -1082,7 +1082,7 @@ fn handle_ui_form_key(state: &mut AppState, key: KeyEvent) -> Action {
 /// The `[p]` field editor's key handling (`Mode::EditingPattern`). Mirrors
 /// [`handle_intent_confirm_key`]'s shape: `Ctrl-C`/`Ctrl-D` pass through as
 /// quit (no live resource to purge -- the prompt is parked in
-/// [`EditingPatternState`] and restored on cancel, but a hard quit drops
+/// [`super::state::EditingPatternState`] and restored on cancel, but a hard quit drops
 /// the whole session anyway), `PageUp`/`PageDown` scroll the field list, and
 /// every other key is bare-only (a held modifier is NOT a field action --
 /// same M2-shape guard as the other modals). The field keys: `Up`/`Down`/`

@@ -12,7 +12,7 @@
 //! sibling project directory) that has no adapter-free equivalent the way
 //! `resolve_default_path`/`write_head` do, so the concrete host is built
 //! HERE -- this crate already carries the `conway-session` edge, gated by
-//! `jsonl-store`, exactly like [`crate::builder::build_default_store`].
+//! `jsonl-store`, exactly like `crate::builder::build_default_store`.
 //! `RuntimeDeps::session_discovery` takes the finished `Arc<dyn
 //! SessionDiscoveryHost>` directly (unlike `context_path_host`, which
 //! `Runtime::new` builds internally from adapter-free pieces already in

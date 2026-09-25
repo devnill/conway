@@ -1529,7 +1529,7 @@ fn full_instruction_text(instruction: &PluginInstruction) -> String {
 /// [`FragmentAuthor::Operator`] yields `Provenance::Operator { name, path }`
 /// -- an operator's own words, sourced from a file some plugin merely read,
 /// are never durably attributed to that plugin or misfiled as a skill. Both
-/// call sites of this helper ([-1]/[1] `PluginInstructions*` above) share
+/// call sites of this helper (\[-1\]/\[1\] `PluginInstructions*` above) share
 /// it so the stamping rule is written once, not duplicated per position.
 fn provenance_for_instruction(instruction: &PluginInstruction) -> Provenance {
     match &instruction.authored_by {

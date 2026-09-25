@@ -37,7 +37,8 @@
 //! third-party-operated server it does not control. If every tier
 //! 404s, [`OpenAiCompatBackend::run_probe`] still returns
 //! `Err(BackendError::BadRequest{..})` (via [`classify`]) rather than
-//! inventing a synthetic success — a caller of [`Backend::probe`] classifying
+//! inventing a synthetic success — a caller of
+//! [`conway_core::ports::Backend::probe`] classifying
 //! this result is expected to recognize that a `BadRequest`-classified probe
 //! failure means "this liveness path isn't served here", not "the endpoint
 //! is down".

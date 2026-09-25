@@ -80,7 +80,7 @@ pub struct App {
     theme: Theme,
     /// `/ask` (B5) spawns a `tokio::spawn`ed task per question (fork-ask,
     /// then drain the child's single turn to completion via
-    /// `TurnHandle::text` -- see [`run_modal_ask`]) rather than folding it
+    /// `TurnHandle::text` -- see [`ask::run_modal_ask`]) rather than folding it
     /// into `self.handle.events()`: the forked child is a DIFFERENT
     /// session, so its envelopes never arrive on that stream. When the
     /// task resolves, the loop opens the single-turn modal

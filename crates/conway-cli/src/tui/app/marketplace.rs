@@ -2,7 +2,7 @@
 //! the operator-facing action half of board item
 //! `01M0VR96Y87FF2BVNTBSC6GEYR` (browse a Claude Code marketplace, install
 //! a plugin from it, uninstall it again), mirroring
-//! [`super::plugin_toggle::App::apply_plugin_toggle`]'s own architecture
+//! [`super::App::apply_plugin_toggle`]'s own architecture
 //! and testing style deliberately: both write into the user layer's
 //! `settings.json` (`conway::config::discovery::user_config_path`,
 //! `CONWAY_CONFIG_DIR`-overridable via `env`), re-run the REAL config merge

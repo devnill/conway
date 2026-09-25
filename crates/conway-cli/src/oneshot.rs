@@ -1012,7 +1012,7 @@ fn load_agent_def(cli: &Cli, conway: &Conway) -> conway::Result<Option<AgentDef>
 }
 
 /// Combines `--system-prompt`/`--append-system-prompt`/`--output-schema`
-/// into the single string [`RootSpec::system_prompt_override`]
+/// into the single string `RootSpec::system_prompt_override`
 /// (`conway-runtime`) takes, or `None` when none of the three was given
 /// (preserving the pre-existing, `agent_def`-alone behavior exactly).
 /// `agent_def` is `--agent`'s own already-loaded, already-validated def
@@ -1098,7 +1098,7 @@ fn schema_instruction(schema: &RootSchema) -> String {
 }
 
 /// Resolves `--output-schema`'s eventual `result_contract` value -- fed into
-/// [`RootSpec::result_contract`] for the flag-free/`--session` arms, and
+/// `RootSpec::result_contract` for the flag-free/`--session` arms, and
 /// (board item `01M03FQDF33AZ8G258516EDWQD`) `ForkSpec::result_contract` for
 /// the `--fork-from` arm -- as `output_schema` (already loaded/compiled by
 /// [`load_output_schema`]) when `Some`, else the resolved `--agent` def's

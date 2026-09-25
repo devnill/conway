@@ -3,8 +3,8 @@
 //!
 //! ## Why this exists: the seam the label-based design turned out not to be
 //!
-//! The plugin this port now backs used to be a [`Curator`](crate::ports::
-//! Curator): `SessionMeta.labels` marked a whole session recallable, and
+//! The plugin this port now backs used to be a `Curator`
+//! (`crate::ports::curator::Curator`): `SessionMeta.labels` marked a whole session recallable, and
 //! `MemoryCurator::curate` recalled its records verbatim via
 //! `ValidatedPath::derive_with`. That worked only because `derive_with` can
 //! reference records that already exist -- and freeform memory text does

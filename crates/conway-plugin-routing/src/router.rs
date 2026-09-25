@@ -281,7 +281,7 @@ impl DeclarativeRouter {
     /// configured floor (`RoleConfig::required`, empty/no-op by default)
     /// merged with the caller-supplied `req.required` via [`strictest`] --
     /// neither side can weaken the other. A `role` absent from `roles`
-    /// (unreachable for a non-pinned request, since [`evaluate`] already
+    /// (unreachable for a non-pinned request, since [`Self::evaluate`] already
     /// errors with `UnknownRole` first; reachable for a pin naming a role
     /// with no chain of its own) contributes no floor, so `req.required`
     /// alone applies -- the same total, never-panics fallback shape

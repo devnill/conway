@@ -146,7 +146,7 @@ struct AnthropicFields {
 /// of `openai-compat`'s wire-behavior vocabulary at all.
 ///
 /// **Which endpoints earned a built-in entry, and which did not -- decided
-/// against [S4c]'s own instruction not to ship an untested claim.** An
+/// against `S4c`'s own instruction not to ship an untested claim.** An
 /// Anthropic-compatible endpoint gets one only when this crate can (a) name
 /// a concrete instance of it that is genuinely reachable through this
 /// adapter's own auth shape (a bare `x-api-key` header plus a `base_url`

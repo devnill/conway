@@ -64,9 +64,9 @@ pub struct EventStream {
 /// started listening live -- anything persisted strictly before that could
 /// not have also been broadcast to *this* subscription). The `ts` kept per
 /// entry is the *replay record's own* timestamp, not any live envelope's --
-/// see [`is_live_duplicate`] for why that matters.
+/// see [`EventStream::is_live_duplicate`] for why that matters.
 ///
-/// **Match-first, not ts-gated (critical -- see [`is_live_duplicate`]'s
+/// **Match-first, not ts-gated (critical -- see [`EventStream::is_live_duplicate`]'s
 /// doc):** every live envelope is checked for a content match against
 /// `pending` *before* anything about its own `ts` is consulted. In
 /// production the live twin of a persisted record is always emitted with a
@@ -246,7 +246,7 @@ impl EventStream {
     /// collision with `live` is structurally possible), it remembers the
     /// event's content. Every live envelope is matched against that content
     /// **first, before its own `ts` is consulted at all** -- see
-    /// [`is_live_duplicate`]'s doc for why the match cannot be ts-gated: in
+    /// [`EventStream::is_live_duplicate`]'s doc for why the match cannot be ts-gated: in
     /// production the live twin's `ts` is always later than the record's,
     /// so gating on it would silently defeat the dedup. A content match is
     /// dropped and the entry consumed; unmatched entries expire on their own
