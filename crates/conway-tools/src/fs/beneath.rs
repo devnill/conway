@@ -467,35 +467,117 @@ fn copy_existing_mode_confined(dir: &Dir, relative: &Path, tmp_relative: &Path, 
 /// Production `sync_parent` for [`write_file_atomic_confined_with`]:
 /// durably flushes `relative`'s PARENT directory, still entirely through
 /// `dir` (the already-opened, TOCTOU-safe [`cap_std::fs::Dir`] capability
-/// for this agent's confinement root) -- never a fresh ambient open.
+/// for this agent's confinement root) -- never a fresh AMBIENT open (see
+/// "why not reopen ambiently" below for why that distinction is the whole
+/// point).
 ///
-/// `cap_std::fs::Dir` has no `sync_all`/`sync_data` method of its own (it
-/// is not `std::fs::File` and does not implement `std::io::Write`), but it
-/// does not need one: `cap_std`'s own `Dir` is, at the representation
-/// level, a thin wrapper around exactly one `std::fs::File` (that crate's
-/// `fs::dir::Dir { std_file: fs::File }`), and `Dir::into_std_file` hands
-/// that same underlying OS handle back out as a plain `std::fs::File`,
-/// which has always supported `sync_all` on a directory fd on every
-/// platform this workspace targets (POSIX `fsync(2)` accepts a directory
-/// fd; `write.rs::atomic_write` already relies on the identical fact via a
-/// bare `fs::File::open` on a directory path). So `cap_std` CAN express
-/// this durability step, just not as an inherent method: the capability
-/// crosses into `std::fs::File` first, then durability is
-/// `std::fs::File::sync_all`, same as `write.rs`'s own
-/// `DurableWrite`/`DurableSync` impls for `std::fs::File`.
+/// `relative`'s parent is usually a subdirectory reached via `dir.open_dir`
+/// (itself symlink-refusing, same as every other `Dir` call in this
+/// module); when `relative` has no parent (the write target sits directly
+/// under the confinement root), the "parent" IS `dir` itself, so this
+/// clones the capability (`Dir::try_clone`, a cheap `dup` of the underlying
+/// fd) rather than reopening anything. Either way, the resulting `Dir` is
+/// then durably synced by [`sync_dir`], below.
 ///
-/// `relative`'s parent is usually a subdirectory reached via
-/// `dir.open_dir` (itself symlink-refusing, same as every other `Dir`
-/// call in this module); when `relative` has no parent (the write target
-/// sits directly under the confinement root), the "parent" IS `dir`
-/// itself, so this clones the capability (`Dir::try_clone`, a cheap `dup`
-/// of the underlying fd, not a fresh ambient open) rather than reopening
-/// anything.
+/// # The Linux defect this function used to carry (board item
+/// `01M3B8E33XKP03MSSFDKEJPH67`)
+///
+/// An earlier version of this function converted the `Dir` straight to a
+/// `std::fs::File` (`Dir::into_std_file`) and called `sync_all` on it,
+/// reasoning that `cap_std`'s `Dir` is, at the representation level, a thin
+/// wrapper around exactly one `std::fs::File`, and that POSIX `fsync(2)`
+/// accepts a directory fd "on every platform this workspace targets". The
+/// second half of that claim was FALSE: on Linux, `cap_primitives`'s
+/// rustix backend (`cap_primitives::fs::open_ambient_dir_impl`, and every
+/// `Dir` derived from it through `dir_options()`) opens directory
+/// capabilities with `O_PATH` set
+/// (`cap_primitives::fs::target_o_path()` returns `OFlags::PATH` on
+/// `target_os = "linux"`). Confirmed by opening a real `Dir` in a Linux
+/// container and reading back `fcntl(F_GETFL)`: the fd came back
+/// `O_PATH|O_DIRECTORY|O_RDONLY`, on BOTH the ambient root `Dir` and every
+/// `Dir` opened relative to it (`open_dir`, `try_clone`). An `O_PATH`
+/// descriptor is a location marker, not a readable/writable handle: the
+/// kernel accepts it as the `dirfd` argument to the whole `*at()` family
+/// (`openat`, `renameat`, `fstatat`, ...), which is why every OTHER
+/// operation this module performs through `dir` -- `create`, `open`,
+/// `rename`, `metadata` -- works fine on Linux, but it rejects any syscall
+/// that reads or writes through the fd itself, `fsync(2)` included --
+/// exactly the `Bad file descriptor (os error 9)` this board item's
+/// reproduction (`/tmp/capprobe`, a minimal `cap-std`-only project) shows.
+/// macOS's `cap_primitives` backend requests no such flag, so the old
+/// `into_std_file().sync_all()` "just worked" there, which is why this was
+/// invisible to every macOS verification pass and only ever broke on
+/// Linux CI.
+///
+/// # Why not reopen the parent ambiently instead
+///
+/// The obvious-looking fix -- reopen the parent directory by its plain OS
+/// path (`std::fs::File::open`, exactly what `write.rs::atomic_write` does
+/// for the UNCONFINED path) -- was rejected. This module exists
+/// specifically so that no step past `resolve` ever trusts a bare path (see
+/// the module doc); an ambient reopen here would reintroduce, for this one
+/// step, precisely the TOCTOU window `[S1.5]` retired `check_root` to
+/// close. `sync_dir`, below, instead reopens the SAME already-open
+/// directory via `openat(dirfd, ".", O_RDONLY | O_DIRECTORY)`: `"."` is not
+/// a name lookup that walks any path component an attacker (or a racing
+/// sibling operation) could swap -- it is the kernel resolving the fd
+/// that's ALREADY open back to itself, not a fresh capability derived from
+/// a path string. This introduces no new TOCTOU window at all, unlike an
+/// ambient-by-path reopen would have.
+///
+/// # Durability posture
+///
+/// With `sync_dir` fixed, the durability guarantee this function's callers
+/// rely on -- the post-rename directory-entry sync -- holds on every unix
+/// platform this workspace tests (macOS locally, Linux in CI). It is not
+/// weakened or made to silently degrade anywhere: a failure here still
+/// surfaces as the loud `"wrote {candidate} but failed to sync its parent
+/// directory: {err}"` `ToolError::Io` in
+/// [`write_file_atomic_confined_with`], exactly as before.
 fn sync_confined_parent_dir(dir: &Dir, relative: &Path) -> io::Result<()> {
-    match relative.parent().filter(|p| !p.as_os_str().is_empty()) {
-        Some(parent) => dir.open_dir(parent)?.into_std_file().sync_all(),
-        None => dir.try_clone()?.into_std_file().sync_all(),
-    }
+    let parent = match relative.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(parent) => dir.open_dir(parent)?,
+        None => dir.try_clone()?,
+    };
+    sync_dir(parent)
+}
+
+/// Durably flushes an already-open directory capability. See
+/// [`sync_confined_parent_dir`]'s doc for why this is not simply
+/// `dir.into_std_file().sync_all()` on unix.
+#[cfg(unix)]
+fn sync_dir(dir: Dir) -> io::Result<()> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    // Reopen `dir`'s own fd via `openat(dirfd, ".", ...)`: on Linux this
+    // trades the `O_PATH` fd `cap_primitives` handed back for a plain,
+    // fsync-able one, referring to the exact same directory, with no new
+    // path-component lookup (hence no new TOCTOU window) -- see
+    // `sync_confined_parent_dir`'s doc for the full reasoning. On macOS
+    // (which never sets `O_PATH` here to begin with) this is a harmless,
+    // equally cheap reopen of the same directory.
+    let reopened = nix::fcntl::openat(
+        Some(dir.as_raw_fd()),
+        ".",
+        nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_DIRECTORY,
+        nix::sys::stat::Mode::empty(),
+    )?;
+    // SAFETY: `openat` just returned a freshly-opened, uniquely-owned fd
+    // that nothing else holds a reference to.
+    let file = unsafe { std::fs::File::from_raw_fd(reopened) };
+    file.sync_all()
+}
+
+/// Non-unix (Windows) fallback: `cap_primitives`'s Windows backend does not
+/// exhibit the `O_PATH`-shaped defect above (there is no `O_PATH` concept
+/// on Windows), so the direct `into_std_file().sync_all()` this module used
+/// everywhere before board item `01M3B8E33XKP03MSSFDKEJPH67` is left
+/// unchanged here. Not exercised by this workspace's CI (Linux-only), so
+/// this is deliberately the minimal, previously-working shape rather than a
+/// newly-invented one.
+#[cfg(not(unix))]
+fn sync_dir(dir: Dir) -> io::Result<()> {
+    dir.into_std_file().sync_all()
 }
 
 /// The outcome of [`confined_metadata`]: `cd` needs to distinguish all

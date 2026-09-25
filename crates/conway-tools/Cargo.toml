@@ -40,8 +40,12 @@ tokio = { workspace = true, features = ["fs", "process", "io-util", "macros", "r
 # audit-logging purpose, not a new one (C-04).
 tracing = { workspace = true }
 
+# `fs` additionally pulls in `nix::fcntl::openat`/`Mode`, used by
+# `fs::beneath::sync_confined_parent_dir`'s unix implementation (board item
+# `01M3B8E33XKP03MSSFDKEJPH67`) to reopen a `cap_std::fs::Dir`'s own fd via
+# `openat(dirfd, ".", ...)` -- see that function's doc for why.
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["signal", "process"] }
+nix = { workspace = true, features = ["signal", "process", "fs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
