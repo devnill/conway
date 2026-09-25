@@ -312,7 +312,7 @@ impl EditingShellPrefixState {
 }
 
 /// The refusal message shown by both [`EditingShellPrefixState::
-/// from_prompt`] (a pre-populated default) and [`super::AppState::
+/// from_prompt`] (a pre-populated default) and [`AppState::
 /// submit_editing_shell_prefix`] (a submitted `Enter`) -- one wording, so
 /// the operator sees the identical explanation regardless of which path
 /// triggered it.
