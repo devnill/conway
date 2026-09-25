@@ -570,6 +570,7 @@ dependencies = [
  "conway-plugin-trim",
  "conway-plugin-ui",
  "conway-plugin-web",
+ "conway-test-fixtures",
  "conway-testkit",
  "crossterm",
  "futures",
@@ -660,6 +661,7 @@ dependencies = [
  "conway",
  "conway-core",
  "conway-plugin-mcp",
+ "conway-test-fixtures",
  "conway-testkit",
  "serde",
  "serde_json",
@@ -990,6 +992,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "conway-test-fixtures"
+version = "0.10.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "conway-testkit"
 version = "0.10.0"
 dependencies = [
@@ -1021,6 +1030,7 @@ dependencies = [
  "cap-std",
  "chrono",
  "conway-core",
+ "conway-test-fixtures",
  "globset",
  "ignore",
  "nix 0.29.0",

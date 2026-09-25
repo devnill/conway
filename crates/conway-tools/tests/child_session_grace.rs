@@ -199,6 +199,29 @@ fn fixture(dir: &Path, name: &str) -> PathBuf {
 /// script" OS-side tax (board item `01M09MPZ9C188AHNBKWEJ3CEQA`; see
 /// `tests/hook_runner.rs::warm`'s own doc for the measurement) BEFORE a
 /// timed [`ChildSession::spawn`] below ever starts its own clock.
+///
+/// **Deliberately still `Command::new(path)`, NOT
+/// `conway_test_fixtures::script_command`, unlike its siblings in
+/// `hook_runner.rs`/`subprocess_plugins.rs`/`end_to_end.rs` (board item
+/// `01M3CMQZZCSRF7YB9GEMA92M0C`).** This warm-up's whole job is to actually
+/// `execve` THIS exact file once, ahead of the timed call below, so the
+/// macOS first-exec tax lands here and not inside
+/// `the_first_ordinary_round_trip_gets_the_warm_up_budget`'s tight 1200ms
+/// budget. Routing this warm-up through an explicit interpreter (`/bin/sh
+/// path`) avoids that OS-level `execve`, so the file is never actually
+/// warmed by it -- confirmed by direct measurement, not assumption: with
+/// `script_command` here, `the_first_ordinary_round_trip_gets_the_warm_up_budget`
+/// failed 3/3 runs (took 1.4-1.8s against its 1200ms budget); reverted to
+/// plain `Command::new(path)`, it passed 3/3. This helper's own failure
+/// mode is harmless regardless -- its `Result` is discarded unconditionally
+/// -- and the REAL, timed spawn immediately below
+/// (`ChildSession::spawn`) already retries the OS-level `ETXTBSY` race
+/// itself, unconditionally, via `conway_tools::process::spawn_retry::
+/// spawn_with_retry` (board item `01M1X2ZCCZEW322YCMGW57K75D`), so this
+/// helper losing that same race buys nothing this file does not already
+/// have. Converting it would only trade a real, working timing guarantee
+/// for protection against a failure mode that was never observable here to
+/// begin with.
 async fn warm(path: &Path) {
     let child = tokio::process::Command::new(path)
         .stdin(std::process::Stdio::null())

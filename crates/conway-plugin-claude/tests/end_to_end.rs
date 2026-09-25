@@ -14,6 +14,7 @@ use std::sync::Arc;
 use conway::plugin::{ContentBlock, Plugin as _, ToolCall, ToolCtx};
 use conway::AgentId;
 use conway_plugin_mcp::McpPlugin;
+use conway_test_fixtures::script_command;
 use conway_testkit::{CollectingEventSink, FakeSubagentHost};
 
 const REF_MCP_SERVER: &str = r#"#!/usr/bin/env python3
@@ -101,8 +102,17 @@ fn write_script(dir: &std::path::Path, name: &str, contents: &str) -> std::path:
 /// -- see `conway-plugin-mcp`'s own `tests/common::warm` for the measured
 /// first-exec tax this sidesteps (a freshly written script's first exec on
 /// this OS can block for seconds at ~0% CPU).
+///
+/// [`REF_MCP_SERVER`]'s own shebang is `#!/usr/bin/env python3`, so this is
+/// launched via `conway_test_fixtures::script_command("python3", path)`, not
+/// `Command::new(path)`'s direct `execve` of the file `write_script` just
+/// wrote -- see that crate's own doc for the ETXTBSY ("Text file busy")
+/// race this avoids and the measurements behind it (board item
+/// `01M3CMQZZCSRF7YB9GEMA92M0C`). `Command::new("python3")` resolves through
+/// `PATH` exactly as the shebang's own `env python3` does -- this preserves
+/// which interpreter runs rather than pinning it to an absolute path.
 async fn warm(path: &std::path::Path) {
-    let child = tokio::process::Command::new(path)
+    let child = script_command("python3", path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

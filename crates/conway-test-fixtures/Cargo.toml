@@ -1,0 +1,17 @@
+[package]
+name = "conway-test-fixtures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "One `script_command()`, parameterised by interpreter: spawns a test's own freshly-written fixture script by launching a long-resident interpreter binary against it rather than exec'ing the fresh file directly, closing the ETXTBSY (\"Text file busy\") race a freshly-written-then-exec'd script can lose under load. Dev-dependency only -- nothing in any crate's `src/` may reach this."
+
+[dependencies]
+# `tokio::process::Command` is the return type every caller (`conway-tools`,
+# `conway-cli`, `conway-plugin-claude` test binaries) already builds its
+# fixture spawns from -- this crate hands back the identical type so callers
+# keep chaining `.stdin(..)`/`.stdout(..)`/`.process_group(0)`/etc. exactly
+# as before. `["process"]` is the minimal feature for the `Command` type
+# itself; nothing here spawns a runtime, so no `rt`/`macros`/etc.
+tokio = { workspace = true, features = ["process"] }

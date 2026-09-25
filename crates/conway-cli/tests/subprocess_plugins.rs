@@ -37,6 +37,7 @@ mod common;
 
 use common::mock_backend::{Chunk, MockBackend, Script};
 use common::{run_conway, write_fixture};
+use conway_test_fixtures::script_command;
 
 /// The full-featured fixture, duplicated (not shared via `common`) from
 /// `crates/conway-plugin-subprocess/tests/common/mod.rs`'s own
@@ -110,8 +111,17 @@ fn write_greet_script(fixture: &common::Fixture) -> std::path::PathBuf {
 /// `conway-plugin-subprocess`'s `tests/common/mod.rs::warm` for the full
 /// measurement). [`GREET_PLUGIN_PY`] reads stdin then answers unconditionally
 /// -- it never hangs on empty input, so warming it is safe.
+///
+/// [`GREET_PLUGIN_PY`]'s own shebang is `#!/usr/bin/env python3`, so this is
+/// launched via `conway_test_fixtures::script_command("python3", path)`, not
+/// `Command::new(path)`'s direct `execve` of the file `write_greet_script`
+/// just wrote -- see that crate's own doc for the ETXTBSY ("Text file
+/// busy") race this avoids and the measurements behind it (board item
+/// `01M3CMQZZCSRF7YB9GEMA92M0C`). `Command::new("python3")` resolves through
+/// `PATH` exactly as the shebang's own `env python3` does -- this preserves
+/// which interpreter runs rather than pinning it to an absolute path.
 async fn warm(path: &std::path::Path) {
-    let child = tokio::process::Command::new(path)
+    let child = script_command("python3", path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

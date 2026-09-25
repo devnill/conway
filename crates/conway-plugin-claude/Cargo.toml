@@ -68,3 +68,10 @@ conway = { path = "../conway", features = ["test-support"] }
 conway-testkit = { path = "../conway-testkit" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# Board item 01M3CMQZZCSRF7YB9GEMA92M0C: `tests/end_to_end.rs`'s own `warm()`
+# writes a fresh Python fixture and must launch it via `python3 <path>`, not
+# `Command::new(path)`'s direct exec of the file it just wrote -- see
+# `conway-test-fixtures`'s own crate doc for the ETXTBSY race this closes
+# and the measurements behind it. Workspace-internal, dev-only (C-04):
+# nothing in `src/` may name it.
+conway-test-fixtures = { path = "../conway-test-fixtures" }

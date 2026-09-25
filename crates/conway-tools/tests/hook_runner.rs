@@ -23,6 +23,7 @@ use conway_core::hook::{
     ContextDelta, HookAnswer, HookEvent, HookInvocation, HookPermissionVerdict,
 };
 use conway_core::ports::HookRunner;
+use conway_test_fixtures::script_command;
 use conway_tools::hook_runner::ProcessHookRunner;
 use conway_tools::process::unix::kill_group;
 use tempfile::TempDir;
@@ -48,8 +49,14 @@ fn fixture(dir: &Path, name: &str, script: &str) -> PathBuf {
 /// or a plain `exit N`, none of which trap SIGTERM or background a
 /// grandchild): waiting for exit is safe and sufficient here, unlike the
 /// two hang fixtures `warm_hanging_fixture` exists for.
+///
+/// Launched via `conway_test_fixtures::script_command("/bin/sh", path)`, not
+/// `Command::new(path)`'s direct `execve` of the file `fixture()` just wrote
+/// moments earlier -- see that crate's own doc for the ETXTBSY ("Text file
+/// busy") race this avoids and the measurements behind it (board item
+/// `01M3CMQZZCSRF7YB9GEMA92M0C`).
 async fn warm(path: &Path) {
-    let child = tokio::process::Command::new(path)
+    let child = script_command("/bin/sh", path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -111,6 +118,28 @@ async fn warm(path: &Path) {
 /// stale-but-present pgid would let `assert_group_dead` succeed instantly
 /// against an already-dead warm-up process, proving nothing about the REAL
 /// invocation this test means to time.
+///
+/// **Deliberately still `Command::new(path)`, NOT
+/// `conway_test_fixtures::script_command` (board item
+/// `01M3CMQZZCSRF7YB9GEMA92M0C`).** This warm-up's entire job, per this
+/// doc's own measurement above, is to make THIS exact file's macOS
+/// first-exec tax land here rather than inside
+/// `hang_trapping_sigterm_is_killed_and_reported_as_timed_out`'s and
+/// `backgrounded_grandchild_does_not_survive_the_timeout_path`'s own tight
+/// 2000ms `timeout_ms`. Routing this warm-up through an explicit
+/// interpreter avoids the OS-level `execve` of `path` that actually pays
+/// that tax, so the file is never really warmed by it -- confirmed by
+/// direct measurement: with `script_command` here, both of those tests
+/// failed under `cargo test`'s default parallelism with the exact
+/// `wait_for_pgid` panic below ("fixture never wrote its pgid") that this
+/// warm-up exists to prevent; reverted to plain `Command::new(path)`, they
+/// passed repeatedly. This helper's own spawn failure is harmless regardless
+/// (swallowed two lines below, same as ever), and unlike the REAL, timed
+/// spawn inside `ProcessHookRunner::run` -- which has no retry of its own
+/// and is exactly why `run_retrying_spawn_race` above exists as a
+/// deliberately TEST-side mitigation -- this helper was never the thing
+/// standing between a real spawn and a panic on the Linux `ETXTBSY` race in
+/// the first place.
 async fn warm_hanging_fixture(path: &Path, marker: &Path) {
     let mut command = tokio::process::Command::new(path);
     command

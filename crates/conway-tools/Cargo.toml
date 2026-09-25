@@ -50,6 +50,16 @@ nix = { workspace = true, features = ["signal", "process", "fs"] }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+# Board item 01M3CMQZZCSRF7YB9GEMA92M0C: `tests/kill_group.rs`,
+# `tests/hook_runner.rs` and `tests/child_session_grace.rs` each write a
+# fresh `#!/bin/sh` fixture and must launch it via `/bin/sh <path>`, not
+# `Command::new(path)`'s direct exec of the file just written -- see
+# `conway-test-fixtures`'s own crate doc for the ETXTBSY ("Text file busy")
+# race this closes and the measurements behind it (originally fixed only in
+# `kill_group.rs`, board item `01M3CCB39A1SKWFQEKC2CZK7S9`; this crate is
+# that ONE implementation, per P-14, folded out to all three). Workspace-
+# internal, dev-only (C-04): nothing in `src/` may name it.
+conway-test-fixtures = { path = "../conway-test-fixtures" }
 
 [[test]]
 name = "common_helpers"

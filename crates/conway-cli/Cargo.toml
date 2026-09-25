@@ -364,3 +364,10 @@ tokio = { workspace = true, features = ["net", "io-util"] }
 # `portable-pty`-over-`expectrl` justification. The ONE new dependency this
 # item adds; every other dev-dependency in this file already existed.
 portable-pty = { workspace = true }
+# Board item 01M3CMQZZCSRF7YB9GEMA92M0C: `tests/subprocess_plugins.rs`'s own
+# `warm()` writes a fresh Python fixture and must launch it via `python3
+# <path>`, not `Command::new(path)`'s direct exec of the file it just wrote
+# -- see `conway-test-fixtures`'s own crate doc for the ETXTBSY race this
+# closes and the measurements behind it. Workspace-internal, dev-only
+# (C-04): nothing in `src/` may name it.
+conway-test-fixtures = { path = "../conway-test-fixtures" }
