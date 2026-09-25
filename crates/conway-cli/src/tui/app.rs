@@ -312,7 +312,7 @@ impl App {
                         // Board item `01M350FR4SM6QT0EM6M35EY5AZ`:
                         // refreshed on the SAME seam as the flat/structured
                         // allow mirrors above -- this class was missing a
-                        // review surface entirely until this item.
+                        // review surface entirely until the revoke surface was added.
                         self.state.shell_prefix_grants = self.conway.active_shell_prefix_grants();
                         // the fourth mirror, refreshed on the SAME seam as
                         // the four above -- see this block's own doc for

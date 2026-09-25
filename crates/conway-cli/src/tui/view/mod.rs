@@ -1291,15 +1291,15 @@ fn draw_editing_pattern(
             }
         }
     }
-    // Board item `01M331DN5YF9J1T12QRASZCHV7`: the disclosure this item
-    // adds -- the rule breadth Enter would actually submit RIGHT NOW,
+    // Board item `01M331DN5YF9J1T12QRASZCHV7`: the field-state disclosure
+    // -- the rule breadth Enter would actually submit RIGHT NOW,
     // recomputed from the live field state every frame via
     // `EditingPatternState::preview_rule`, plus a legend stating what
     // Space does. Both survive to `Enter`: neither the summary line nor
     // the legend is conditioned on `ed.fields` being non-empty, so an
     // all-wildcard `tool:*` grant (no structured fields, or every field
     // left wildcard) states its own breadth exactly as plainly as a
-    // pinned one -- the trap this item closes is an operator reading
+    // pinned one -- the trap being closed is an operator reading
     // silence as "wildcard", so silence is exactly what must not remain
     // for either state.
     body_lines.push(Line::from(""));
@@ -2055,7 +2055,7 @@ mod tests {
         // Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: a `bash` call now offers
         // the session-scoped shell-prefix grant (`[p]`), so this row uses
         // the SAME abbreviated key labels the pattern-offer row already
-        // used before this item -- there being an offer to fit is what
+        // used before the shell-prefix offer existed -- there being an offer to fit is what
         // triggers the abbreviation, not which offer it is.
         assert!(
             text.contains("[y] once"),

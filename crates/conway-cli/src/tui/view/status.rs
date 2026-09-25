@@ -1912,7 +1912,7 @@ mod tests {
     /// `ToolCallProposed` -> `PermissionRequested` ->
     /// `PermissionResolved(AllowOnce)` -> `ToolCallStarted` -- through
     /// `AppState::apply`, rather than assigning `activity` by hand the way
-    /// the sibling render tests above do. The whole claim of this item is
+    /// the sibling render tests above do. The whole claim under test is
     /// that the SEQUENCE leaves the wrong rung up, so the sequence is what
     /// the test has to pin.
     fn approved_call_state() -> AppState {
@@ -3046,7 +3046,7 @@ mod tests {
 
         // And the idle counterpart, through the identical render path: once
         // the turn ends (`Activity::Idle`), the same buffer reads `ready`
-        // again, exactly as before this item.
+        // again, exactly as before the running/ready split.
         state.activity = Activity::Idle;
         let idle_rendered = render_row(&state, &theme, WIDE);
         assert!(

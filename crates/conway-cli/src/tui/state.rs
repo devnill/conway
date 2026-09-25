@@ -1001,7 +1001,7 @@ pub struct AppState {
     /// TUI (`app.rs`/`app/focus.rs` both set `Thinking`) can never be the
     /// one rendered.
     ///
-    /// The adjacent behavior this item recorded here as known and
+    /// The adjacent behavior recorded here as known and
     /// unchanged -- a prompted call executing under the `awaiting
     /// permission…` rung because `Event::PermissionResolved` left
     /// `activity` at [`Activity::AwaitingPermission`] -- was then fixed by
@@ -2120,7 +2120,7 @@ impl AppState {
     /// edited) `input` verbatim as the prefix, restores the prompt to
     /// `AwaitingPermission` (so the app loop's dispatch can resolve it with
     /// the existing `resolve_current_prompt` path), and returns the prefix
-    /// + scope for the key handler to wrap in an
+    /// and scope for the key handler to wrap in an
     /// `Action::GrantSessionShellPrefix`. Returns `None` if no editor is
     /// open. The grant covers FUTURE calls; THIS call is resolved
     /// separately by the dispatch arm as `AllowOnce` -- mirrors
