@@ -89,6 +89,7 @@
 //! lives entirely in `mod tests`, not in `edit_prompt_externally` itself.
 
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
@@ -145,13 +146,26 @@ pub(crate) fn edit_prompt_externally<B: Backend>(
     current: &str,
     editor_command: &str,
 ) -> EditorOutcome {
+    // The trailing counter is what actually makes this unique, and the other
+    // two components are for a human reading `ls /tmp`. Process id is shared
+    // by every thread, and a nanosecond clock is NOT a uniqueness guarantee:
+    // two threads calling `SystemTime::now()` at once can be reported the
+    // same value under load, and `unwrap_or_default()` below collapses a
+    // pre-epoch clock to a flat `0` for all callers. Both were observed --
+    // 5 collisions in 800 concurrent test invocations, one test reading
+    // another's file or finding it already deleted (board item
+    // 01M3DQ5MKJ1V5JH4WNSXD9X1E5). `write_test_script` in this file's own
+    // test module already used a counter for exactly this reason; this is
+    // the same mechanism rather than a second scheme.
+    static PROMPT_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
-        "conway-prompt-{}-{}.txt",
+        "conway-prompt-{}-{}-{}.txt",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        PROMPT_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
     if let Err(e) = std::fs::write(&path, current) {
         return EditorOutcome::Failed {

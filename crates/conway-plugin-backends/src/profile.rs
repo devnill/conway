@@ -729,6 +729,30 @@ impl Dialect {
 
 #[cfg(test)]
 mod tests {
+    /// A temp-directory name no concurrent caller in this process can collide
+    /// with. The counter is what makes it unique; the process id is only so a
+    /// human reading `ls /tmp` can tell which run left it behind.
+    ///
+    /// These four tests previously built their names from the process id plus
+    /// `SystemTime::now().as_nanos()`, which is NOT a uniqueness guarantee:
+    /// every thread shares one process id, and two threads calling the clock
+    /// at once can be handed the same nanosecond under load. The same shape
+    /// was observed colliding for real in `conway-cli`'s editor tests -- one
+    /// test reading another's file -- at roughly 5 in 800 concurrent
+    /// invocations (board item 01M3DQ5MKJ1V5JH4WNSXD9X1E5). These four each
+    /// `create_dir_all` and write, so a collision here would have the same
+    /// effect. One helper rather than four counters, so a fifth test cannot
+    /// reintroduce the defect by copying a neighbour that lacks it.
+    fn unique_temp_name(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "conway-profile-{label}-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
     use super::*;
     use crate::config::ConfigError;
 
@@ -825,14 +849,7 @@ mod tests {
 
     #[test]
     fn merge_file_records_a_shadow_when_an_id_already_exists() {
-        let dir = std::env::temp_dir().join(format!(
-            "conway-profile-shadow-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = unique_temp_name("shadow");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profiles.toml");
         std::fs::write(
@@ -870,14 +887,7 @@ mod tests {
 
     #[test]
     fn an_unrecognized_field_is_a_typed_error_naming_it_not_a_panic() {
-        let dir = std::env::temp_dir().join(format!(
-            "conway-profile-typo-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = unique_temp_name("typo");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profiles.toml");
         std::fs::write(
@@ -908,14 +918,7 @@ mod tests {
 
     #[test]
     fn an_empty_id_is_a_typed_error_not_a_panic() {
-        let dir = std::env::temp_dir().join(format!(
-            "conway-profile-empty-id-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = unique_temp_name("empty-id");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profiles.toml");
         std::fs::write(
@@ -940,14 +943,7 @@ mod tests {
     /// module doc describes.
     #[test]
     fn a_minimal_profile_with_only_id_set_parses_with_conservative_defaults() {
-        let dir = std::env::temp_dir().join(format!(
-            "conway-profile-minimal-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = unique_temp_name("minimal");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profiles.toml");
         std::fs::write(
