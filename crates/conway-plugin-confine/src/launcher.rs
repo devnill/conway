@@ -103,7 +103,11 @@ fn scheme_string_literal(path: &Path) -> String {
 /// condition and printed reason when `bwrap` is absent.
 ///
 /// `#[cfg(target_os = "linux")]` for the identical reason
-/// [`sandbox_exec_launcher`]'s own doc gives for its matching gate.
+/// `sandbox_exec_launcher`'s own doc gives for its matching gate. That name is
+/// a plain code span rather than a link on purpose: this doc is rendered ONLY
+/// on Linux, where `sandbox_exec_launcher` is gated out and so can never be
+/// linked to. As a link it built clean on macOS -- where this item is itself
+/// gated out and its doc never rendered -- and failed only on CI.
 #[cfg(target_os = "linux")]
 pub(crate) fn bwrap_launcher(binary: PathBuf, root: PathBuf) -> Launcher {
     Arc::new(move |command: &str, cwd: &Path| {
