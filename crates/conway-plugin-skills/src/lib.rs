@@ -75,12 +75,18 @@ use std::path::Path;
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, ContentBlock, ContextHook, ContextHookCtx, ContextPayload, PathArgs,
-    PermissionClass, Plugin, PluginDescription, PluginManifest, Provenance, RenderKind, Tool,
-    ToolCall, ToolCategory, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    async_trait, ContentBlock, ContextHook, ContextHookCtx, ContextPayload, EventSinkHandle,
+    PathArgs, PermissionClass, Plugin, PluginConfigureError, PluginDescription, PluginManifest,
+    Provenance, RenderKind, Tool, ToolCall, ToolCategory, ToolError, ToolName, ToolOutput,
+    ToolSpec, TruncationPolicy,
 };
 use conway::skills::load_skill_defs;
-use conway::SkillDef;
+use conway::{AgentId, SkillDef};
+
+mod trigger;
+
+use trigger::{RootTrackerHook, TriggerEventSink, TriggerState};
+pub use trigger::{SkillProposalEvidence, DEFAULT_TOOL_CALL_THRESHOLD, TOOL_CALL_THRESHOLD_KEY};
 
 /// The install id an operator names in `plugins.install` -- the same
 /// `[plugins].install` surface `conway.stepguard`/`conway.history` use.
@@ -228,6 +234,12 @@ impl Tool for ReadSkillTool {
 /// [`Self::from_dir`].
 pub struct SkillsPlugin {
     skills: Arc<HashMap<String, SkillDef>>,
+    /// The self-authoring-skills mechanical trigger's shared state (board
+    /// item `01M3DTRY56PQ5BX8HTVE7V96K0`) -- see `trigger`'s own module
+    /// doc for the full design. Held alongside the unrelated skill-index
+    /// map because both live on the one `SkillsPlugin` a `[plugins.install]`
+    /// entry names; they share no data with each other.
+    trigger: Arc<TriggerState>,
 }
 
 impl std::fmt::Debug for SkillsPlugin {
@@ -243,7 +255,10 @@ impl SkillsPlugin {
     /// caller that already ran `conway::skills::load_skill_defs` (e.g. an
     /// embedder with its own skills directory, or a test fixture) uses.
     pub fn new(skills: Arc<HashMap<String, SkillDef>>) -> Self {
-        Self { skills }
+        Self {
+            skills,
+            trigger: TriggerState::new(),
+        }
     }
 
     /// Loads `.conway/skills/<name>/SKILL.md` from `dir` via the SAME public
@@ -270,6 +285,30 @@ impl SkillsPlugin {
         Arc::new(SkillIndexHook {
             skills: self.skills.clone(),
         })
+    }
+
+    /// The self-authoring-skills trigger's `ContextHook` half, on its own --
+    /// mirrors [`Self::hook`]'s "standalone `with_context_hook`" escape
+    /// hatch, for an embedder that wants the root-tracking side effect (see
+    /// `trigger`'s own module doc) without installing this crate as a
+    /// `Plugin`. Installing via `with_plugin` instead routes through
+    /// [`Plugin::context_hooks`], which already includes this hook
+    /// alongside [`Self::hook`]'s own.
+    pub fn trigger_hook(&self) -> Arc<dyn ContextHook> {
+        Arc::new(RootTrackerHook {
+            state: self.trigger.clone(),
+        })
+    }
+
+    /// The self-authoring-skills trigger's published verdict for
+    /// `root_agent`'s most recent completed (non-ephemeral, root-of-its-own-
+    /// tree) turn, if one has been observed yet -- the entire hand-off
+    /// surface to the not-yet-built next slice (forking a proposal, showing
+    /// it, writing a skill file). See `trigger`'s own module doc for the
+    /// full design and [`SkillProposalEvidence::should_propose`] for the
+    /// mechanical OR across its three rules.
+    pub fn last_trigger_evidence(&self, root_agent: AgentId) -> Option<SkillProposalEvidence> {
+        self.trigger.last_evidence(&root_agent)
     }
 }
 
@@ -307,7 +346,31 @@ impl Plugin for SkillsPlugin {
     }
 
     fn context_hooks(&self) -> Vec<Arc<dyn ContextHook>> {
-        vec![self.hook()]
+        vec![self.hook(), self.trigger_hook()]
+    }
+
+    /// Applies `[plugins.config."conway.skills"]` -- today, only the
+    /// self-authoring-skills trigger's `tool_call_threshold` (see
+    /// `trigger::TOOL_CALL_THRESHOLD_KEY`'s own doc for the exact shape and
+    /// default). Delegates entirely to `TriggerState::configure`; the
+    /// skill-index half of this plugin has no operator-tunable settings of
+    /// its own.
+    fn configure(&mut self, value: &serde_json::Value) -> Result<(), PluginConfigureError> {
+        self.trigger.configure(value)
+    }
+
+    /// The self-authoring-skills trigger's `Plugin::observe_sink` half
+    /// (board item `01M3DTRY56PQ5BX8HTVE7V96K0`) -- `conway.skills` is the
+    /// first IN-PROCESS `Plugin` to override this seam; see `trigger`'s own
+    /// module doc for why `Event::AgentFinished` is the anchor, how root-vs-
+    /// child identity is recovered despite the bare `Event` carrying none,
+    /// and the lossy-delivery decision. Always `Some`: this plugin has no
+    /// "nothing to observe" state once installed, unlike a subprocess
+    /// plugin that only engages `observe/1` if it declared the point.
+    fn observe_sink(&self) -> Option<EventSinkHandle> {
+        Some(Arc::new(TriggerEventSink {
+            state: self.trigger.clone(),
+        }))
     }
 }
 
@@ -479,8 +542,9 @@ mod tests {
         let hooks = plugin.context_hooks();
         assert_eq!(
             hooks.len(),
-            1,
-            "the plugin contributes exactly one context hook"
+            2,
+            "the plugin contributes the skill-index hook AND the self-authoring-skills \
+             trigger's root-tracker hook (board item 01M3DTRY56PQ5BX8HTVE7V96K0)"
         );
         assert_eq!(plugin.manifest().tools, vec![ToolName::new(TOOL_NAME)]);
     }

@@ -41,14 +41,14 @@ use std::time::Duration;
 
 use conway::config::schema::{ConwayConfig, RoleEntry};
 use conway::plugin::Plugin;
-use conway::test_support::base_config_at;
-use conway::{SessionSpec, SkillDef};
+use conway::test_support::{base_config, base_config_at};
+use conway::{SessionSpec, SkillDef, SpawnSpec};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
 use conway_core::ids::{BackendId, SeqRange, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_core::provenance::Provenance;
-use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{text_response, FakeBackend, FakeStore, ScriptedBackend, ScriptedTurn};
 
 use conway::test_support::test_builder;
 use conway_plugin_skills::{SkillsPlugin, PLUGIN_ID, TOOL_NAME};
@@ -422,4 +422,87 @@ fn manifest_id_matches_the_published_constant() {
     let skills: std::collections::HashMap<String, SkillDef> = std::collections::HashMap::new();
     let plugin = SkillsPlugin::new(Arc::new(skills));
     assert_eq!(plugin.manifest().id, PLUGIN_ID);
+}
+
+// ---------------------------------------------------------------------
+// Board item `01M3DTRY56PQ5BX8HTVE7V96K0`: `conway.skills` becomes the
+// first IN-PROCESS `Plugin::observe_sink` consumer, and fires a mechanical
+// trigger at a completed ROOT agent's end. This is the single most
+// important test in this file's addition, proving BOTH halves of that
+// item's acceptance criteria together, with ONE fixture:
+//
+// - LIVENESS (P-15's "a unit test is not a liveness test"): the evidence
+//   this test reads comes from `SkillsPlugin::last_trigger_evidence`, which
+//   only ever has anything in it because `TriggerEventSink::emit` was
+//   actually called by `ConwayBuilder::build`'s real bus-draining
+//   forwarding task -- this test never calls `emit`/`record_event` itself,
+//   unlike `conway_plugin_skills::trigger`'s own unit tests (which drive
+//   the state machine directly and are explicitly NOT this proof).
+// - DISCRIMINATION (P-15's fixture-at-default clause): the fixture
+//   contains BOTH a root and a delegated (`SubagentMode::Spawn`) child, so
+//   "the child produced no evidence" is distinguishable from "there was no
+//   child to begin with".
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn the_trigger_fires_on_a_root_turn_end_and_not_on_a_delegated_childs_end_to_end() {
+    let store = Arc::new(FakeStore::new());
+    let backend = Arc::new(FakeBackend::echo(BackendId::new("fake")));
+    let skills: std::collections::HashMap<String, SkillDef> = std::collections::HashMap::new();
+    let plugin = Arc::new(SkillsPlugin::new(Arc::new(skills)));
+
+    let conway = test_builder(base_config())
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_plugin(plugin.clone())
+        .build()
+        .expect("build should succeed with every port injected");
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let root = handle.root();
+
+    // Spawn a real delegated child BEFORE root's own turn runs -- a genuine
+    // agent with its own `agent_path` of length 2, so `RootTrackerHook`
+    // (this plugin's own `ContextHook`) learns it is NOT root, the same way
+    // it learns the root IS.
+    let child = handle
+        .spawn(root, SpawnSpec::new("please review"))
+        .await
+        .expect("spawn should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(10), handle.await_agent(child))
+        .await
+        .expect("the delegated child must not hang")
+        .expect("the delegated child should finish");
+
+    assert!(
+        plugin.last_trigger_evidence(child).is_none(),
+        "a delegated child's own AgentFinished must NEVER record trigger evidence -- proven \
+         against a fixture that actually HAS a child, not merely a fixture that lacks one"
+    );
+    assert!(
+        plugin.last_trigger_evidence(root).is_none(),
+        "sanity: root has not run its own turn yet, so it must not have evidence either"
+    );
+
+    // Now run the ROOT's own turn to completion.
+    let turn = handle
+        .prompt("please do the actual work")
+        .await
+        .expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("result() must not hang")
+        .expect("result() should succeed");
+
+    let evidence = plugin.last_trigger_evidence(root).expect(
+        "the root's own AgentFinished must record trigger evidence, delivered through the REAL \
+         observe_sink wiring (ConwayBuilder::build's forwarding task draining the real \
+         EventBus) -- not a direct call into this plugin's own sink",
+    );
+    assert_eq!(
+        evidence.root_agent, root,
+        "the recorded evidence must name the root agent it was computed for"
+    );
 }
