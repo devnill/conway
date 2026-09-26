@@ -138,7 +138,15 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          bwrap --ro-bind / / --dev /dev true && echo "bwrap smoke test OK"
+          if bwrap --ro-bind / / --dev /dev true; then
+            echo "bwrap smoke test OK"
+          else
+            echo "::warning::bwrap cannot create a namespace on this runner --"\
+                 "conway-plugin-confine's Linux containment test will fail" \
+                 "below, loudly, rather than skipping. That failure is an" \
+                 "environment problem, not a containment defect: check" \
+                 "kernel.apparmor_restrict_unprivileged_userns."
+          fi
 
       - name: cargo test --workspace --all-features
         run: cargo test --workspace --all-features --no-fail-fast
