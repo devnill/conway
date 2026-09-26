@@ -109,16 +109,33 @@ this repository's automation ran this claim's test on any commit; it was
 verified only by whoever happened to run the suite by hand on a Mac that
 day.
 
-**Linux, not exercised by this tree's own CI, still.** The `bwrap` profile
-is implemented on the identical shape, but its mirror test
-(`#[cfg(target_os = "linux")]`) skips, printing the reason, when `bwrap` is
-not installed on the machine running the suite — and no job in
-`ci.yml`, including the `ubuntu-latest` ones, installs `bwrap`, so this
-skip fires on every CI run today. Declaration honesty — stating a
-capability's real, tested status rather than describing untested code as
-verified — means treating the Linux path as a designed,
-not-yet-independently-verified-here implementation until a CI runner with
-`bwrap` actually exercises it.
+**Linux, by CI** (`.github/workflows/ci.yml`'s `cargo test (workspace, all
+features)` job, `runs-on: ubuntu-latest`, board item
+`01M3DK6XS64DRRGPJTVHC1XPH5`). That job now installs `bubblewrap` before
+running the workspace suite, at the exact absolute path (`/usr/bin/bwrap`)
+this crate's own `DEFAULT_PRIMITIVE_PATH` already probes for — no PATH
+change needed. The mirror test (`#[cfg(target_os = "linux")]`,
+`linux_containment::bwrap_confines_writes_but_not_reads`) now executes the
+real `bwrap` profile above instead of skipping: a write inside a
+confinement root succeeds and the file exists, a write outside it fails
+with the file absent, and a read outside it (`cat /etc/hosts`) still
+succeeds. Before this, the test skipped — printing the reason, never
+failing — on every CI run, because no job in `ci.yml` installed `bwrap`;
+CI reported this crate green the whole time without that half of its
+containment claim ever having run.
+
+**Named residual gap.** The CI job proves the shipped `bwrap` profile
+confines correctly on the current tree; it does not itself prove the test
+would CATCH a regression to an unconfined launcher (P-15's "shown to
+fail" half). That demonstration — temporarily defeat the confinement,
+confirm this same test then fails, restore — is a one-time manual recipe
+run by the build lane by hand, not an automated CI gate, for the identical
+reason `write_outside_root_is_refused_and_absent`'s own doc comment gives
+for the macOS side (`crates/conway-plugin-confine/tests/
+confine_end_to_end.rs`): automating it would need either a second,
+permanent "unconfined" launcher checked into the tree, or a runtime switch
+that could itself silently regress to unconfined — the exact defect class
+this plugin exists to make impossible.
 
 **The confinement root is canonicalized before either profile is built.**
 Found by the build lane running this crate's own acceptance suite: a

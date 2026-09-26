@@ -93,6 +93,36 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # `conway-plugin-confine`'s Linux containment test
+      # (`linux_containment::bwrap_confines_writes_but_not_reads`,
+      # `crates/conway-plugin-confine/tests/confine_end_to_end.rs`) probes
+      # for `bwrap` at `conway_plugin_confine::DEFAULT_PRIMITIVE_PATH`
+      # (`/usr/bin/bwrap`) and SKIPS -- prints why, does not fail -- when
+      # it is absent. `bubblewrap` is not part of the `ubuntu-latest`
+      # runner image (`actions/runner-images`'s own package inventory for
+      # that image names no such package), and no job in this workflow
+      # ever installed it, so the skip fired on every run of this job,
+      # silently, and CI reported this crate green without that half of
+      # its containment claim ever running. `apt-get install bubblewrap`
+      # puts the binary at the exact absolute path the test already
+      # probes -- no PATH change needed. Board item
+      # `01M3DK6XS64DRRGPJTVHC1XPH5`.
+      #
+      # NAMED RESIDUAL GAP (P-15): this makes the test EXECUTE, which is
+      # the gap this item closes -- but the "temporarily defeat the
+      # confinement and watch this same test fail" half of P-15 is not
+      # automated here, on purpose, for the identical reason the macOS
+      # mirror test gives in its own doc comment
+      # (`write_outside_root_is_refused_and_absent`): doing so inside the
+      # shipped binary would need either a permanent second "unconfined"
+      # launcher checked into the tree, or a runtime switch that could
+      # itself silently regress to unconfined -- the exact defect class
+      # this whole plugin exists to make impossible. That demonstration
+      # stays a one-time manual recipe run by the build lane, not a CI
+      # gate.
+      - name: Install bubblewrap (bwrap, for conway-plugin-confine's Linux containment test)
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+
       - name: cargo test --workspace --all-features
         run: cargo test --workspace --all-features --no-fail-fast
 
