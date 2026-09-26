@@ -126,8 +126,8 @@ containment claim ever having run.
 
 **Named residual gap.** The CI job proves the shipped `bwrap` profile
 confines correctly on the current tree; it does not itself prove the test
-would CATCH a regression to an unconfined launcher (P-15's "shown to
-fail" half). That demonstration — temporarily defeat the confinement,
+would CATCH a regression to an unconfined launcher — the rule that a check
+is not established until it has been shown to fail. That demonstration — temporarily defeat the confinement,
 confirm this same test then fails, restore — is a one-time manual recipe
 run by the build lane by hand, not an automated CI gate, for the identical
 reason `write_outside_root_is_refused_and_absent`'s own doc comment gives

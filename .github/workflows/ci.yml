@@ -120,8 +120,25 @@ jobs:
       # this whole plugin exists to make impossible. That demonstration
       # stays a one-time manual recipe run by the build lane, not a CI
       # gate.
+      #
+      # THE INSTALL ALONE IS NOT ENOUGH, learned from CI run 36209070740.
+      # With `bubblewrap` installed but nothing else changed, the test ran
+      # and failed at its FIRST assertion -- "write inside root should
+      # succeed" -- with `bwrap: setting up uid map: Permission denied`.
+      # That is not a conway defect: Ubuntu 23.10 and later ship
+      # `kernel.apparmor_restrict_unprivileged_userns=1`, which forbids the
+      # unprivileged user namespace `bwrap` must create, so `bwrap` cannot
+      # confine anything at all on a default `ubuntu-latest` runner. The
+      # sysctl below relaxes exactly that one restriction, on an ephemeral
+      # CI VM, for the duration of this job. `|| true` so a runner image
+      # without the knob does not fail the step -- if the relaxation does
+      # not take, the containment test fails loudly rather than silently
+      # skipping, which is the behaviour this whole item is about.
       - name: Install bubblewrap (bwrap, for conway-plugin-confine's Linux containment test)
-        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / --dev /dev true && echo "bwrap smoke test OK"
 
       - name: cargo test --workspace --all-features
         run: cargo test --workspace --all-features --no-fail-fast
