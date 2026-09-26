@@ -258,11 +258,27 @@ committed unattended.
 gets approved); one-shot and embedded can consume the resulting skill
 library without participating in writing it.
 
-**Cost.** Plugin, but a real new hook point is needed underneath it: a
-"session finished, review it" moment nothing in `docs/plugins/hooks.md`'s
-sixteen points currently offers (the closest, `child_reported`, fires per
-child result crossing back to a parent, not per session end, and never
-for a root — see `hooks.md` point 13). Large/XL.
+**Cost.** Plugin. Large/XL.
+
+> **Correction, 2026-09-26.** This entry previously said "a real new hook
+> point is needed underneath it: a 'session finished, review it' moment
+> nothing in `docs/plugins/hooks.md`'s sixteen points currently offers."
+> That is no longer true, and a planning pass trusted it over the board
+> item's own (correct) contrary note before checking. `hooks.md` point 11,
+> `observe/1`, is **Implemented**: a plugin declares a selector at
+> engagement and the host forwards each matching `Event` — the same
+> `crates/conway-core/src/event.rs` enum that carries `AgentFinished` and
+> `TurnFinished`. The trait surface is `Plugin::observe_sink`
+> (`crates/conway-core/src/ports/plugin.rs`). No new hook point is needed.
+>
+> One real caveat remains, and it is small: no **in-process** plugin
+> subscribes through `observe_sink` today — the trait method defaults to
+> `None` and only `SubprocessPlugin` overrides it — so an in-process
+> `conway.skills` would be the first, which is implementing an existing
+> trait method rather than adding a seam. Note also that the forwarding
+> path is deliberately lossy (a slow consumer is dropped and sees
+> `Event::Lagged`), so a trigger that must not miss a turn end has to say
+> what it does when its event was dropped.
 
 **Why it's rung two, not one.** This is explicitly **[quality]**, not
 coverage: a static skill library (Tier 1 #2) already gets most of the
