@@ -195,6 +195,14 @@ async fn warm_hanging_fixture(path: &Path, marker: &Path) {
 ///
 /// Bounded, and it panics loudly when exhausted rather than looping until the
 /// harness times out.
+///
+/// Not called directly by any test below (01M3DAM630VGYVME66J0355SNM): three
+/// call sites here used to call `ProcessHookRunner::run` straight, skipping
+/// this wrapper, and paid for it at ~1-in-400 under Linux load. `TestHookRunner`
+/// just below is now the ONLY way a test in this file gets at
+/// `ProcessHookRunner::run` -- there is no bare `ProcessHookRunner` value left
+/// in scope for a future test to accidentally call `.run` on without the
+/// retry, so the omission this item exists for cannot recur here.
 async fn run_retrying_spawn_race(
     runner: &ProcessHookRunner,
     invocation: &HookInvocation,
@@ -214,6 +222,27 @@ async fn run_retrying_spawn_race(
          race, investigate rather than raising the bound",
         invocation.command
     );
+}
+
+/// A `ProcessHookRunner` reachable ONLY through `run_retrying_spawn_race`.
+///
+/// Every test below constructs `TestHookRunner::new()`, never
+/// `ProcessHookRunner::new()` directly, and calls `runner.run(...)` -- which
+/// resolves to this inherent method, not `ProcessHookRunner`'s own
+/// `HookRunner::run`, so it is not a naming convention a new test has to
+/// remember: there is no other `run` to call on the `runner` binding these
+/// tests use. `.0` stays reachable for the rare caller that genuinely needs
+/// the untried single-shot call; nothing in this file does.
+struct TestHookRunner(ProcessHookRunner);
+
+impl TestHookRunner {
+    fn new() -> Self {
+        Self(ProcessHookRunner::new())
+    }
+
+    async fn run(&self, invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+        run_retrying_spawn_race(&self.0, invocation).await
+    }
 }
 
 fn invocation(command: Vec<String>, timeout_ms: u64, payload: serde_json::Value) -> HookInvocation {
@@ -280,16 +309,14 @@ esac
     );
     warm(&script).await;
 
-    let runner = ProcessHookRunner::new();
+    let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
         5_000,
         serde_json::json!({"marker": "marker-8f2c1a"}),
     );
 
-    let answer = run_retrying_spawn_race(&runner, &invocation)
-        .await
-        .expect("hook should succeed");
+    let answer = runner.run(&invocation).await.expect("hook should succeed");
     assert_eq!(
         answer,
         HookAnswer::new(
@@ -310,16 +337,14 @@ async fn empty_stdout_on_success_is_the_default_answer() {
     let script = fixture(dir.path(), "silent.sh", "#!/bin/sh\nexit 0\n");
     warm(&script).await;
 
-    let runner = ProcessHookRunner::new();
+    let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
         5_000,
         serde_json::json!(null),
     );
 
-    let answer = run_retrying_spawn_race(&runner, &invocation)
-        .await
-        .expect("hook should succeed");
+    let answer = runner.run(&invocation).await.expect("hook should succeed");
     assert_eq!(answer, HookAnswer::default());
 }
 
@@ -375,7 +400,7 @@ esac
     );
     warm(&script).await;
 
-    let runner = ProcessHookRunner::new();
+    let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
         5_000,
@@ -384,16 +409,13 @@ esac
 
     // Bounded per this item's own hard rule: a test that could reproduce a
     // hang must report it as a failure, never wedge the harness.
-    let answer = tokio::time::timeout(
-        Duration::from_secs(15),
-        run_retrying_spawn_race(&runner, &invocation),
-    )
-    .await
-    .expect(
-        "ProcessHookRunner did not return within 15s under a multi-thread runtime \
-         (01M03FNRGWNMMRKXBJKCEE14QJ)",
-    )
-    .expect("hook should succeed");
+    let answer = tokio::time::timeout(Duration::from_secs(15), runner.run(&invocation))
+        .await
+        .expect(
+            "ProcessHookRunner did not return within 15s under a multi-thread runtime \
+             (01M03FNRGWNMMRKXBJKCEE14QJ)",
+        )
+        .expect("hook should succeed");
     assert_eq!(
         answer,
         HookAnswer::new(
@@ -410,7 +432,7 @@ esac
 
 #[tokio::test]
 async fn nonexistent_command_fails_closed_not_a_panic() {
-    let runner = ProcessHookRunner::new();
+    let runner = TestHookRunner::new();
     let invocation = invocation(
         vec!["/definitely/does/not/exist/conway-hook-fixture".to_string()],
         5_000,
@@ -433,7 +455,7 @@ async fn nonzero_exit_fails_closed() {
     let script = fixture(dir.path(), "fails.sh", "#!/bin/sh\nexit 7\n");
     warm(&script).await;
 
-    let runner = ProcessHookRunner::new();
+    let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
         5_000,
@@ -457,7 +479,7 @@ async fn unparseable_stdout_fails_closed_even_on_a_clean_exit() {
     );
     warm(&script).await;
 
-    let runner = ProcessHookRunner::new();
+    let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
         5_000,
@@ -513,19 +535,16 @@ while true; do sleep 1; done
     );
     warm_hanging_fixture(&script, &pgid_file).await;
 
-    let runner = ProcessHookRunner::new();
+    let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
         2_000,
         serde_json::json!(null),
     );
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(20),
-        run_retrying_spawn_race(&runner, &invocation),
-    )
-    .await
-    .expect("the runner must return within 20s even though the script traps SIGTERM");
+    let result = tokio::time::timeout(Duration::from_secs(20), runner.run(&invocation))
+        .await
+        .expect("the runner must return within 20s even though the script traps SIGTERM");
 
     assert_eq!(
         result,
@@ -561,19 +580,16 @@ while true; do sleep 1; done
     );
     warm_hanging_fixture(&script, &pgid_file).await;
 
-    let runner = ProcessHookRunner::new();
+    let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
         2_000,
         serde_json::json!(null),
     );
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(20),
-        run_retrying_spawn_race(&runner, &invocation),
-    )
-    .await
-    .expect("the runner must return within 20s");
+    let result = tokio::time::timeout(Duration::from_secs(20), runner.run(&invocation))
+        .await
+        .expect("the runner must return within 20s");
     assert_eq!(result, Err(HookFailure::TimedOut { after_ms: 2_000 }));
 
     // The backgrounded `sleep 300 &` inherited the same pgid as the script
