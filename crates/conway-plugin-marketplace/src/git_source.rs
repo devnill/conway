@@ -658,7 +658,7 @@ fn copy_tree(src: &Path, dest: &Path, plugin_id: &str) -> Result<(), Marketplace
 pub(crate) mod test_support {
     use std::future::Future;
 
-    use super::GIT_PROGRAM_ENV;
+    use super::{MarketplaceError, GIT_PROGRAM_ENV};
 
     fn lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -669,19 +669,82 @@ pub(crate) mod test_support {
     /// duration, restoring whatever value (if any) preceded it -- see this
     /// module's own doc for why this serializes against every OTHER test
     /// touching the same env var rather than merely saving/restoring it.
-    pub(crate) async fn with_program<F, Fut, T>(program: &std::ffi::OsStr, body: F) -> T
+    ///
+    /// **Retries the ETXTBSY race (board item `01M3DMS5DVVNZHF0XFGH1H4H4N`),
+    /// on top of the env-var plumbing, in the SAME function rather than a
+    /// second helper a caller could forget to reach for.** Every current
+    /// caller (this file's own tests, and `install.rs`'s via
+    /// `with_stub_git`) writes a fresh executable "stub git" and execs it
+    /// through `body` moments later -- unsafe under `cargo test`'s
+    /// parallelism for the identical reason `conway-tools/tests/
+    /// hook_runner.rs`'s own `run_retrying_spawn_race` documents (a
+    /// concurrent thread's `fork` can inherit this file's still-open write
+    /// handle before this test's own `exec`). `body` is called again, with
+    /// the SAME env var still set and the SAME serializing guard still
+    /// held, only when the previous attempt's error is exactly this shape:
+    /// [`MarketplaceError::GitUnavailable`] whose `detail` contains "Text
+    /// file busy" (the `Display` of
+    /// `std::io::ErrorKind::ExecutableFileBusy`, formatted in by
+    /// `require_git`/`run_git_clone`'s own `source.to_string()`). Bounded,
+    /// and panics loudly if exhausted rather than looping until the
+    /// harness times out.
+    ///
+    /// `body` is `Fn`, not `FnOnce` -- it must be callable more than once
+    /// for a retry to invoke it again. Every caller in this crate already
+    /// closes only over borrowed state (`&Path`, `&PluginSource`, ...), so
+    /// this is not a new constraint any of them actually feel.
+    ///
+    /// Not a production concern: `git_program()` under `cfg(not(test))`
+    /// always resolves to the pre-existing system `git` binary, never a
+    /// file this crate just wrote, so this race cannot occur outside a
+    /// test binary -- see `editor.rs`'s own module doc (`conway-cli`) for
+    /// the identical argument made about `$EDITOR`.
+    pub(crate) async fn with_program<F, Fut, T>(
+        program: &std::ffi::OsStr,
+        body: F,
+    ) -> Result<T, MarketplaceError>
     where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = T>,
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<T, MarketplaceError>>,
     {
+        const ATTEMPTS: u32 = 10;
+
         let _guard = lock().lock().await;
         let previous = std::env::var(GIT_PROGRAM_ENV).ok();
         std::env::set_var(GIT_PROGRAM_ENV, program);
-        let result = body().await;
+
+        let mut result = body().await;
+        for attempt in 0..ATTEMPTS {
+            match &result {
+                Err(MarketplaceError::GitUnavailable { detail, .. })
+                    if detail.contains("Text file busy") =>
+                {
+                    if attempt + 1 < ATTEMPTS {
+                        tokio::time::sleep(std::time::Duration::from_millis(u64::from(
+                            20 * (attempt + 1),
+                        )))
+                        .await;
+                        result = body().await;
+                    }
+                }
+                _ => break,
+            }
+        }
+
         match previous {
             Some(value) => std::env::set_var(GIT_PROGRAM_ENV, value),
             None => std::env::remove_var(GIT_PROGRAM_ENV),
         }
+
+        if let Err(MarketplaceError::GitUnavailable { detail, .. }) = &result {
+            if detail.contains("Text file busy") {
+                panic!(
+                    "the stub git spawn lost the ETXTBSY race {ATTEMPTS} times in a row; that \
+                     is no longer a race, investigate rather than raising the bound"
+                );
+            }
+        }
+
         result
     }
 }

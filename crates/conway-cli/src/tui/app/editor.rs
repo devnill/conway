@@ -59,6 +59,34 @@
 //! - Anything else (editor exits 0, file readable, non-empty result):
 //!   [`EditorOutcome::Replace`] -- `AppState::input` becomes the file's
 //!   content verbatim (minus that one trailing newline).
+//!
+//! **This module's own tests are one of several places this workspace has
+//! found the freshly-written-then-immediately-exec'd ETXTBSY race (board
+//! item `01M3DMS5DVVNZHF0XFGH1H4H4N`; see `conway-tools/tests/
+//! hook_runner.rs`'s own `run_retrying_spawn_race`/`TestHookRunner` for the
+//! sibling fix this one is modeled on).** `write_test_script` below writes
+//! an executable shell script and the test then execs it moments later; on
+//! a loaded host `cargo test`'s own parallelism can fork a DIFFERENT
+//! thread's spawn while this script's write handle is still (however
+//! briefly) open, and the kernel answers the exec with `ETXTBSY` ("Text
+//! file busy").
+//!
+//! **`spawn_with_retry` (`conway_tools::process::spawn_retry`) does NOT
+//! belong on [`edit_prompt_externally`]'s own production spawn, and this
+//! was a deliberate call, not an oversight.** That helper exists for
+//! exactly one shape: a file THIS codebase itself just wrote (a plugin
+//! script, a hook command) and is about to `exec` within the same
+//! operation -- see its own module doc. `edit_prompt_externally`'s
+//! `program` is `editor_command`'s first word, resolved from `$VISUAL`/
+//! `$EDITOR`/`vi` (`resolve_editor_command`): an operator's PRE-EXISTING,
+//! already-installed editor binary that conway never writes and that sits
+//! on disk unchanged for the whole session. There is no write-then-exec of
+//! that binary for the OS to race, so `ExecutableFileBusy` cannot occur on
+//! this path in production, and retrying a case that cannot occur would
+//! only be dead code inviting the next reader to wonder what it guards
+//! against. The race below is exclusively an artifact of THIS module's own
+//! tests writing a fresh script and executing it seconds later, so the fix
+//! lives entirely in `mod tests`, not in `edit_prompt_externally` itself.
 
 use std::process::Command;
 
@@ -208,8 +236,70 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
+    // `super::edit_prompt_externally`, glob-imported just above, is
+    // deliberately shadowed by the same-named function defined a few lines
+    // below (an explicit item always wins over a glob import of the same
+    // name, per Rust's own shadowing rules -- no conflict, no `#[allow]`
+    // needed). Every test in this file therefore calls the ordinary,
+    // unqualified `edit_prompt_externally(...)`, which retries the ETXTBSY
+    // race this module's own top doc describes; there is no OTHER thing
+    // that unqualified name resolves to inside this module, so a future
+    // test cannot accidentally reach the un-retried version the way
+    // forgetting to call a helper would allow. Mirrors `conway-tools/
+    // tests/hook_runner.rs`'s `TestHookRunner` (a type, there, doing the
+    // identical job of leaving no un-retried spelling in scope) -- a free
+    // function can't be wrapped in a newtype the same way, so shadowing
+    // the name itself is this module's version of the same idea.
+
     fn test_terminal() -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(20, 5)).expect("TestBackend construction cannot fail")
+    }
+
+    /// Retries `super::edit_prompt_externally` when (and only when) it
+    /// lost the ETXTBSY race this module's own top doc describes --
+    /// `write_test_script` just below writes a fresh executable and every
+    /// test in this file execs it moments later, which is unsafe under
+    /// `cargo test`'s parallelism for the identical reason
+    /// `conway-tools/tests/hook_runner.rs`'s own `run_retrying_spawn_race`
+    /// documents (a concurrent thread's `fork` can inherit this file's
+    /// still-open write handle before this test's own `exec`).
+    ///
+    /// Detected via [`EditorOutcome::Failed`]'s `notice` text containing
+    /// "Text file busy" -- the `Display` of
+    /// `std::io::ErrorKind::ExecutableFileBusy`, formatted in by
+    /// `edit_prompt_externally`'s own `could not run editor {editor_command
+    /// :?}: {e}` -- rather than a new error variant, since `EditorOutcome`
+    /// is production's own type and gains no case for a race that is
+    /// exclusively a test artifact (this module's own top doc explains why
+    /// `spawn_with_retry` does not belong on the production spawn itself).
+    ///
+    /// Bounded, and panics loudly if exhausted rather than looping until
+    /// the harness times out -- same shape as `run_retrying_spawn_race`.
+    fn edit_prompt_externally<B: Backend>(
+        terminal: &mut Terminal<B>,
+        current: &str,
+        editor_command: &str,
+    ) -> EditorOutcome {
+        const ATTEMPTS: u32 = 10;
+        for attempt in 0..ATTEMPTS {
+            let outcome = super::edit_prompt_externally(terminal, current, editor_command);
+            match &outcome {
+                EditorOutcome::Failed { notice } if notice.contains("Text file busy") => {
+                    if attempt + 1 < ATTEMPTS {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            20 * u64::from(attempt + 1),
+                        ));
+                        continue;
+                    }
+                }
+                _ => return outcome,
+            }
+        }
+        panic!(
+            "edit_prompt_externally lost the ETXTBSY race {ATTEMPTS} times in a row for \
+             {editor_command:?}; that is no longer a race, investigate rather than raising the \
+             bound"
+        );
     }
 
     /// A test-only "editor": a tiny shell script this test writes and
@@ -355,7 +445,11 @@ mod tests {
 
         let _ = std::fs::remove_file(&script);
 
-        assert!(matches!(outcome, EditorOutcome::Unchanged));
+        match outcome {
+            EditorOutcome::Unchanged => {}
+            EditorOutcome::Replace(text) => panic!("expected Unchanged, got Replace({text:?})"),
+            EditorOutcome::Failed { notice } => panic!("expected Unchanged, got Failed: {notice}"),
+        }
     }
 
     /// An editor program that does not exist at all (never spawns) is the

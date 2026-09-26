@@ -602,12 +602,21 @@ exit 1
     /// actually serializes this against `git_source.rs`'s OWN test doing
     /// the identical thing to the identical process-global env var (that
     /// module's own doc has the full argument for why this cannot be a
-    /// bare save/restore).
+    /// bare save/restore), and which is ALSO where the retry for the
+    /// freshly-written-stub-git ETXTBSY race (board item
+    /// `01M3DMS5DVVNZHF0XFGH1H4H4N`) lives -- every call site below writes
+    /// its own stub git and execs it moments later, the identical shape
+    /// that module's own doc describes. `body` is `Fn`, not `FnOnce`, for
+    /// the same reason `with_program` itself requires it: a retried body
+    /// must be callable more than once.
     #[cfg(unix)]
-    async fn with_stub_git<F, Fut, T>(program: &std::path::Path, body: F) -> T
+    async fn with_stub_git<F, Fut, T>(
+        program: &std::path::Path,
+        body: F,
+    ) -> Result<T, MarketplaceError>
     where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = T>,
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, MarketplaceError>>,
     {
         crate::git_source::test_support::with_program(program.as_os_str(), body).await
     }
