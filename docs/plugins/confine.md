@@ -97,18 +97,28 @@ reachable as it would be unsandboxed, per the ruling above.
 
 ## Verified on
 
-**macOS only, in this tree.** `conway-plugin-confine`'s own in-crate test
-(`#[cfg(target_os = "macos")]`) exercises the real `sandbox-exec` profile
-above: a write inside a confinement root succeeds and the file exists, a
-write outside it fails with the file absent, and a read outside it (`cat
-/etc/hosts`) still succeeds. The Linux `bwrap` profile is implemented on the
-identical shape but is **not exercised by this tree's own CI** — its mirror
-test (`#[cfg(target_os = "linux")]`) skips, printing the reason, when
-`bwrap` is not installed on the machine running the suite. Declaration
-honesty — stating a capability's real, tested status rather than
-describing untested code as verified — means treating the Linux path as a
-designed, not-yet-independently-verified-here implementation until a CI
-runner with `bwrap` actually exercises it.
+**macOS, by CI** (`.github/workflows/ci.yml`'s `macOS (doc + confine tests)`
+job, `runs-on: macos-latest`, board item `01M3DJ66THS10MDKSQ3QT4YXHG`).
+`conway-plugin-confine`'s own in-crate test (`#[cfg(target_os = "macos")]`)
+exercises the real `sandbox-exec` profile above: a write inside a
+confinement root succeeds and the file exists, a write outside it fails
+with the file absent, and a read outside it (`cat /etc/hosts`) still
+succeeds. Every other job in that workflow runs `ubuntu-latest`, which never
+compiles this module at all — before the `macOS` job existed, nothing in
+this repository's automation ran this claim's test on any commit; it was
+verified only by whoever happened to run the suite by hand on a Mac that
+day.
+
+**Linux, not exercised by this tree's own CI, still.** The `bwrap` profile
+is implemented on the identical shape, but its mirror test
+(`#[cfg(target_os = "linux")]`) skips, printing the reason, when `bwrap` is
+not installed on the machine running the suite — and no job in
+`ci.yml`, including the `ubuntu-latest` ones, installs `bwrap`, so this
+skip fires on every CI run today. Declaration honesty — stating a
+capability's real, tested status rather than describing untested code as
+verified — means treating the Linux path as a designed,
+not-yet-independently-verified-here implementation until a CI runner with
+`bwrap` actually exercises it.
 
 **The confinement root is canonicalized before either profile is built.**
 Found by the build lane running this crate's own acceptance suite: a

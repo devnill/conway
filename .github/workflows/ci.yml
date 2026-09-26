@@ -336,3 +336,74 @@ jobs:
 
       - name: cargo test -p conway
         run: cargo test -p conway ${{ matrix.args }}
+
+  # Every job above runs `ubuntu-latest`. `conway-plugin-confine` has genuine
+  # `#[cfg(target_os = "macos")]` code and tests -- Seatbelt (`sandbox-exec`)
+  # containment, the security boundary `conway.confine` exists to provide --
+  # that a Linux runner never compiles at all, so no job above can ever catch
+  # a defect in it. This is not hypothetical: this exact defect's mirror
+  # image (a `#[cfg(target_os = "linux")]` doc linking to a macOS-gated item,
+  # so the link rendered clean on macOS and failed only on CI) went red on
+  # this workflow and was fixed in cb0bc487, hours before this job was
+  # written. Reverse the platforms -- a macOS-gated doc linking to something
+  # Linux-gated -- and nothing above would ever see it. Board item
+  # `01M3DJ66THS10MDKSQ3QT4YXHG`.
+  #
+  # SCOPE, deliberately narrower than the `test`/`feature-matrix` jobs above:
+  #   * the `doc` gate, workspace-wide -- rustdoc only renders a
+  #     `#[cfg(target_os = "macos")]` item's own doc comment when compiled
+  #     FOR macOS, so this is the only job in this whole workflow that can
+  #     ever check that half of the docs at all (`cb0bc487`'s defect ran the
+  #     opposite direction from this job).
+  #   * `cargo test -p conway-plugin-confine` -- the crate whose own doc
+  #     (`docs/plugins/confine.md`, "Verified on") makes a containment claim
+  #     about macOS. Before this job existed, NOTHING in this repository's
+  #     automation ran that claim's test: the `#[cfg(target_os = "macos")]`
+  #     module does not exist in a Linux build, and no other job here runs
+  #     on macOS at all.
+  #   * `cargo test -p conway-cli --test confine_cli` -- the one CLI-level
+  #     acceptance test for the same tool, `#![cfg(target_os = "macos")]`
+  #     for its entire file; scoped to this one test binary rather than
+  #     `conway-cli`'s much larger full suite, which the `test` job above
+  #     already runs (on Linux) for everything that is not platform-gated.
+  #
+  # NOT the full `--workspace --all-features` suite on macOS, and not every
+  # crate: GitHub bills a private repository's macOS runners at a real
+  # multiple of a Linux minute (this repository is public today, where
+  # standard runners of every OS are unlimited and free, but a job's scope
+  # should not assume that never changes). Scoping to the crates that
+  # actually carry platform-gated, security-relevant code keeps this job's
+  # cost proportionate to what only it can catch.
+  #
+  # NAMED RESIDUAL GAP (P-15: a check's blind spot, stated, not discovered
+  # later): this job does not install `bwrap` and does not run on Linux, so
+  # it does nothing for the Linux half of `conway.confine` -- that half's
+  # containment test already skips itself (printing why) whenever `bwrap` is
+  # absent from the machine running the suite, including on this workflow's
+  # own `test` job today. The Linux containment claim stays exactly as
+  # unverified-by-CI as before this job; only the macOS claim changes.
+  macos:
+    name: macOS (doc + confine tests)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Same invocation as `scripts/check-fast-gates.sh --gate "cargo doc
+      # (-D warnings)"` -- one code path, not two spellings that can drift
+      # apart (01M0TJC2GY2C81Y9R1KKWT5PJJ).
+      - name: cargo doc --workspace --no-deps
+        run: scripts/check-fast-gates.sh --gate "cargo doc (-D warnings)"
+
+      - name: cargo test -p conway-plugin-confine --all-features
+        run: cargo test -p conway-plugin-confine --all-features --no-fail-fast
+
+      - name: cargo test -p conway-cli --test confine_cli --all-features
+        run: cargo test -p conway-cli --test confine_cli --all-features --no-fail-fast
