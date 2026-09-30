@@ -216,6 +216,48 @@ pub const DEFAULT_OPINION_SET: [&str; 7] = [
 /// instance still returns the SAME tool for browsing/registry purposes
 /// (whether a live surface is wired in changes what a CALL does, never
 /// which tools/capabilities this plugin declares).
+///
+/// `skills_plugin` is the already-constructed `conway.skills` candidate
+/// (slice 2, board item `01M3DTT078W25MD2S4527R0WAV`), threaded in exactly
+/// like `idiom_plugin`/`confine_plugin` above rather than built here --
+/// [`install`] needs a SECOND, typed clone of it after configuration (so
+/// the one-shot dispatch's automatic skill-proposal trigger can read
+/// `SkillsPlugin::last_trigger_evidence` directly), which is only possible
+/// if the `Arc` this function receives is not the ONLY clone in existence
+/// -- see [`install`]'s own doc for exactly why `Arc::get_mut`-based
+/// configuration must therefore happen BEFORE that clone, not inside this
+/// function. [`all_bundle_plugins`]/[`installed_plugins`] have no such
+/// need and build their own fresh, always-uniquely-owned candidate via
+/// [`default_skills_plugin`] instead.
+/// Builds the `conway.skills` candidate exactly as `bundle` used to build
+/// it internally: `SkillsPlugin::from_dir(<cwd>/.conway/skills)`, falling
+/// back to an empty-skills plugin on any read/parse failure (a missing
+/// directory is not an error either way) -- see [`bundle`]'s own doc,
+/// "`skills_plugin`", for why [`install`] does NOT use this helper (it
+/// needs the CONCRETE, not yet type-erased, `Arc<SkillsPlugin>` so it can
+/// configure it directly and keep a second typed clone). Used by
+/// [`all_bundle_plugins`]/[`installed_plugins`], neither of which needs
+/// anything beyond the `Arc<dyn Plugin>` `bundle` itself takes.
+fn default_skills_plugin(cwd: &std::path::Path) -> Arc<dyn Plugin> {
+    resolve_skills_plugin_typed(cwd)
+}
+
+/// [`default_skills_plugin`]'s own concrete-typed construction --
+/// `SkillsPlugin::from_dir(<cwd>/.conway/skills)`, falling back to an
+/// empty-skills plugin on any read/parse failure. Returns the CONCRETE
+/// `Arc<SkillsPlugin>` (not yet type-erased) so [`install`] can configure it
+/// directly via `Arc::get_mut` (requires exclusive ownership -- see
+/// [`bundle`]'s own doc, "`skills_plugin`") and keep a second, typed clone
+/// for the automatic skill-proposal trigger's own facade read.
+fn resolve_skills_plugin_typed(cwd: &std::path::Path) -> Arc<conway_plugin_skills::SkillsPlugin> {
+    Arc::new(
+        conway_plugin_skills::SkillsPlugin::from_dir(&cwd.join(".conway").join("skills"))
+            .unwrap_or_else(|_| {
+                conway_plugin_skills::SkillsPlugin::new(Arc::new(std::collections::HashMap::new()))
+            }),
+    )
+}
+
 fn bundle(
     cwd: &std::path::Path,
     memory_store: Arc<dyn MemoryStore>,
@@ -223,12 +265,8 @@ fn bundle(
     idiom_plugin: Arc<dyn Plugin>,
     confine_plugin: Arc<dyn Plugin>,
     form_surface: Option<Arc<dyn conway_plugin_ui::FormSurface>>,
+    skills_plugin: Arc<dyn Plugin>,
 ) -> Vec<Arc<dyn Plugin>> {
-    let skills_plugin =
-        conway_plugin_skills::SkillsPlugin::from_dir(&cwd.join(".conway").join("skills"))
-            .unwrap_or_else(|_| {
-                conway_plugin_skills::SkillsPlugin::new(Arc::new(std::collections::HashMap::new()))
-            });
     vec![
         Arc::new(conway_plugin_skeleton::SkeletonPlugin),
         // `/conway.history.rewind`
@@ -256,7 +294,7 @@ fn bundle(
         // `install_selected` surface its tool uses), so `[plugins].install
         // = ["conway.skills"]` is the whole of the wiring -- no separate
         // `with_context_hook` call.
-        Arc::new(skills_plugin),
+        skills_plugin,
         // `conway.memory` -- a mutable `MemoryStore` injected into context
         // by a `ContextHook` (board item `01M09P2T8E5M292WMSMS64CVC4`, a
         // REWORK of the label-based curator this bundle used to install --
@@ -586,6 +624,7 @@ pub fn all_bundle_plugins(
         idiom_plugin,
         confine_plugin,
         None,
+        default_skills_plugin(cwd),
     )
 }
 
@@ -1034,17 +1073,71 @@ fn resolve_agent_names(install_ids: &[String]) -> Result<Arc<dyn AgentNames>, Fa
 /// (and, through it, `ConwayBuilder::with_plugin`) before `build()`
 /// returns, before `App`/`AppState` exist to answer into. Forwarded to
 /// `bundle` verbatim -- see that function's own doc, "`form_surface`".
+/// **A fourth return value, unlike every other caller of `bundle` (board
+/// item `01M3DTT078W25MD2S4527R0WAV`): the CONCRETE, already-configured
+/// `Arc<SkillsPlugin>`.** Every other plugin in this bundle is reachable
+/// only through the type-erased `Arc<dyn Plugin>` trait object
+/// `install_selected` consumes -- fine for every capability that reaches
+/// the model purely through `Plugin::tools`/`context_hooks`/`commands`. The
+/// automatic skill-proposal trigger (`oneshot.rs`, the non-`keep_alive`
+/// path -- see `conway_plugin_skills::trigger`'s own module doc for why the
+/// TUI's `keep_alive` root cannot use it) needs to call `SkillsPlugin::
+/// last_trigger_evidence` directly, a method with no `Plugin`-trait
+/// counterpart, so this function hands the caller a second, TYPED clone of
+/// the exact same instance `install_selected` also received -- not a second,
+/// independently-constructed `SkillsPlugin` that would observe a different
+/// event stream.
+///
+/// **Configuring it BEFORE cloning, not through the generic
+/// `apply_plugin_config` loop -- see `bundle`'s own doc,
+/// "`skills_plugin`", for why.** `apply_plugin_config`'s `Arc::get_mut` call
+/// requires EXCLUSIVE ownership; by the time this function would otherwise
+/// have handed a clone to its caller, the `Arc` already has two owners (this
+/// function's own returned clone, and the one moved into `plugins`), so
+/// configuring it there would fail every build that sets
+/// `[plugins.config."conway.skills"]` at all. Configuring it here, on the
+/// freshly-constructed, still-uniquely-owned `Arc`, and removing its id from
+/// the map `apply_plugin_config` sees afterward, is what keeps both
+/// properties true: the operator's own config value still applies, loudly
+/// refusing an invalid one exactly as `apply_plugin_config` would have, and
+/// the caller still gets a live, typed handle.
 pub async fn install(
     builder: ConwayBuilder,
     env: &HashMap<String, String>,
     form_surface: Option<Arc<dyn conway_plugin_ui::FormSurface>>,
-) -> Result<(ConwayBuilder, Arc<dyn MemoryStore>, Arc<dyn AgentNames>), FacadeError> {
+) -> Result<
+    (
+        ConwayBuilder,
+        Arc<dyn MemoryStore>,
+        Arc<dyn AgentNames>,
+        Arc<conway_plugin_skills::SkillsPlugin>,
+    ),
+    FacadeError,
+> {
     let cwd = builder.config().cwd.clone();
     let plugin_config = builder.config().plugins.config.clone();
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
     let agent_names = resolve_agent_names(&builder.config().plugins.install)?;
     let idiom_plugin = resolve_idiom_plugin(&cwd, env)?;
     let confine_plugin = resolve_confine_plugin(&builder.config().plugins.install)?;
+
+    let mut skills_plugin = resolve_skills_plugin_typed(&cwd);
+    if let Some(value) = plugin_config.get(conway_plugin_skills::PLUGIN_ID) {
+        Arc::get_mut(&mut skills_plugin)
+            .expect(
+                "skills_plugin is freshly constructed above and not yet cloned -- exclusively \
+                 owned",
+            )
+            .configure(value)
+            .map_err(|e| FacadeError::Build {
+                message: format!(
+                    "[plugins.config.\"{}\"]: {e}",
+                    conway_plugin_skills::PLUGIN_ID
+                ),
+            })?;
+    }
+    let skills_plugin_handle = skills_plugin.clone();
+
     let mut plugins = bundle(
         &cwd,
         memory_store.clone(),
@@ -1052,11 +1145,18 @@ pub async fn install(
         idiom_plugin,
         confine_plugin,
         form_surface,
+        skills_plugin,
     );
-    apply_plugin_config(&mut plugins, &plugin_config)?;
+    // `conway.skills`'s own config was already applied, directly, above --
+    // excluded here so `apply_plugin_config`'s `Arc::get_mut` never sees the
+    // now-two-owners `Arc` this function's own `skills_plugin_handle` clone
+    // created (see this function's own doc).
+    let mut remaining_config = plugin_config.clone();
+    remaining_config.remove(conway_plugin_skills::PLUGIN_ID);
+    apply_plugin_config(&mut plugins, &remaining_config)?;
     let builder = builder.install_selected(plugins, router_bundle(), backend_bundle())?;
     let builder = warn_if_no_plugin_opinion(builder, env);
-    Ok((builder, memory_store, agent_names))
+    Ok((builder, memory_store, agent_names, skills_plugin_handle))
 }
 
 /// Board item `01M1FSDRF20E2EGHCG3RK28DKH`: the startup notice for a config
@@ -1203,6 +1303,7 @@ pub fn installed_plugins(
         idiom_plugin,
         confine_plugin,
         None,
+        default_skills_plugin(&cwd),
     );
     // Configured BEFORE the `install` filter below, not after: this is the
     // same "validate every candidate this table names, whether or not it
@@ -1319,6 +1420,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_skeleton::PLUGIN_ID);
@@ -1344,6 +1446,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_memory::PLUGIN_ID);
@@ -1404,6 +1507,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_confine::PLUGIN_ID);
@@ -1431,6 +1535,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID);
@@ -1459,6 +1564,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_web::PLUGIN_ID);
@@ -1506,6 +1612,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_toolindex::PLUGIN_ID);
@@ -1553,6 +1660,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         );
         let config: std::collections::BTreeMap<String, serde_json::Value> = [(
             conway_plugin_trim::PLUGIN_ID.to_string(),
@@ -1650,6 +1758,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         );
         let config: std::collections::BTreeMap<String, serde_json::Value> = [(
             conway_plugin_trim::PLUGIN_ID.to_string(),
@@ -1684,6 +1793,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_ui::PLUGIN_ID);
@@ -1727,6 +1837,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             Some(surface),
+            default_skills_plugin(&cwd),
         );
         let ui_plugin = plugins
             .iter()
@@ -1784,6 +1895,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .map(|p| p.manifest().id)
@@ -1812,6 +1924,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_idiom::PLUGIN_ID);
@@ -1982,6 +2095,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_names::PLUGIN_ID);
@@ -2032,6 +2146,7 @@ mod tests {
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
+            default_skills_plugin(&cwd),
         );
         let names_plugin = plugins
             .iter()

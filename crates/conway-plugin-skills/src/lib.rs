@@ -83,8 +83,14 @@ use conway::plugin::{
 use conway::skills::load_skill_defs;
 use conway::{AgentId, SkillDef};
 
+mod propose;
 mod trigger;
 
+pub use propose::{
+    parse_proposal_reply, skill_md_path, valid_skill_name, write_approval_from_config,
+    ProposalOutcome, WriteApproval, NONE_SENTINEL, PROPOSAL_DEADLINE_SECS, PROPOSAL_MAX_STEPS,
+    PROPOSE_DIRECTIVE, WRITE_APPROVAL_KEY,
+};
 use trigger::{RootTrackerHook, TriggerEventSink, TriggerState};
 pub use trigger::{SkillProposalEvidence, DEFAULT_TOOL_CALL_THRESHOLD, TOOL_CALL_THRESHOLD_KEY};
 
@@ -309,6 +315,20 @@ impl SkillsPlugin {
     /// mechanical OR across its three rules.
     pub fn last_trigger_evidence(&self, root_agent: AgentId) -> Option<SkillProposalEvidence> {
         self.trigger.last_evidence(&root_agent)
+    }
+
+    /// Slice 2's `[plugins.config."conway.skills"].write_approval`, as this
+    /// LIVE plugin instance was configured (`Plugin::configure`, below) --
+    /// `Ask` until an operator's own config sets it, per [`WriteApproval`]'s
+    /// own default. A caller that only holds a merged `ConwayConfig`
+    /// (`conway-cli`'s one-shot/TUI dispatch, before a `SkillsPlugin`
+    /// instance is necessarily in scope) reads the identical value via
+    /// [`write_approval_from_config`] instead -- both read the SAME
+    /// underlying JSON blob, just from two different vantage points; see
+    /// that function's own doc for why the two can never disagree in
+    /// practice.
+    pub fn write_approval(&self) -> WriteApproval {
+        self.trigger.write_approval()
     }
 }
 

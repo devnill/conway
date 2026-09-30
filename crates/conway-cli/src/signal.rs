@@ -61,6 +61,17 @@ impl SigintWatch {
     pub async fn notified(&self) {
         self.notify.notified().await;
     }
+
+    /// Like [`Self::notified`], but the returned future is ALREADY registered
+    /// as a waiter when this returns, before its first poll. `notify_waiters`
+    /// stores no permit, so a caller that checks the recorded state and only
+    /// then starts waiting can miss a delivery landing between the two;
+    /// registering first, then checking, closes that window.
+    pub fn registered(&self) -> std::pin::Pin<Box<tokio::sync::futures::Notified<'_>>> {
+        let mut notified = Box::pin(self.notify.notified());
+        notified.as_mut().enable();
+        notified
+    }
 }
 
 /// Spawns the SIGINT watcher on the current Tokio runtime. Must be called
@@ -201,6 +212,17 @@ impl TerminationWatch {
     /// there isn't a second live process left to observe it in).
     pub async fn notified(&self) {
         self.notify.notified().await;
+    }
+
+    /// Like [`Self::notified`], but the returned future is ALREADY registered
+    /// as a waiter when this returns, before its first poll. `notify_waiters`
+    /// stores no permit, so a caller that checks the recorded state and only
+    /// then starts waiting can miss a delivery landing between the two;
+    /// registering first, then checking, closes that window.
+    pub fn registered(&self) -> std::pin::Pin<Box<tokio::sync::futures::Notified<'_>>> {
+        let mut notified = Box::pin(self.notify.notified());
+        notified.as_mut().enable();
+        notified
     }
 }
 

@@ -899,6 +899,7 @@ impl App {
         let (plugin_cmd_tx, plugin_cmd_rx) = mpsc::unbounded_channel();
         let (provider_status_tx, provider_status_rx) = mpsc::unbounded_channel();
         let (await_tx, await_rx) = mpsc::unbounded_channel();
+        let (skill_propose_tx, skill_propose_rx) = mpsc::unbounded_channel();
         Ok(Self {
             handle,
             state,
@@ -911,6 +912,8 @@ impl App {
             plugin_cmd_rx: Some(plugin_cmd_rx),
             await_tx,
             await_rx: Some(await_rx),
+            skill_propose_tx,
+            skill_propose_rx: Some(skill_propose_rx),
             provider_status_tx,
             provider_status_rx: Some(provider_status_rx),
             history_path,

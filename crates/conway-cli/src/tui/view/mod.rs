@@ -71,7 +71,7 @@ use ratatui::Frame;
 use super::state::{
     AddProviderContextWindowState, AddProviderCredentialState, AppState, AskModal,
     DenyFeedbackState, EditingPatternState, EditingShellPrefixState, IntentConfirm, Mode,
-    TrustPreviewCard, UiFormState,
+    SkillProposalModal, TrustPreviewCard, UiFormState,
 };
 pub use theme::Theme;
 
@@ -228,6 +228,13 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
         );
     }
 
+    // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): the skill-proposal
+    // modal -- the seventh surface in the SAME never-stack family every
+    // branch above this one belongs to.
+    if let Mode::SkillProposal(modal) = &state.mode {
+        draw_skill_proposal(frame, areas.transcript, modal, state.modal_scroll, theme);
+    }
+
     // T7: the `/help` keybinding overlay is NOT a `Mode` variant (see
     // `AppState::help_open`'s own doc) -- it is gated on `Mode::Normal`
     // here instead, which is exactly how it avoids ever stacking on top of
@@ -374,7 +381,11 @@ fn layout(state: &AppState, area: Rect) -> Areas {
     let show_agents = state.agent_view_open
         && !matches!(
             state.mode,
-            Mode::AskModal(_) | Mode::IntentConfirm(_) | Mode::TrustPreview(_) | Mode::UiForm(_)
+            Mode::AskModal(_)
+                | Mode::IntentConfirm(_)
+                | Mode::TrustPreview(_)
+                | Mode::UiForm(_)
+                | Mode::SkillProposal(_)
         )
         && area.height > input_height + STATUS_HEIGHT + 3;
 
@@ -1102,6 +1113,93 @@ fn draw_trust_preview(
         "[y] trust  [n] cancel"
     };
     let error_line = match &card.error {
+        Some(err) => Line::from(Span::styled(format!("error: {err}"), theme.error)),
+        None => Line::from(""),
+    };
+    let footer_lines = vec![Line::from(hint), error_line];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
+/// Rows the skill-proposal modal's footer ALWAYS reserves: the decision-key
+/// hint plus a line reserved for an in-modal error -- mirrors
+/// [`TRUST_PREVIEW_FOOTER_ROWS`] exactly (this modal, like the trust-preview
+/// card, has a real in-modal error state: a failed write keeps it open with
+/// the error shown, via `AppState::fail_skill_proposal`).
+const SKILL_PROPOSAL_FOOTER_ROWS: u16 = 2;
+
+/// Slice 2's skill-proposal modal (board item `01M3DTT078W25MD2S4527R0WAV`):
+/// bottom-anchored, content-sized, capped, via the shared [`modal`]
+/// primitive -- following [`draw_trust_preview`]'s precedent exactly. Shows
+/// the proposed skill's name/description, then either its diff against an
+/// existing skill of the same name (an update) or its full body (a brand
+/// new skill) -- never both, so an operator is never shown a diff that
+/// silently omits context a fresh write would have shown in full.
+///
+/// The footer shows the three decision keys -- `[enter] write  [e] edit
+/// [esc] discard` -- and, after a FAILED write, the error that kept the
+/// modal open (red), mirroring [`draw_trust_preview`]'s footer shape
+/// exactly.
+fn draw_skill_proposal(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    modal_state: &SkillProposalModal,
+    scroll: u16,
+    theme: &Theme,
+) {
+    let header = match &modal_state.description {
+        Some(description) if !description.is_empty() => {
+            format!("propose skill \"{}\": {description}", modal_state.name)
+        }
+        _ => format!("propose skill \"{}\"", modal_state.name),
+    };
+    let mut body_lines = vec![
+        Line::from(Span::styled(header, theme.emphasized)),
+        Line::from(""),
+    ];
+    match &modal_state.diff {
+        Some(diff) => {
+            body_lines.push(Line::from(Span::styled(
+                format!("updates an existing skill -- {}", modal_state.name),
+                theme.emphasized,
+            )));
+            body_lines.push(Line::from(""));
+            body_lines.extend(diff.split('\n').map(|line| Line::from(line.to_string())));
+        }
+        None => {
+            body_lines.extend(
+                modal_state
+                    .content
+                    .split('\n')
+                    .map(|line| Line::from(line.to_string())),
+            );
+        }
+    }
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        SKILL_PROPOSAL_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " PROPOSE SKILL ",
+        theme.border_danger,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[enter] write  [e] edit  [esc] discard  [PageUp/PageDown] scroll"
+    } else {
+        "[enter] write  [e] edit  [esc] discard"
+    };
+    let error_line = match &modal_state.error {
         Some(err) => Line::from(Span::styled(format!("error: {err}"), theme.error)),
         None => Line::from(""),
     };

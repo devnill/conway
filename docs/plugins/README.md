@@ -140,7 +140,9 @@ routes` — see [`sessions.md`](../sessions.md) and
   own page before installing it.
 - [`skills.md`](skills.md) — `conway.skills`, progressive skill disclosure:
   narrows full-body skill context to a one-line index plus a `read_skill`
-  tool.
+  tool. Also covers self-authoring skills: `/conway.skills.propose` (and an
+  automatic proposal for a one-shot run that looks like hard work) — writes
+  a `SKILL.md` only on an explicit `Enter`/`y`.
 - [`path.md`](path.md) — `conway.path`, a tool (`compose_context_path`) a
   model calls to compose what a session sends as context on its NEXT turn —
   bring specific records in from another session, leave specific records of

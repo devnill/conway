@@ -760,6 +760,9 @@ fn mode_label(mode: &Mode, activity: &Activity) -> String {
         // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: the permission prompt's
         // "deny with feedback" text entry owns the screen.
         Mode::EditingDenyFeedback(_) => "deny feedback".to_string(),
+        // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): the
+        // skill-proposal modal owns the screen.
+        Mode::SkillProposal(_) => "skill proposal".to_string(),
     }
 }
 

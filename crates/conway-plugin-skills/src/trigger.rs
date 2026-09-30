@@ -114,6 +114,8 @@ use conway::plugin::{
 };
 use conway::AgentId;
 
+use crate::propose::{WriteApproval, WRITE_APPROVAL_KEY};
+
 /// The `[plugins.config."conway.skills"]` key `TriggerState::configure`
 /// recognizes: the minimum number of `Event::ToolCallProposed` occurrences
 /// observed during one root task for the tool-call-count rule to fire on
@@ -213,6 +215,12 @@ struct Accumulator {
 /// to the host separately) share the identical state.
 pub(crate) struct TriggerState {
     tool_call_threshold: Mutex<u32>,
+    /// Slice 2's `write_approval` knob (`propose::WRITE_APPROVAL_KEY`) --
+    /// stored alongside `tool_call_threshold` since both are this plugin's
+    /// own `[plugins.config."conway.skills"]` keys, validated by the SAME
+    /// `configure` call below. See [`WriteApproval`]'s own doc for why
+    /// there is deliberately no third value.
+    write_approval: Mutex<WriteApproval>,
     /// `agent_id -> is this agent the root of its own tree`, learned from
     /// [`RootTrackerHook::before_request`]'s own `ContextHookCtx::
     /// agent_path`. An agent id absent from this table (never observed via
@@ -234,6 +242,7 @@ impl TriggerState {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             tool_call_threshold: Mutex::new(DEFAULT_TOOL_CALL_THRESHOLD),
+            write_approval: Mutex::new(WriteApproval::default()),
             roots: Mutex::new(HashMap::new()),
             acc: Mutex::new(Accumulator::default()),
             decisions: Mutex::new(HashMap::new()),
@@ -257,6 +266,7 @@ impl TriggerState {
                 actual: json_value_kind(value).to_string(),
             })?;
         let mut threshold = *self.tool_call_threshold.lock().expect("threshold poisoned");
+        let mut write_approval = *self.write_approval.lock().expect("write_approval poisoned");
         for (key, raw) in object {
             match key.as_str() {
                 TOOL_CALL_THRESHOLD_KEY => {
@@ -278,6 +288,30 @@ impl TriggerState {
                             message: format!("must fit in a u32, got {n}"),
                         })?;
                 }
+                // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): see
+                // `propose::WriteApproval`'s own doc for why `"always"` is
+                // refused by name here rather than silently mapped to
+                // anything -- this is the LOUD validation path;
+                // `propose::write_approval_from_config` is the lenient
+                // mirror a caller with no live plugin instance reads
+                // instead.
+                WRITE_APPROVAL_KEY => {
+                    let s = raw
+                        .as_str()
+                        .ok_or_else(|| PluginConfigureError::InvalidValue {
+                            key: key.clone(),
+                            message: "must be a JSON string".to_string(),
+                        })?;
+                    write_approval = WriteApproval::parse(s).ok_or_else(|| {
+                        PluginConfigureError::InvalidValue {
+                            key: key.clone(),
+                            message: format!(
+                                "must be \"ask\" or \"never\" (got {s:?}; there is no \"always\" \
+                                 -- an unattended write is out of scope for this feature)"
+                            ),
+                        }
+                    })?;
+                }
                 other => {
                     return Err(PluginConfigureError::UnknownKey {
                         key: other.to_string(),
@@ -286,7 +320,13 @@ impl TriggerState {
             }
         }
         *self.tool_call_threshold.lock().expect("threshold poisoned") = threshold;
+        *self.write_approval.lock().expect("write_approval poisoned") = write_approval;
         Ok(())
+    }
+
+    /// See [`crate::SkillsPlugin::write_approval`]'s own doc.
+    pub(crate) fn write_approval(&self) -> WriteApproval {
+        *self.write_approval.lock().expect("write_approval poisoned")
     }
 
     /// Records, from a live [`ContextHookCtx`], whether `agent_id` is the
@@ -777,6 +817,74 @@ mod tests {
         let state = TriggerState::new();
         let err = state.configure(&serde_json::json!(3)).unwrap_err();
         assert!(matches!(err, PluginConfigureError::NotAnObject { actual } if actual == "number"));
+    }
+
+    // -----------------------------------------------------------------
+    // Slice 2's `write_approval` key.
+    // -----------------------------------------------------------------
+    #[test]
+    fn write_approval_defaults_to_ask_when_never_configured() {
+        let state = TriggerState::new();
+        assert_eq!(state.write_approval(), WriteApproval::Ask);
+    }
+
+    #[test]
+    fn configure_accepts_write_approval_never_and_it_takes_effect() {
+        let state = TriggerState::new();
+        state
+            .configure(&serde_json::json!({ "write_approval": "never" }))
+            .unwrap();
+        assert_eq!(state.write_approval(), WriteApproval::Never);
+    }
+
+    #[test]
+    fn configure_accepts_write_approval_ask_explicitly() {
+        let state = TriggerState::new();
+        state
+            .configure(&serde_json::json!({ "write_approval": "ask" }))
+            .unwrap();
+        assert_eq!(state.write_approval(), WriteApproval::Ask);
+    }
+
+    /// There is deliberately no `always` -- refused BY NAME, not silently
+    /// folded into `never` or `ask`.
+    #[test]
+    fn configure_refuses_write_approval_always() {
+        let state = TriggerState::new();
+        let err = state
+            .configure(&serde_json::json!({ "write_approval": "always" }))
+            .unwrap_err();
+        assert!(
+            matches!(err, PluginConfigureError::InvalidValue { key, .. } if key == "write_approval")
+        );
+        // Refusing it must not have silently taken effect anyway.
+        assert_eq!(state.write_approval(), WriteApproval::Ask);
+    }
+
+    #[test]
+    fn configure_refuses_a_non_string_write_approval() {
+        let state = TriggerState::new();
+        let err = state
+            .configure(&serde_json::json!({ "write_approval": 1 }))
+            .unwrap_err();
+        assert!(
+            matches!(err, PluginConfigureError::InvalidValue { key, .. } if key == "write_approval")
+        );
+    }
+
+    /// Both keys can be set in the same call, independently.
+    #[test]
+    fn configure_accepts_both_keys_together() {
+        let state = TriggerState::new();
+        state
+            .configure(&serde_json::json!({ "tool_call_threshold": 2, "write_approval": "never" }))
+            .unwrap();
+        assert_eq!(state.write_approval(), WriteApproval::Never);
+        let root = root_agent(&state);
+        tool_call(&state);
+        tool_call(&state);
+        state.record_event(finished(root, false));
+        assert!(state.last_evidence(&root).unwrap().tool_call_threshold_met);
     }
 
     #[test]

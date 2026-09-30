@@ -14,7 +14,9 @@ use conway::{AgentId, PermissionDecision, PermissionScope};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::keybindings::Context;
-use super::state::{AppState, AskFate, IntentChoice, Mode, TrustDecision, UiFormDecision};
+use super::state::{
+    AppState, AskFate, IntentChoice, Mode, SkillProposalFate, TrustDecision, UiFormDecision,
+};
 
 /// What a keypress means for the app loop to carry out.
 #[derive(Debug, Clone, PartialEq)]
@@ -189,6 +191,21 @@ pub enum Action {
     /// the app loop's own arm needs no facade call at all -- see
     /// `AppState::resolve_ui_form`'s own doc.
     UiFormDecision(UiFormDecision),
+    /// Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): a decision key was
+    /// pressed while the skill-proposal modal was open (`Enter` write /
+    /// `Esc` discard). The app loop runs `AppState::write_skill_proposal`/
+    /// `AppState::close_skill_proposal`; this module only reports which
+    /// fate was chosen.
+    SkillProposalFate(SkillProposalFate),
+    /// Slice 2: `e` was pressed while the skill-proposal modal was open --
+    /// the ONE key on this modal that needs a live terminal (to suspend/
+    /// resume around `$EDITOR`, exactly like `Action::OpenExternalEditor`),
+    /// so it cannot be carried out here (`input::handle_key` stays pure with
+    /// respect to I/O, this module's own doc). The app loop's own arm calls
+    /// `editor::edit_prompt_externally` against the modal's current
+    /// `content` and applies the result via `AppState::
+    /// apply_skill_proposal_edit`.
+    SkillProposalEdit,
     /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: `Enter` on the settings
     /// providers section's own `add_provider:<id>` leaf -- carries the
     /// chosen [`crate::first_run::ProviderChoice::id`] (never the whole
@@ -367,6 +384,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::UiForm(_) => handle_ui_form_key(state, key),
         // Board item `01M1A9M2EVJNR0HBN86A8E40EA`.
         Mode::EditingDenyFeedback(_) => handle_deny_feedback_key(state, key),
+        // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`).
+        Mode::SkillProposal(_) => handle_skill_proposal_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
 }
@@ -948,6 +967,54 @@ fn handle_trust_preview_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             Action::TrustDecision(TrustDecision::Cancel)
         }
+        _ => Action::None,
+    }
+}
+
+/// The skill-proposal modal's key handling (slice 2, board item
+/// `01M3DTT078W25MD2S4527R0WAV`): exactly three ways out -- `Enter` (write),
+/// `e` (edit in `$EDITOR` first), `Esc` (discard). Everything else is
+/// SWALLOWED, mirroring [`handle_trust_preview_key`]'s shape exactly: the
+/// input line is inert, `/agents` is neither visible nor available, and the
+/// quit keys (`Ctrl-C`/`Ctrl-D`) still pass through as `Action::CtrlC`/
+/// `Action::Quit` -- quitting with the modal open IS the discard outcome
+/// (the ephemeral child that produced this proposal is ALREADY purged by
+/// the time this modal exists at all, see [`crate::tui::state::
+/// SkillProposalModal`]'s own doc, so there is nothing left to clean up).
+///
+/// The modal scrolls past its capped height exactly like every other
+/// modal-bearing surface (`view/mod.rs::draw_skill_proposal`'s own doc),
+/// checked before the decision keys' bare-keypress guard.
+///
+/// `e` only fires on a bare keypress -- a modifier held (Ctrl-E, Alt-E, ...)
+/// is NOT the edit choice, the same B5 M2 guard every other modal-bearing
+/// surface's key handler applies.
+fn handle_skill_proposal_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
+    }
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
+    match key.code {
+        KeyCode::Enter => Action::SkillProposalFate(SkillProposalFate::Write),
+        KeyCode::Char('e') | KeyCode::Char('E') => Action::SkillProposalEdit,
+        KeyCode::Esc => Action::SkillProposalFate(SkillProposalFate::Discard),
         _ => Action::None,
     }
 }
@@ -3956,6 +4023,99 @@ mod tests {
         let mut state = ask_modal_state();
         // Ctrl-C / Ctrl-D still report their actions -- `app.rs` purges the
         // modal's child before honoring them (no fate-less way out).
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
+            Action::CtrlC
+        );
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('d'))),
+            Action::Quit
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`), review round 1:
+    // the skill-proposal modal's own key handling had zero coverage before
+    // this -- mirrors the `ask_modal_*` tests just above exactly.
+    // -----------------------------------------------------------------
+
+    fn skill_proposal_state() -> AppState {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_skill_proposal(crate::tui::state::SkillProposalModal {
+            child: AgentId::new(),
+            name: "example".to_string(),
+            description: None,
+            content: "---\nname: example\n---\n\nBody.\n".to_string(),
+            existing: None,
+            diff: None,
+            error: None,
+        });
+        state
+    }
+
+    #[test]
+    fn skill_proposal_enter_e_esc_map_to_write_edit_discard() {
+        let mut state = skill_proposal_state();
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Enter)),
+            Action::SkillProposalFate(SkillProposalFate::Write)
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('e'))),
+            Action::SkillProposalEdit,
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('E'))),
+            Action::SkillProposalEdit,
+            "a capital E must also fire the edit action"
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Esc)),
+            Action::SkillProposalFate(SkillProposalFate::Discard)
+        );
+        // None of these keys close the modal themselves -- the app loop
+        // does (`write_skill_proposal`/`close_skill_proposal`).
+        assert!(matches!(state.mode, Mode::SkillProposal(_)));
+    }
+
+    /// `e`/`Enter`/`Esc` only fire on a BARE keypress -- a modifier held
+    /// (Ctrl-E, Alt-Enter, ...) must not be mistaken for the choice, the
+    /// same B5 M2 guard every other modal-bearing surface's key handler
+    /// applies (`handle_ask_modal_key`'s own doc).
+    #[test]
+    fn skill_proposal_edit_key_requires_no_modifier() {
+        let mut state = skill_proposal_state();
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('e'))),
+            Action::None
+        );
+        assert!(matches!(state.mode, Mode::SkillProposal(_)));
+    }
+
+    #[test]
+    fn skill_proposal_swallows_text_and_palette_keys() {
+        let mut state = skill_proposal_state();
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('x'))),
+            Action::None
+        );
+        assert!(state.input.is_empty(), "the input line must stay inert");
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('/'))),
+            Action::None
+        );
+        assert!(state.input.is_empty());
+        assert!(matches!(state.mode, Mode::SkillProposal(_)));
+    }
+
+    #[test]
+    fn skill_proposal_quit_keys_pass_through() {
+        let mut state = skill_proposal_state();
+        // The ephemeral child that produced this proposal is ALREADY
+        // purged by the time the modal exists at all (see
+        // `SkillProposalModal`'s own doc) -- quitting here is a plain
+        // discard, no purge-first special case the way `/ask`'s modal
+        // needs.
         assert_eq!(
             handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
             Action::CtrlC

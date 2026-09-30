@@ -28,7 +28,9 @@ use crate::tui::form::FormReceiver;
 use crate::tui::gate::GateReceiver;
 use crate::tui::input::{self, Action};
 use crate::tui::session_picker;
-use crate::tui::state::{should_animate, AskModal, Entry, MODEL_DECISION_HISTORY_CAP};
+use crate::tui::state::{
+    should_animate, AskModal, Entry, SkillProposalFate, MODEL_DECISION_HISTORY_CAP,
+};
 use crate::tui::view;
 
 /// The app loop's redraw cap (module notes: "60 fps cap / redraw-on-change").
@@ -133,6 +135,13 @@ impl App {
             .await_rx
             .take()
             .expect("await_rx is set in App::new and taken exactly once, here");
+        // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): mirrors
+        // `await_rx` exactly, same reasoning -- see `app/skill_propose.rs`'s
+        // own module doc.
+        let mut skill_propose_rx = self
+            .skill_propose_rx
+            .take()
+            .expect("skill_propose_rx is set in App::new and taken exactly once, here");
 
         loop {
             tokio::select! {
@@ -365,6 +374,17 @@ impl App {
                 maybe_await = await_rx.recv() => {
                     if let Some(done) = maybe_await {
                         self.apply_await_done(done);
+                        dirty = true;
+                    }
+                }
+                // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): the
+                // reply side of `Effect::RunSkillPropose`'s spawned task
+                // (`App::spawn_skill_propose`) -- mirrors `await_rx.recv()`
+                // immediately above in every structural respect, including
+                // being drained unconditionally.
+                maybe_skill_propose = skill_propose_rx.recv() => {
+                    if let Some(done) = maybe_skill_propose {
+                        self.apply_skill_propose_done(done);
                         dirty = true;
                     }
                 }
@@ -1120,6 +1140,44 @@ impl App {
                                     commands::apply_trust_decision(decision, &mut self.state, &host)
                                         .await;
                                 }
+                                // Slice 2 (board item
+                                // `01M3DTT078W25MD2S4527R0WAV`): the
+                                // skill-proposal modal's decision. Unlike
+                                // `Action::AskFate`/`TrustDecision`, neither
+                                // fate makes a facade call through `Host` --
+                                // `Write` is a plain, local file write
+                                // (`App::write_skill_proposal`), and
+                                // `Discard` is a plain mode close, since the
+                                // ephemeral child that produced this
+                                // proposal is ALREADY purged (see
+                                // `app/skill_propose.rs`'s own doc).
+                                Action::SkillProposalFate(fate) => {
+                                    match fate {
+                                        SkillProposalFate::Write => {
+                                            self.write_skill_proposal();
+                                        }
+                                        SkillProposalFate::Discard => {
+                                            self.state.close_skill_proposal();
+                                            self.state.transcript.push(Entry::Notice {
+                                                text: "skill proposal discarded".to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                                // Slice 2: `e` on the skill-proposal modal --
+                                // needs a live terminal, exactly like
+                                // `Action::OpenExternalEditor` below, so it
+                                // cannot be carried out in `input.rs`. A
+                                // no-op (falls through the `let else`) if
+                                // the modal somehow already closed by the
+                                // time this action is dispatched (a stale
+                                // action after a race is not expected in
+                                // practice, but this arm never panics on
+                                // it).
+                                Action::SkillProposalEdit => {
+                                    let editor_command = editor::resolve_editor_command();
+                                    self.apply_skill_proposal_edit_action(terminal, &editor_command);
+                                }
                                 // Board item `01M19NH39AE2D5AMJK0RZRQY86`: the
                                 // `ask_question` modal's decision (`up`/`down`
                                 // choose, `enter` answer, `esc` cancel).
@@ -1233,6 +1291,14 @@ impl App {
                                             Effect::RunAwait { agent } => {
                                                 self.spawn_await(agent);
                                             }
+                                            // Structurally unreachable from
+                                            // `apply_model_switch`, same
+                                            // reason as `RunAwait` above.
+                                            // Handled correctly anyway,
+                                            // mirroring it exactly.
+                                            Effect::RunSkillPropose { root } => {
+                                                self.spawn_skill_propose(root);
+                                            }
                                             Effect::RunMarketplaceInstall {
                                                 marketplace_url,
                                                 plugin_id,
@@ -1341,6 +1407,9 @@ impl App {
                                                 }
                                                 Effect::RunAwait { agent } => {
                                                     self.spawn_await(agent);
+                                                }
+                                                Effect::RunSkillPropose { root } => {
+                                                    self.spawn_skill_propose(root);
                                                 }
                                                 Effect::RunMarketplaceInstall {
                                                     marketplace_url,
@@ -1483,6 +1552,13 @@ impl App {
                                         // comments just above.
                                         Effect::RunAwait { agent } => {
                                             self.spawn_await(agent);
+                                        }
+                                        // Structurally unreachable from THIS
+                                        // call site, same reason as the
+                                        // arms just above. Handled correctly
+                                        // anyway, mirroring them exactly.
+                                        Effect::RunSkillPropose { root } => {
+                                            self.spawn_skill_propose(root);
                                         }
                                         // Structurally unreachable from THIS
                                         // call site for the same reason

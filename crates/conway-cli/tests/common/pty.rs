@@ -478,6 +478,21 @@ impl PtySession {
         self.send("\x1b[Z");
     }
 
+    /// The child's own OS process id, for a test that needs to send it a
+    /// real signal (`nix::sys::signal::kill`, the same mechanism `tests/
+    /// oneshot.rs`'s own `send_sigint`/`send_signal` helpers use against a
+    /// plain [`super::command`]-spawned child) rather than merely killing it
+    /// outright ([`PtySession`] itself only exposes that much, via `Drop`).
+    /// `#[allow(dead_code)]`: only a signal-driven suite calls this, and
+    /// (this module's own doc on `#[allow(dead_code)]` elsewhere) every
+    /// `tests/*.rs` file compiles this module fresh as its own crate.
+    #[allow(dead_code)]
+    pub fn pid(&self) -> u32 {
+        self.child
+            .process_id()
+            .expect("a freshly spawned child always has a pid on unix")
+    }
+
     /// Polls for the child's exit, up to `timeout` -- the one piece of
     /// process lifecycle none of [`Self::spawn`]/[`Self::send`]/
     /// [`Self::wait_for_any`]/[`Self::screen`] otherwise expose, needed by

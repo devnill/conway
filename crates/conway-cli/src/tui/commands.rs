@@ -314,6 +314,24 @@ pub enum SlashCommand {
     Plugins {
         action: Option<PluginsAction>,
     },
+    /// `/conway.skills.propose` (slice 2, board item
+    /// `01M3DTT078W25MD2S4527R0WAV`): forks an ephemeral child asking it to
+    /// reflect on the task just performed and propose a `SKILL.md`, or say
+    /// none is warranted -- the primary, on-demand path (the ruling this
+    /// item names: the automatic trigger fires at session CLOSE for a
+    /// `keep_alive` root, which is too late to show a modal, so this
+    /// explicit command is what an interactive operator actually uses).
+    /// Named like a plugin-declared command (`plugin_id.bare_name`) but is
+    /// NOT one -- `conway-core`'s `Plugin::commands()`/`CommandOutcome`
+    /// surface has no shape for "fork an ephemeral child, await its full
+    /// result, and show a bespoke approve/write modal" (every variant there
+    /// is deliberately narrower), and widening it is a `conway-core` change
+    /// this slice's own fence forbids. `parse` recognizes the literal word
+    /// BEFORE the generic plugin-command fallback (`other =>`) gets a
+    /// chance to, exactly the way every other built-in command word does.
+    /// Takes no arguments -- `parse` rejects anything else with `usage:
+    /// /conway.skills.propose (no arguments)`.
+    SkillsPropose,
 }
 
 /// `/plugin`'s optional action (board item `01M0WB5W5DX844HSJQG3JP23X0`,
@@ -525,6 +543,11 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
              dynamically (CommandRegistry::palette_entries), never through this table; this \
              indicates a caller reaching for the wrong mechanism"
         ),
+        SlashCommand::SkillsPropose => CommandSpec {
+            name: "/conway.skills.propose",
+            usage: "/conway.skills.propose",
+            description: "propose a SKILL.md for the procedure just used (writes only on Enter)",
+        },
     }
 }
 
@@ -596,6 +619,7 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
         SlashCommand::Role { role: None },
         SlashCommand::Help,
         SlashCommand::Quit,
+        SlashCommand::SkillsPropose,
     ]
 }
 
@@ -805,6 +829,15 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/quit" | "/exit" => {
             parse_no_arg(rest, word)?;
             Ok(SlashCommand::Quit)
+        }
+        // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): recognized as
+        // its OWN literal word, matched BEFORE the generic plugin-command
+        // fallback (`other =>`, immediately below) gets a chance to treat
+        // its `.`-separated shape as a plugin command name -- see
+        // `SlashCommand::SkillsPropose`'s own doc.
+        "/conway.skills.propose" => {
+            parse_no_arg(rest, "/conway.skills.propose")?;
+            Ok(SlashCommand::SkillsPropose)
         }
         other => {
             // a plugin command's full
@@ -1233,6 +1266,20 @@ pub enum Effect {
     /// `app/await_cmd.rs`'s module doc for why a shared channel with `/ask`
     /// was considered and rejected).
     RunAwait { agent: AgentId },
+    /// `/conway.skills.propose` (slice 2, board item
+    /// `01M3DTT078W25MD2S4527R0WAV`) validated -- `execute` has already
+    /// refused it when `write_approval` is `never` (no fork, per the
+    /// acceptance criterion: "no fork, no modal, no tokens") and when
+    /// another proposal is already in flight, and has set `state.
+    /// skill_propose_in_flight`. **`execute` never spawns the task itself**
+    /// -- the same reasoning [`Self::RunModalAsk`]/[`Self::RunAwait`]'s own
+    /// docs give: forking the ephemeral child needs the live
+    /// `SessionHandle`/`Conway`/`skill_propose_tx`, none of which `Host`/
+    /// `execute` has. The caller (`App::submit`, via `App::
+    /// spawn_skill_propose`) does the actual `tokio::spawn`. `root` is
+    /// `CommandCtx`-equivalent identity (`host.root()`), captured here
+    /// rather than re-read inside the spawned task.
+    RunSkillPropose { root: AgentId },
     /// `/plugin install <url> <id>` validated -- **`execute` never fetches
     /// anything itself.** `App::apply_marketplace_install` needs `env`
     /// (to resolve `settings.json`'s path via `CONWAY_CONFIG_DIR`) and
@@ -1457,6 +1504,18 @@ pub trait Host {
     /// resolved command is a SEPARATE step -- see [`Effect::
     /// RunPluginCommand`]'s own doc).
     fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>>;
+
+    /// Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`):
+    /// `[plugins.config."conway.skills"].write_approval`, as this process's
+    /// merged `ConwayConfig` carries it -- `execute`'s `SlashCommand::
+    /// SkillsPropose` arm reads this to refuse forking at all when it is
+    /// `Never` (acceptance: "no fork, no modal, no tokens"). Synchronous,
+    /// not async -- a config field read, like [`Self::tool_specs`]'s own
+    /// "sync, not async" reasoning. `conway_plugin_skills::
+    /// write_approval_from_config` is the SAME lenient reader the automatic
+    /// trigger (`oneshot.rs`) uses, so the two surfaces can never read this
+    /// knob differently.
+    fn skills_write_approval(&self) -> conway_plugin_skills::WriteApproval;
 }
 
 /// The live [`Host`]: pure delegation to a `SessionHandle` + `Conway` pair
@@ -1647,6 +1706,16 @@ impl Host for LiveHost<'_> {
 
     fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
         self.commands.resolve(full_name)
+    }
+
+    fn skills_write_approval(&self) -> conway_plugin_skills::WriteApproval {
+        conway_plugin_skills::write_approval_from_config(
+            self.conway
+                .config()
+                .plugins
+                .config
+                .get(conway_plugin_skills::PLUGIN_ID),
+        )
     }
 }
 
@@ -2558,6 +2627,36 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 Effect::None
             }
         },
+        // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): `write_approval
+        // = never` suppresses EVERYTHING -- no fork, no modal, no tokens
+        // (the acceptance criterion's own wording) -- checked here, before
+        // `state.skill_propose_in_flight` is even read, so a `never`
+        // operator sees the identical refusal whether or not a proposal
+        // happens to be in flight (impossible in practice under `never`,
+        // since this is the only place that ever sets the flag, but the
+        // ordering makes that a structural fact rather than a coincidence
+        // of which check runs first). A second proposal already in flight
+        // is refused next, mirroring `/ask`'s own single-slot refusal
+        // (`state.ask_in_flight`).
+        SlashCommand::SkillsPropose => {
+            if host.skills_write_approval() == conway_plugin_skills::WriteApproval::Never {
+                notice(
+                    state,
+                    "conway.skills write_approval is \"never\" -- /conway.skills.propose is \
+                     disabled",
+                );
+                Effect::None
+            } else if state.skill_propose_in_flight {
+                notice(
+                    state,
+                    "a skill proposal is already running -- wait for it to finish",
+                );
+                Effect::None
+            } else {
+                state.skill_propose_in_flight = true;
+                Effect::RunSkillPropose { root: host.root() }
+            }
+        }
         SlashCommand::Tree => {
             // Item A3: no facade call -- the alias renders from
             // `state.tree` (the panel's own view), so its labels, recipe
@@ -5199,6 +5298,12 @@ mod tests {
         /// exercised by `bare_resume_with_no_sessions_gives_a_clear_
         /// notice`), `None` fails with `fake_error()`.
         resumable_sessions_result: Option<Vec<session_picker::ResumableSessionRow>>,
+        /// Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): `Host::
+        /// skills_write_approval`'s scripted response -- `Ask` by default
+        /// (`FakeHost::new`), the same default `conway_plugin_skills::
+        /// WriteApproval` itself documents. See [`Self::
+        /// with_skills_write_approval`].
+        skills_write_approval: conway_plugin_skills::WriteApproval,
     }
 
     impl FakeHost {
@@ -5223,6 +5328,7 @@ mod tests {
                 tool_specs: Vec::new(),
                 tool_plugin_ids: HashMap::new(),
                 resumable_sessions_result: None,
+                skills_write_approval: conway_plugin_skills::WriteApproval::Ask,
             }
         }
 
@@ -5232,6 +5338,15 @@ mod tests {
 
         fn last_context_agent(&self) -> Option<AgentId> {
             *self.last_context_agent.lock().unwrap()
+        }
+
+        /// Scripts `skills_write_approval` -- see that field's own doc.
+        fn with_skills_write_approval(
+            mut self,
+            approval: conway_plugin_skills::WriteApproval,
+        ) -> Self {
+            self.skills_write_approval = approval;
+            self
         }
 
         /// Registers `command` under `full_name`, for a test exercising
@@ -5472,6 +5587,11 @@ mod tests {
         fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
             self.calls.lock().unwrap().push("resolve_command");
             self.plugin_commands.get(full_name).cloned()
+        }
+
+        fn skills_write_approval(&self) -> conway_plugin_skills::WriteApproval {
+            self.calls.lock().unwrap().push("skills_write_approval");
+            self.skills_write_approval
         }
     }
 
@@ -6064,6 +6184,85 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("no agent matches")),
             "the failure must be a named, typed notice: {:?}",
+            notice_lines(&state)
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // execute() -- SlashCommand::SkillsPropose (slice 2, board item
+    // `01M3DTT078W25MD2S4527R0WAV`)
+    // ---------------------------------------------------------------
+
+    /// The default (`write_approval = ask`, `FakeHost::new`'s own default):
+    /// sets `skill_propose_in_flight` and returns `Effect::RunSkillPropose`
+    /// naming the root -- `execute` itself never forks (the fork lives in
+    /// `App::spawn_skill_propose`, off this loop -- see `Effect::
+    /// RunSkillPropose`'s own doc).
+    #[tokio::test]
+    async fn skills_propose_defaults_to_ask_and_returns_run_skill_propose() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::SkillsPropose, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::RunSkillPropose { root: r } if r == root));
+        assert!(state.skill_propose_in_flight);
+        assert!(
+            host.calls().contains(&"skills_write_approval"),
+            "the write_approval check must actually happen: {:?}",
+            host.calls()
+        );
+    }
+
+    /// **`write_approval = never` suppresses the fork itself, at the
+    /// `execute` level.** No `Effect::RunSkillPropose` is ever produced, and
+    /// `skill_propose_in_flight` is never set -- the caller (`App::submit`)
+    /// therefore never reaches `App::spawn_skill_propose` at all, which is
+    /// this crate's own structural guarantee that no fork happens (the
+    /// end-to-end proof, against a real `Conway`'s own session listing,
+    /// lives in `app/skill_propose.rs`'s own
+    /// `write_approval_never_suppresses_the_fork_entirely`).
+    #[tokio::test]
+    async fn skills_propose_refuses_outright_when_write_approval_is_never() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root)
+            .with_skills_write_approval(conway_plugin_skills::WriteApproval::Never);
+
+        let effect = execute(SlashCommand::SkillsPropose, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            !state.skill_propose_in_flight,
+            "write_approval=never must never set the in-flight flag"
+        );
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("never") && line.contains("disabled")),
+            "the refusal must be a named, typed notice: {:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// A second `/conway.skills.propose` while one is already running is
+    /// refused, mirroring `/ask`'s single-slot refusal exactly.
+    #[tokio::test]
+    async fn skills_propose_refuses_a_second_one_while_the_first_is_in_flight() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.skill_propose_in_flight = true;
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::SkillsPropose, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("already running")),
+            "the refusal must be a named, typed notice: {:?}",
             notice_lines(&state)
         );
     }

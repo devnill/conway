@@ -171,7 +171,7 @@ async fn main() -> std::process::ExitCode {
         (None, None)
     };
 
-    let (conway, memory_store, agent_names) =
+    let (conway, memory_store, agent_names, skills_plugin) =
         match build_conway(&cli, gate_override, form_surface, is_tui, interactive, &env).await {
             Ok(built) => built,
             Err(e) => {
@@ -234,6 +234,7 @@ async fn main() -> std::process::ExitCode {
         tui_form_rx,
         memory_store,
         agent_names,
+        skills_plugin,
         &env,
     )
     .await;
@@ -341,6 +342,7 @@ async fn build_conway(
     Conway,
     Arc<dyn conway::plugin::MemoryStore>,
     Arc<dyn conway_plugin_names::AgentNames>,
+    Arc<conway_plugin_skills::SkillsPlugin>,
 )> {
     let builder = match &cli.config {
         Some(path) => ConwayBuilder::from_config(path)?,
@@ -486,7 +488,7 @@ async fn build_conway(
     // `[plugins]` section in `settings.json` at all. Every dispatch target
     // sees this union from the SAME choke point, so the property holds for
     // the TUI and every one-shot/subcommand invocation identically.
-    let (builder, memory_store, agent_names) =
+    let (builder, memory_store, agent_names, skills_plugin) =
         first_party_plugins::install(builder, env, form_surface).await?;
     // The subprocess plugin tier (board item 01KZY8PATND84AKY0J376E3DWV):
     // a SEPARATE choke point from the line above -- see
@@ -542,7 +544,7 @@ async fn build_conway(
     // `crates/conway/tests/architecture_invariants.rs` T7 enforces.
     let builder = statusline_plugin::install(builder, &crate::tui::config::load(cli)?);
     let conway = builder.build()?;
-    Ok((conway, memory_store, agent_names))
+    Ok((conway, memory_store, agent_names, skills_plugin))
 }
 
 /// Board item `01M250BXW12HVMKZBCFPKG3704` named two commands that answer
@@ -806,7 +808,13 @@ mod command_tolerates_mcp_startup_failures_tests {
 /// `tui_gate_rx` is `Some` exactly when the `None` (tui) arm below is the
 /// one taken -- see `main`'s comment. `tui_form_rx` (board item
 /// `01M19NH39AE2D5AMJK0RZRQY86`) is `Some` on the identical condition, for
-/// the identical reason.
+/// the identical reason. `skills_plugin` (board item
+/// `01M3DTT078W25MD2S4527R0WAV`) is this binary's ONE `Arc<SkillsPlugin>`
+/// instance, threaded through to `oneshot::run` for the automatic
+/// skill-proposal trigger, on the identical "one instance per process,
+/// threaded rather than re-opened" footing `memory_store`/`agent_names`
+/// already establish two parameters above.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch(
     cli: &Cli,
     conway: Conway,
@@ -814,6 +822,7 @@ async fn dispatch(
     tui_form_rx: Option<tui::form::FormReceiver>,
     memory_store: Arc<dyn conway::plugin::MemoryStore>,
     agent_names: Arc<dyn conway_plugin_names::AgentNames>,
+    skills_plugin: Arc<conway_plugin_skills::SkillsPlugin>,
     env: &HashMap<String, String>,
 ) -> conway::Result<ExitCode> {
     match &cli.command {
@@ -887,7 +896,7 @@ async fn dispatch(
             )
             .await
         }
-        None if cli.print.is_some() => oneshot::run(cli, conway).await,
+        None if cli.print.is_some() => oneshot::run(cli, conway, skills_plugin).await,
         None => {
             let gate_rx = tui_gate_rx.expect("tui_gate_rx is constructed whenever is_tui is true");
             let form_rx = tui_form_rx.expect("tui_form_rx is constructed whenever is_tui is true");

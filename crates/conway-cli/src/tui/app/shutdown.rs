@@ -165,5 +165,28 @@ impl App {
         // and `self.state` (and the reply sender it owns) is dropped along
         // with it either way.
         let _ = self.state.take_pending_ui_form();
+        // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): drain a parked
+        // skill proposal on exit too, for the identical reason the
+        // `ask_question` question just above needs it -- there is no live
+        // child to purge (the ephemeral fork that produced this proposal is
+        // ALREADY purged by the time a `SkillProposalModal` exists at all,
+        // see that type's own doc), so quitting with the proposal open or
+        // parked IS the discard fate: nothing was ever written. A proposal
+        // currently LIVE in `Mode::SkillProposal` needs no special handling
+        // either, mirroring `take_pending_ui_form`'s own doc.
+        //
+        // **Disclosed, accepted gap:** a proposal fork still IN FLIGHT
+        // (`state.skill_propose_in_flight`, no modal yet) has no
+        // `state.ask_child`-style handle this method could cancel -- unlike
+        // `/ask`, this feature never surfaces the forked child's id before
+        // its whole turn is done (see `tui/app/skill_propose.rs`'s own
+        // doc). Quitting here leaves that spawned task to wind down on its
+        // own; it is bounded by `conway_plugin_skills::PROPOSAL_MAX_STEPS`/
+        // `PROPOSAL_DEADLINE_SECS` and holds its own `Conway` clone, so it
+        // purges its ephemeral child and exits on its own schedule even
+        // after this method returns, the same "bounded residue, never an
+        // unbounded hang" posture the mechanical trigger's own lossy-
+        // delivery decision already accepts elsewhere in this feature.
+        let _ = self.state.take_pending_skill_proposal();
     }
 }

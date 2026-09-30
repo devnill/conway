@@ -208,7 +208,16 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // facade/filesystem context this terminal-free harness does not
         // have, so it is applied in `app.rs`'s run loop only (see
         // `Action::MakeModelDefault`'s own doc in `input.rs`).
-        | Action::MakeModelDefault(_) => {}
+        | Action::MakeModelDefault(_)
+        // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): `Write`/
+        // `Discard` need a real filesystem write and `AppState::
+        // close_skill_proposal`/`fail_skill_proposal`, and `Edit` needs a
+        // live `Terminal`/child-process suspend-resume exactly like
+        // `Action::OpenExternalEditor` above -- none of which this
+        // terminal-free harness has, so all three are applied in
+        // `app/run.rs`'s run loop only; a test asserts on the ACTION alone.
+        | Action::SkillProposalFate(_)
+        | Action::SkillProposalEdit => {}
     }
     action
 }

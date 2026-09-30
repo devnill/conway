@@ -56,6 +56,7 @@ mod provider_manage;
 mod provider_status;
 mod run;
 mod shutdown;
+mod skill_propose;
 mod startup;
 mod viewport;
 
@@ -64,6 +65,7 @@ pub(super) mod fixtures;
 
 use ask::AskUpdate;
 use plugin_cmd::PluginCommandDone;
+use skill_propose::SkillProposeDone;
 
 pub struct App {
     handle: conway::SessionHandle,
@@ -113,6 +115,13 @@ pub struct App {
     /// a variant folded into `modal_ask_tx`/`modal_ask_rx`.
     await_tx: mpsc::UnboundedSender<await_cmd::AwaitDone>,
     await_rx: Option<mpsc::UnboundedReceiver<await_cmd::AwaitDone>>,
+    /// Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): mirrors
+    /// `await_tx`/`await_rx` exactly, same reasoning -- see
+    /// `app/skill_propose.rs`'s own module doc for why `/conway.skills.
+    /// propose`'s ephemeral fork+await is spawned off this loop rather than
+    /// awaited inline.
+    skill_propose_tx: mpsc::UnboundedSender<SkillProposeDone>,
+    skill_propose_rx: Option<mpsc::UnboundedReceiver<SkillProposeDone>>,
     /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: mirrors `plugin_cmd_tx`/
     /// `plugin_cmd_rx` exactly, same reasoning, for the providers section's
     /// own background classification -- see `provider_status.rs`'s own
@@ -437,6 +446,16 @@ impl App {
                         // spawn_await`'s.
                         Effect::RunAwait { agent } => {
                             self.spawn_await(agent);
+                        }
+                        // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`):
+                        // `execute`'s `SlashCommand::SkillsPropose` arm has
+                        // already checked `write_approval` and set `state.
+                        // skill_propose_in_flight` -- THIS is where the
+                        // actual `tokio::spawn` runs, mirroring `RunAwait`'s
+                        // own arm exactly. See `Effect::RunSkillPropose`'s
+                        // own doc and `Self::spawn_skill_propose`'s.
+                        Effect::RunSkillPropose { root } => {
+                            self.spawn_skill_propose(root);
                         }
                         // Board item `01M0WB5W5DX844HSJQG3JP23X0`: `execute`
                         // cannot reach `App::apply_marketplace_install`

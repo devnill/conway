@@ -51,8 +51,8 @@ pub use agent_tree::{AgentTreeView, NodeStatus, SpawnRoleOrModel, TreeNode};
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use modal::{
     AddProviderContextWindowState, AddProviderCredentialState, AskFate, AskModal,
-    DenyFeedbackState, Mode, TrustDecision, TrustPreviewCard, UiFormDecision, UiFormState,
-    DEFAULT_DENY_FEEDBACK,
+    DenyFeedbackState, Mode, SkillProposalFate, SkillProposalModal, TrustDecision,
+    TrustPreviewCard, UiFormDecision, UiFormState, DEFAULT_DENY_FEEDBACK,
 };
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
 pub use transcript::{backfill_entries, clamp_tool_preview_lines, Entry, ToolStatus};
@@ -743,6 +743,23 @@ pub struct AppState {
     /// [`Self::promote_next_surface`] already documents (queued prompt,
     /// then ask, then intent card, then trust preview, then this).
     pending_ui_form: Option<PendingFormAsk>,
+    /// Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): a skill proposal
+    /// parked behind another modal-bearing surface -- mirrors
+    /// `pending_ui_form` exactly. `tui/app/skill_propose.rs`'s own
+    /// `SkillProposeDone` arm calls [`Self::offer_skill_proposal`], which
+    /// parks here whenever `mode` is not `Normal`. Drained in the SAME
+    /// fixed priority order [`Self::promote_next_surface`] already
+    /// documents (queued prompt, ask, intent card, trust preview, ui form,
+    /// then this -- lowest priority of all seven).
+    pending_skill_proposal: Option<SkillProposalModal>,
+    /// Slice 2: whether `/conway.skills.propose`'s (or the automatic
+    /// trigger's) ephemeral fork is currently in flight -- mirrors
+    /// `ask_in_flight` exactly: while set, a second proposal is refused with
+    /// a `Notice` rather than competing for the one [`Mode::SkillProposal`]
+    /// slot. Set by `commands::execute`'s `SlashCommand::SkillsPropose` arm
+    /// (or the automatic trigger's own call site), cleared when
+    /// `SkillProposeDone` arrives.
+    pub skill_propose_in_flight: bool,
     /// Whether an `/ask` child's single turn is currently in flight (B5).
     /// Set by `app.rs` when it spawns the ask task, cleared when the result
     /// arrives -- while set, a second `/ask` is refused with a `Notice`
@@ -1801,6 +1818,8 @@ impl AppState {
             pending_intent_confirm: None,
             pending_trust_preview: None,
             pending_ui_form: None,
+            pending_skill_proposal: None,
+            skill_propose_in_flight: false,
             spinner_frame: 0,
             turn_started_at: None,
             awaiting_permission_since: None,

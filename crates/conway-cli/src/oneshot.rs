@@ -347,8 +347,9 @@
 //!     to close" tradeoff the pre-existing id-collision probe above already
 //!     accepts, applied to the new bind step.
 
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use conway::gates::AllowListGate;
@@ -416,7 +417,23 @@ fn is_reasonless_permission_denial(event: &Event) -> bool {
 /// `cli.print.is_some()`). `conway`'s `Runtime` already has this module's
 /// [`build_gate`] wired in as its `PermissionGate` -- see reconciliation #1
 /// above -- `run` itself never touches gate construction.
-pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
+///
+/// **`skills_plugin` (slice 2, board item `01M3DTT078W25MD2S4527R0WAV`): the
+/// automatic skill-proposal trigger's ONE reachable home.** The ruling this
+/// item names states it plainly: for an interactive TUI root (`keep_alive:
+/// true`), `Event::AgentFinished` -- the trigger's own anchor, `conway_
+/// plugin_skills::trigger`'s own module doc -- fires only at session
+/// CLOSE, too late to show a modal to an operator who is still there. A
+/// one-shot root is never `keep_alive` (`resolve_session`'s every arm), so
+/// its `AgentFinished` genuinely marks the end of the operator's own task --
+/// this function, after the run's own terminal result lands, is where that
+/// evidence is finally ripe to act on. See `maybe_propose_skill`'s own
+/// doc for what "act on it" means for a non-interactive dispatch target.
+pub async fn run(
+    cli: &Cli,
+    conway: Conway,
+    skills_plugin: Arc<conway_plugin_skills::SkillsPlugin>,
+) -> conway::Result<ExitCode> {
     let text = read_prompt(cli)?;
 
     let handle = resolve_session(cli, &conway).await?;
@@ -624,34 +641,486 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
 
     renderer.finish(final_result.as_ref())?;
 
-    let sigint_seen = sigint.hits() > 0;
-    // Board item A5.3: `term_cause` takes precedence over `sigint_seen`
-    // whenever both are somehow set (the loop's shared `grace_deadline`
-    // guard means at most one of the sigint/termination `select!` arms
-    // ever actually fires and drives `final_result`'s cancellation reason
-    // -- `term_cause` reflects precisely that, so it is the more precise
-    // of the two signals available here, exactly mirroring why
-    // `sigint_seen` alone was already sufficient before this signal
-    // existed).
-    let code = match (&final_result, term_cause) {
-        (Some(result), Some(cause)) => ExitCode::from_result_with_signal(result, Some(cause)),
-        (Some(result), None) => ExitCode::from_result_with_sigint(result, sigint_seen),
-        // The grace window elapsed with no terminal result at all -- still
-        // report the documented signal-specific code rather than falling
-        // through to the generic `AgentFailed` below.
-        (None, Some(cause)) => match cause {
-            signal::TermSignal::Term => ExitCode::TerminatedBySigterm,
-            signal::TermSignal::Hup => ExitCode::TerminatedBySighup,
-        },
-        (None, None) if sigint_seen => ExitCode::Interrupted,
-        // The event stream ended without ever producing a terminal result
-        // and without a SIGINT/SIGTERM/SIGHUP -- not expected in practice
-        // (the broadcast bus only closes once every `Arc<Runtime>` is
-        // dropped), but this fn must still return *something* rather than
-        // hang or panic.
-        (None, None) => ExitCode::AgentFailed,
+    // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): the automatic
+    // skill-proposal trigger. Best-effort and entirely off the exit-code
+    // path when it runs to completion undisturbed -- a reflection that
+    // fails, or an operator who declines the proposal, must never change
+    // what this run reports for the ACTUAL task it was asked to do. Skipped
+    // outright on a signal-driven exit that already happened DURING the
+    // main turn (`sigint`/`term_cause` -- checked structurally below, not
+    // re-derived here): the operator asked this process to stop, and a
+    // reflection turn is the last thing it should start on the way out.
+    //
+    // **A signal arriving DURING the reflection is a different case,
+    // handled here rather than silently** (review finding, board item
+    // `01M3DTT078W25MD2S4527R0WAV` round 1): `maybe_propose_skill` races
+    // every one of its own blocking steps (the evidence poll, the forked
+    // child's turn, the interactive `y`/`N` read) against both signal
+    // watches and returns `true` the moment either fires, after best-effort
+    // cleanup -- see its own doc.
+    let propose_interrupted =
+        if final_result.is_some() && sigint.hits() == 0 && term_cause.is_none() {
+            maybe_propose_skill(
+                &conway,
+                &handle,
+                root,
+                &skills_plugin,
+                &sigint,
+                &termination,
+            )
+            .await
+        } else {
+            false
+        };
+
+    let code = if propose_interrupted {
+        // The root's own `final_result` already reflects a SUCCESSFUL
+        // completion (that is exactly why `maybe_propose_skill` was ever
+        // called) -- `ExitCode::from_result_with_sigint`/`with_signal`
+        // both gate their override on `r.status` being `Cancelled`, which
+        // is never true here (nothing about the ROOT's own run was
+        // cancelled; the interrupt landed strictly AFTER it finished). So
+        // this reports the signal directly, the same documented codes
+        // those two helpers use, rather than silently falling through to
+        // whatever the root's unrelated, already-successful status would
+        // otherwise produce (a clean `0` an operator who just pressed
+        // Ctrl-C would rightly not expect).
+        match termination.observed() {
+            Some(signal::TermSignal::Term) => ExitCode::TerminatedBySigterm,
+            Some(signal::TermSignal::Hup) => ExitCode::TerminatedBySighup,
+            None => ExitCode::Interrupted,
+        }
+    } else {
+        let sigint_seen = sigint.hits() > 0;
+        // Board item A5.3: `term_cause` takes precedence over `sigint_seen`
+        // whenever both are somehow set (the loop's shared `grace_deadline`
+        // guard means at most one of the sigint/termination `select!` arms
+        // ever actually fires and drives `final_result`'s cancellation reason
+        // -- `term_cause` reflects precisely that, so it is the more precise
+        // of the two signals available here, exactly mirroring why
+        // `sigint_seen` alone was already sufficient before this signal
+        // existed).
+        match (&final_result, term_cause) {
+            (Some(result), Some(cause)) => ExitCode::from_result_with_signal(result, Some(cause)),
+            (Some(result), None) => ExitCode::from_result_with_sigint(result, sigint_seen),
+            // The grace window elapsed with no terminal result at all -- still
+            // report the documented signal-specific code rather than falling
+            // through to the generic `AgentFailed` below.
+            (None, Some(cause)) => match cause {
+                signal::TermSignal::Term => ExitCode::TerminatedBySigterm,
+                signal::TermSignal::Hup => ExitCode::TerminatedBySighup,
+            },
+            (None, None) if sigint_seen => ExitCode::Interrupted,
+            // The event stream ended without ever producing a terminal result
+            // and without a SIGINT/SIGTERM/SIGHUP -- not expected in practice
+            // (the broadcast bus only closes once every `Arc<Runtime>` is
+            // dropped), but this fn must still return *something* rather than
+            // hang or panic.
+            (None, None) => ExitCode::AgentFailed,
+        }
     };
     Ok(code)
+}
+
+/// Resolves the instant EITHER a SIGINT or a termination-class signal
+/// (SIGTERM/SIGHUP) has been observed by this process -- immediately, if
+/// one was already recorded before this call even started, or the next
+/// time one arrives. **Checking `hits()`/`observed()` at all, rather than
+/// racing `notified()` alone, is load-bearing -- and the waiters are
+/// registered before that check, not after:** `tokio::sync::Notify::
+/// notify_waiters` wakes only CURRENTLY-registered waiters and stores no
+/// permit for a later call (unlike `notify_one`), so a signal delivered in
+/// the narrow synchronous gap between two of this module's own `select!`
+/// blocks would otherwise be missed entirely -- the next `select!` would
+/// start waiting fresh, with no memory that the signal already fired.
+/// Every blocking step [`maybe_propose_skill`]/[`prompt_and_maybe_write`]
+/// perform races against this function, never against the raw watches
+/// directly, for exactly that reason.
+async fn signal_fired(sigint: &signal::SigintWatch, termination: &signal::TerminationWatch) {
+    // Register both waiters BEFORE checking the recorded state: each watch
+    // sets its flag before calling `notify_waiters`, so a delivery either
+    // lands before the check (and the check sees it) or after registration
+    // (and wakes the registered waiter). Checking first would leave a gap.
+    let sigint_woken = sigint.registered();
+    let termination_woken = termination.registered();
+    if sigint.hits() > 0 || termination.observed().is_some() {
+        return;
+    }
+    tokio::select! {
+        _ = sigint_woken => {}
+        _ = termination_woken => {}
+    }
+}
+
+/// **A real race, found empirically (P-15), closed by bounded polling.**
+/// `SkillsPlugin`'s evidence is published by its `Plugin::observe_sink`
+/// forwarding task -- `ConwayBuilder::build`'s own doc: a task `tokio::
+/// spawn`ed on a SEPARATE `EventBus` subscription from the one [`run`]'s own
+/// event loop drains. Nothing orders "this function has seen the root's
+/// `AgentFinished` and returned" ahead of "the plugin's own forwarding task
+/// has processed that identical broadcast event and updated its published
+/// verdict" -- they are two independent subscribers to the same bus. A
+/// first version of this function called `SkillsPlugin::
+/// last_trigger_evidence` exactly once, synchronously, right after the
+/// loop: written and run first, it reproducibly found no evidence for a
+/// real two-tool-call fixture that plainly crossed the threshold
+/// (`crates/conway-cli/tests/skills_propose_oneshot.rs`'s own
+/// `a_tool_heavy_one_shot_run_triggers_but_refuses_to_propose_without_a_
+/// terminal`) -- not a flake, a structural ordering gap. Bounded polling
+/// (never a blocking/indefinite wait) closes it: the forwarding task's own
+/// per-event work is one channel receive plus a `match`, so this resolves
+/// within a handful of scheduler turns in practice -- `POLL_BOUND` is
+/// sized the way this crate's own `HANG_TIMEOUT` convention prescribes (an
+/// order-of-magnitude margin above the slowest plausible scheduling delay,
+/// not a promptness assertion), so this never blocks a one-shot run's exit
+/// for anything close to its own duration.
+async fn wait_for_trigger_evidence(
+    skills_plugin: &conway_plugin_skills::SkillsPlugin,
+    root: conway::AgentId,
+) -> Option<conway_plugin_skills::SkillProposalEvidence> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(5);
+    const POLL_BOUND: Duration = Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + POLL_BOUND;
+    loop {
+        if let Some(evidence) = skills_plugin.last_trigger_evidence(root) {
+            return Some(evidence);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            // Fail SAFE: a verdict that never arrives is treated exactly
+            // like "the trigger did not fire" -- never a reason to guess or
+            // to propose anyway.
+            return None;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Slice 2's automatic trigger (board item `01M3DTT078W25MD2S4527R0WAV`),
+/// scoped to this one-shot root -- see [`run`]'s own doc for why this is the
+/// ONE dispatch target the trigger can act on directly. Reads slice 1's own
+/// published verdict (`SkillsPlugin::last_trigger_evidence`) and, if it says
+/// a proposal is warranted, forks the SAME bounded ephemeral child
+/// `/conway.skills.propose` does (`conway_plugin_skills::PROPOSE_DIRECTIVE`/
+/// `PROPOSAL_MAX_STEPS`/`PROPOSAL_DEADLINE_SECS` -- ONE fork/parse
+/// implementation, shared by both surfaces, per `conway_plugin_skills::
+/// propose`'s own module doc) and shows the result at the terminal.
+///
+/// **No unattended writes, restated for a non-interactive dispatch target.**
+/// Three independent gates, each of which alone is enough to produce no
+/// write at all:
+/// 1. `write_approval = never` (`conway_plugin_skills::
+///    write_approval_from_config`, the SAME lenient reader `conway-cli`'s
+///    TUI dispatch uses) refuses before ever forking -- no fork, no tokens,
+///    mirroring `/conway.skills.propose`'s own refusal exactly.
+/// 2. `SkillProposalEvidence::should_propose()` being `false` (the common
+///    case -- most tasks are not "hard work") means nothing here even
+///    reads `write_approval`.
+/// 3. **Stdin is not a real terminal** (`IsTerminal::is_terminal`): this
+///    process cannot show a proposal AND read a `y`/`N` decision from a pipe
+///    without either hanging on a pipe that never closes or reading a byte
+///    of the operator's own piped DATA as a decision it was never meant to
+///    be -- both worse than simply not proposing. A one-line stderr notice
+///    points at re-running interactively instead of silently doing nothing.
+///
+/// # Signal-awareness (review finding, round 1)
+///
+/// Every blocking step below -- the evidence poll, the forked child's own
+/// turn, the interactive `y`/`N` read (inside [`prompt_and_maybe_write`]) --
+/// is raced against [`signal_fired`], never awaited bare. Before this, an
+/// operator who had ALREADY seen their real answer, and had a
+/// process-wide signal handler installed that swallows a lone Ctrl-C (this
+/// module's own `sigint`/`termination` watches: the FIRST delivery of
+/// either only records itself, precisely so the render loop can react
+/// gracefully -- `signal.rs`'s own doc), had no way to make THIS phase stop
+/// short of a second Ctrl-C's unconditional `std::process::exit`. Returns
+/// `true` the moment a signal is observed, after best-effort cleanup
+/// ([`cleanup_interrupted_child`]) -- [`run`]'s own caller uses this to
+/// override the exit code, since the root's OWN result (already a success
+/// by the time this function is ever called) carries no trace of the
+/// interrupt on its own.
+async fn maybe_propose_skill(
+    conway: &Conway,
+    handle: &SessionHandle,
+    root: conway::AgentId,
+    skills_plugin: &conway_plugin_skills::SkillsPlugin,
+    sigint: &signal::SigintWatch,
+    termination: &signal::TerminationWatch,
+) -> bool {
+    // LOAD-BEARING, found the hard way: `skills_plugin` is constructed by
+    // `first_party_plugins::bundle` REGARDLESS of `[plugins].install`
+    // selection (see that function's own doc) -- an unselected instance's
+    // `observe_sink`/`context_hooks` are simply never attached to the
+    // Runtime, so its `last_trigger_evidence` returns `None` FOREVER, not
+    // merely "not yet." Without this check, `wait_for_trigger_evidence`'s
+    // own bounded poll cannot tell "will never arrive" apart from "hasn't
+    // arrived yet" and burns its whole `POLL_BOUND` on every single
+    // one-shot run, installed or not -- caught by a real regression in this
+    // crate's own workspace suite (`dogfood_background_and_children.rs`'s
+    // `backgrounded_job_returns_fast_leaves_output_uncaptured_and_leaves_
+    // the_pid_alive`, a real-binary timing test with no connection to
+    // `conway.skills` at all, which started failing once this function
+    // started polling unconditionally) before it ever reached a released
+    // build. Checked here, once, up front: the overwhelmingly common case
+    // (`conway.skills` not installed, the default) returns immediately.
+    if !conway
+        .config()
+        .plugins
+        .install
+        .iter()
+        .any(|id| id == conway_plugin_skills::PLUGIN_ID)
+    {
+        return false;
+    }
+    let evidence = tokio::select! {
+        evidence = wait_for_trigger_evidence(skills_plugin, root) => evidence,
+        () = signal_fired(sigint, termination) => return true,
+    };
+    let Some(evidence) = evidence else {
+        return false;
+    };
+    if !evidence.should_propose() {
+        return false;
+    }
+    let write_approval = conway_plugin_skills::write_approval_from_config(
+        conway
+            .config()
+            .plugins
+            .config
+            .get(conway_plugin_skills::PLUGIN_ID),
+    );
+    if write_approval == conway_plugin_skills::WriteApproval::Never {
+        return false;
+    }
+    if !std::io::stdin().is_terminal() {
+        diag::warn(
+            "conway.skills: this task looks like it might be worth saving as a skill -- \
+             re-run interactively (with a real terminal on stdin) to review a proposal",
+        );
+        return false;
+    }
+
+    diag::progress("conway.skills: reflecting on this task for a possible skill proposal...");
+    let spec = ForkSpec::new(conway_plugin_skills::PROPOSE_DIRECTIVE)
+        .ephemeral(true)
+        .budget(Budget {
+            max_steps: conway_plugin_skills::PROPOSAL_MAX_STEPS,
+            deadline: Some(
+                chrono::Utc::now()
+                    + chrono::Duration::seconds(
+                        i64::try_from(conway_plugin_skills::PROPOSAL_DEADLINE_SECS)
+                            .unwrap_or(i64::MAX),
+                    ),
+            ),
+            max_tokens: None,
+            max_tool_calls: None,
+        });
+    // `fork` itself is NOT raced against the signals -- it is an ordinary,
+    // in-process registration (`Runtime::start`), not a long-running
+    // network call, and cancelling it mid-flight via a dropped `select!`
+    // branch could leave a child registered in the runtime with no id ever
+    // returned to this function to purge it by. Checked for a signal
+    // immediately after it returns instead (below), so an interrupt that
+    // arrived WHILE `fork` was running is still honored promptly, with a
+    // real child id in hand to clean up.
+    let child = match handle.fork(root, spec).await {
+        Ok(child) => child,
+        Err(e) => {
+            diag::warn(format!(
+                "conway.skills: could not start the skill-proposal reflection: {e}"
+            ));
+            return false;
+        }
+    };
+    if sigint.hits() > 0 || termination.observed().is_some() {
+        cleanup_interrupted_child(conway, handle, child).await;
+        return true;
+    }
+    let awaited = tokio::select! {
+        result = handle.await_agent(child) => Some(result),
+        () = signal_fired(sigint, termination) => None,
+    };
+    let result = match awaited {
+        Some(result) => {
+            // Distillate only -- purge regardless of outcome, mirroring
+            // `tui/app/skill_propose.rs`'s own identical discipline.
+            let _ = conway.purge(child).await;
+            result
+        }
+        None => {
+            cleanup_interrupted_child(conway, handle, child).await;
+            return true;
+        }
+    };
+    let result = match result {
+        Ok(result) => result,
+        Err(e) => {
+            diag::warn(format!(
+                "conway.skills: the skill-proposal reflection failed: {e}"
+            ));
+            return false;
+        }
+    };
+    match conway_plugin_skills::parse_proposal_reply(&result.summary) {
+        conway_plugin_skills::ProposalOutcome::NoneWarranted => {
+            diag::progress("conway.skills: no skill proposal was warranted for this task");
+            false
+        }
+        conway_plugin_skills::ProposalOutcome::Malformed { reason } => {
+            diag::warn(format!(
+                "conway.skills: the proposal could not be used ({reason})"
+            ));
+            false
+        }
+        conway_plugin_skills::ProposalOutcome::Proposal {
+            name,
+            description,
+            content,
+        } => {
+            prompt_and_maybe_write(
+                conway,
+                &name,
+                description.as_deref(),
+                &content,
+                sigint,
+                termination,
+            )
+            .await
+        }
+    }
+}
+
+/// Best-effort cleanup for the ephemeral proposal child when a signal
+/// interrupts the reflection while it is still running: cancel it, then
+/// wait -- BOUNDED, never indefinitely -- for it to actually reach a
+/// terminal state before purging it (`purge` requires a terminal agent).
+/// Mirrors `tui/app/shutdown.rs`'s own "cancel, bounded wait, best-effort
+/// purge" posture for an `/ask` abandoned on quit. The bound
+/// (`CLEANUP_BOUND`) matches [`run`]'s own main-loop `grace_deadline` (5s,
+/// this module's own reconciliation notes on that constant): a cancelled
+/// backend call genuinely needs a moment to unwind, and 5s is the SAME
+/// window this process already gives the ROOT's own cancellation to land,
+/// so the child gets no less. Still tiny next to the 180s this whole path
+/// exists to bound -- "returning promptly" is a comparison against THAT,
+/// not against zero. Left running past the bound: reaped by the next
+/// startup's own crash sweep, the same disclosed residue every other
+/// best-effort ephemeral cleanup in this crate already accepts.
+async fn cleanup_interrupted_child(
+    conway: &Conway,
+    handle: &SessionHandle,
+    child: conway::AgentId,
+) {
+    let _ = handle.cancel(child, "interrupted by signal").await;
+    const CLEANUP_BOUND: Duration = Duration::from_secs(5);
+    if tokio::time::timeout(CLEANUP_BOUND, handle.await_agent(child))
+        .await
+        .is_ok()
+    {
+        let _ = conway.purge(child).await;
+    }
+}
+
+/// Shows one validated proposal at the terminal (a diff against the
+/// existing skill of the same name, if any -- the SAME "update shows a
+/// diff, never a silent replace" acceptance criterion `tui/app/
+/// skill_propose.rs`'s own modal satisfies) and reads a `y`/`N` decision
+/// from stdin, ALREADY confirmed to be a real terminal by [`maybe_propose_
+/// skill`]'s own caller-side check. Writes only on an explicit `y`/`yes`
+/// (case-insensitive); every other input, including a read failure OR a
+/// signal, is a decline -- never a write on ambiguous, unreadable, or
+/// interrupted input. Returns `true` if a signal is what ended this call
+/// (see [`maybe_propose_skill`]'s own doc, "Signal-awareness").
+///
+/// **The blocking read runs on a bare `std::thread`, deliberately NOT
+/// `tokio::task::spawn_blocking`.** Tokio's own runtime-shutdown semantics
+/// wait for outstanding `spawn_blocking` work specifically (it runs real OS
+/// threads a scheduler cannot forcibly reclaim) -- unlike an ordinary
+/// `tokio::spawn`ed task, which this process's own `sigint`/`termination`
+/// watchers (`signal.rs`) already rely on being abandoned, unjoined, at
+/// shutdown. An abandoned `spawn_blocking` task parked on stdin would make
+/// this process's otherwise-prompt exit hostage to stdin ever closing --
+/// exactly the promptness this function exists to guarantee on a signal. A
+/// bare, un-joined `std::thread` carries no such obligation: when the
+/// process actually exits, the OS tears every thread down regardless of
+/// what it is doing.
+async fn prompt_and_maybe_write(
+    conway: &Conway,
+    name: &str,
+    description: Option<&str>,
+    content: &str,
+    sigint: &signal::SigintWatch,
+    termination: &signal::TerminationWatch,
+) -> bool {
+    let skills_root = conway.config().cwd.join(".conway").join("skills");
+    let path = conway_plugin_skills::skill_md_path(&skills_root, name);
+    let existing = std::fs::read_to_string(&path).ok();
+
+    eprintln!();
+    eprintln!("conway.skills proposes a new skill: {name}");
+    if let Some(description) = description {
+        eprintln!("  {description}");
+    }
+    match &existing {
+        Some(old) => {
+            let diff = crate::diff::unified_diff(name, name, old, content);
+            if diff.is_empty() {
+                eprintln!("  (identical to the already-saved skill -- nothing to write)");
+                return false;
+            }
+            eprintln!("--- this UPDATES the existing skill ---");
+            eprint!("{diff}");
+        }
+        None => {
+            eprintln!("--- new skill ---");
+            eprint!("{content}");
+        }
+    }
+    eprint!("Write this to {}? [y/N] ", path.display());
+    let _ = std::io::stderr().flush();
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = std::io::stdin().read_line(&mut line).map(|_| line);
+        // The receiver only goes away if this whole call was interrupted
+        // (the `select!` below took the signal branch) -- nothing left to
+        // notify; a send failure here is silently dropped.
+        let _ = tx.send(result);
+    });
+
+    let line = tokio::select! {
+        received = rx => match received {
+            Ok(Ok(line)) => line,
+            _ => {
+                diag::progress("conway.skills: proposal discarded (could not read a decision)");
+                return false;
+            }
+        },
+        () = signal_fired(sigint, termination) => {
+            diag::progress("conway.skills: proposal discarded (interrupted)");
+            return true;
+        }
+    };
+    if !matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        diag::progress("conway.skills: proposal discarded");
+        return false;
+    }
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            diag::warn(format!(
+                "conway.skills: could not create {}: {e}",
+                parent.display()
+            ));
+            return false;
+        }
+    }
+    match std::fs::write(&path, content) {
+        Ok(()) => diag::progress(format!("conway.skills: wrote {}", path.display())),
+        Err(e) => diag::warn(format!(
+            "conway.skills: could not write {}: {e}",
+            path.display()
+        )),
+    }
+    false
 }
 
 /// Resolves `cli.session`/`cli.resume`/`cli.fork_from` (driven live

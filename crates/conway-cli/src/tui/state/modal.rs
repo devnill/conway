@@ -356,6 +356,97 @@ impl PartialEq for DenyFeedbackState {
     }
 }
 
+/// Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): the skill-proposal
+/// modal's state -- an ephemeral fork child's parsed
+/// [`conway_plugin_skills::ProposalOutcome::Proposal`], waiting for the
+/// operator to write it, edit it first, or discard it. Opened by
+/// `/conway.skills.propose` (the primary, interactive path) and by the
+/// automatic trigger for a non-`keep_alive` run -- see `docs/plugins/
+/// skills.md` for exactly when each fires.
+///
+/// `child` is the ephemeral fork child's [`AgentId`], kept ONLY for
+/// display/debugging: unlike [`AskModal::child`], this feature never offers
+/// a `[f]`/`[p]` "keep/pull-in" fate over it -- the child is always
+/// discarded the moment its reply is captured (`tui/app/skill_propose.rs`'s
+/// own doc, "distillate only," mirrors `/ask`'s own `[esc]` discard
+/// semantics as the ONLY outcome, applied unconditionally rather than as
+/// one of three choices), so by the time this modal is showing, `child` is
+/// already purged.
+///
+/// `name`/`description`/`content` are [`conway_plugin_skills::
+/// parse_proposal_reply`]'s own parsed fields -- `content` is the COMPLETE
+/// file text `App::write_skill_proposal` (`tui/app/skill_propose.rs`) writes
+/// verbatim on `Enter`.
+/// **Editing (`e`) can change `content`'s body/description, but never
+/// `name`** -- `name` fixes the write target
+/// (`.conway/skills/<name>/SKILL.md`) at propose time, deliberately: an
+/// operator retargeting the write path from inside a free-text editor,
+/// with no re-validation of THAT specific field against
+/// [`conway_plugin_skills::valid_skill_name`]'s path-traversal guard,
+/// is a footgun this modal does not offer. A `name:` line the operator
+/// changes in the editor is therefore cosmetic in the written file's own
+/// frontmatter, not authoritative for where it lands -- stated here so a
+/// future reader does not "fix" this into re-deriving the path from the
+/// edited text.
+///
+/// `existing`/`diff` are computed once when the proposal arrives (and
+/// recomputed after every edit): `existing` is the current
+/// `.conway/skills/<name>/SKILL.md` content, if any file is already there
+/// (`None` for a brand-new skill); `diff` is `crate::diff::unified_diff`
+/// against it, `None` for a new skill (nothing to diff against) or when the
+/// content is unchanged (a `String::new()` diff is normalized to `None` so
+/// the view layer has one "nothing to show" case, not two).
+///
+/// `error` mirrors [`AskModal::error`]/[`TrustPreviewCard::error`] exactly:
+/// `Some` only after a write attempt FAILED -- the modal stays open with
+/// the error shown, never silently falling through to a discard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillProposalModal {
+    pub child: AgentId,
+    pub name: String,
+    pub description: Option<String>,
+    pub content: String,
+    pub existing: Option<String>,
+    pub diff: Option<String>,
+    pub error: Option<String>,
+}
+
+impl SkillProposalModal {
+    /// Recomputes [`Self::diff`] from the current [`Self::content`] against
+    /// [`Self::existing`] -- called on open and again after every `e` edit
+    /// (`AppState::apply_skill_proposal_edit`), so the modal's own diff
+    /// never goes stale relative to whatever text is about to be written.
+    pub fn recompute_diff(&mut self) {
+        // `None` for a brand-new skill (nothing to diff against -- the view
+        // layer shows the full body instead, `view::draw_skill_proposal`'s
+        // own doc), NOT a diff against an empty string: that would render
+        // as "every line added," which is a diff, not the "new skill, full
+        // body" case this modal means to show.
+        self.diff = self.existing.as_deref().and_then(|old| {
+            let rendered = crate::diff::unified_diff(&self.name, &self.name, old, &self.content);
+            if rendered.is_empty() {
+                None
+            } else {
+                Some(rendered)
+            }
+        });
+    }
+}
+
+/// `Mode::SkillProposal`'s three ways out -- there is no fourth: quitting
+/// with the modal open (`Ctrl-C`/`Ctrl-D`) discards it, mirroring `/ask`'s
+/// own quit-path purge (the ephemeral child is ALREADY purged by the time
+/// this modal opens -- see [`SkillProposalModal`]'s own doc -- so quitting
+/// here writes nothing, exactly like [`Self::Discard`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillProposalFate {
+    /// Writes [`SkillProposalModal::content`] to
+    /// `.conway/skills/<name>/SKILL.md`, creating the directory if needed.
+    Write,
+    /// Discards the proposal -- nothing is written.
+    Discard,
+}
+
 /// `Normal` (the input line submits a prompt or a `/command`) or
 /// `AwaitingPermission` (the input line is inert; `y`/`a`/`n`/`Esc` resolve
 /// the pending prompt -- see `input.rs`). Only one prompt is shown at a
@@ -501,6 +592,20 @@ pub enum Mode {
     /// never stacks against the other modal-bearing surfaces, the same
     /// non-stacking guarantee `EditingPattern` already has.
     EditingDenyFeedback(DenyFeedbackState),
+    /// Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): the skill-proposal
+    /// modal -- see [`SkillProposalModal`]'s own doc. While this is the
+    /// mode, the input line is inert and `input.rs::handle_skill_proposal_key`
+    /// swallows every key except `Enter` (write), `e` (edit in `$EDITOR`
+    /// first), `Esc` (discard), plus the quit keys (`Ctrl-C`/`Ctrl-D`, which
+    /// discard -- the ephemeral child is already purged by the time this
+    /// modal opens, so there is nothing left to clean up). A permission
+    /// prompt arriving while this modal is open queues in `queued_prompts`
+    /// exactly as it does behind another prompt, and a proposal arriving
+    /// while any of the other six modal-bearing surfaces is showing parks in
+    /// `pending_skill_proposal` until the surface clears -- the SEVENTH
+    /// modal-bearing surface joining the same never-stack discipline,
+    /// lowest priority, checked last in `AppState::promote_next_surface`.
+    SkillProposal(SkillProposalModal),
 }
 
 impl std::fmt::Debug for Mode {
@@ -535,6 +640,7 @@ impl std::fmt::Debug for Mode {
             Mode::EditingDenyFeedback(fb) => {
                 write!(f, "EditingDenyFeedback(tool={})", fb.prompt.request.tool)
             }
+            Mode::SkillProposal(modal) => write!(f, "SkillProposal(name={})", modal.name),
         }
     }
 }
@@ -718,7 +824,73 @@ impl AppState {
                 filter: String::new(),
             });
             self.modal_scroll = 0;
+            return;
         }
+        if let Some(modal) = self.pending_skill_proposal.take() {
+            self.mode = Mode::SkillProposal(modal);
+            self.modal_scroll = 0;
+        }
+    }
+
+    /// Opens the skill-proposal modal (slice 2, board item
+    /// `01M3DTT078W25MD2S4527R0WAV`), parking it in `pending_skill_proposal`
+    /// instead whenever another modal-bearing surface currently owns `mode`
+    /// -- mirrors [`Self::offer_ui_form`] exactly, the new lowest-priority
+    /// slot in `Self::promote_next_surface`.
+    pub fn offer_skill_proposal(&mut self, modal: SkillProposalModal) {
+        if matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::SkillProposal(modal);
+            self.modal_scroll = 0;
+        } else {
+            self.pending_skill_proposal = Some(modal);
+        }
+    }
+
+    /// Drains a proposal parked in `pending_skill_proposal`. Used by
+    /// `app.rs`'s quit path so a proposal parked behind another surface when
+    /// the operator quits is not silently lost from view -- mirrors
+    /// [`Self::take_pending_ui_form`] exactly: nothing is written, and the
+    /// ephemeral child that produced it is ALREADY purged (see
+    /// [`SkillProposalModal`]'s own doc), so there is nothing left to clean
+    /// up beyond dropping the value. Returns the parked modal if one was
+    /// waiting, else `None`; either way `pending_skill_proposal` is cleared.
+    pub fn take_pending_skill_proposal(&mut self) -> Option<SkillProposalModal> {
+        self.pending_skill_proposal.take()
+    }
+
+    /// Closes the skill-proposal modal after a fate that needs no further
+    /// input (a successful write, or a discard), promoting the next
+    /// parked/queued surface via `Self::promote_next_surface`. A no-op
+    /// when no skill-proposal modal is open.
+    pub fn close_skill_proposal(&mut self) {
+        if !matches!(self.mode, Mode::SkillProposal(_)) {
+            return;
+        }
+        self.mode = Mode::Normal;
+        self.promote_next_surface();
+    }
+
+    /// Records a write attempt's FAILURE on the open modal -- the modal
+    /// STAYS OPEN with the error shown, mirroring [`Self::fail_ask_modal`]/
+    /// [`Self::fail_trust_preview`] exactly: a failed write never silently
+    /// discards the proposal. A no-op when no modal is open.
+    pub fn fail_skill_proposal(&mut self, error: String) {
+        if let Mode::SkillProposal(modal) = &mut self.mode {
+            modal.error = Some(error);
+        }
+    }
+
+    /// Applies an `e`-edit's result to the open modal: replaces `content`
+    /// (NEVER `name` -- see [`SkillProposalModal`]'s own doc), recomputes
+    /// the diff, and clears any previous error (a fresh edit is a fresh
+    /// attempt). A no-op when no skill-proposal modal is open.
+    pub fn apply_skill_proposal_edit(&mut self, content: String) {
+        let Mode::SkillProposal(modal) = &mut self.mode else {
+            return;
+        };
+        modal.content = content;
+        modal.error = None;
+        modal.recompute_diff();
     }
 
     /// Opens `ask_question`'s modal (board item `01M19NH39AE2D5AMJK0RZRQY86`),
@@ -2348,5 +2520,118 @@ mod tests {
             "the second press must not duplicate the row the first press already merged in: {:?}",
             form.ask.request.options
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`), review round 1:
+    // `apply_skill_proposal_edit` had zero coverage before this.
+    // -----------------------------------------------------------------
+
+    fn skill_proposal(name: &str, content: &str) -> SkillProposalModal {
+        SkillProposalModal {
+            child: AgentId::new(),
+            name: name.to_string(),
+            description: None,
+            content: content.to_string(),
+            existing: None,
+            diff: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn apply_skill_proposal_edit_replaces_content_and_clears_a_prior_error() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_skill_proposal(skill_proposal(
+            "example",
+            "---\nname: example\n---\n\nOld body.\n",
+        ));
+        state.fail_skill_proposal("a prior write failed".to_string());
+        let Mode::SkillProposal(modal) = &state.mode else {
+            panic!("modal must be open");
+        };
+        assert_eq!(modal.error.as_deref(), Some("a prior write failed"));
+
+        state.apply_skill_proposal_edit("---\nname: example\n---\n\nNew body.\n".to_string());
+
+        let Mode::SkillProposal(modal) = &state.mode else {
+            panic!("modal must still be open");
+        };
+        assert_eq!(modal.content, "---\nname: example\n---\n\nNew body.\n");
+        assert!(
+            modal.error.is_none(),
+            "a fresh edit must clear a previous write error"
+        );
+    }
+
+    /// **The load-bearing guarantee (review round 1): editing the content's
+    /// own `name:` frontmatter line does NOT retarget the write.** `name`
+    /// (the field `App::write_skill_proposal` actually joins onto
+    /// `.conway/skills/<name>/SKILL.md`) is fixed at propose time and is
+    /// never re-derived from `content` -- see [`SkillProposalModal`]'s own
+    /// doc for why. This proves it at the state level: after an edit that
+    /// changes the embedded `name:` line, `modal.name` (the write target)
+    /// is untouched, even though `modal.content` (what gets WRITTEN, at the
+    /// original target) is exactly the edited text, `name:` line included.
+    #[test]
+    fn apply_skill_proposal_edit_changing_the_name_field_does_not_retarget_the_write() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_skill_proposal(skill_proposal(
+            "original-name",
+            "---\nname: original-name\n---\n\nBody.\n",
+        ));
+
+        state.apply_skill_proposal_edit(
+            "---\nname: renamed-in-editor\n---\n\nEdited body.\n".to_string(),
+        );
+
+        let Mode::SkillProposal(modal) = &state.mode else {
+            panic!("modal must still be open");
+        };
+        assert_eq!(
+            modal.name, "original-name",
+            "the write target must stay the ORIGINAL name, never re-derived from an edit"
+        );
+        assert_eq!(
+            modal.content, "---\nname: renamed-in-editor\n---\n\nEdited body.\n",
+            "the edited text -- name: line included -- is what gets written, just at the \
+             original path"
+        );
+    }
+
+    #[test]
+    fn apply_skill_proposal_edit_recomputes_the_diff_against_existing() {
+        let mut state = AppState::new(AgentId::new());
+        let mut modal = skill_proposal("example", "---\nname: example\n---\n\nOld.\n");
+        modal.existing = Some("---\nname: example\n---\n\nOriginal.\n".to_string());
+        modal.recompute_diff();
+        state.offer_skill_proposal(modal);
+        let Mode::SkillProposal(before) = &state.mode else {
+            panic!("modal must be open");
+        };
+        assert!(
+            before.diff.is_some(),
+            "the initial proposal must already diff against existing"
+        );
+
+        state.apply_skill_proposal_edit("---\nname: example\n---\n\nOriginal.\n".to_string());
+
+        let Mode::SkillProposal(after) = &state.mode else {
+            panic!("modal must still be open");
+        };
+        assert!(
+            after.diff.is_none(),
+            "editing the content back to match `existing` exactly must recompute the diff to \
+             None, not leave the STALE diff from before the edit: {:?}",
+            after.diff
+        );
+    }
+
+    #[test]
+    fn apply_skill_proposal_edit_is_a_no_op_when_no_modal_is_open() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(matches!(state.mode, Mode::Normal));
+        state.apply_skill_proposal_edit("anything".to_string());
+        assert!(matches!(state.mode, Mode::Normal));
     }
 }
