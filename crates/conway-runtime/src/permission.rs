@@ -133,6 +133,44 @@ pub struct PermissionCtx {
     /// this field existed — makes [`PermissionBroker::decide`]'s root check
     /// a byte-for-byte no-op.
     pub root: AgentRoot,
+    /// Board item `01M3TD844GXJFEVF69M0HH1X5Q` (RULING 2026-09-30): the
+    /// boundary [`PermissionMode::Prompt`]'s own default-allow step
+    /// (`default_in_project_read_allows`, consulted by
+    /// [`PermissionBroker::decide`]) checks a read-only call's declared
+    /// path arguments -- and this agent's own current `cwd` -- against.
+    ///
+    /// Reuses [`AgentRoot`] rather than inventing a second root type: the
+    /// shape is identical (`Confined` names an actual boundary, `Broken`
+    /// fails closed, `Unconfined` means "no boundary is known, so this
+    /// default never applies" -- it is NOT "everywhere qualifies"). **A
+    /// SEPARATE boundary from [`Self::root`], not an alias of it, and the
+    /// two deliberately diverge for an agent with no confinement root.**
+    /// When `--root` is set, this field carries the SAME [`CanonicalRoot`]
+    /// as [`Self::root`] (the confinement root already IS the project
+    /// boundary; nothing else to compute). When `--root` is unset
+    /// (`Self::root == AgentRoot::Unconfined`), production still resolves
+    /// this field to `Confined` -- the git root enclosing this agent's own
+    /// spawn-time `cwd` (or that `cwd` itself, outside any repository),
+    /// matching the identical "what counts as one project" rule
+    /// `conway::config::discovery::session_root` already keys session
+    /// storage on. This is the ONE way an unconfined agent's reads get a
+    /// default-allow boundary at all. Resolved exactly ONCE per agent,
+    /// alongside [`Self::root`] (`AgentLoop::run_inner`) -- never
+    /// re-derived per call, and never from THIS struct's own `cwd` field
+    /// (the LIVE, `cd`-tracking snapshot every batch carries): a `cd`
+    /// outside the project narrows nothing retroactively and widens
+    /// nothing either, because `default_in_project_read_allows` separately
+    /// requires the live `cwd` to still resolve inside this boundary
+    /// before it ever blesses a call that would use it implicitly (an
+    /// absent, optional path argument -- `grep`/`glob`'s `path` -- which
+    /// the tool itself then defaults to its own live cwd).
+    ///
+    /// Every test fixture across this crate defaults this field to
+    /// `AgentRoot::Unconfined` (mirroring [`Self::root`]'s own test
+    /// default) -- correctly inert for every pre-existing test, none of
+    /// which constructs a `Read`/`Search` call with `PathArgs::Named` at
+    /// all; the tests this item adds set it explicitly.
+    pub default_read_root: AgentRoot,
 }
 
 /// The minimal, already-resolved slice of a proposed tool call the broker
@@ -267,6 +305,445 @@ impl AgentRoot {
                 }
             },
         }
+    }
+}
+
+/// Board item `01M3TD844GXJFEVF69M0HH1X5Q` (RULING 2026-09-30): the
+/// project-root fallback `AgentLoop::run_inner` computes once per agent,
+/// alongside [`AgentRoot::reconstruct`], for an agent carrying no
+/// confinement root (`--root` unset) -- the boundary
+/// [`PermissionCtx::default_read_root`] checks a read-only call against
+/// when nothing narrower (an explicit `--root`) already applies.
+///
+/// Walks upward from `start`, INCLUSIVE, for the nearest ancestor carrying a
+/// `.git` entry -- directory OR file (a linked worktree's or a submodule's
+/// `.git` is a file containing a `gitdir:` pointer elsewhere; this walk only
+/// cares that *something* is there, never resolving where a pointer leads)
+/// -- and returns that ancestor. Falls back to `start` itself, unmodified,
+/// when no such ancestor exists anywhere above it (including the ordinary
+/// case of `start` not being inside a git repository at all) -- the walk
+/// does NOT fall back to the filesystem root as a boundary, which would pool
+/// every non-repository directory on the machine into one shared default.
+///
+/// **Deliberately the identical rule TWO OTHER, independently maintained
+/// copies already use**: `conway::config::discovery::
+/// find_enclosing_git_root` (which `conway::config::discovery::
+/// session_root` uses for the identical "what counts as one project"
+/// question, to key session storage) and `conway_plugin_idiom::
+/// find_enclosing_git_root` (a project-instructions walk). This crate
+/// cannot depend on either -- `conway-runtime` sits BELOW `conway` and every
+/// first-party plugin crate in the dependency graph, never above -- so this
+/// is a THIRD, independently maintained copy rather than a shared call,
+/// continuing the precedent the first two already disclose in their own
+/// doc comments. Keep all three in sync by hand if the rule ever changes.
+///
+/// **Why reuse `session_root`'s own answer, rather than inventing a fourth
+/// definition of "project."** The RULING this board item settles requires
+/// picking the definition already consistent with how conway defines a
+/// project elsewhere, not a new one: a session launched from a repository
+/// subdirectory already shares its WHOLE repository's session history
+/// (`session_root`'s own git-root preference) -- defaulting the read
+/// boundary to the SAME repository, rather than the narrower launch
+/// directory, keeps those two "what is this project" answers in agreement
+/// instead of introducing a third, different boundary for one specific
+/// feature.
+pub(crate) fn enclosing_project_root(start: &Path) -> PathBuf {
+    let mut current = start.to_path_buf();
+    loop {
+        if current.join(".git").exists() {
+            return current;
+        }
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => return start.to_path_buf(),
+        }
+    }
+}
+
+/// Board item `01M3TD844GXJFEVF69M0HH1X5Q` (CRITICAL, post-review fix):
+/// whether `candidate` -- [`enclosing_project_root`]'s own output, BEFORE
+/// [`AgentRoot::reconstruct`] ever sees it -- is too broad to ever back
+/// [`PermissionCtx::default_read_root`] for an agent with no EXPLICIT
+/// `--root`. Two cases, both making a confined-looking boundary that is
+/// actually "everywhere a human cares about":
+///
+/// - **The filesystem root.** `candidate` canonicalizes to a path with no
+///   parent (`/` on Unix) -- `enclosing_project_root`'s own fallback
+///   returns `start` unchanged when no `.git` exists ANYWHERE above it, so
+///   launching conway with `cwd` AT `/` (or any `.git`-free tree reachable
+///   only by walking all the way to `/`) would otherwise compute `/`
+///   itself as "the project."
+/// - **The home directory, or anything ABOVE it.** `candidate` equals the
+///   caller's own home directory, or the home directory sits underneath
+///   `candidate` (a dotfiles repo with its `.git` rooted AT `$HOME`, which
+///   `enclosing_project_root`'s git-walk would otherwise happily return as
+///   "the project" the instant conway is launched from anywhere inside
+///   it). Either shape makes `~/.ssh`, `~/.aws`, and `~/.conway/
+///   settings.json` (API keys) "inside the project" by this check's own
+///   plain prefix rule -- exactly the blast radius this fix closes.
+///
+/// **A project genuinely nested UNDER home is unaffected** -- `candidate`
+/// being a DESCENDANT of home (the ordinary case: `~/code/myproject`) does
+/// not satisfy either branch above, so the default still applies there.
+///
+/// Both sides are canonicalized before comparing (a symlinked `$HOME` is
+/// still caught; `candidate` not existing — which should not happen, since
+/// `enclosing_project_root` only ever returns an existing directory — falls
+/// back to the lexical path rather than panicking). `home` is the caller's
+/// OWN already-resolved home directory ([`conway_core::containment::
+/// home_dir`], called exactly once, at the one production call site,
+/// `AgentLoop::run_inner` via `default_read_root_for_unconfined_agent`
+/// below) -- this function never reads the environment itself, so a test
+/// exercising it is never at the mercy of this crate's own tests running
+/// the process's real `$HOME` in parallel. `None` (no home directory could
+/// be determined at all) only ever blocks the filesystem-root case; nothing
+/// here can conclude "broader than home" without an actual home to compare
+/// against.
+///
+/// **An EXPLICIT `--root` is never checked here at all** -- this function
+/// is called only from the `AgentRoot::Unconfined` branch of
+/// `default_read_root_for_unconfined_agent`, never when `--root` already
+/// supplied an explicit boundary (even `--root ~`): the operator who types
+/// that flag said so on purpose, and this guard exists to stop an IMPLICIT,
+/// non-operator-chosen default from reaching that scope, not to second-guess
+/// an explicit one.
+pub(crate) fn default_read_root_too_broad(candidate: &Path, home: Option<&Path>) -> bool {
+    let candidate = candidate
+        .canonicalize()
+        .unwrap_or_else(|_| candidate.to_path_buf());
+    if candidate.parent().is_none() {
+        return true;
+    }
+    let Some(home) = home else {
+        return false;
+    };
+    let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    // `home.starts_with(&candidate)` is true both when `candidate == home`
+    // (a path always starts with itself) and when `candidate` is a strict
+    // ancestor of `home` -- the single check this doc's two bullets above
+    // both reduce to.
+    home.starts_with(&candidate)
+}
+
+/// Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the FULL computation
+/// `AgentLoop::run_inner` uses for `PermissionCtx::default_read_root` when
+/// this agent carries no EXPLICIT confinement root (`--root` unset) --
+/// [`enclosing_project_root`] plus the [`default_read_root_too_broad`]
+/// guard immediately above, folded into ONE function so the production call
+/// site and this item's own acceptance tests exercise the IDENTICAL
+/// decision, never two independently-maintained copies that could drift.
+/// Returns `AgentRoot::Unconfined` (this default never applies -- every
+/// read-category call still prompts, exactly as before this item) when the
+/// computed boundary is too broad; otherwise `AgentRoot::Confined` on the
+/// computed, canonicalized boundary (via [`AgentRoot::reconstruct`], which
+/// also fails closed to `AgentRoot::Broken` on the vanishingly unlikely
+/// case the path stops canonicalizing between the check above and here).
+pub(crate) fn default_read_root_for_unconfined_agent(cwd: &Path, home: Option<&Path>) -> AgentRoot {
+    let candidate = enclosing_project_root(cwd);
+    if default_read_root_too_broad(&candidate, home) {
+        AgentRoot::Unconfined
+    } else {
+        AgentRoot::reconstruct(&Some(candidate))
+    }
+}
+
+#[cfg(test)]
+mod enclosing_project_root_tests {
+    use super::enclosing_project_root;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// A nested directory under a `.git`-marked repository root resolves
+    /// to that root, not the nested directory itself -- the exact case
+    /// `conway::config::discovery::session_root`'s own git-root preference
+    /// exists for (launching from a subdirectory of a checkout).
+    #[test]
+    fn walks_up_to_the_nearest_dot_git_directory() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        let nested = repo.join("src").join("deep");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(repo.join(".git")).unwrap();
+
+        assert_eq!(enclosing_project_root(&nested), repo);
+    }
+
+    /// A linked worktree's `.git` is a FILE, not a directory -- the walk
+    /// only checks that *something* named `.git` exists, matching the two
+    /// other independently maintained copies of this rule.
+    #[test]
+    fn a_dot_git_file_counts_too_not_only_a_directory() {
+        let tmp = TempDir::new().unwrap();
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir(&worktree).unwrap();
+        fs::write(worktree.join(".git"), b"gitdir: /elsewhere\n").unwrap();
+
+        assert_eq!(enclosing_project_root(&worktree), worktree);
+    }
+
+    /// Outside any repository, the walk falls back to `start` itself --
+    /// never further up to the filesystem root, which would pool every
+    /// non-repository directory on the machine into one shared boundary.
+    #[test]
+    fn falls_back_to_start_outside_any_repository() {
+        let tmp = TempDir::new().unwrap();
+        let bare = tmp.path().join("just-a-directory");
+        fs::create_dir(&bare).unwrap();
+
+        assert_eq!(enclosing_project_root(&bare), bare);
+    }
+}
+
+#[cfg(test)]
+mod default_read_root_home_guard_tests {
+    //! Board item `01M3TD844GXJFEVF69M0HH1X5Q` (CRITICAL, post-review fix):
+    //! `default_read_root_too_broad`/`default_read_root_for_unconfined_agent`
+    //! never let the no-`--root` default-allow boundary become the
+    //! filesystem root, the caller's own home directory, or an ancestor of
+    //! it. The last two tests drive the real `PermissionBroker::decide` end
+    //! to end (never a hand-simulated check), proving the computed
+    //! `AgentRoot` this module produces actually changes what the broker
+    //! does, not merely what this module's own pure function returns.
+
+    use super::*;
+    use async_trait::async_trait;
+    use conway_core::agent::{PermissionDecision, PermissionRequest};
+    use conway_core::ids::ToolName;
+    use conway_core::ports::PermissionGate;
+    use std::fs;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    /// A gate that records how many times it was consulted and always
+    /// grants `AllowOnce` -- used by the two end-to-end tests below so
+    /// `call_count()` distinguishes "the default covered this" (0) from
+    /// "the call reached the operator" (1).
+    struct RecordingGate {
+        calls: Mutex<u32>,
+    }
+
+    impl RecordingGate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(0),
+            })
+        }
+
+        fn call_count(&self) -> u32 {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl PermissionGate for RecordingGate {
+        async fn check(&self, _req: PermissionRequest) -> PermissionDecision {
+            *self.calls.lock().unwrap() += 1;
+            PermissionDecision::AllowOnce
+        }
+    }
+
+    fn read_call_at(path: &str) -> AuthorizedCall {
+        AuthorizedCall {
+            call_id: "c1".into(),
+            tool: ToolName::new("read"),
+            category: ToolCategory::Read,
+            arguments: serde_json::json!({"path": path}),
+            rendered: format!("read({{\"path\":{path:?}}})"),
+            path_args: PathArgs::Named(&["path"]),
+            render_kind: RenderKind::Structured,
+        }
+    }
+
+    fn ctx_with(default_read_root: AgentRoot, cwd: PathBuf) -> PermissionCtx {
+        PermissionCtx {
+            agent_id: AgentId::new(),
+            agent_path: vec![],
+            session: SessionId::new(),
+            cwd,
+            root: AgentRoot::Unconfined,
+            default_read_root,
+        }
+    }
+
+    // ---- default_read_root_too_broad: pure, fast, no broker involved ----
+
+    #[test]
+    fn candidate_equal_to_home_is_too_broad() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir(&home).unwrap();
+
+        assert!(default_read_root_too_broad(&home, Some(&home)));
+    }
+
+    #[test]
+    fn candidate_an_ancestor_of_home_is_too_broad() {
+        let tmp = TempDir::new().unwrap();
+        let candidate = tmp.path().to_path_buf();
+        let home = candidate.join("home");
+        fs::create_dir(&home).unwrap();
+
+        assert!(default_read_root_too_broad(&candidate, Some(&home)));
+    }
+
+    #[test]
+    fn candidate_a_descendant_of_home_is_not_too_broad() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let project = home.join("code").join("myproject");
+        fs::create_dir_all(&project).unwrap();
+
+        assert!(!default_read_root_too_broad(&project, Some(&home)));
+    }
+
+    #[test]
+    fn filesystem_root_is_too_broad_regardless_of_home() {
+        assert!(default_read_root_too_broad(Path::new("/"), None));
+        let tmp = TempDir::new().unwrap();
+        assert!(default_read_root_too_broad(
+            Path::new("/"),
+            Some(tmp.path())
+        ));
+    }
+
+    #[test]
+    fn unrelated_candidate_and_home_are_not_too_broad() {
+        let tmp = TempDir::new().unwrap();
+        let candidate = tmp.path().join("project");
+        let home = tmp.path().join("home");
+        fs::create_dir(&candidate).unwrap();
+        fs::create_dir(&home).unwrap();
+
+        assert!(!default_read_root_too_broad(&candidate, Some(&home)));
+    }
+
+    /// A symlinked home must still be caught -- both sides are
+    /// canonicalized before comparing.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_home_is_still_caught() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let real_home = tmp.path().join("real_home");
+        fs::create_dir(&real_home).unwrap();
+        let home_link = tmp.path().join("home_link");
+        symlink(&real_home, &home_link).unwrap();
+
+        // The candidate is the REAL path (what `enclosing_project_root`
+        // would compute after walking real directories); `home` is handed
+        // in as the SYMLINK (what a `$HOME` pointing through a symlink
+        // would resolve to before canonicalization). Both must agree.
+        assert!(default_read_root_too_broad(&real_home, Some(&home_link)));
+    }
+
+    // ---- default_read_root_for_unconfined_agent: the full computation ----
+
+    #[test]
+    fn cwd_fallback_equal_to_home_yields_unconfined() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir(&home).unwrap();
+
+        // No `.git` anywhere above `home` inside this tempdir, so
+        // `enclosing_project_root` falls back to `home` itself.
+        let result = default_read_root_for_unconfined_agent(&home, Some(&home));
+        assert!(
+            matches!(result, AgentRoot::Unconfined),
+            "a cwd-fallback boundary equal to home must stay Unconfined: {result:?}"
+        );
+    }
+
+    #[test]
+    fn git_root_equal_to_home_dotfiles_repo_yields_unconfined() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let nested = home.join(".config").join("nvim");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(home.join(".git")).unwrap();
+
+        let result = default_read_root_for_unconfined_agent(&nested, Some(&home));
+        assert!(
+            matches!(result, AgentRoot::Unconfined),
+            "a dotfiles repo rooted at home must stay Unconfined: {result:?}"
+        );
+    }
+
+    #[test]
+    fn normal_project_under_home_still_computes_a_confined_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let project = home.join("code").join("myproject");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir(project.join(".git")).unwrap();
+
+        let result = default_read_root_for_unconfined_agent(&project, Some(&home));
+        assert!(
+            matches!(result, AgentRoot::Confined(_)),
+            "a project genuinely nested under home must still get a boundary: {result:?}"
+        );
+    }
+
+    // ---- end to end: through the real PermissionBroker::decide ----
+
+    /// BREAK-THE-GUARD TARGET. A session launched with `cwd == home` and no
+    /// `.git` anywhere must still prompt for an in-home read -- never
+    /// auto-allowed. (Verified red/green by hand: temporarily stubbing
+    /// `default_read_root_too_broad` to always return `false` made this
+    /// test fail with `call_count() == 0`; restored and confirmed clean via
+    /// `git diff`.)
+    #[tokio::test]
+    async fn a_session_launched_at_home_still_prompts_for_an_in_home_read() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let ssh_dir = home.join(".ssh");
+        fs::create_dir_all(&ssh_dir).unwrap();
+        fs::write(ssh_dir.join("id_rsa"), b"-----BEGIN PRIVATE KEY-----").unwrap();
+
+        let default_read_root = default_read_root_for_unconfined_agent(&home, Some(&home));
+        let gate = RecordingGate::new();
+        let bus = EventBus::new(64);
+        let broker = PermissionBroker::new(gate.clone(), bus);
+        let ctx = ctx_with(default_read_root, home.clone());
+
+        let outcome = broker.decide(&ctx, &read_call_at(".ssh/id_rsa")).await;
+        assert_eq!(
+            outcome,
+            PermissionOutcome::Allow,
+            "the gate's own AllowOnce still wins"
+        );
+        assert_eq!(
+            gate.call_count(),
+            1,
+            "a read inside a home-rooted default boundary must still prompt, never be \
+             auto-allowed"
+        );
+    }
+
+    /// The honest control: a project genuinely nested under home is
+    /// UNAFFECTED by this fix and still gets the default.
+    #[tokio::test]
+    async fn a_normal_project_under_home_is_still_default_allowed() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let project = home.join("code").join("myproject");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir(project.join(".git")).unwrap();
+        fs::write(project.join("a.txt"), b"hi").unwrap();
+
+        let default_read_root = default_read_root_for_unconfined_agent(&project, Some(&home));
+        let gate = RecordingGate::new(); // must never be consulted
+        let bus = EventBus::new(64);
+        let broker = PermissionBroker::new(gate.clone(), bus);
+        let ctx = ctx_with(default_read_root, project.clone());
+
+        let outcome = broker.decide(&ctx, &read_call_at("a.txt")).await;
+        assert_eq!(outcome, PermissionOutcome::Allow);
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "a project genuinely nested under home must still be allowed without a prompt"
+        );
     }
 }
 
@@ -470,6 +947,72 @@ fn paths_under_match(ctx: &PermissionCtx, call: &AuthorizedCall, root: &Canonica
         }
     }
     true
+}
+
+/// Board item `01M3TD844GXJFEVF69M0HH1X5Q` (RULING 2026-09-30): whether
+/// `call` qualifies for [`PermissionMode::Prompt`]'s own built-in
+/// default-allow -- an in-project, read-only call is authorized without
+/// ever reaching the operator's gate. Checked by [`PermissionBroker::decide`]
+/// ONLY when `mode == PermissionMode::Prompt`, and only AFTER every deny
+/// rule, hook, plan-mode gate, prompt rule, the cache, the shell-prefix
+/// grants, and the durable pattern grants have all already had their say
+/// (see that method's own call site) -- this default is the LAST allow path
+/// consulted, so an operator's own narrower mechanism always wins, never
+/// this one.
+///
+/// **The category gate.** Only [`ToolCategory::Read`] and
+/// [`ToolCategory::Search`] qualify -- the two read-only categories a
+/// built-in, path-bearing tool declares today (confirmed against the tree:
+/// `conway_tools::fs::read`/`glob`/`grep`). [`ToolCategory::Think`] (the
+/// third category `PermissionMode::Plan` also treats as non-mutating) is
+/// deliberately excluded: nothing that declares it carries a path argument
+/// at all, so there is no boundary for this check to evaluate, and admitting
+/// it here would be an unreachable no-op at best.
+///
+/// **The path gate -- fails closed exactly like [`paths_under_match`],
+/// which this reuses.** A tool declaring [`PathArgs::None`] (e.g.
+/// `conway.web`'s `web_fetch`, which is `Read` but fetches a URL, never a
+/// filesystem path) or [`PathArgs::Unconfinable`] never qualifies: a call
+/// this broker cannot statically confine can never be blessed by an
+/// IMPLICIT boundary either, the same asymmetry an explicit `paths_under`
+/// allow rule already uses. **This is also what makes "a read-category call
+/// with no declared path argument still prompts" true**, per this item's own
+/// acceptance criteria -- `web_fetch` is the real, shipped example.
+///
+/// **`ctx.default_read_root` must be [`AgentRoot::Confined`].**
+/// `AgentRoot::Unconfined` means no project boundary could be established
+/// at all (never "everywhere qualifies"), and `AgentRoot::Broken` fails
+/// closed exactly as it does for [`PermissionBroker::check_root`] -- neither
+/// ever authorizes anything here.
+///
+/// **The live-`cwd` requirement, beyond what `paths_under_match` alone
+/// checks.** A `Named` path argument left ABSENT (`grep`/`glob`'s optional
+/// `path`, which the tool itself then defaults to the agent's own cwd) is
+/// invisible to `paths_under_match` -- it treats "argument not given" as
+/// "nothing to check here", correct for an EXPLICIT operator-authored
+/// `paths_under` rule (the operator wrote it knowing that gap), wrong for an
+/// IMPLICIT, non-operator-authored default: a call whose only path argument
+/// is absent resolves, in the real tool, against `ctx.cwd` -- so this
+/// default additionally requires `ctx.cwd` itself to resolve inside the
+/// boundary before it ever blesses such a call. This also closes the
+/// "chasing cwd" hazard a confined agent's own root check does not have to
+/// worry about: `ctx.cwd` here is the LIVE, `cd`-tracking snapshot (unlike
+/// `ctx.default_read_root`, resolved once at agent spawn), so an agent that
+/// `cd`s itself outside the project stops qualifying for this default on its
+/// very next call, exactly as if it had wandered outside an explicit
+/// `--root`.
+fn default_in_project_read_allows(ctx: &PermissionCtx, call: &AuthorizedCall) -> bool {
+    if !matches!(call.category, ToolCategory::Read | ToolCategory::Search) {
+        return false;
+    }
+    let root = match &ctx.default_read_root {
+        AgentRoot::Confined(root) => root,
+        AgentRoot::Unconfined | AgentRoot::Broken => return false,
+    };
+    if !matches!(root.contains(&ctx.cwd), Containment::Inside) {
+        return false;
+    }
+    paths_under_match(ctx, call, root)
 }
 
 /// Whether an ALLOW [`Rule`] authorizes `(ctx, call)` -- the single allow
@@ -2571,6 +3114,37 @@ impl PermissionBroker {
                 return PermissionOutcome::Allow;
             }
 
+            // Board item `01M3TD844GXJFEVF69M0HH1X5Q` (RULING 2026-09-30):
+            // `Prompt` mode's own built-in default -- an in-project,
+            // read-only call is allowed without a prompt. Deliberately the
+            // LAST allow path consulted in this block (after the cache, the
+            // shell-prefix grants, and every durable pattern grant): an
+            // operator's own narrower mechanism always gets the chance to
+            // name a call first, and this default only ever fills the gap
+            // nothing else already covers. `mode == Prompt` specifically --
+            // `Plan` and `AutoAllow` are unaffected by this item (`Plan`'s
+            // own category gate above, and `AutoAllow`'s own branch
+            // immediately below, already decide those modes unchanged).
+            if mode == PermissionMode::Prompt && default_in_project_read_allows(ctx, call) {
+                self.emit(
+                    ctx,
+                    Event::PermissionResolved {
+                        call_id: call.call_id.clone(),
+                        decision: PermissionDecisionKind::Cached,
+                    },
+                );
+                self.record_decision(
+                    ctx,
+                    call,
+                    PermissionDecisionRecordKind::DefaultInProjectRead,
+                    PermissionDecisionSource::Default,
+                    None,
+                    None,
+                )
+                .await;
+                return PermissionOutcome::Allow;
+            }
+
             if mode == PermissionMode::AutoAllow {
                 self.emit(
                     ctx,
@@ -2991,6 +3565,14 @@ mod tests {
             session,
             cwd: PathBuf::from("/tmp"),
             root: AgentRoot::Unconfined,
+            // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: `Unconfined` keeps
+            // this default-allow step inert for every test built from this
+            // helper, byte-for-byte unchanged from before this field
+            // existed -- none of them exercise a `Read`/`Search` call with
+            // `PathArgs::Named` at all. The tests this item adds build their
+            // own `PermissionCtx` with `default_read_root: AgentRoot::
+            // Confined(..)` directly.
+            default_read_root: AgentRoot::Unconfined,
         }
     }
 
@@ -4623,6 +5205,7 @@ mod tests {
                 session,
                 cwd: PathBuf::from("/tmp"),
                 root: AgentRoot::Unconfined,
+                default_read_root: AgentRoot::Unconfined,
             };
             let outcome = broker
                 .decide(&child_ctx, &bash_call("c3", "git status"))
@@ -4640,6 +5223,7 @@ mod tests {
                 session,
                 cwd: PathBuf::from("/tmp"),
                 root: AgentRoot::Unconfined,
+                default_read_root: AgentRoot::Unconfined,
             };
             let outcome = broker
                 .decide(&stranger_ctx, &bash_call("c4", "git status"))

@@ -240,6 +240,21 @@ fn blocks_text(blocks: &[ContentBlock]) -> String {
 
 // ---------------------------------------------------------------------
 // 1. `read` inside the root -> allowed as normal.
+//
+// Board item `01M3TD844GXJFEVF69M0HH1X5Q` (RULING 2026-09-30), an exception
+// to this file's own "Retirement" module doc (which states every
+// `PathArgs::Named` test here now asserts `gate.requests().len() == 1`):
+// `PermissionMode::Prompt`'s own built-in default-allow for an in-project,
+// read-only call applies to a CONFINED agent too -- when a root is set
+// (`SpawnSpec::root` here, `--root`/`ConwayBuilder::with_root` elsewhere),
+// `PermissionCtx::default_read_root` carries the SAME boundary as the
+// confinement root itself (the confinement root already IS the project
+// boundary -- see that field's own doc). A `read` fully inside it is
+// therefore now allowed WITHOUT ever reaching the gate, not merely without
+// `conway.fs`'s own containment check stopping it. `read_outside_root_is_
+// denied` (next) is unaffected and still proves containment itself holds:
+// the default only ever widens an ALLOW, it can never let a call escape the
+// root.
 // ---------------------------------------------------------------------
 #[tokio::test]
 async fn read_inside_root_is_allowed() {
@@ -274,8 +289,11 @@ async fn read_inside_root_is_allowed() {
     assert!(blocks_text(&result.blocks).contains("hello from inside"));
     assert_eq!(
         gate.requests().len(),
-        1,
-        "an in-root, fully-confinable call reaches the gate exactly as before this slice"
+        0,
+        "an in-root, fully-confinable read now takes `PermissionMode::Prompt`'s own \
+         in-project-read default-allow path (board item `01M3TD844GXJFEVF69M0HH1X5Q`) and \
+         never reaches the gate at all: {:?}",
+        gate.requests()
     );
 }
 

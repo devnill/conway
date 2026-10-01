@@ -333,6 +333,12 @@ fn batch_ctx_with_chdir(max_parallel_tools: usize, chdir: CwdHandle) -> ToolBatc
         // root check -- `Unconfined` keeps every existing test here
         // byte-for-byte unchanged.
         root: AgentRoot::Unconfined,
+        // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: `Unconfined` keeps the
+        // new default-allow step inert here too -- every fixture tool in
+        // this file declares `PathArgs::default()` (`Unconfinable`, via
+        // `simple_spec`'s trait-default `path_args`/`render_kind`), which
+        // never qualifies regardless of this field's value.
+        default_read_root: AgentRoot::Unconfined,
         // Every existing test in this file predates the runner-level tool
         // timeout (board item `01M1FSHJ3FG522MHA9CMBJTVW1`) and must keep
         // its unlimited behavior; the timeout tests below set this field on

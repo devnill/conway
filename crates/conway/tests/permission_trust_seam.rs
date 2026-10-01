@@ -181,7 +181,16 @@ fn isolated_env() -> (TempDir, HashMap<String, String>) {
 #[tokio::test]
 async fn an_untrusted_project_allow_rule_does_not_take_effect() {
     let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
-    let fixture_path = write_fixture_file(project.path());
+    // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the fixture lives OUTSIDE
+    // `project` (the session's own cwd) on purpose. `project` itself is now
+    // ALSO conway's own in-project-read default-allow boundary (Prompt
+    // mode's own built-in default for an in-project, read-only call, which
+    // runs regardless of trust) -- a fixture placed inside it would be
+    // auto-allowed by THAT default alone, proving nothing about trust. The
+    // untrusted `read:*` rule is the only thing that could authorize a read
+    // of a file outside the project.
+    let fixture_dir = TempDir::new().expect("tempdir");
+    let fixture_path = write_fixture_file(fixture_dir.path());
     let (_config_dir, env) = isolated_env();
 
     let gate = RecordingGate::new();
@@ -595,7 +604,12 @@ async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
 #[tokio::test]
 async fn editing_a_trusted_project_files_content_de_trusts_it() {
     let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
-    let fixture_path = write_fixture_file(project.path());
+    // See `an_untrusted_project_allow_rule_does_not_take_effect`'s own note
+    // (board item `01M3TD844GXJFEVF69M0HH1X5Q`): the fixture lives OUTSIDE
+    // `project` so conway's own in-project-read default never authorizes it
+    // on its own, and only the (de-)trusted `read:*` rule is in play.
+    let fixture_dir = TempDir::new().expect("tempdir");
+    let fixture_path = write_fixture_file(fixture_dir.path());
     let (_config_dir, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();

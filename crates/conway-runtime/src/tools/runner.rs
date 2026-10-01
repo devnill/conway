@@ -110,6 +110,13 @@ pub struct ToolBatchCtx {
     /// (hazard #8 in this slice's own inventory: a TOCTOU widening, and
     /// slow).
     pub root: AgentRoot,
+    /// Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the project-root boundary
+    /// `PermissionMode::Prompt`'s own default-allow step checks a read-only
+    /// call against, reconstructed exactly once per agent alongside
+    /// [`Self::root`] -- see [`PermissionCtx::default_read_root`]'s own doc
+    /// for the full contract and why it is a SEPARATE boundary from
+    /// `root`, not an alias of it.
+    pub default_read_root: AgentRoot,
     /// Board item `01M1FSHJ3FG522MHA9CMBJTVW1`: an operator-configurable
     /// ceiling on ONE tool call's own `invoke`, enforced at the single seam
     /// every tool runs through (`execute_one`, below) so a hung tool becomes
@@ -261,6 +268,7 @@ impl ToolRunner {
             let capability_host = ctx.capability_host.clone();
             let plugin_config = ctx.plugin_config.clone();
             let root = ctx.root.clone();
+            let default_read_root = ctx.default_read_root.clone();
             let tool_timeout = ctx.tool_timeout;
             let hooks = self.hooks.clone();
             let observers = ctx.observers.clone();
@@ -293,6 +301,7 @@ impl ToolRunner {
                     capability_host,
                     plugin_config,
                     root,
+                    default_read_root,
                     tool_timeout,
                     call,
                 ))
@@ -357,6 +366,7 @@ async fn execute_one(
     capability_host: Arc<dyn CapabilityHost>,
     plugin_config: Arc<PluginConfig>,
     root: AgentRoot,
+    default_read_root: AgentRoot,
     tool_timeout: Option<Duration>,
     call: ToolCall,
 ) -> ToolOutcome {
@@ -413,6 +423,7 @@ async fn execute_one(
         session: session_id,
         cwd: cwd.clone(),
         root,
+        default_read_root,
     };
 
     match broker.decide(&perm_ctx, &authorized).await {

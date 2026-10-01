@@ -73,6 +73,13 @@ fn ctx(agent_id: AgentId, agent_path: Vec<AgentId>, session: SessionId) -> Permi
         // `crates/conway/tests/root_containment_seam.rs` is the root check's
         // own dedicated (real end-to-end) test file.
         root: AgentRoot::Unconfined,
+        // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: `Unconfined` keeps this
+        // file's own pre-existing tests -- all about the cache/pattern/mode
+        // machinery, not the new default-allow step -- byte-for-byte
+        // unchanged; the "default read" section below builds its own
+        // `PermissionCtx` with `default_read_root: AgentRoot::Confined(..)`
+        // directly.
+        default_read_root: AgentRoot::Unconfined,
     }
 }
 
@@ -2038,4 +2045,301 @@ async fn a_plugin_contributed_allow_rule_is_refused_at_the_broker_boundary() {
         "the plugin deny rule is installed: {deny_active:?}"
     );
     assert_eq!(deny_active[0].1, PatternOrigin::Plugin);
+}
+
+// ---------------------------------------------------------------------
+// Board item `01M3TD844GXJFEVF69M0HH1X5Q` (RULING 2026-09-30): `Prompt`
+// mode's own built-in default -- an in-project, read-only call is allowed
+// without ever reaching the operator's gate. Every test below builds a
+// REAL tempdir and drives REAL filesystem resolution (`CanonicalRoot::
+// contains`, via `resolve_like_the_tool_will`) through `PermissionBroker::
+// decide` directly -- the production decision function, not a stand-in --
+// so a `..`/symlink escape is caught by the same containment primitive
+// `check_root`/`paths_under` already use, never a hand-simulated one.
+// ---------------------------------------------------------------------
+
+/// Builds a `PermissionCtx` whose `default_read_root` is `Confined` to
+/// `root` (canonicalized for real) and whose confinement `root` is
+/// `Unconfined` -- isolating this item's own default-allow step from S5's
+/// confinement-root check, which `root_containment_seam.rs` already covers
+/// end to end.
+fn default_read_ctx(
+    agent_id: AgentId,
+    session: SessionId,
+    cwd: PathBuf,
+    root: &Path,
+) -> PermissionCtx {
+    let canonical =
+        conway_core::containment::CanonicalRoot::new(root).expect("tempdir root canonicalizes");
+    PermissionCtx {
+        agent_id,
+        agent_path: vec![agent_id],
+        session,
+        cwd,
+        root: AgentRoot::Unconfined,
+        default_read_root: AgentRoot::Confined(canonical),
+    }
+}
+
+/// A real `read`-shaped call naming `path` -- `Read` category,
+/// `PathArgs::Named(&["path"])`, exactly as `conway_tools::fs::read::
+/// ReadTool` declares itself, so this fixture's shape matches what
+/// production actually builds.
+fn read_call_at(call_id: &str, path: &str) -> AuthorizedCall {
+    AuthorizedCall {
+        call_id: call_id.into(),
+        tool: ToolName::new("read"),
+        category: ToolCategory::Read,
+        arguments: serde_json::json!({"path": path}),
+        rendered: format!("read({{\"path\":{path:?}}})"),
+        path_args: conway_core::ports::PathArgs::Named(&["path"]),
+        render_kind: conway_core::ports::RenderKind::Structured,
+    }
+}
+
+/// An in-project read is allowed without ever reaching the operator's gate
+/// -- the item's headline acceptance criterion.
+#[tokio::test]
+async fn an_in_project_read_is_allowed_without_a_prompt() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("a.txt"), b"hi").unwrap();
+    let gate = ScriptedGate::new(vec![]); // must never be consulted
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = default_read_ctx(agent, session, tmp.path().to_path_buf(), tmp.path());
+
+    let outcome = broker.decide(&c, &read_call_at("c1", "a.txt")).await;
+    assert_eq!(outcome, PermissionOutcome::Allow);
+    assert_eq!(
+        gate.call_count(),
+        0,
+        "an in-project read must be allowed without ever reaching the operator's gate"
+    );
+}
+
+/// BREAK-THE-GUARD TARGET. A `..`-escaping read must still reach the
+/// gate -- never auto-allowed. (Verified red/green by hand: stubbing
+/// `default_in_project_read_allows`'s `root.contains(&ctx.cwd)` check out
+/// made this test fail with `call_count() == 0`; restored and confirmed
+/// clean via `git diff`.)
+#[tokio::test]
+async fn a_dot_dot_escaping_read_still_prompts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root_dir = tmp.path().join("root");
+    std::fs::create_dir(&root_dir).unwrap();
+    std::fs::write(tmp.path().join("secret.txt"), b"top secret").unwrap();
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = default_read_ctx(agent, session, root_dir.clone(), &root_dir);
+
+    let outcome = broker
+        .decide(&c, &read_call_at("c2", "../secret.txt"))
+        .await;
+    assert_eq!(
+        outcome,
+        PermissionOutcome::Allow,
+        "the gate's own AllowOnce still wins"
+    );
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "a `..`-escaping read must still reach the operator's gate, never be auto-allowed"
+    );
+}
+
+/// BREAK-THE-GUARD TARGET, the symlink sibling: a symlink that resolves
+/// outside the project root must still reach the gate. `root/link` points
+/// at `../outside`, and `outside/secret.txt` exists, so the FULL candidate
+/// path resolves (via `CanonicalRoot::contains`'s real `canonicalize`) to a
+/// real location outside the boundary.
+#[tokio::test]
+#[cfg(unix)]
+async fn a_symlink_escaping_read_still_prompts() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root_dir = tmp.path().join("root");
+    let outside_dir = tmp.path().join("outside");
+    std::fs::create_dir(&root_dir).unwrap();
+    std::fs::create_dir(&outside_dir).unwrap();
+    std::fs::write(outside_dir.join("secret.txt"), b"top secret").unwrap();
+    symlink(Path::new("../outside"), root_dir.join("link")).unwrap();
+
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = default_read_ctx(agent, session, root_dir.clone(), &root_dir);
+
+    let outcome = broker
+        .decide(&c, &read_call_at("c3", "link/secret.txt"))
+        .await;
+    assert_eq!(
+        outcome,
+        PermissionOutcome::Allow,
+        "the gate's own AllowOnce still wins"
+    );
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "a symlink-escaping read must still reach the operator's gate, never be auto-allowed"
+    );
+}
+
+/// An absolute path outside the project root prompts, exactly like the
+/// relative escapes above.
+#[tokio::test]
+async fn an_outside_root_absolute_read_still_prompts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root_dir = tmp.path().join("root");
+    std::fs::create_dir(&root_dir).unwrap();
+    let outside_file = tmp.path().join("secret.txt");
+    std::fs::write(&outside_file, b"top secret").unwrap();
+
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = default_read_ctx(agent, session, root_dir.clone(), &root_dir);
+
+    let outcome = broker
+        .decide(&c, &read_call_at("c4", outside_file.to_str().unwrap()))
+        .await;
+    assert_eq!(
+        outcome,
+        PermissionOutcome::Allow,
+        "the gate's own AllowOnce still wins"
+    );
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "an outside-root absolute read must still reach the operator's gate"
+    );
+}
+
+/// A read-category call declaring NO path argument at all
+/// (`PathArgs::None`, e.g. `conway.web`'s real `web_fetch`) never
+/// qualifies for the default, regardless of category -- this item's own
+/// disclosed edge case.
+#[tokio::test]
+async fn a_read_with_no_declared_path_argument_still_prompts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = default_read_ctx(agent, session, tmp.path().to_path_buf(), tmp.path());
+
+    let no_path_call = AuthorizedCall {
+        call_id: "c5".into(),
+        tool: ToolName::new("web_fetch"),
+        category: ToolCategory::Read,
+        arguments: serde_json::json!({"url": "https://example.com"}),
+        rendered: "https://example.com".into(),
+        path_args: conway_core::ports::PathArgs::None,
+        render_kind: conway_core::ports::RenderKind::Structured,
+    };
+    let outcome = broker.decide(&c, &no_path_call).await;
+    assert_eq!(
+        outcome,
+        PermissionOutcome::Allow,
+        "the gate's own AllowOnce still wins"
+    );
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "a read-category call with no declared path argument must still prompt"
+    );
+}
+
+/// An in-project `edit` (category `Edit`, not `Read`/`Search`) is
+/// unaffected by this item: the default never applies to a mutating
+/// category, so it still prompts exactly as it did before this item.
+#[tokio::test]
+async fn an_in_project_edit_still_prompts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = default_read_ctx(agent, session, tmp.path().to_path_buf(), tmp.path());
+
+    let outcome = broker.decide(&c, &write_call("c6")).await;
+    assert_eq!(
+        outcome,
+        PermissionOutcome::Allow,
+        "the gate's own AllowOnce still wins"
+    );
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "an `edit` call must still prompt -- the default only ever covers Read/Search"
+    );
+}
+
+/// DENY-WINS, break-the-guard target: an in-project read matched by an
+/// operator `deny` rule is still denied -- the default-allow step is the
+/// LAST allow path in `decide`, strictly below the deny check, so this
+/// proves the ordering rather than assuming it from the broker's own
+/// comments. (Verified red/green by hand: temporarily moving the new
+/// default-allow check above the `deny_matches` call made this test fail
+/// with `PermissionOutcome::Allow`; restored and confirmed clean via `git
+/// diff`.)
+#[tokio::test]
+async fn an_in_project_read_matched_by_a_deny_rule_is_still_denied() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("a.txt"), b"hi").unwrap();
+    let gate = ScriptedGate::new(vec![]); // deny beats everything -- never consulted
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = default_read_ctx(agent, session, tmp.path().to_path_buf(), tmp.path());
+
+    broker.remember_deny_pattern(
+        PatternRule::parse("read:*").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let outcome = broker.decide(&c, &read_call_at("c7", "a.txt")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "a `deny` rule must win over the in-project default-allow: {outcome:?}"
+    );
+    assert_eq!(gate.call_count(), 0);
+}
+
+/// PROMPT-WINS: an in-project read matched by an operator `prompt` rule
+/// still reaches the gate every time -- the default-allow step never
+/// applies once `must_reach_gate` is set, exactly like the cache and the
+/// durable pattern grants.
+#[tokio::test]
+async fn an_in_project_read_matched_by_a_prompt_rule_still_prompts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("a.txt"), b"hi").unwrap();
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = default_read_ctx(agent, session, tmp.path().to_path_buf(), tmp.path());
+
+    broker.remember_prompt_pattern(
+        PatternRule::parse("read:*").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let outcome = broker.decide(&c, &read_call_at("c8", "a.txt")).await;
+    assert_eq!(
+        outcome,
+        PermissionOutcome::Allow,
+        "the gate's own AllowOnce still wins"
+    );
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "a `prompt` rule must force the gate even for an in-project read the default would \
+         otherwise cover"
+    );
 }

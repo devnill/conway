@@ -428,7 +428,18 @@ fn expand_tilde(raw: &str) -> Result<Option<PathBuf>, ResolveError> {
 /// of that file) and `global_instructions_isolation.rs` (NOT gated -- that
 /// file's own test never reaches this fallback at all, see the note at its
 /// one test for why).
-fn home_dir() -> Option<PathBuf> {
+///
+/// `pub` (board item `01M3TD844GXJFEVF69M0HH1X5Q`, a post-review CRITICAL
+/// fix): `conway_runtime::permission`'s default-read-root computation
+/// (`AgentLoop::run_inner`) calls this directly, at its own ONE production
+/// call site, so its own "is the computed project root the home directory,
+/// or broader" guard agrees with the identical home-directory answer
+/// `resolve_candidate`'s own tilde expansion already uses, rather than a
+/// second, independently-resolved lookup that could disagree with this one
+/// on some platform. `conway-runtime` cannot depend on the `directories`
+/// crate just to re-derive this itself without a new dependency this item
+/// does not justify.
+pub fn home_dir() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
 }
 
@@ -479,6 +490,34 @@ mod tests {
         assert_ne!(Containment::Inside, Containment::Outside);
         assert_ne!(Containment::Inside, Containment::Undecidable);
         assert_ne!(Containment::Outside, Containment::Undecidable);
+    }
+
+    /// Board item `01M3TD844GXJFEVF69M0HH1X5Q`: `CanonicalRoot::new` roots
+    /// fine at a single FILE, not only a directory -- `Path::canonicalize`
+    /// (what this type's constructor calls) resolves any EXISTING path,
+    /// file or directory alike. A `paths_under` boundary naming an exact
+    /// file (e.g. `.env`) therefore installs and matches that one file --
+    /// `contains` is a plain `starts_with` on the canonical form, so a
+    /// candidate resolving to the file's own path is `Inside`, and a
+    /// DIFFERENT file (even a sibling whose name is a textual prefix
+    /// extension) is `Outside`: nothing can be "beneath" a file in any
+    /// sense this type's prefix check recognizes.
+    #[test]
+    fn a_root_may_be_a_single_file_not_only_a_directory() {
+        let tmp = TempDir::new().unwrap();
+        let dotenv = tmp.path().join(".env");
+        fs::write(&dotenv, b"SECRET=1").unwrap();
+        let sibling = tmp.path().join(".env.example");
+        fs::write(&sibling, b"SECRET=changeme").unwrap();
+        let root = CanonicalRoot::new(&dotenv).unwrap();
+
+        assert_eq!(root.contains(&dotenv), Containment::Inside);
+        assert_eq!(
+            root.contains(&sibling),
+            Containment::Outside,
+            "a file-rooted boundary must not match a sibling that merely shares its name as a \
+             text prefix"
+        );
     }
 
     #[test]

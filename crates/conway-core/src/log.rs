@@ -338,6 +338,23 @@ pub enum PermissionDecisionRecordKind {
     /// built a [`crate::permission_pattern::Rule`]/`PatternRule` at all,
     /// and is never written to `permissions.json`.
     ShellPrefixGrant,
+    /// Board item `01M3TD844GXJFEVF69M0HH1X5Q` (RULING 2026-09-30):
+    /// authorized by [`crate::permission_mode::PermissionMode::Prompt`]'s
+    /// own built-in default for an in-project, read-only call -- NOT a
+    /// `Rule` the operator or a plugin wrote, and not a cached `AllowAlways`
+    /// or pattern grant either. This fires only when every declared path
+    /// argument (and the agent's own current working directory) resolves
+    /// inside the boundary conway considers the project (an explicit
+    /// `--root`, or, absent one, the git root enclosing the session's
+    /// launch directory), and the call's declared category is
+    /// [`crate::content::ToolCategory::Read`] or
+    /// [`crate::content::ToolCategory::Search`] -- the two read-only
+    /// categories a path-bearing built-in tool declares. Deliberately its
+    /// own variant, not folded into [`Self::Pattern`]/[`Self::Auto`]: an
+    /// operator reading the transcript should be able to tell "conway's own
+    /// default let this through" apart from "something I (or a file)
+    /// configured did".
+    DefaultInProjectRead,
 }
 
 /// WHO/WHAT resolved one call, as opposed to WHAT was decided
@@ -366,6 +383,12 @@ pub enum PermissionDecisionSource {
     /// PermissionMode`] alone -- `AutoAllow` authorizing without asking, or
     /// `Plan` refusing a category it does not permit.
     Mode,
+    /// Board item `01M3TD844GXJFEVF69M0HH1X5Q`: resolved by conway's own
+    /// built-in default for an in-project read-only call under
+    /// [`crate::permission_mode::PermissionMode::Prompt`]
+    /// ([`PermissionDecisionRecordKind::DefaultInProjectRead`]) -- no
+    /// operator-authored rule, cached grant, or mode fallback was consulted.
+    Default,
 }
 
 /// Filter for session listing.

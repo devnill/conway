@@ -647,7 +647,10 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
     std::fs::write(subdir.join("src").join("file.txt"), b"subdir src").expect("write");
 
     // `discover` finds the project via the nearest `.conway/settings.json`
-    // walking up from the launch cwd.
+    // walking up from the launch cwd (`load_permission_files`'s explicit
+    // `&subdir` argument below, not conway's own session cwd -- see the
+    // `agent_cwd` note immediately below for why those two are
+    // deliberately NOT the same directory in this test).
     let conway_dir = ancestor.path().join(".conway");
     std::fs::create_dir_all(&conway_dir).expect("mkdir ancestor/.conway");
     std::fs::write(conway_dir.join("settings.json"), "").expect("write settings.json");
@@ -658,11 +661,24 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
     .expect("write permissions.json");
 
     let (_config_dir, env) = isolated_env();
+    // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the session's own cwd is a
+    // SEPARATE tempdir, deliberately neither `ancestor` nor `subdir`.
+    // `subdir` is itself the path turn 2 reads (`subdir/src/file.txt`, "the
+    // path a cwd-relative base would have confined") -- if the session's
+    // cwd WERE `subdir`, `subdir` would ALSO be conway's own
+    // in-project-read default-allow boundary (Prompt mode's own built-in
+    // default for an in-project, read-only call), which would silently
+    // auto-allow turn 2's read regardless of the `paths_under` rule's own
+    // ancestor-relative resolution, making this test unable to observe
+    // that resolution at all. `load_permission_files`'s own `&subdir`
+    // argument below is unaffected -- it is the explicit discovery-start
+    // path this production method takes, independent of the session's cwd.
+    let agent_cwd = TempDir::new().expect("tempdir");
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
     let conway = build_conway_with_builtins(
-        base_config_at(&subdir),
+        base_config_at(agent_cwd.path()),
         scripted_backend(vec![
             // Turn 1: ancestor/src -- under the rule's boundary (gate bypassed).
             ScriptedTurn::Respond(read_call_response(
@@ -1061,9 +1077,16 @@ async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses
 async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surfaces_a_registration_error(
 ) {
     let project = TempDir::new().expect("tempdir");
-    // A real file to read -- the call is observable through the real
-    // `ReadTool` -> `PermissionBroker::decide` seam.
-    std::fs::write(project.path().join("file.txt"), b"inside the project")
+    // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the probe file lives
+    // OUTSIDE `project` (the session's own cwd) on purpose. `project` is
+    // also conway's own in-project-read default-allow boundary (Prompt
+    // mode's own built-in default for an in-project, read-only call) -- a
+    // probe placed inside it would be auto-allowed by THAT default alone
+    // once the bad-prefix rule is dropped, proving nothing about
+    // registration. A real file to read -- the call is observable through
+    // the real `ReadTool` -> `PermissionBroker::decide` seam.
+    let probe_dir = TempDir::new().expect("tempdir");
+    std::fs::write(probe_dir.path().join("file.txt"), b"outside the project")
         .expect("write fixture file");
     let (config_dir, env) = isolated_env();
     // A GLOBAL file (trusted-by-authorship) so the allow rule's install path
@@ -1079,7 +1102,7 @@ async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surface
         base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
-                &project.path().join("file.txt").display().to_string(),
+                &probe_dir.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
         ]),
@@ -1171,7 +1194,12 @@ async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surface
 #[tokio::test]
 async fn a_paths_under_allow_rule_with_a_nul_byte_in_its_prefix_surfaces_a_registration_error() {
     let project = TempDir::new().expect("tempdir");
-    std::fs::write(project.path().join("file.txt"), b"inside the project")
+    // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the probe lives OUTSIDE
+    // `project` -- see the sibling "cannot canonicalize" test's own note for
+    // why (`project` is also conway's own in-project-read default-allow
+    // boundary, which must not be the thing authorizing this probe).
+    let probe_dir = TempDir::new().expect("tempdir");
+    std::fs::write(probe_dir.path().join("file.txt"), b"outside the project")
         .expect("write fixture file");
     let (config_dir, env) = isolated_env();
     // JSON's `\u0000` escape is legal; serde_json decodes it to a real NUL
@@ -1187,7 +1215,7 @@ async fn a_paths_under_allow_rule_with_a_nul_byte_in_its_prefix_surfaces_a_regis
         base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
-                &project.path().join("file.txt").display().to_string(),
+                &probe_dir.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
         ]),
@@ -1246,10 +1274,16 @@ async fn a_paths_under_allow_rule_with_a_nul_byte_in_its_prefix_surfaces_a_regis
 #[tokio::test]
 async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_registration_error() {
     let project = TempDir::new().expect("tempdir");
-    // A real file to read -- proves the dropped deny/prompt rules are inert
-    // at decision time (the call reaches the gate, not silently denied nor
+    // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the probe lives OUTSIDE
+    // `project` -- see `a_paths_under_allow_rule_with_a_prefix_that_cannot_
+    // canonicalize_surfaces_a_registration_error`'s own note for why
+    // (`project` is also conway's own in-project-read default-allow
+    // boundary, which must not be the thing deciding this probe). A real
+    // file to read -- proves the dropped deny/prompt rules are inert at
+    // decision time (the call reaches the gate, not silently denied nor
     // silently allowed) through the real ReadTool -> PermissionBroker seam.
-    std::fs::write(project.path().join("file.txt"), b"inside the project")
+    let probe_dir = TempDir::new().expect("tempdir");
+    std::fs::write(probe_dir.path().join("file.txt"), b"outside the project")
         .expect("write fixture file");
     let (config_dir, env) = isolated_env();
     // A GLOBAL file with one deny and one prompt rule, each over a
@@ -1268,7 +1302,7 @@ async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_regi
         base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
-                &project.path().join("file.txt").display().to_string(),
+                &probe_dir.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
         ]),
@@ -1372,7 +1406,13 @@ async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_regi
 async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_rule_and_informs_the_operator(
 ) {
     let project = TempDir::new().expect("tempdir");
-    std::fs::write(project.path().join("file.txt"), b"inside the project")
+    // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the probe lives OUTSIDE
+    // `project` -- see `a_paths_under_allow_rule_with_a_prefix_that_cannot_
+    // canonicalize_surfaces_a_registration_error`'s own note for why
+    // (`project` is also conway's own in-project-read default-allow
+    // boundary, which must not be the thing deciding this probe).
+    let probe_dir = TempDir::new().expect("tempdir");
+    std::fs::write(probe_dir.path().join("file.txt"), b"outside the project")
         .expect("write fixture file");
     let (_config_dir, env) = isolated_env();
     write_project_permissions(
@@ -1385,7 +1425,7 @@ async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_ru
         base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
-                &project.path().join("file.txt").display().to_string(),
+                &probe_dir.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
         ]),
@@ -1699,7 +1739,15 @@ async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate
 #[tokio::test]
 async fn an_untrusted_project_structured_allow_rule_does_not_take_effect() {
     let project = TempDir::new().expect("tempdir");
-    std::fs::write(project.path().join("file.txt"), b"inside the project").expect("write fixture");
+    // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the probe lives OUTSIDE
+    // `project` on purpose -- see
+    // `a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_
+    // surfaces_a_registration_error`'s own note for why (`project` is also
+    // conway's own in-project-read default-allow boundary, which must not
+    // be the thing authorizing this probe regardless of trust).
+    let probe_dir = TempDir::new().expect("tempdir");
+    std::fs::write(probe_dir.path().join("file.txt"), b"outside the project")
+        .expect("write fixture");
     let (_config_dir, env) = isolated_env();
     write_project_permissions(
         &project,
@@ -1713,7 +1761,7 @@ async fn an_untrusted_project_structured_allow_rule_does_not_take_effect() {
         base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
-                &project.path().join("file.txt").display().to_string(),
+                &probe_dir.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
         ]),
@@ -2317,6 +2365,20 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
     let root_dir = TempDir::new().expect("tempdir");
     std::fs::write(root_dir.path().join("file.txt"), b"inside the root").expect("write fixture");
     let root_canon = root_dir.path().canonicalize().expect("canonicalize root");
+    let read_target = root_dir.path().join("file.txt").display().to_string();
+    // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the session's own cwd is a
+    // SEPARATE tempdir, deliberately NOT `root_dir`. `root_dir` is the
+    // `paths_under` rule's own boundary -- it must be the RULE, and only the
+    // rule, that authorizes turn 1's read and stops authorizing it once
+    // revoked. If the session's cwd were `root_dir` itself, `root_dir`
+    // would ALSO be conway's own in-project-read default-allow boundary
+    // (Prompt mode's own built-in default for an in-project, read-only
+    // call), which would silently keep authorizing turn 2's read even after
+    // the rule is revoked, making this test unable to observe the revoke at
+    // all. Both turns use `read_target`'s ABSOLUTE path rather than a cwd-
+    // relative one, since the read must resolve into `root_dir` regardless
+    // of which directory is the agent's own cwd.
+    let agent_cwd = TempDir::new().expect("tempdir");
 
     let (config_dir, env) = isolated_env();
     write_global_permissions(
@@ -2333,13 +2395,13 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
         reason: "operator said no".into(),
     });
     let conway = build_conway_with_builtins(
-        base_config_at(root_dir.path()),
+        base_config_at(agent_cwd.path()),
         scripted_backend(vec![
             // Turn 1: the structured rule authorizes this read (gate bypassed).
-            ScriptedTurn::Respond(read_call_response("file.txt")),
+            ScriptedTurn::Respond(read_call_response(&read_target)),
             ScriptedTurn::Respond(text_response("done")),
             // Turn 2: after the revoke, the SAME read must reach the gate.
-            ScriptedTurn::Respond(read_call_response("file.txt")),
+            ScriptedTurn::Respond(read_call_response(&read_target)),
             ScriptedTurn::Respond(text_response("done")),
             // Turn 3: the sibling flat grant must still auto-allow.
             ScriptedTurn::Respond(write_call_response(&write_target)),
