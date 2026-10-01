@@ -562,8 +562,8 @@ pub(crate) fn uncanonicalizable_paths_under_error(
 ///   mean `~/.conway/src`, which protects nothing.)
 ///
 /// An ABSOLUTE prefix is unaffected by this choice in both cases.
-pub(crate) fn permission_rule_base(path: &Path, global_path: Option<&Path>, cwd: &Path) -> PathBuf {
-    if global_path == Some(path) {
+pub(crate) fn permission_rule_base(path: &Path, is_global: bool, cwd: &Path) -> PathBuf {
+    if is_global {
         return cwd.to_path_buf();
     }
     // `<project>/.conway/permissions.json` -> `<project>`. The fallback (a
@@ -589,8 +589,6 @@ pub(crate) fn load_permission_files(
     granting_agent: AgentId,
 ) -> PermissionLoadReport {
     let paths = crate::config::discovery::permission_file_paths(cwd, env);
-    let global_path = crate::config::discovery::user_config_path(env)
-        .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
     let trust_store = crate::config::trust::TrustStore::load(env);
     let mut notices = Vec::new();
     let mut registration_errors = Vec::new();
@@ -623,11 +621,23 @@ pub(crate) fn load_permission_files(
             continue;
         }
 
-        let is_global = global_path.as_deref() == Some(path.as_path());
+        // `paths`' own construction (`permission_file_paths`'s doc) puts
+        // the PROJECT-scope candidate first and every other candidate
+        // (global, and -- board item `01M3TJQGJHFFPWE2YYN60WN1XB` -- the
+        // user-scope project-keyed grants file) after it, and every one of
+        // those "every other" candidates is operator-authored, never
+        // something a cloned checkout could have written -- so all of them
+        // are trusted by authorship, not just the literal global path. A
+        // path-equality check against ONE hardcoded global candidate would
+        // have left the new grants file permanently untrusted (it is
+        // neither the project path nor the old global path), silently
+        // reintroducing the exact friction this item's own grants-to-
+        // user-scope change exists to avoid.
+        let is_global = project_path.as_deref() != Some(path.as_path());
         // B2: the base a relative `paths_under` prefix in THIS file
         // resolves against -- the project root for a project file, the
-        // agent cwd for the global file.
-        let base = permission_rule_base(path, global_path.as_deref(), cwd);
+        // agent cwd for every operator-authored one.
+        let base = permission_rule_base(path, is_global, cwd);
 
         // Deny applies unconditionally, from every scope, regardless of
         // trust -- D4 §3. F12: this now also covers structured `then:
@@ -763,15 +773,11 @@ pub(crate) fn trust_permission_file(
     // B2: the same relative-`paths_under` base `load_permission_files`
     // computes, so a rule installs with the SAME boundary whether it took
     // effect at startup (already-trusted file) or here (`/trust
-    // permissions` mid-session). For the project file -- the only file
-    // the TUI's `/trust permissions` ever targets -- the base is the
-    // project root derived from the path itself, identical either way.
-    // For the global file (no containing project) the base is the passed
-    // `cwd`, the same choice `load_permission_files` makes with its
-    // explicit `cwd`.
-    let global_path = crate::config::discovery::user_config_path(env)
-        .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
-    let base = permission_rule_base(path, global_path.as_deref(), cwd);
+    // permissions` mid-session). This function only ever trusts the
+    // PROJECT file (the only file the TUI's `/trust permissions` ever
+    // targets), so `is_global` is always `false` here -- the base is the
+    // project root derived from the path itself.
+    let base = permission_rule_base(path, false, cwd);
     let mut installed = 0;
     let mut registration_errors = Vec::new();
     let mut notices = Vec::new();

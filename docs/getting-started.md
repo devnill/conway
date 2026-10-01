@@ -84,19 +84,22 @@ file leak back in as a *project* layer for a working directory that still
 sits beneath your real home.
 
 **A project `settings.json` reached by the walk is not applied until you
-trust it.** Unlike `.conway/permissions.json` (see `docs/permissions.md`'s
-own "Trust" section), an untrusted project `settings.json` does not merely
-contribute nothing and let the session start anyway — conway refuses to
-start at all, naming the file and what trusting it requires. The reason is
-sharper than permissions: `settings.json` can set `backends.<id>.base_url`
-and `backends.<id>.api_key`, so a cloned repository's config can redirect
-your traffic and your credentials to an endpoint you never typed, not just
-widen what an agent may call. Your own user-scope `settings.json`
-(`~/.conway/settings.json`, or `$CONWAY_CONFIG_DIR/settings.json`) is never
-gated — it is your own file — and `--config <path>` bypasses the walk
-(and this gate) entirely, exactly as it always has. See
-`docs/permissions.md`'s "Project `settings.json` trust" section for the
-full mechanism, including non-interactive behavior.
+trust it.** The reason is sharper than permissions: `settings.json` can set
+`backends.<id>.base_url` and `backends.<id>.api_key`, so a cloned
+repository's config can redirect your traffic and your credentials to an
+endpoint you never typed, not just widen what an agent may call. An
+untrusted project `settings.json` contributes nothing to the merged
+configuration — exactly like an untrusted `.conway/permissions.json` (see
+`docs/permissions.md`'s own "Trust" section) — and conway starts anyway,
+with a transcript notice, a persistent status-line marker, and (for a
+non-interactive run) a stderr line, all naming the file and the command
+that applies it (`conway trust project`, or the TUI's `/trust
+permissions`, which trusts both of a project's files in one act). Your own
+user-scope `settings.json` (`~/.conway/settings.json`, or
+`$CONWAY_CONFIG_DIR/settings.json`) is never gated — it is your own file —
+and `--config <path>` bypasses the walk (and this gate) entirely, exactly
+as it always has. See `docs/permissions.md`'s "Project `settings.json`
+trust" section for the full mechanism.
 
 That is enough to run. **A second file, `.conway/models.json`, is optional
 on a default build and worth adding anyway** — it declares each

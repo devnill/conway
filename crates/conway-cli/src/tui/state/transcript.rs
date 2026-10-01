@@ -144,6 +144,25 @@ pub enum Entry {
         text: String,
         fatal: bool,
     },
+    /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review): the
+    /// "project config ignored" notice, and ONLY that notice -- a dedicated
+    /// variant rather than another `Entry::Error`, because this one carries
+    /// a property no other transcript entry does: **it must render in a
+    /// style NO config, trusted or not, can turn invisible.** Every other
+    /// severity in this enum (`Notice`'s cyan, `Error`'s red/bold-red) is
+    /// styled from `Theme`, and `Theme` is itself built from `[tui.theme]`
+    /// -- which is exactly the knob an untrusted project `settings.json`
+    /// could otherwise use to set `{"error":{"modifiers":["hidden"]}}` and
+    /// make its own "you are ignoring me" notice disappear. `view::
+    /// transcript::entry_lines`'s own `Entry::SecurityNotice` arm renders a
+    /// style built directly from `ratatui`, never read from `theme` at
+    /// all -- see that arm's own doc for why this is a SEPARATE defense
+    /// from `tui::config::load_from_options` also trust-gating `[tui]`
+    /// itself (this is the floor if that gate is ever bypassed or
+    /// regresses, not a substitute for it).
+    SecurityNotice {
+        text: String,
+    },
     /// A PROMPTED `Event::PermissionDecision`, rendered dim, one line,
     /// directly beneath the [`Entry::Tool`] it belongs to (`call_id`
     /// matches -- `AppState::apply_permission_decision` pushes this

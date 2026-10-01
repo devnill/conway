@@ -219,8 +219,8 @@ and the command as it would actually run:
 | Key | Grants | Persistence |
 | --- | --- | --- |
 | `y` | This exact call, once. | Nothing — the identical call asks again next time. |
-| `a` | This exact call — same tool, byte-identical (canonicalized) arguments — remembered at the current grant scope (see `s` below). A different argument to the same tool is a different call and asks again. | In memory only. Gone at restart; never written to a file. |
-| `p` (structured tool) | Opens a field editor over the call's top-level structured argument fields (only offered when the tool's rendering is a structured JSON dump, not a shell command — `read`, `report`, `grep`, … ). Every field starts **wildcard**; `space` pins the selected field to its exact (canonicalized-JSON) value, `↑`/`↓`/`tab` move between fields, `s` cycles the grant scope (shared with `a` above), `Enter` builds an allow rule from the pinned fields — a pinned field must match exactly, an unpinned one is wildcard, and every field must match (AND) — grants it, and resolves this call as allowed; `Esc` cancels back to this prompt with no decision made. Granting with nothing pinned is the broadest the editor can produce: any call to that tool — the same breadth the old immediate `tool:*` grant offered, and what the footer's `[p] grants:` line states before you press anything. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the project-scoped `permissions.json`'s structured `rules` array (best-effort, silent either way — a write failure loses only the file durability, never the in-session grant; matched by rule equality, so granting the identical rule twice never duplicates the entry). Same trust-digest consequence as `[a]`'s sibling flat-pattern write: that write changes the file's bytes, so a *previously untrusted* file gains a rule that still won't take effect on its own until you `/trust permissions`. A per-agent or per-subtree grant is never written to a file, for the same reason as the flat form: it names live agent ids, meaningless at the next launch. |
+| `a` | This exact call — same tool, byte-identical (canonicalized) arguments — remembered at the current grant scope (see `s` below). A different argument to the same tool is a different call and asks again. | Installed immediately at the current grant scope, and — at session scope only — appended to a file (board item `01M3TJQGJHFFPWE2YYN60WN1XB`: the operator's own user-scope, project-keyed grants store under conway's config directory, **never** the project's own `permissions.json` — a remembered prompt answer must never become a byte in the checkout, where a `git diff` could show it or a `git pull` could pick up someone else's). Best-effort, silent either way — a write failure loses only the file durability, never the in-session grant. A per-agent or per-subtree grant is never written to a file: it names live agent ids, meaningless at the next launch. |
+| `p` (structured tool) | Opens a field editor over the call's top-level structured argument fields (only offered when the tool's rendering is a structured JSON dump, not a shell command — `read`, `report`, `grep`, … ). Every field starts **wildcard**; `space` pins the selected field to its exact (canonicalized-JSON) value, `↑`/`↓`/`tab` move between fields, `s` cycles the grant scope (shared with `a` above), `Enter` builds an allow rule from the pinned fields — a pinned field must match exactly, an unpinned one is wildcard, and every field must match (AND) — grants it, and resolves this call as allowed; `Esc` cancels back to this prompt with no decision made. Granting with nothing pinned is the broadest the editor can produce: any call to that tool — the same breadth the old immediate `tool:*` grant offered, and what the footer's `[p] grants:` line states before you press anything. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the structured `rules` array of the SAME operator-owned, project-keyed grants file `[a]`'s row above writes to (best-effort, silent either way — a write failure loses only the file durability, never the in-session grant; matched by rule equality, so granting the identical rule twice never duplicates the entry). This file is always trusted by authorship (it is never something a checkout controls), so — unlike before board item `01M3TJQGJHFFPWE2YYN60WN1XB` — a remembered grant here needs no `/trust permissions` to take effect at the next launch. A per-agent or per-subtree grant is never written to a file, for the same reason as the flat form: it names live agent ids, meaningless at the next launch. |
 | `p` (shell command, e.g. `bash`) | Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`. A **different** mechanism from the row above, not a smaller version of it: opens a free-text editor seeded with a narrow, two-token default (`git status` from `git status --short`; never the bare `git`) — type to widen or narrow it, `Ctrl-S` (not bare `s`, since the prefix text can itself contain the letter) cycles the grant scope, `Enter` grants it and resolves this call as allowed, `Esc` cancels back to this prompt. Accepting authorizes a LATER command whose text starts with the SAME whitespace-aligned tokens (`git status` covers `git status --short`, not `git push` or `git statusfoo`) — the identical token-alignment rule the durable mechanism's own `command_prefix` used before board `01KZDDPC5MMD49F6JPV9CW4TVM` closed that door for `ShellCommand` permanently. This is the SEPARATE, additive mechanism that door's own closure explicitly did not rule out: see "The shell-prefix grant" below. | **In memory only, for this class specifically, regardless of scope.** Never appended to `permissions.json`, at ANY scope — including `Session`, unlike the structured `[p]` row above. Gone the moment this process exits; nothing to `/trust`, nothing to revoke on disk. |
 | `s` | Not a decision — cycles the scope the remembered-grant keys (`a` and both `p` rows above) grant at: **this session** (the default; every agent in the session) → **this agent only** → **this agent and its subtree**. The prompt states the current scope in words next to the keys. The choice resets to *this session* for every new prompt, so narrowing is always a deliberate, per-prompt act. While the shell-prefix editor is open specifically, this is `Ctrl-S` rather than a bare `s` — see that row's own note. | n/a |
 | `n` | Denies this call, once. | Nothing. |
@@ -704,6 +704,16 @@ confirms and actually trusts the *current* bytes shown, installing their
 `allow` rules immediately, for this session as well as the next; `[n]`/`Esc`
 cancels, having written nothing.
 
+**One trust act covers both of a project's files** (board item
+`01M3TJQGJHFFPWE2YYN60WN1XB`). Confirming `/trust permissions` also records
+a trust decision for that same project's `settings.json`, if it has one, in
+the same action — you no longer have to remember a second command for the
+second file. Each file still gets its own independent record underneath
+(edit either one and only that one re-arms), this just means ONE confirm
+covers both. The headless `conway trust project` command (below) does the
+identical thing from a shell, and is also reachable as `conway trust
+settings` for scripts written before this item.
+
 **Reviewing what a file would install.** The preview card shows you the
 file's current content BEFORE you decide — install and trust no longer
 happen in the same action with nothing shown first. What it does **not**
@@ -749,24 +759,46 @@ consent gate of its own, for a reason `permissions.json` never had:
 That is not "what may an agent do" (the question every rule in this page
 answers) — it is "where does your traffic and your credential actually go."
 A cloned repository's project `settings.json` naming a `base_url` you never
-typed is strictly more dangerous than a permissive `allow` rule, so this
-gate is **stricter** than `permissions.json`'s own: an untrusted project
-`settings.json` does not degrade quietly the way an untrusted
-`permissions.json` does (this page's own "trust asymmetry," above, where an
-untrusted file simply contributes nothing and the session starts anyway).
-It **refuses to start the session at all** until you trust it — this is a
-different failure mode on purpose, not an inconsistency: silently applying
-it is exactly the redirection this gate exists to prevent, and silently
-skipping it would start a session on a *different* configuration than the
-one actually sitting in the project directory, with no indication that
-happened.
+typed is strictly more dangerous than a permissive `allow` rule.
+
+**RULING (2026-09-30, board item `01M3TJQGJHFFPWE2YYN60WN1XB`): ignored,
+loudly — not refused.** An earlier version of this gate refused to start
+the session at all until you trusted the file, on the reasoning that
+silently applying or silently skipping it were both worse than a hard
+stop. That reasoning about the HARM still holds, but the hard stop itself
+turned out to be worse in practice: friction severe enough that it trained
+people to delete the file or avoid the directory rather than engage with
+it, and it reappeared on every `git pull` that touched it. The posture now
+matches `permissions.json`'s own (this page's own "trust asymmetry,"
+above): an untrusted (or trusted-then-edited) project `settings.json`
+contributes **nothing** to the merged configuration, and conway starts
+anyway — but the ignoring is made impossible to miss, not merely silent-and-
+degraded:
+
+- **A transcript notice at session start**, naming the exact file, that it
+  is being ignored, and the command that applies it. If it was trusted
+  before and has since been edited, the notice says that distinctly
+  ("...changed since you trusted it") rather than reusing the first-time
+  wording.
+- **A persistent `project config ignored` marker in the status line** for
+  the rest of the session — not just a notice that scrolls past once. It is
+  forced into the line regardless of your `[tui.status_line]` configuration
+  (the same way the `AUTO-ALLOW` mode marker cannot be configured away),
+  because the file being ignored is, by construction, something a cloned
+  checkout's own `settings.json` could otherwise have a say in.
+- **A stderr line on every non-interactive run** (`conway -p`, `conway
+  sessions`, `conway routes`, …) — the same `Conway::warnings()` choke
+  point every other config warning already prints through.
 
 **Same subject, same store, a second kind.** Trust here is keyed on the
 identical `(absolute path, content digest)` shape `permissions.json`'s own
 trust uses, recorded in the same `trust.json` — but as its own, independent
-record. Trusting a project's `permissions.json` says nothing about that same
-project's `settings.json`, and an edit to either one de-trusts only that
-one, silently, the identical way an edit de-trusts `permissions.json` above.
+record. An edit to either file de-trusts only that one, silently, the
+identical way an edit de-trusts `permissions.json` above. **One trust act
+covers both** (see "Granting trust deliberately," above, and `conway trust
+project`, below) — trusting a project's `permissions.json` through
+`/trust permissions` also trusts that project's `settings.json` in the same
+confirm, when it has one.
 
 **Scope: your working directory's own project layer only.** Your own user
 scope (`~/.conway/settings.json`, or `$CONWAY_CONFIG_DIR/settings.json`) is
@@ -776,23 +808,23 @@ is unaffected too: naming a file directly on the command line is already an
 explicit, per-invocation choice, not something the ancestor walk reached on
 its own.
 
-**Non-interactively, this refuses outright, naming the file.** There is no
-prompt to answer with no terminal to answer it on, and — as with
-`permissions.json`'s own one-shot behavior above — silently proceeding
-without the project's own configuration would start a session on
-config that is not what the project directory actually says. The refusal
-names the exact path and what recording a decision requires; once granted,
-every subsequent launch — one-shot included — reuses that recorded
-decision exactly as `permissions.json`'s own trust already carries into
-`-p` mode (this page's own "In one-shot mode" section above).
+**Granting trust.** `conway trust project` (below) reviews and records
+consent for both files from a shell, with no TUI needed; `/trust
+permissions` does the identical thing interactively, as just described.
+Existing grants already recorded in a project's own files from before this
+item keep working once the project is trusted — nothing here invalidates a
+prior decision.
 
-**Granting trust.** The library-level mechanism (`conway::config::trust::
-TrustStore::trust_settings`) records a decision the same way
-`TrustStore::trust` already does for `permissions.json` — an interactive
-`/trust settings`-shaped surface over it is expected, mirroring `/trust
-permissions`'s own preview-then-confirm shape described above, but is not
-covered by this page's own snapshot; check the TUI's `/help` output for
-what actually shipped in your build.
+### `conway trust` (headless)
+
+`conway trust project [--path <settings-file>]` reviews and records consent
+for a project's `settings.json` AND `permissions.json` — whichever of the
+two actually exist — printing each file's content before writing anything,
+then recording a decision for exactly those bytes (`conway trust list`
+shows every decision recorded; `conway trust revoke <path>` withdraws one).
+`conway trust settings` is kept as an alias of `project`, for a script
+written before this item. There is no blanket flag: every invocation
+reviews the actual bytes of the actual files found, every time.
 
 ## Confinement
 
@@ -1021,8 +1053,8 @@ does:
   per-session, informed act at the keyboard, authorizing nothing beyond
   THIS session, never written anywhere another session — or another
   person — could read back unreviewed.
-- **A `[p]` field-editor grant is written to `permissions.json`'s
-  structured `rules` array, not the flat `allow` list.** Every other
+- **A `[p]` field-editor grant is written to a `permissions.json`-shaped
+  file's structured `rules` array, not the flat `allow` list.** Every other
   session-scope grant this page describes (a flat pattern, or any rule
   installed from a permissions file) is backed by a flat `<tool>:<prefix>`
   wire string. The field editor instead grants a structured rule
@@ -1030,7 +1062,10 @@ does:
   the pinned-field shape that flat wire string cannot express — so it is
   written to (and read back from, and revoked from) the `rules` array
   instead. See "The structured `rules` array" and "Inspecting and revoking"
-  above for what that array looks like and how a row there is revoked.
+  above for what that array looks like and how a row there is revoked, and
+  "The prompt" table above for exactly which file this is (board item
+  `01M3TJQGJHFFPWE2YYN60WN1XB`: the operator's own user-scope, project-keyed
+  grants file, never the project's own `permissions.json`).
 - **The one-shot `-p`/`--allowed-tools` gate is a DIFFERENT mechanism, and it
   still scans a command's text for shell metacharacters — deliberately, not
   as an oversight.** Everything above this bullet describes `permissions.json`

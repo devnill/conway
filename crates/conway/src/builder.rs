@@ -410,24 +410,28 @@ impl ConwayBuilder {
     /// (`config::load` with `LoadOptions::default()`, whose own `cwd`
     /// defaults to `std::env::current_dir()`).
     ///
-    /// **The one production call site for the project-`settings.json`
-    /// consent gate** (board item `01M2M5EM73GA15NMQ1H87TTEDP`): before
-    /// ever calling `config::load`, this checks
-    /// `config::trust::guard_untrusted_project_settings` against the exact
-    /// same `cwd`/`env` `LoadOptions::default()` resolves — an untrusted,
-    /// walk-discovered project `settings.json` fails this method outright
-    /// with `FacadeError::UntrustedProjectSettings`, naming the file and
-    /// how to consent, rather than merging it or silently proceeding
-    /// without it. See `guard_untrusted_project_settings`'s own doc for the
-    /// full three-outcome contract and why this function itself has no
-    /// interactivity of its own: the SAME refusal fires whether a caller is
-    /// running interactively or not, because this method cannot prompt
-    /// anyone. `conway-cli`'s `main.rs` is the one caller today (`--config`
-    /// absent) — it decides interactive-vs-not and, on this specific
-    /// error, is where an interactive prompt-then-retry (call
-    /// `config::trust::TrustStore::trust_settings`, then call this method
-    /// again) would be wired; that retry loop is not built by this item
-    /// (it lives outside this crate's own file lane).
+    /// **No longer a refusal point for an untrusted project
+    /// `settings.json`** (board item `01M3TJQGJHFFPWE2YYN60WN1XB`,
+    /// superseding board item `01M2M5EM73GA15NMQ1H87TTEDP`'s "refuse
+    /// outright" ruling): an untrusted, walk-discovered project
+    /// `settings.json` no longer stops this method from returning `Ok` at
+    /// all. Calls `config::merge::load_trust_gated` rather than plain
+    /// `config::load` -- that is the one spot the consent check now lives,
+    /// SKIPPING the merge of that one layer and pushing a `ConfigWarning {
+    /// code: WarningCode::UntrustedProjectConfigIgnored, .. }` onto the
+    /// returned outcome instead, so the file's content never reaches
+    /// `ConwayConfig` without having been ignored, loudly. See
+    /// `config::merge::load_trust_gated`'s own doc for why this is a
+    /// distinct function from plain `config::load` (used unchanged by every
+    /// other caller in this crate and across the workspace) rather than a
+    /// behavior change to that function itself, and
+    /// `config::trust::guard_untrusted_project_settings` for the trust
+    /// computation it reuses unchanged. `conway-cli`'s `main.rs`/
+    /// `tui::app::startup` are what turn `Conway::warnings()` into an
+    /// operator-visible notice (stderr for every non-interactive target, a
+    /// transcript entry plus a persistent status-line marker for the TUI)
+    /// -- this method itself stays non-interactive and never prompts
+    /// anyone, exactly as before.
     ///
     /// **Never fires for `--config <path>`** — [`Self::from_config`] never
     /// calls this method at all, and never will: its own
@@ -438,13 +442,7 @@ impl ConwayBuilder {
     /// case here.
     pub fn discover() -> Result<Self> {
         let options = LoadOptions::default();
-        config::trust::guard_untrusted_project_settings(&options.cwd, &options.env).map_err(
-            |e| FacadeError::UntrustedProjectSettings {
-                path: e.path.clone(),
-                message: e.to_string(),
-            },
-        )?;
-        let outcome = config::load(options)?;
+        let outcome = config::merge::load_trust_gated(options)?;
         Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
     }
 
@@ -469,6 +467,21 @@ impl ConwayBuilder {
     /// settings.json` or an isolated fixture directory with none;
     /// [`Self::from_options_ignoring_user_config`] is the sibling that
     /// drops that layer entirely, mirroring `from_config_only`.
+    ///
+    /// **Disclosed asymmetry (board item `01M3TJQGJHFFPWE2YYN60WN1XB`'s own
+    /// security review): NOT trust-gated, unlike [`Self::discover`].**
+    /// This calls plain `config::load`, the same unconditional merge
+    /// `config::load`'s own callers across this workspace already rely on
+    /// (see `config::merge::ProjectLayerTrust`'s own doc for why
+    /// trust-gating is an opt-in concern, not the merge mechanism's
+    /// default) -- a caller-supplied `options.cwd`/`options.env` is this
+    /// method's whole reason to exist, and nothing about that implies it is
+    /// also standing in for "the operator's own ambient project" the way
+    /// `discover()`'s hardcoded real-environment call is. There is no
+    /// production caller of this method anywhere in this workspace today;
+    /// an embedder that wants `discover()`'s trust-gating behavior against
+    /// its own supplied `options` should call `config::merge::
+    /// load_trust_gated` directly instead of this method.
     pub fn from_options(options: LoadOptions) -> Result<Self> {
         let outcome = config::load(options)?;
         Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))

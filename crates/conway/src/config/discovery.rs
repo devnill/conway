@@ -317,17 +317,26 @@ pub fn history_file_path(env: &HashMap<String, String>) -> Option<PathBuf> {
     user_config_path(env).and_then(|settings| settings.parent().map(|dir| dir.join("history")))
 }
 
-/// V2: the persisted permission-rules file, resolved project-first then
-/// global — the same precedence `discover`/`user_config_path` already
-/// establish for `settings.json`.
+/// V2: the persisted permission-rules files read at startup, resolved
+/// project-first, then global, then (board item `01M3TJQGJHFFPWE2YYN60WN1XB`)
+/// the operator's own user-scope, project-keyed grants file -- the same
+/// precedence `discover`/`user_config_path` already establish for
+/// `settings.json`, extended by one entry.
 ///
-/// Project-first is deliberate: a grant like "allow `cargo test`" is
-/// almost always about *this* checkout, and a project-scoped file can be
-/// reviewed in a diff alongside the code it authorizes. The global file is
-/// the fallback for grants that genuinely follow the operator.
+/// Project-first is deliberate: an `allow` rule a repository itself ships
+/// is almost always about *that* checkout, and a project-scoped file can be
+/// reviewed in a diff alongside the code it authorizes -- though, unlike the
+/// other two entries, this one requires an explicit trust decision before
+/// its `allow` half installs (see `crate::permissions::load_permission_files`'s
+/// own doc). The global file is next: hand-authored by the operator in
+/// their own config directory, trusted by authorship, and followed them
+/// across every project. [`user_scope_project_permissions_path`] is last:
+/// also operator-authored and trusted by authorship, but scoped to just
+/// this project -- the destination a REMEMBERED prompt answer (the TUI's
+/// `a`/`p` grant) is actually written to, never the project file.
 ///
-/// Returns both candidates in precedence order so the caller can load and
-/// merge them; a missing file at either level is not an error.
+/// Returns every candidate in precedence order so the caller can load and
+/// merge them; a missing file at any level is not an error.
 pub fn permission_file_paths(cwd: &std::path::Path, env: &HashMap<String, String>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     // Project scope: alongside the nearest `.conway/settings.json`, or the
@@ -354,7 +363,65 @@ pub fn permission_file_paths(cwd: &std::path::Path, env: &HashMap<String, String
             paths.push(global);
         }
     }
+    // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: the operator's own,
+    // user-scope, project-keyed grants file -- see
+    // [`user_scope_project_permissions_path`]'s own doc for why a REMEMBERED
+    // permission grant lands here rather than in the project's own
+    // `permissions.json`. Appended last and only if distinct from the two
+    // candidates above (the project-keyed path can coincide with the global
+    // one in the degenerate case where `project_dir` has no enclosing git
+    // root and resolves to the same directory `user_config_path` already
+    // uses -- vanishingly unlikely, but the same `!paths.contains` dedup the
+    // global push above already relies on).
+    if let Some(grants) = user_scope_project_permissions_path(cwd, env) {
+        if !paths.contains(&grants) {
+            paths.push(grants);
+        }
+    }
     paths
+}
+
+/// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: where a REMEMBERED permission
+/// grant (the TUI's `a`/`p` prompt answers) is written -- the operator's own
+/// user-scope config directory, under a project-keyed subdirectory, never
+/// the project's own `.conway/permissions.json`. Mirrors [`session_root`]'s
+/// own `sessions/<project-key>/` scheme exactly (same
+/// `find_enclosing_git_root`-then-[`encode_project_key`] key, same base
+/// directory [`user_config_path`] resolves into, so `CONWAY_CONFIG_DIR`
+/// redirects this precisely as it redirects every other user-scoped file
+/// this module resolves) -- a new sibling path component
+/// (`permission-grants/<project-key>/permissions.json`) rather than a new
+/// resolution scheme.
+///
+/// **Why not the project's `permissions.json`:** that file lives inside the
+/// checkout, so a grant appended there is a change to tracked (or at least
+/// trackable) project content -- exactly the kind of byte a `git pull`
+/// could turn into someone else's rule, or that `git diff` would show as
+/// the operator's own answer to an interactive prompt leaking into a commit.
+/// Recording it in the operator's own config directory instead keeps "what
+/// did I personally allow, once, by pressing `a`" entirely out of the
+/// repository, while still being per-project (not a single global file that
+/// would leak a grant from one checkout into every other).
+///
+/// **Always operator-authored, so always trusted like the global file**:
+/// `crate::permissions::load_permission_files` treats every candidate
+/// that is not the project-scope file (`permission_file_paths`'s own first
+/// entry) as trusted by authorship -- this path included, by construction
+/// (nothing under `user_config_path`'s own directory is ever something a
+/// cloned repository could have written).
+pub fn user_scope_project_permissions_path(
+    project_dir: &Path,
+    env: &HashMap<String, String>,
+) -> Option<PathBuf> {
+    let project_dir = normalize_lexically(project_dir);
+    let key_dir = find_enclosing_git_root(&project_dir).unwrap_or(project_dir);
+    let config_dir = user_config_path(env).and_then(|p| p.parent().map(Path::to_path_buf))?;
+    Some(
+        config_dir
+            .join("permission-grants")
+            .join(encode_project_key(&key_dir))
+            .join("permissions.json"),
+    )
 }
 
 /// Lexically normalizes `path`: collapses `.`/`..` components without
@@ -1023,6 +1090,65 @@ mod tests {
         let b = session_root(Path::new("/Users/dan/project-b"), None, &env);
         assert_ne!(a, b);
         assert_eq!(a.parent(), b.parent(), "both still share the central root");
+    }
+
+    // -----------------------------------------------------------------
+    // `user_scope_project_permissions_path` (board item
+    // `01M3TJQGJHFFPWE2YYN60WN1XB`) -- the destination a REMEMBERED
+    // permission grant now writes to, instead of the project's own
+    // `permissions.json`.
+    // -----------------------------------------------------------------
+
+    /// **Fails against a version that resolves under the project
+    /// directory**: the headline property this item's own ruling asks
+    /// for -- a grant must land under the operator's OWN config
+    /// directory, never inside the checkout (`session_root`'s own
+    /// `sessions/<project-key>/` scheme, mirrored here for
+    /// `permission-grants/<project-key>/permissions.json`).
+    #[test]
+    fn user_scope_project_permissions_path_resolves_under_the_config_dir_not_the_project() {
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/custom/config_dir".to_string(),
+        );
+        let resolved =
+            user_scope_project_permissions_path(Path::new("/Users/dan/my-project"), &env)
+                .expect("a config dir is resolvable");
+        assert_eq!(
+            resolved,
+            PathBuf::from(
+                "/custom/config_dir/permission-grants/-Users-dan-my-project/permissions.json"
+            )
+        );
+        assert!(
+            !resolved.starts_with("/Users/dan/my-project"),
+            "must never resolve under the project directory itself: {}",
+            resolved.display()
+        );
+    }
+
+    /// Two different projects get two different grants files, sharing the
+    /// same parent directory -- the identical property
+    /// `session_root_two_different_projects_get_two_different_roots` pins
+    /// for the sessions scheme this mirrors.
+    #[test]
+    fn user_scope_project_permissions_path_differs_per_project() {
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/custom/config_dir".to_string(),
+        );
+        let a =
+            user_scope_project_permissions_path(Path::new("/Users/dan/project-a"), &env).unwrap();
+        let b =
+            user_scope_project_permissions_path(Path::new("/Users/dan/project-b"), &env).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(
+            a.parent().and_then(Path::parent),
+            b.parent().and_then(Path::parent),
+            "both still share the central permission-grants/ directory"
+        );
     }
 
     #[test]

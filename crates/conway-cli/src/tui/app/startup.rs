@@ -593,11 +593,37 @@ impl App {
         // to keep exactly that kind of message from being camouflaged as
         // ordinary cyan chatter.
         for warning in conway.warnings() {
-            state.transcript.push(crate::tui::state::Entry::Error {
-                text: format!("config warning: {}", warning.message),
-                fatal: false,
-            });
+            // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review):
+            // `UntrustedProjectConfigIgnored` gets the dedicated,
+            // never-themed `Entry::SecurityNotice` -- not `Entry::Error`,
+            // whose `theme.error` style an untrusted project's own
+            // `[tui.theme]` could otherwise use to hide the very notice
+            // naming it (closed independently by `tui::config::
+            // load_from_options` trust-gating `[tui]` itself; this is the
+            // floor under that gate, not a substitute for it). Every other
+            // warning code keeps the ordinary themed channel.
+            if warning.code == conway::config::WarningCode::UntrustedProjectConfigIgnored {
+                state
+                    .transcript
+                    .push(crate::tui::state::Entry::SecurityNotice {
+                        text: format!("config warning: {}", warning.message),
+                    });
+            } else {
+                state.transcript.push(crate::tui::state::Entry::Error {
+                    text: format!("config warning: {}", warning.message),
+                    fatal: false,
+                });
+            }
         }
+        // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: the transcript entry
+        // just pushed above (if any) is this session's ONE-TIME notice; this
+        // is the flag that keeps "a project config file is being ignored"
+        // visible in the status line for as long as the session runs, not
+        // merely at the moment it scrolled past.
+        state.project_config_ignored = conway
+            .warnings()
+            .iter()
+            .any(|w| w.code == conway::config::WarningCode::UntrustedProjectConfigIgnored);
         // Board item `01M2N2GJ9K7QEABGZD7R9GVT3Y`: rule B, widened past
         // guided setup's own confirm surface -- the interactive TUI's own
         // half of the SAME check `main.rs`'s non-interactive branch just
@@ -649,6 +675,17 @@ impl App {
         state.default_permission_mode = effective_default_mode;
         state.permission_mode = conway.permission_mode();
         state.permission_paths = report.paths;
+        // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: resolved once, here,
+        // alongside every other permission-file path this loader already
+        // computes -- the destination `run.rs`'s `persist_permission_rule`/
+        // `persist_permission_structured_rule` actually write a REMEMBERED
+        // grant to, which is deliberately NOT `permission_paths.first()`
+        // (the project file) any more. See `AppState::grants_path`'s own
+        // doc for why.
+        state.grants_path = conway::config::discovery::user_scope_project_permissions_path(
+            cli.cwd.as_deref().unwrap_or(&conway.config().cwd),
+            &env_vars,
+        );
         // T3: cwd display -- prefer the CLI `--cwd` override, fall back to
         // the config's `cwd`. Both are `PathBuf`; render the display string
         // via `display()` (lossy for non-UTF8).

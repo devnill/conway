@@ -1,5 +1,14 @@
-//! `conway trust settings|list|revoke` against the real compiled binary --
-//! board item `01M2TTWSQ53CDWB9VRGSX05XNQ`.
+//! `conway trust project|list|revoke` against the real compiled binary --
+//! board item `01M3TJQGJHFFPWE2YYN60WN1XB`, superseding board item
+//! `01M2TTWSQ53CDWB9VRGSX05XNQ`'s "refuse outright" contract this file used
+//! to pin.
+//!
+//! **RULING (2026-09-30): an untrusted project `.conway/` no longer stops
+//! conway from starting.** Its files are IGNORED -- never applied, never
+//! silently skipped -- and conway starts anyway, with a notice naming the
+//! file and the command that applies it. This file's tests prove exactly
+//! that contract against the real binary, not the old "refuses to start"
+//! one.
 //!
 //! **Deliberately does NOT use `tests/common`'s own `command` helper.** That
 //! helper passes `--config <fixture>`, and `--config` bypasses the ancestor
@@ -29,10 +38,12 @@ struct Project {
 }
 
 /// The project settings document every test here starts from: valid, minimal,
-/// and carrying one observable value. Byte-identical in shape to the fixture
-/// `conway::config::trust`'s own gate unit tests use, so a failure here is
-/// about the CLI surface and never about a malformed config.
-const PROJECT_SETTINGS: &str = r#"{"limits":{"max_steps":7}}"#;
+/// and carrying one observable value a real config load WOULD reflect if
+/// (and only if) this file's content were applied: an otherwise-unknown
+/// role named `probe`. `conway routes explain probe` answers "unknown role"
+/// when this layer was ignored and does not when it was applied -- see
+/// `settings_is_applied_or_not` below for exactly how that is read.
+const PROJECT_SETTINGS: &str = r#"{"roles":{"probe":{"chain":["ollama/does-not-matter"]}}}"#;
 
 impl Project {
     fn new() -> Self {
@@ -67,6 +78,10 @@ impl Project {
         self.root().join(".conway").join("settings.json")
     }
 
+    fn permissions_path(&self) -> PathBuf {
+        self.root().join(".conway").join("permissions.json")
+    }
+
     fn trust_json(&self) -> PathBuf {
         self.config.path().join("trust.json")
     }
@@ -87,6 +102,20 @@ impl Project {
             .output()
             .expect("run conway binary")
     }
+
+    /// `conway routes explain probe` -- `Ok(true)` when the `probe` role
+    /// IS configured (an observable only `PROJECT_SETTINGS`' own content
+    /// could have produced), `Ok(false)` when it reports "unknown role"
+    /// (the role was never seen at all -- the settings layer was ignored).
+    fn probe_role_is_configured(&self) -> bool {
+        let out = self.run(&["routes", "explain", "probe"]);
+        let err = stderr(&out);
+        assert!(
+            !err.contains("unknown role") || !out.status.success(),
+            "an 'unknown role' message must come with a failing exit code: {err}"
+        );
+        !err.contains("unknown role")
+    }
 }
 
 fn stdout(out: &Output) -> String {
@@ -97,124 +126,155 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// **P-15: fails against HEAD.** An operator with an untrusted project
-/// `settings.json` reaches a working conway using only the shell they are
-/// already in -- no Rust, no deleting the file, no prior knowledge of
-/// `trust.json`. Against HEAD step 2 has nothing to call: `conway trust` is
-/// not a built-in subcommand, so it falls through clap's
-/// `external_subcommand` into `dispatch` -- which is only reached AFTER
-/// `build_conway`, i.e. after the very refusal being cleared. There is no
-/// ordering of HEAD's commands that gets past step 1.
+/// **The headline property.** An untrusted project `settings.json` no
+/// longer stops conway from starting: the real binary runs, its own
+/// content is NOT applied (the `probe` role it declares is invisible to
+/// `routes explain`), and the ignoring is announced on stderr, naming the
+/// file and the remedy. **Break-the-guard**: a stub that silently applied
+/// the untrusted file anyway would still pass every assertion except
+/// `probe_role_is_configured()` -- that is the one line a silent-apply
+/// regression trips.
 #[test]
-fn an_untrusted_project_settings_can_be_trusted_from_a_blocked_shell() {
+fn an_untrusted_project_settings_no_longer_blocks_startup_but_is_not_applied() {
     let project = Project::new();
 
-    // 1. Blocked: conway refuses to start at all.
-    let blocked = project.run(&["plugin", "list"]);
+    let out = project.run(&["plugin", "list"]);
     assert!(
-        !blocked.status.success(),
-        "an untrusted project settings.json must still refuse; stdout: {}",
-        stdout(&blocked)
+        out.status.success(),
+        "conway must start even with an untrusted project settings.json; stderr: {}",
+        stderr(&out)
     );
     assert!(
-        stderr(&blocked).contains("untrusted project settings.json"),
-        "expected the consent refusal, got stderr: {}",
-        stderr(&blocked)
+        stderr(&out).contains("project config ignored"),
+        "the ignoring must be announced on stderr, got: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains(&project.settings_path().display().to_string()),
+        "the notice must name the exact file: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("conway trust project"),
+        "the notice must name the command that applies it: {}",
+        stderr(&out)
     );
 
-    // 2. The remedy, typed at that same blocked shell.
-    let trusted = project.run(&["trust", "settings"]);
+    assert!(
+        !project.probe_role_is_configured(),
+        "an untrusted project settings.json's content must NOT be applied"
+    );
+}
+
+/// `conway trust project` is the one act that applies both of a project's
+/// files on the next start -- settings.json's `probe` role becomes
+/// visible, and (separately) a `permissions.json` placed alongside it is
+/// also recorded as trusted in the same invocation.
+#[test]
+fn conway_trust_project_applies_both_files_on_the_next_start() {
+    let project = Project::new();
+    std::fs::write(project.permissions_path(), r#"{"allow":["read:*"]}"#)
+        .expect("write permissions.json");
+
+    assert!(
+        !project.probe_role_is_configured(),
+        "sanity: untrusted, not yet applied"
+    );
+
+    let trusted = project.run(&["trust", "project"]);
     assert!(
         trusted.status.success(),
-        "`conway trust settings` must work where conway itself refuses to start; stderr: {}",
+        "`conway trust project` must succeed; stderr: {}",
         stderr(&trusted)
     );
+    let printed = stdout(&trusted);
+    assert!(
+        printed.contains(&project.settings_path().display().to_string()),
+        "must review settings.json: {printed}"
+    );
+    assert!(
+        printed.contains(&project.permissions_path().display().to_string()),
+        "must ALSO review permissions.json, in the same invocation: {printed}"
+    );
 
-    // 3. Unblocked, with the project config actually in play.
+    assert!(
+        project.probe_role_is_configured(),
+        "after one `conway trust project`, the settings.json layer must apply"
+    );
+
+    let recorded = std::fs::read_to_string(project.trust_json()).expect("trust.json was written");
+    assert!(
+        recorded.contains("settings_files") && recorded.contains("permission_files"),
+        "both kinds must be recorded by one invocation: {recorded}"
+    );
+}
+
+/// `conway trust settings` is kept as an alias of `project`, for a script
+/// written before this item.
+#[test]
+fn conway_trust_settings_is_an_alias_of_project() {
+    let project = Project::new();
+    let out = project.run(&["trust", "settings"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(project.probe_role_is_configured());
+}
+
+/// **The guard is not weakened.** Consent is per-path AND per-bytes: an
+/// edit after trusting re-arms the ignore-notice, which is the whole point
+/// of digest-scoped trust (`conway::config::trust`'s own "trust subject"
+/// doc) and the case that matters most in practice -- a teammate's `git
+/// push` changing a file you already approved.
+#[test]
+fn editing_a_trusted_project_settings_re_arms_the_ignore_notice() {
+    let project = Project::new();
+    assert!(project.run(&["trust", "project"]).status.success());
+    assert!(project.probe_role_is_configured());
+
+    std::fs::write(
+        project.settings_path(),
+        r#"{"roles":{"probe":{"chain":["ollama/different"]},"other":{"chain":["ollama/x"]}}}"#,
+    )
+    .expect("rewrite the project settings.json");
+
     let after = project.run(&["plugin", "list"]);
     assert!(
         after.status.success(),
-        "after consent conway must start; stderr: {}",
+        "an edit since consent must still start conway, just ignore the new bytes; stdout: {}",
+        stdout(&after)
+    );
+    assert!(
+        stderr(&after).contains("project config ignored") && stderr(&after).contains("EDITED"),
+        "stderr must disclose an edit since trusted, not the first-time wording: {}",
         stderr(&after)
     );
     assert!(
-        stdout(&after).lines().any(|l| l.starts_with('[')),
-        "the real plugin listing must come back, got stdout: {}",
-        stdout(&after)
+        !project.probe_role_is_configured(),
+        "the EDITED file's content must not apply until re-trusted"
     );
 
-    // The decision landed in the fixture's own trust.json, under the exact
-    // path the guard gates -- never a developer's real ~/.conway.
-    let recorded = std::fs::read_to_string(project.trust_json()).expect("trust.json was written");
+    // And re-consenting says plainly that this is not what was approved
+    // before, rather than quietly re-recording.
+    let re_trusted = project.run(&["trust", "project"]);
     assert!(
-        recorded.contains("settings_files"),
-        "the settings kind must be what was recorded: {recorded}"
+        re_trusted.status.success(),
+        "stderr: {}",
+        stderr(&re_trusted)
     );
     assert!(
-        recorded.contains(&project.settings_path().display().to_string()),
-        "trust.json must key on the gated path: {recorded}"
+        stdout(&re_trusted).contains("EDITED since"),
+        "re-consent must disclose that the bytes changed: {}",
+        stdout(&re_trusted)
     );
-}
-
-/// Acceptance 2: the refusal names a remedy reachable from a shell where
-/// conway refuses to start, and no longer names the two that were not.
-/// **Fails against HEAD**, which named the TUI's `/trust settings` (a
-/// command that does not exist -- the TUI parses `/trust permissions`) and
-/// `TrustStore::trust_settings`, a Rust API.
-#[test]
-fn the_refusal_names_a_remedy_an_operator_can_actually_run() {
-    let project = Project::new();
-    let message = stderr(&project.run(&["plugin", "list"]));
-
-    assert!(
-        message.contains("conway trust settings --path"),
-        "the refusal must name the headless consent command: {message}"
-    );
-    assert!(
-        message.contains(&format!("rm {}", project.settings_path().display())),
-        "the refusal must say the file can be removed to proceed: {message}"
-    );
-    // BREAK-THE-GUARD: the unreachable advice is gone, not merely joined.
-    assert!(
-        !message.contains("TrustStore::trust_settings"),
-        "a Rust API is not an operator remedy: {message}"
-    );
-    assert!(
-        !message.contains("the TUI's"),
-        "the TUI is what just refused to start: {message}"
-    );
-}
-
-/// `conway trust settings` is review-then-record in one output: the bytes
-/// being consented to are printed before anything is written.
-#[test]
-fn trust_settings_prints_the_file_it_is_about_to_trust() {
-    let project = Project::new();
-    let out = project.run(&["trust", "settings"]);
-
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let printed = stdout(&out);
-    assert!(
-        printed.contains("max_steps"),
-        "the operator must see the contents being consented to: {printed}"
-    );
-    assert!(
-        printed.contains(&project.settings_path().display().to_string()),
-        "and the exact file they name: {printed}"
-    );
-    assert!(
-        printed.contains("conway trust revoke"),
-        "and how to undo it: {printed}"
-    );
+    assert!(project.probe_role_is_configured());
 }
 
 /// `conway trust list` reports what is trusted, and `conway trust revoke`
-/// withdraws it -- after which the guard refuses again. The full loop, all
-/// of it headless.
+/// withdraws it -- after which the ignore-notice fires again (never a hard
+/// refusal).
 #[test]
 fn list_shows_the_decision_and_revoke_withdraws_it() {
     let project = Project::new();
-    assert!(project.run(&["trust", "settings"]).status.success());
+    assert!(project.run(&["trust", "project"]).status.success());
 
     let listed = project.run(&["trust", "list"]);
     assert!(listed.status.success(), "stderr: {}", stderr(&listed));
@@ -232,62 +292,25 @@ fn list_shows_the_decision_and_revoke_withdraws_it() {
     let revoked = project.run(&["trust", "revoke", &path]);
     assert!(revoked.status.success(), "stderr: {}", stderr(&revoked));
 
+    assert!(
+        !project.probe_role_is_configured(),
+        "after revocation the file must be ignored again"
+    );
     let after = project.run(&["plugin", "list"]);
     assert!(
-        !after.status.success(),
-        "after revocation the guard must refuse again; stdout: {}",
+        after.status.success(),
+        "revocation must NOT stop conway from starting; stdout: {}",
         stdout(&after)
     );
     assert!(
-        stdout(&project.run(&["trust", "list"])).contains("no trust decisions recorded"),
-        "the revoked row must be gone from the listing"
-    );
-}
-
-/// **The guard is not weakened.** Consent is per-path AND per-bytes: an
-/// edit after trusting re-arms the refusal, which is the whole point of
-/// digest-scoped trust (`conway::config::trust`'s own "trust subject" doc)
-/// and the case that matters most in practice -- a teammate's `git push`
-/// changing a file you already approved.
-#[test]
-fn editing_a_trusted_project_settings_re_arms_the_refusal() {
-    let project = Project::new();
-    assert!(project.run(&["trust", "settings"]).status.success());
-    assert!(project.run(&["plugin", "list"]).status.success());
-
-    std::fs::write(project.settings_path(), r#"{"limits":{"max_steps":9999}}"#)
-        .expect("rewrite the project settings.json");
-
-    let after = project.run(&["plugin", "list"]);
-    assert!(
-        !after.status.success(),
-        "an edit since consent must refuse again; stdout: {}",
-        stdout(&after)
-    );
-    assert!(
-        stderr(&after).contains("untrusted project settings.json"),
+        stderr(&after).contains("project config ignored"),
         "stderr: {}",
         stderr(&after)
     );
-
-    // And re-consenting says plainly that this is not what was approved
-    // before, rather than quietly re-recording.
-    let re_trusted = project.run(&["trust", "settings"]);
-    assert!(
-        re_trusted.status.success(),
-        "stderr: {}",
-        stderr(&re_trusted)
-    );
-    assert!(
-        stdout(&re_trusted).contains("EDITED since"),
-        "re-consent must disclose that the bytes changed: {}",
-        stdout(&re_trusted)
-    );
 }
 
-/// **The guard is not weakened, part two.** There is no blanket flag a
-/// script could set to skip consent -- nothing on the root command, and
-/// nothing on `trust settings` itself beyond naming which file.
+/// **There is no blanket flag.** Nothing on the root command, and nothing
+/// on `trust project` itself beyond naming which file.
 #[test]
 fn there_is_no_blanket_trust_flag() {
     let project = Project::new();
@@ -295,7 +318,7 @@ fn there_is_no_blanket_trust_flag() {
     for args in [
         vec!["--help"],
         vec!["trust", "--help"],
-        vec!["trust", "settings", "--help"],
+        vec!["trust", "project", "--help"],
     ] {
         let help = stdout(&project.run_in(project.config.path(), &args));
         for forbidden in [
@@ -312,12 +335,12 @@ fn there_is_no_blanket_trust_flag() {
         }
     }
 
-    // And the refusal itself cannot be argued away: passing the flag a
-    // script might guess is a parse error, not a bypass.
+    // And conway never refuses to start regardless -- there is nothing left
+    // to "bypass."
     let guessed = project.run(&["--trust-project-settings", "plugin", "list"]);
     assert!(
         !guessed.status.success(),
-        "an invented bypass flag must not work; stdout: {}",
+        "an invented bypass flag must not parse; stdout: {}",
         stdout(&guessed)
     );
 }
@@ -325,11 +348,12 @@ fn there_is_no_blanket_trust_flag() {
 /// Nothing to consent to is a usage error naming what it looked for, not a
 /// silent success that leaves an operator believing something was trusted.
 #[test]
-fn trust_settings_with_no_project_layer_is_a_usage_error() {
+fn trust_project_with_no_project_layer_is_a_usage_error() {
     let project = Project::new();
     // Run from the throwaway config dir, which has no `.conway/settings.json`
-    // of its own and no ancestor that does.
-    let out = project.run_in(project.config.path(), &["trust", "settings"]);
+    // of its own and no ancestor that does, and no `.conway/permissions.json`
+    // either.
+    let out = project.run_in(project.config.path(), &["trust", "project"]);
 
     assert_eq!(
         out.status.code(),
@@ -339,7 +363,7 @@ fn trust_settings_with_no_project_layer_is_a_usage_error() {
         stderr(&out)
     );
     assert!(
-        stderr(&out).contains("no project settings.json is reachable"),
+        stderr(&out).contains("nothing to trust"),
         "stderr: {}",
         stderr(&out)
     );
@@ -372,20 +396,18 @@ fn revoking_an_unrecorded_path_is_a_usage_error() {
 }
 
 /// `--path` names one file explicitly, and a relative spelling still lands
-/// on the key the guard looks up -- the silent-failure class this resolver
-/// exists to close (`conway::config::trust::resolve_settings_trust_target`'s
-/// own doc).
+/// on the key the ignore-check looks up -- the silent-failure class this
+/// resolver exists to close
+/// (`conway::config::trust::resolve_settings_trust_target`'s own doc).
 #[test]
-fn an_explicit_relative_path_records_the_key_the_guard_gates() {
+fn an_explicit_relative_path_records_the_key_the_check_gates() {
     let project = Project::new();
 
-    let out = project.run(&["trust", "settings", "--path", ".conway/settings.json"]);
+    let out = project.run(&["trust", "project", "--path", ".conway/settings.json"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
 
-    let after = project.run(&["plugin", "list"]);
     assert!(
-        after.status.success(),
-        "a relative --path must clear the same gate; stderr: {}",
-        stderr(&after)
+        project.probe_role_is_configured(),
+        "a relative --path must clear the same check"
     );
 }

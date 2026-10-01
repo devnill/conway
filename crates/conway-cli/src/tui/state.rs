@@ -51,8 +51,8 @@ pub use agent_tree::{AgentTreeView, NodeStatus, SpawnRoleOrModel, TreeNode};
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use modal::{
     AddProviderContextWindowState, AddProviderCredentialState, AskFate, AskModal,
-    DenyFeedbackState, Mode, SkillProposalFate, SkillProposalModal, TrustDecision,
-    TrustPreviewCard, UiFormDecision, UiFormState, DEFAULT_DENY_FEEDBACK,
+    DenyFeedbackState, Mode, SettingsPreviewSection, SkillProposalFate, SkillProposalModal,
+    TrustDecision, TrustPreviewCard, UiFormDecision, UiFormState, DEFAULT_DENY_FEEDBACK,
 };
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
 pub use transcript::{backfill_entries, clamp_tool_preview_lines, Entry, ToolStatus};
@@ -478,11 +478,49 @@ pub struct AppState {
     /// standing surface ruling -- see `App::new`'s own doc for the
     /// precedence/trust computation).
     pub default_permission_mode: PermissionMode,
-    /// V2b: where a newly-granted pattern is persisted, in precedence
-    /// order (project first, then global). Resolved once at `App::new`.
-    /// Empty when neither scope resolves, in which case a grant applies
-    /// to the session but is not written anywhere.
+    /// V2b: every permission-file candidate `App::new` considered, in
+    /// precedence order (project first, then every operator-authored
+    /// candidate -- `crate::config::discovery::permission_file_paths`'s own
+    /// construction). `.first()` is specifically the PROJECT-scope file --
+    /// `/trust permissions` (`tui::commands`) addresses exactly that entry,
+    /// since it is the one candidate that ever NEEDS an explicit trust
+    /// decision. Resolved once at `App::new`.
+    ///
+    /// **Not where a newly-granted pattern is persisted** (board item
+    /// `01M3TJQGJHFFPWE2YYN60WN1XB`, superseding this field's former role):
+    /// see [`Self::grants_path`] for that -- a REMEMBERED grant answer must
+    /// never land in the project's own `permissions.json`, so the write
+    /// path and this read/addressing list diverged on purpose.
     pub permission_paths: Vec<std::path::PathBuf>,
+    /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: where a REMEMBERED
+    /// permission grant (the TUI's `a`/`p` prompt answers, `PermissionScope::
+    /// Session`) is actually written --
+    /// `conway::config::discovery::user_scope_project_permissions_path`'s
+    /// file, the operator's own user-scope, project-keyed grants store,
+    /// never the project's own `.conway/permissions.json`. `None` only when
+    /// that function itself cannot resolve a config directory at all, in
+    /// which case a grant applies to the session but is not written
+    /// anywhere -- the same "best-effort, never fails the grant itself"
+    /// posture `persist_permission_rule`'s own doc already takes for every
+    /// other failure on this path.
+    pub grants_path: Option<std::path::PathBuf>,
+    /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: `true` for the life of the
+    /// session whenever `App::new` saw a
+    /// `conway::config::WarningCode::UntrustedProjectConfigIgnored` entry
+    /// among `Conway::warnings()` -- an untrusted (or trusted-then-edited)
+    /// project `settings.json` was ignored at startup. Drives the status
+    /// line's persistent `project config ignored` marker
+    /// (`tui::view::status`'s own `StatusLineField::Trust`) -- the "ignoring
+    /// must never be silent" half board item `01M3TJQGJHFFPWE2YYN60WN1XB`'s
+    /// own ruling asks for BEYOND the one-time transcript notice
+    /// (`Conway::warnings()` already renders
+    /// into the transcript unconditionally; this is what keeps the fact
+    /// visible for the rest of the session, not just at the moment it
+    /// scrolled past). Never re-checked after startup: an operator who
+    /// trusts the project mid-session restarts to apply it anyway (this
+    /// module's own established "restart to apply" precedent), so there is
+    /// no mid-session transition this would need to track.
+    pub project_config_ignored: bool,
     /// V2b: the active pattern ALLOW grants, for the settings review list.
     /// A mirror of the broker's `active_patterns()`, refreshed when
     /// `/settings` opens and after any revoke action — the broker remains
@@ -1769,6 +1807,8 @@ impl AppState {
             permission_mode: PermissionMode::default(),
             default_permission_mode: PermissionMode::default(),
             permission_paths: Vec::new(),
+            grants_path: None,
+            project_config_ignored: false,
             permission_grants: Vec::new(),
             structured_allow_rules: Vec::new(),
             permission_denies: Vec::new(),

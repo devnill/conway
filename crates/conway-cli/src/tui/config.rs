@@ -255,7 +255,15 @@ pub fn load(cli: &Cli) -> conway::Result<TuiSection> {
 }
 
 fn load_from_options(options: conway::config::LoadOptions) -> conway::Result<TuiSection> {
-    let mut merged = conway::config::merged_document(&options)?;
+    // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review): trust-gated,
+    // not plain `merged_document` -- an untrusted project `settings.json`
+    // must contribute NOTHING, including a `[tui.theme]` block that could
+    // otherwise hide the very notice/status-line marker that names it (by
+    // styling `theme.error` -- the channel both render through --
+    // `{"modifiers":["hidden"]}`). See `conway::config::merge::
+    // load_trust_gated`'s own doc for why this needs the SAME gate
+    // `ConwayBuilder::discover` applies, not a second, independent opinion.
+    let mut merged = conway::config::merged_document_trust_gated(&options)?;
     let tui_value = merged.as_object_mut().and_then(|obj| obj.remove("tui"));
     match tui_value {
         Some(value) => serde_json::from_value(value).map_err(|e| FacadeError::Config {
@@ -364,6 +372,76 @@ mod tests {
         );
         assert_eq!(tui.tool_preview_lines, Some(7));
         assert_eq!(tui.history_size, Some(42));
+    }
+
+    /// **Security review finding, closed (board item
+    /// `01M3TJQGJHFFPWE2YYN60WN1XB`)**: an untrusted, WALK-DISCOVERED
+    /// project `settings.json`'s `[tui]` section contributes NOTHING --
+    /// not a theme override that could otherwise hide the very notice/
+    /// status-line marker naming the file as ignored
+    /// (`{"error":{"modifiers":["hidden"]}}`), and not anything else in
+    /// `[tui]` either. Deliberately does NOT use `explicit_path` (every
+    /// other test in this module does, and `explicit_path` bypasses the
+    /// trust gate entirely, by design -- the same `--config <path>`
+    /// carve-out `conway::config::trust`'s own doc describes): this test's
+    /// fixture is reached by the ancestor walk from `cwd`, the only shape
+    /// the gate ever fires for. **Fails against a version that reads
+    /// `[tui]` via plain `conway::config::merged_document`.**
+    #[test]
+    fn an_untrusted_project_tui_section_is_ignored_until_trusted() {
+        let project_root = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let conf_dir = project_root.path().join(".conway");
+        std::fs::create_dir_all(&conf_dir).expect("mkdir .conway");
+        let settings_path = conf_dir.join("settings.json");
+        std::fs::write(
+            &settings_path,
+            r#"{
+                "tui": {
+                    "theme": {"error": {"fg": "red", "modifiers": ["hidden"]}},
+                    "tool_preview_lines": 999
+                }
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: project_root.path().to_path_buf(),
+            explicit_path: None,
+            env: env.clone(),
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+
+        // Before consent: the project's own [tui] section is invisible.
+        let tui = load_from_options(options.clone()).expect("load must still succeed");
+        assert_eq!(
+            tui,
+            TuiSection::default(),
+            "an untrusted project's [tui] section must contribute nothing, \
+             including the theme override that could hide its own notice"
+        );
+
+        // After consent: the SAME walk now applies it.
+        conway::config::trust::TrustStore::trust_settings(&env, &settings_path)
+            .expect("trust_settings succeeds");
+        let tui = load_from_options(options).expect("load must succeed");
+        assert_eq!(tui.tool_preview_lines, Some(999));
+        assert_eq!(
+            tui.theme.error,
+            Some(ThemeStyleConfig {
+                fg: Some("red".to_string()),
+                bg: None,
+                modifiers: vec!["hidden".to_string()],
+            }),
+            "once trusted, the project's own [tui] section applies exactly \
+             as any other trusted project config would"
+        );
     }
 
     /// A typo'd key inside `[tui.theme]` still fails loudly for this
