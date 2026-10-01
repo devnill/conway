@@ -106,13 +106,14 @@ pub(crate) fn build_request_body(
     if !req.params.stop.is_empty() {
         body.insert("stop_sequences".into(), json!(req.params.stop));
     }
-    if let Some(budget_tokens) = reasoning_budget_tokens(req) {
+    let reasoning_budget = reasoning_budget_tokens(req);
+    if let Some(budget_tokens) = reasoning_budget {
         body.insert(
             "thinking".into(),
             json!({ "type": "enabled", "budget_tokens": budget_tokens }),
         );
     }
-    warn_ignored_params(req);
+    warn_ignored_params(req, reasoning_budget.is_some());
 
     if stream {
         body.insert("stream".into(), json!(true));
@@ -138,26 +139,54 @@ fn reasoning_budget_tokens(req: &GenerateRequest) -> Option<u32> {
         .and_then(|tokens| u32::try_from(tokens).ok())
 }
 
-/// Warns, once per request, about a `SamplingParams` field this adapter's
-/// wire body construction above never reads. A `roles.<alias>.params`
-/// setting that reaches this far and then does nothing is the
-/// declaration-honesty defect this project keeps paying for -- see
-/// `conway::config::schema::RoleParams`'s own doc. `temperature`, `top_p`,
-/// `max_tokens`, and `stop` are all read above (unconditionally, or via
-/// `default_max_tokens` for `max_tokens`); `seed` is the one typed field
-/// with no Anthropic Messages API equivalent, so it is the one checked
-/// here. Extra keys are exempt by design (`RoleParams::extra`'s own doc):
-/// `extra` is a free map for provider-specific keys precisely because no
-/// fixed struct can enumerate them, so a key this adapter does not
-/// recognize among `extra` is not, on its own, evidence of a
-/// misconfiguration the way an ignored TYPED field is.
-fn warn_ignored_params(req: &GenerateRequest) {
+/// Warns, once per request, about a `SamplingParams`/`extra` field this
+/// adapter's wire body construction above never reads. A
+/// `roles.<alias>.params` setting that reaches this far and then does
+/// nothing is the declaration-honesty defect this project keeps paying for
+/// -- see `conway::config::schema::RoleParams`'s own doc, which already
+/// promises every such key is warned about, never just accepted.
+/// `temperature`, `top_p`, `max_tokens`, and `stop` are all read above
+/// (unconditionally, or via `default_max_tokens` for `max_tokens`); `seed`
+/// is the one typed field with no Anthropic Messages API equivalent, so it
+/// is the one checked here.
+///
+/// `reasoning_budget_sent` is whether [`reasoning_budget_tokens`] actually
+/// put a `thinking` value in the body for THIS request -- `false` means the
+/// caller set `extra.reasoning_budget_tokens` to something that is not a
+/// valid non-negative token count (`reasoning_budget_tokens`'s own
+/// `Value::as_u64`/`u32::try_from` gate).
+///
+/// Every OTHER `extra` key is warned about unconditionally (board item
+/// dogfood-02/thinking-role silently dropped): this body builder has no
+/// generic passthrough -- `docs/routing.md`'s "Sampling and reasoning
+/// params" section says so explicitly -- so a key this module does not name
+/// is simply never read, and "ignored" is always the true answer for it.
+fn warn_ignored_params(req: &GenerateRequest, reasoning_budget_sent: bool) {
     if req.params.seed.is_some() {
         tracing::warn!(
             field = "seed",
             backend = "anthropic",
             "params field \"seed\" ignored by backend \"anthropic\": the Anthropic Messages \
              API has no seed parameter"
+        );
+    }
+    if req.params.extra.contains_key("reasoning_budget_tokens") && !reasoning_budget_sent {
+        tracing::warn!(
+            field = "reasoning_budget_tokens",
+            backend = "anthropic",
+            "params.extra field \"reasoning_budget_tokens\" ignored by backend \"anthropic\": \
+             the configured value is not a valid non-negative token count"
+        );
+    }
+    for key in req.params.extra.keys() {
+        if key == "reasoning_budget_tokens" {
+            continue; // handled above, sent or explained
+        }
+        tracing::warn!(
+            field = %key,
+            backend = "anthropic",
+            "params.extra field \"{key}\" ignored by backend \"anthropic\": no wire mapping \
+             reads this key, so the provider never receives it"
         );
     }
 }
@@ -927,6 +956,91 @@ mod tests {
     fn no_seed_param_logs_no_warning() {
         let (log, _guard) = install_capture();
         let req = seed_request(None);
+        build_request_body(&req, 8192, false);
+        assert_eq!(log.count(), 0);
+    }
+
+    fn extra_request(extra: serde_json::Map<String, Value>) -> GenerateRequest {
+        GenerateRequest {
+            model: ModelId::new("claude-sonnet-4-6"),
+            segments: vec![],
+            tools: vec![],
+            params: SamplingParams {
+                extra,
+                ..SamplingParams::default()
+            },
+            prefix_key: None,
+        }
+    }
+
+    /// **The break-the-guard target for this item**: DOGFOOD 2 found a
+    /// dropped `extra` key reaching the OpenAI-compatible adapter with no
+    /// signal at all; this adapter has the identical gap for
+    /// `reasoning_budget_tokens` set to a value that does not parse as a
+    /// non-negative token count -- it must warn exactly like `seed` does,
+    /// naming the field and the backend.
+    #[test]
+    fn reasoning_budget_tokens_dropped_for_an_invalid_value_logs_a_warning() {
+        let (log, _guard) = install_capture();
+        let mut extra = serde_json::Map::new();
+        extra.insert("reasoning_budget_tokens".into(), json!("not-a-number"));
+        let req = extra_request(extra);
+
+        let (body, _) = build_request_body(&req, 8192, false);
+
+        assert!(body.get("thinking").is_none());
+        assert_eq!(
+            log.count(),
+            1,
+            "exactly one warning must be logged for one dropped extra key"
+        );
+        assert!(
+            log.contains("reasoning_budget_tokens"),
+            "warning must name the dropped field"
+        );
+        assert!(log.contains("anthropic"), "warning must name the backend");
+    }
+
+    /// The same key, a valid value: no warning, because nothing was
+    /// dropped.
+    #[test]
+    fn reasoning_budget_tokens_sent_with_a_valid_value_logs_no_warning() {
+        let (log, _guard) = install_capture();
+        let mut extra = serde_json::Map::new();
+        extra.insert("reasoning_budget_tokens".into(), json!(4096));
+        let req = extra_request(extra);
+
+        let (body, _) = build_request_body(&req, 8192, false);
+
+        assert_eq!(body["thinking"]["budget_tokens"], 4096);
+        assert_eq!(log.count(), 0);
+    }
+
+    /// Any other `extra` key this adapter has no mapping for at all is
+    /// warned about too, naming the field and the backend --
+    /// `docs/routing.md`'s "Sampling and reasoning params" section
+    /// documents this as the actual behavior, not the generic passthrough
+    /// an earlier draft of that doc claimed.
+    #[test]
+    fn an_unrecognized_extra_key_logs_a_warning_naming_the_field_and_backend() {
+        let (log, _guard) = install_capture();
+        let mut extra = serde_json::Map::new();
+        extra.insert("some_unrecognized_key".into(), json!("value"));
+        let req = extra_request(extra);
+
+        build_request_body(&req, 8192, false);
+
+        assert_eq!(log.count(), 1);
+        assert!(log.contains("some_unrecognized_key"));
+        assert!(log.contains("anthropic"));
+    }
+
+    /// An empty `extra` map logs nothing -- the warning is about a key that
+    /// was actually set and then dropped, never ambient noise.
+    #[test]
+    fn empty_extra_logs_no_warning() {
+        let (log, _guard) = install_capture();
+        let req = extra_request(serde_json::Map::new());
         build_request_body(&req, 8192, false);
         assert_eq!(log.count(), 0);
     }

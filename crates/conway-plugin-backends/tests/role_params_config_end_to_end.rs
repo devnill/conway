@@ -14,8 +14,8 @@
 //! config-to-`RoleConfig` half this test does not re-prove, and
 //! `src/anthropic/wire.rs`/`src/openai_compat/wire.rs`'s own
 //! `reasoning_budget_tokens_serializes_into_thinking_param_when_set`/
-//! `reasoning_effort_is_emitted_only_for_openai_dialect_when_set` unit
-//! tests for the wire-adapter half).
+//! `reasoning_effort_is_emitted_for_openai_and_ollama_but_not_an_unverified_dialect_when_set`
+//! unit tests for the wire-adapter half).
 
 use std::sync::Arc;
 use std::time::Duration;

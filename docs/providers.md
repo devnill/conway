@@ -1233,6 +1233,96 @@ this endpoint served the response. This is scoped to exactly the native
 path — the ordinary OpenAI-compatible path (a session with no resolved
 window) reads whatever `cached_tokens` the server actually sends, if any.
 
+### Turning reasoning up: `reasoning_effort` and `think`
+
+`roles.<alias>.params.extra.reasoning_effort` (see
+[routing.md](routing.md#sampling-and-reasoning-params)) is the SAME
+caller-facing setting on both of the `"ollama"` profile's two endpoints
+above, under two different wire names, because they are two different
+APIs. Confirmed live (2026-09-30, Ollama 0.35.0):
+
+- `POST /v1/chat/completions` (the OpenAI-compatible path a session with no
+  resolved context window still uses) has a genuine, TYPED
+  `reasoning_effort` string field — sending a non-string value answers a
+  structured `400 invalid_request_error` naming the exact field
+  (`ChatCompletionRequest.reasoning_effort`), which is what proves the
+  server recognizes this key rather than silently accepting it as
+  unrecognized JSON. `sends_reasoning_effort = true` for the built-in
+  `"ollama"` profile, same as `"openai"`.
+- `POST /api/chat` (the NATIVE endpoint, used once a window is resolved)
+  has no `reasoning_effort` field at all — that key is silently ignored
+  there, like any other field Go's JSON decoder does not recognize — but
+  DOES have its own top-level `think` field, accepting EITHER a model-
+  specific level string or a plain JSON boolean: `GET /api/show` reports
+  each thinking-capable model's own `"thinking"` capability, e.g.
+  `{"values": [false, "low", "medium", "xhigh"], "default": "medium"}` for
+  one locally-tested model (level strings), `{"values": [false, true]}` for
+  another (boolean only). A level string outside a given model's own set is
+  tolerated, not a `400`. `openai_compat/ollama_native.rs`'s
+  `build_native_request_body` reads the same `extra.reasoning_effort`
+  value and sends it as `think`, so the setting keeps working across the
+  endpoint split an operator never chooses directly.
+
+Neither endpoint gets a per-LEVEL validation table for the string case:
+both send the caller's level string through verbatim, exactly like every
+other `sends_reasoning_effort` profile, and let the server be the one to
+accept or refuse a level it does not recognize. A configured JSON
+**boolean**, though, is NOT treated identically on both endpoints: Ollama's
+OpenAI-compatible `reasoning_effort` is confirmed to be strictly a Go
+`string` field (a boolean there is the SAME structured `400` a bad level
+*type* produces), so `wire::reasoning_effort` only ever extracts a JSON
+string and drops a configured boolean (warned, same as any other dropped
+`extra` key); `think`, confirmed to genuinely accept a boolean, is where a
+configured `true`/`false` actually reaches the wire.
+
+**Per-MODEL gating is NOT optional, unlike the per-level case above.**
+Confirmed live, 2026-09-30: both endpoints answer a loud `400` for a model
+that does not support reasoning AT ALL, regardless of the configured value
+or type — `POST /api/chat {"model":"ministral-3:8b",...,"think":"high"}`
+and the OpenAI-compatible equivalent both answer `"\"ministral-3:8b\" does
+not support thinking"`, while the identical request against
+`qwen3.8:27b-mlx` (a real reasoning-capable model) succeeds. Emitting the
+field unconditionally — this crate's first fix for the silent-drop bug this
+whole section exists to describe — made a configured `reasoning_effort`
+fail EVERY turn against any backend/role combination that happens to
+resolve to a non-thinking model, trading a silent no-op for a non-
+retryable hard failure on every turn. `OpenAiCompatBackend::
+model_reasoning_declaration` (`ModelMetadata::reasoning: Option<bool>`,
+`models.json`/bundled metadata) now gates per model:
+
+- **`Some(true)`** (declared reasoning-capable): send.
+- **`Some(false)`** (declared NOT reasoning-capable): skip, and warn —
+  naming the model, not just the field — exactly like any other dropped
+  `extra` key.
+- **`None`** (no declaration at all — confirmed live the same day to be
+  the COMMON case: most local Ollama models, including every thinking-
+  capable one tested, carry no `models.json`/bundled entry): still send.
+  This is NOT the same decision as `Capabilities::reasoning: bool`, the
+  value ROUTING'S capability floor reads (`build_capabilities`'s own doc)
+  — that field collapses "no declaration" to `false`, which would have
+  re-skipped reasoning for every undescribed thinking-capable model,
+  recreating the original silent-drop bug. The cost of guessing wrong the
+  other way (an undescribed model that genuinely cannot reason) is one
+  loud, attributable `BackendError::BadRequest` naming the model (Ollama's
+  native error shape, a flat `{"error": "<string>"}`, is now read
+  correctly by `extract_message` rather than falling through to a raw-JSON
+  dump) — never a silent no-op, and never a retry storm
+  (`HttpClient::send_with_retry` never retries a `400`). An operator who
+  hits it adds a `reasoning = false` metadata entry for that model, after
+  which the warning path above starts firing for it.
+
+A live `/api/show` probe (`probe_on_startup`, below) WOULD give a real,
+model-specific answer for the `None` case without an extra request — it
+already fetches `/api/show` for the context-window ceiling, and that same
+response's `capabilities` array/`thinking` key would resolve the question
+directly — but its result only ever reaches the ROUTER's `CapabilityIndex`
+(`ConwayBuilder::build`'s probe-overlay step), never `OpenAiCompatBackend`'s
+own synchronous per-request body construction (`capability_inputs`'s own
+doc: "this synchronous, per-request path has no live discovery result to
+offer"). Threading a probe result into that path is a real architectural
+change, not a one-line fix, and stays a disclosed gap rather than this
+item's scope.
+
 **`probe_on_startup` (`[models]` config, default `false`) stays opt-in.**
 Considered and rejected: flipping the default to `true` so every session
 verifies its own context windows live. Rejected because a live network
