@@ -164,6 +164,76 @@ async fn stream_with_a_resolved_context_window_requests_native_num_ctx() {
     assert_eq!(body["stream"], true);
 }
 
+/// **Admission-bound proof for board item `01M3T76R6RGWK83ERATQATBM1H`**:
+/// with NO `ModelOverrides` at all (no `models.json` entry for this pair --
+/// the exact fresh-install shape `glm_context_window.rs` already proves
+/// `Backend::capabilities()` resolves to `1_048_576` for), the REAL request
+/// this backend sends over the wire carries `options.num_ctx: 1048576`, not
+/// the `"ollama"` profile's 32,768-token floor -- the bundled
+/// `ModelMetadataStore::defaults()` table alone carries it, end to end,
+/// through the native endpoint this item's own investigation traced. This
+/// is the "pin which window admission actually uses" half of that item's
+/// acceptance; `first_turn_floor_notice`'s own correction (`conway-cli`'s
+/// `first_run.rs`) is the sibling half, for the PRE-FLIGHT notice this same
+/// shape used to falsely trigger.
+#[tokio::test]
+async fn generate_for_a_fresh_install_glm_pair_requests_the_bundled_window_not_the_old_floor() {
+    for model in ["glm-5.2", "glm-5.3"] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": model,
+                "message": {"role": "assistant", "content": "hi there"},
+                "done": true,
+                "done_reason": "stop",
+                "prompt_eval_count": 10,
+                "eval_count": 4
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Never reached: proves the OpenAI-compatible path was NOT used --
+        // the SAME assertion `generate_with_a_resolved_context_window_
+        // requests_native_num_ctx` above makes for an explicit override,
+        // now proved for the bundled-defaults-only path instead.
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        // No `ModelOverrides` at all: a genuinely fresh install has neither
+        // a `models.json` entry nor a per-backend `metadata_path` for this
+        // pair -- `config()`'s own `models: BTreeMap::new()`.
+        let backend = OpenAiCompatBackend::new(config(&server.uri(), BTreeMap::new())).unwrap();
+        let response = backend
+            .generate(user_request(model))
+            .await
+            .unwrap_or_else(|e| panic!("generate for {model} must succeed: {e}"));
+        assert_eq!(
+            response.content,
+            vec![ContentBlock::Text {
+                text: "hi there".into()
+            }]
+        );
+
+        let requests = server.received_requests().await.unwrap();
+        let native_request = requests
+            .iter()
+            .find(|r| r.url.path() == "/api/chat")
+            .unwrap_or_else(|| panic!("the native endpoint must have been called for {model}"));
+        let body: serde_json::Value = native_request.body_json().unwrap();
+        assert_eq!(
+            body["options"]["num_ctx"], 1_048_576,
+            "the actual wire request for {model} must carry the bundled window, not the old \
+             32,768-token floor: {body}"
+        );
+        server.verify().await;
+    }
+}
+
 /// No resolved context window (`Unverified` -- no override, no metadata):
 /// the ORIGINAL, unchanged OpenAI-compatible endpoint is used, and no
 /// `options` field is ever sent -- conway never invents a number to

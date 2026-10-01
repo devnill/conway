@@ -1160,17 +1160,21 @@ model on an already-configured provider, `--model <backend>/<model>` naming
 something unconfigured. Guided setup's own [`HOSTED_CHOICES`] shortlist
 pins Ollama Cloud to exactly one model (`glm-5.2`, chosen for the wire
 quirks it has actually been debugged against — see that list's own
-doc) — a session run against `ollama_cloud/glm-5.3` (the literal incident
-that motivated the item directly above) never reaches the ADD flow's own
-confirm step no matter how it was configured, since nothing about the ADD
-flow's own scope covers a model it did not itself offer.
+doc) — a session run against a second model on that provider never
+reaches the ADD flow's own confirm step no matter how it was configured,
+since nothing about the ADD flow's own scope covers a model it did not
+itself offer. (`ollama_cloud/glm-5.3`, the literal incident that motivated
+the item directly above, no longer reproduces this: conway's bundled
+per-model metadata now declares its window, see below.)
 
 Rather than chase every entry point separately — the same shape the
 predecessor item's own history warns against, having corrected itself once
 already for exactly this pattern — conway checks once, at the one point
 every entry path shares: immediately before a session's first real turn.
-If that turn's resolved model has no `models.json` entry, no live
-probe, and no verified dialect baseline (`ContextTokensSource::Unverified`
+If that turn's resolved model has no `models.json` entry, no entry in
+conway's bundled per-model metadata (consulted for `openai-compat`
+backends only, the one kind that reads it), no live probe, and no verified
+dialect baseline (`ContextTokensSource::Unverified`
 — the identical admission-safety clamp `tracing::debug!` already logged,
 above), conway now also prints an operator-facing notice naming the exact
 pair, the exact floor number about to govern, and the remedy
@@ -1181,7 +1185,9 @@ warnings()`), and as a standing transcript entry for the interactive TUI.
 This is the SAME `ContextTokensSource::Unverified` state, read through the
 SAME two facts guided setup's own confirm step already reads (a
 `models.json` entry, and whether the dialect's own baseline is a sourced
-fact) — plus, when a caller has opted into `conway-plugin-routing`'s
+fact), plus the bundled per-model metadata table an `openai-compat`
+backend itself resolves windows from (so a model conway already ships a
+window for, such as `glm-5.2` or `glm-5.3`, never triggers it) — plus, when a caller has opted into `conway-plugin-routing`'s
 capability-filtered router (`"conway.routing"` in `[plugins].install` — NOT
 one of guided setup's own default-installed ids), the router's own already-
 resolved `ContextTokensSource` for that exact pair, which is authoritative
