@@ -76,7 +76,7 @@ pub enum Entry {
         /// only `name` was stored). Serialized to a compact JSON string at
         /// apply time. Rendered as a one-line truncated `args: …` preview
         /// while collapsed and pretty-printed (multi-line) while expanded.
-        /// Reuses the `expanded` flag + Ctrl-E toggle below -- args and
+        /// Reuses the `expanded` flag + Ctrl-O toggle below -- args and
         /// output expand/collapse together (the single flag governs both).
         args: String,
         /// T4: accumulated `Event::ToolProgress { call_id, note }` notes
@@ -88,7 +88,7 @@ pub enum Entry {
         /// T5: whether this tool entry's preview is shown in full (`true`)
         /// or collapsed to the `tool_preview_lines` cap + a dim affordance
         /// (`false`, the default). Flipped on EVERY `Entry::Tool` at once by
-        /// [`AppState::toggle_all_tool_entries_expanded`] (the `Ctrl-E`
+        /// [`AppState::toggle_all_tool_entries_expanded`] (the `Ctrl-O`
         /// keybinding). The flag is kept on the entry itself -- not derived
         /// from a single global toggle -- so a future per-entry selective
         /// expand (tool-args reuse, or a transcript-cursor selection)
@@ -96,7 +96,7 @@ pub enum Entry {
         /// branch in `view/transcript.rs::tool_lines` reads this plus the
         /// stored `preview` (which is NEVER truncated -- the cap is
         /// render-time only) and emits either the first N lines + a `… (+M
-        /// lines, Ctrl-E to expand)` affordance or the full content. T4
+        /// lines, Ctrl-O to expand)` affordance or the full content. T4
         /// reuses the same `expanded` flag + render branch for tool-args
         /// previews: a one-line-truncated args preview is the same shape
         /// (collapsed: cap lines + affordance; expanded: full), just with a
@@ -192,6 +192,48 @@ pub enum Entry {
         call_id: String,
         text: String,
     },
+    /// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` ("Run a shell command
+    /// yourself"): one `!`/`!>` operator-typed shell command's own
+    /// lifecycle, pushed exactly once by `tui::app::shell_cmd::
+    /// apply_shell_done` when it completes (there is no streaming phase --
+    /// see that module's own doc for why this is simpler than
+    /// [`Entry::Tool`]'s proposed/running/finished states: a `!` command
+    /// has no model-visible "proposed" step and no operator-visible
+    /// "running" step either, only "ran" or "still running" -- and this
+    /// entry is never pushed until it is one of those two, "still running"
+    /// handled by `AppState::shell_in_flight`/the status line, not by a
+    /// transcript entry).
+    ///
+    /// Deliberately its OWN variant, not `Entry::Tool` with a fabricated
+    /// `call_id` or `Entry::Notice` with pre-formatted text: this is
+    /// neither a model-proposed tool call (no permission step, no
+    /// `ToolStatus`) nor routine harness prose -- it is the operator's own
+    /// typed command and its own output, which `view/transcript.rs::
+    /// entry_lines` renders with a `!`/`!> ` prefix plus exit-status
+    /// coloring distinct from both.
+    Shell {
+        /// The command exactly as run (no leading `!`/`!>`, and with any
+        /// `!!` already resolved to the command it repeats).
+        command: String,
+        /// Captured stdout+stderr, already bounded -- see
+        /// `tui::app::shell_cmd::SHELL_OUTPUT_CAP`'s own doc for the cap
+        /// and what `truncated` means.
+        output: String,
+        /// `None` exactly when the command was killed (`Ctrl-C`) or timed
+        /// out rather than exiting on its own -- `output` itself already
+        /// states which, in words; this is the structured twin of that
+        /// same fact.
+        exit_code: Option<i32>,
+        truncated: bool,
+        /// Whether this was the `!> command` form (output sent to the
+        /// model as a user-provenance turn) rather than the bare `!command`
+        /// form (zero token cost, never admitted to context) -- purely a
+        /// rendering distinction here; which form it was has ALREADY taken
+        /// effect by the time this entry is pushed (`apply_shell_done`'s
+        /// own doc).
+        to_model: bool,
+        ts: Option<DateTime<Utc>>,
+    },
 }
 
 /// A tool call's lifecycle, as reflected in one [`Entry::Tool`].
@@ -205,7 +247,7 @@ pub enum ToolStatus {
 
 impl AppState {
     /// T5: flips `expanded` on EVERY `Entry::Tool` in the transcript at once
-    /// (the `Ctrl-E` keybinding). MVP is all-at-once -- there is no
+    /// (the `Ctrl-O` keybinding). MVP is all-at-once -- there is no
     /// transcript-cursor/selection state, so "expand/collapse all" is the
     /// only meaningful toggle. Pure state mutation: does NOT touch
     /// `scroll`/`follow_tail`/`max_scroll` -- the next render's existing

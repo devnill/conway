@@ -126,6 +126,20 @@ impl App {
             .provider_status_rx
             .take()
             .expect("provider_status_rx is set in App::new and taken exactly once, here");
+        // Board item `01M1YVF4X864GKSGZM4PSCTMEH`, round-1 review fix
+        // (CRITICAL): mirrors `provider_status_rx` exactly, same reasoning
+        // -- see `app/mention_scan.rs`'s own module doc.
+        let mut mention_scan_rx = self
+            .mention_scan_rx
+            .take()
+            .expect("mention_scan_rx is set in App::new and taken exactly once, here");
+        // Board item `01M1YVFRPH0DCE8N0DR5BS5BRT`: mirrors `mention_scan_rx`
+        // exactly, same reasoning -- see `app/shell_cmd.rs`'s own module
+        // doc.
+        let mut shell_rx = self
+            .shell_rx
+            .take()
+            .expect("shell_rx is set in App::new and taken exactly once, here");
         // `/await` (INTENT.md §7a): mirrors `plugin_cmd_rx`/
         // `provider_status_rx` exactly, same reasoning -- see
         // `app/await_cmd.rs`'s own module doc for why the completion notice
@@ -362,6 +376,57 @@ impl App {
                         dirty = true;
                     }
                 }
+                // Board item `01M1YVF4X864GKSGZM4PSCTMEH`, round-1 review
+                // fix (CRITICAL): the reply side of `App::
+                // spawn_mention_scan`'s own spawned task -- mirrors
+                // `provider_status_rx.recv()` immediately above in every
+                // structural respect, which is what keeps a slow/contended
+                // `git`/filesystem walk from ever freezing this loop.
+                maybe_mention_scan = mention_scan_rx.recv() => {
+                    if let Some(done) = maybe_mention_scan {
+                        self.apply_mention_scan_done(done);
+                        dirty = true;
+                    }
+                }
+                // Board item `01M1YVFRPH0DCE8N0DR5BS5BRT`: the reply side of
+                // `App::spawn_shell_command`'s own spawned task -- mirrors
+                // `mention_scan_rx.recv()` immediately above in every
+                // structural respect (a spawned task's eventual reply,
+                // never awaited directly here), which is what keeps a
+                // slow-running `!` command from ever freezing this loop.
+                // `apply_shell_done` pushes the `Entry::Shell` transcript
+                // entry SYNCHRONOUSLY, then -- for the `!>` form only --
+                // hands back the formatted block to send; that send is
+                // awaited HERE, not inside `apply_shell_done` (which stays
+                // sync, mirroring every other `apply_*_done` in this
+                // crate), and happens AFTER the push above so the
+                // operator's own `!>` entry always renders before the
+                // live `Event::UserTurn` the prompt produces (see
+                // `app/shell_cmd.rs`'s own module doc).
+                maybe_shell = shell_rx.recv() => {
+                    if let Some(done) = maybe_shell {
+                        if let Some(block) = self.apply_shell_done(done) {
+                            match self
+                                .handle
+                                .prompt_agent(self.state.focused_agent, block)
+                                .await
+                            {
+                                Ok(_) => {
+                                    self.state.activity = crate::tui::state::Activity::Thinking;
+                                }
+                                Err(e) => {
+                                    self.state.transcript.push(Entry::Notice {
+                                        text: format!(
+                                            "could not send the `!>` command's output to the \
+                                             model: {e}"
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        dirty = true;
+                    }
+                }
                 // The reply side of `Effect::RunAwait`'s spawned task
                 // (`App::spawn_await`) -- mirrors `plugin_cmd_rx.recv()`
                 // above in every structural respect (a spawned task's
@@ -466,7 +531,13 @@ impl App {
                             }
                             dirty = true;
                         }
-                        None => return Ok(ExitCode::Completed),
+                        None => {
+                            // Exiting through any arm must run the same
+                            // cleanup the quit paths do, so an in-flight `!`
+                            // command's process group is killed, not orphaned.
+                            self.purge_open_ask_modal().await;
+                            return Ok(ExitCode::Completed);
+                        }
                     }
                 }
                 maybe_prompt = gate_rx.recv() => {
@@ -494,11 +565,17 @@ impl App {
                         // Stream ended (detached tty): nothing more will
                         // ever arrive on this arm, so keep looping would
                         // busy-spin it forever. Shut down cleanly instead.
-                        None => return Ok(ExitCode::Completed),
+                        None => {
+                            self.purge_open_ask_modal().await;
+                            return Ok(ExitCode::Completed);
+                        }
                         // A read error is not expected to recur productively
                         // either; treat it the same as a clean shutdown
                         // rather than spinning on it.
-                        Some(Err(_)) => return Ok(ExitCode::Completed),
+                        Some(Err(_)) => {
+                            self.purge_open_ask_modal().await;
+                            return Ok(ExitCode::Completed);
+                        }
                     };
                     match ev {
                         CEvent::Key(key) => {
@@ -508,7 +585,15 @@ impl App {
                                 Action::Submit(text) => match self.submit(text).await? {
                                     SubmitOutcome::Continue => {}
                                     SubmitOutcome::Resubscribe => events = self.handle.events(),
-                                    SubmitOutcome::Quit => return Ok(ExitCode::Completed),
+                                    // Review round 1 (finding 1): `/quit`
+                                    // now funnels through
+                                    // `purge_open_ask_modal` too, like
+                                    // every other quit path in this file --
+                                    // see that method's own doc.
+                                    SubmitOutcome::Quit => {
+                                        self.purge_open_ask_modal().await;
+                                        return Ok(ExitCode::Completed);
+                                    }
                                     SubmitOutcome::FocusNewSession {
                                         child,
                                         parent,
@@ -1271,7 +1356,15 @@ impl App {
                                             // accept, should
                                             // a future change ever route one
                                             // through this call site.
-                                            Effect::Quit => return Ok(ExitCode::Completed),
+                                            // Review round 1 (finding 1):
+                                            // funnels through
+                                            // `purge_open_ask_modal` too,
+                                            // mirroring every other quit
+                                            // arm in this file.
+                                            Effect::Quit => {
+                                                self.purge_open_ask_modal().await;
+                                                return Ok(ExitCode::Completed);
+                                            }
                                             Effect::Resumed(handle) => {
                                                 self.handle = handle;
                                                 events = self.handle.events();
@@ -1359,7 +1452,16 @@ impl App {
                                             .await
                                             {
                                                 Effect::None => {}
-                                                Effect::Quit => return Ok(ExitCode::Completed),
+                                                // Review round 1 (finding
+                                                // 1): funnels through
+                                                // `purge_open_ask_modal`
+                                                // too, mirroring every
+                                                // other quit arm in this
+                                                // file.
+                                                Effect::Quit => {
+                                                    self.purge_open_ask_modal().await;
+                                                    return Ok(ExitCode::Completed);
+                                                }
                                                 Effect::Resumed(handle) => {
                                                     self.handle = handle;
                                                     events = self.handle.events();
@@ -1480,7 +1582,15 @@ impl App {
                                     .await
                                     {
                                         Effect::None => {}
-                                        Effect::Quit => return Ok(ExitCode::Completed),
+                                        // Review round 1 (finding 1):
+                                        // funnels through
+                                        // `purge_open_ask_modal` too,
+                                        // mirroring every other quit arm
+                                        // in this file.
+                                        Effect::Quit => {
+                                            self.purge_open_ask_modal().await;
+                                            return Ok(ExitCode::Completed);
+                                        }
                                         Effect::Resumed(handle) => {
                                             self.handle = handle;
                                             events = self.handle.events();
@@ -1670,6 +1780,14 @@ impl App {
                                     }
                                 }
                             }
+                            // Board item `01M1YVF4X864GKSGZM4PSCTMEH`,
+                            // round-1 review fix (CRITICAL): unconditional,
+                            // after EVERY key this loop just dispatched --
+                            // see `App::kick_off_pending_mention_scan`'s own
+                            // doc for why this is the one call site both
+                            // this `CEvent::Key` arm and `CEvent::Paste`
+                            // below funnel through.
+                            self.kick_off_pending_mention_scan();
                         }
                         // T8: bracketed paste (enabled in `tui/mod.rs`'s
                         // terminal setup) -- the whole pasted block arrives
@@ -1683,6 +1801,7 @@ impl App {
                         CEvent::Paste(text) => {
                             dirty = true;
                             input::handle_paste(&mut self.state, &text);
+                            self.kick_off_pending_mention_scan();
                         }
                         CEvent::Resize(_, _) => dirty = true,
                         _ => {}

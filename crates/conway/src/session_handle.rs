@@ -1257,6 +1257,30 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
                 note: format!("child {} finished: {}", result.agent_id, result.summary),
             },
         )),
+        // Board item `01M1YVFRPH0DCE8N0DR5BS5BRT`: the SAME `AgentProgress`
+        // fallback shape `SystemNote`/`ForkDirective`/`ParentSteer` already
+        // use just above -- a resumed session's replay still SHOWS a past
+        // `!` command (it happened; the operator typed it), even though
+        // this record was deliberately never admitted to context (see the
+        // variant's own doc). No faithful `Event` exists for it (there is
+        // no live "operator ran a shell command" event at all -- the
+        // transcript entry is pushed directly by `conway-cli`'s own
+        // `tui::app::shell_cmd::apply_shell_done`, never through this
+        // replay path, when the command was just run), so this fallback is
+        // for a RESUMED session only.
+        LogRecord::OperatorShellRecord {
+            seq,
+            ts,
+            command,
+            output,
+            ..
+        } => Some((
+            *seq,
+            *ts,
+            Event::AgentProgress {
+                note: format!("! {command}\n{output}"),
+            },
+        )),
         _ => None,
     }
 }

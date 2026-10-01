@@ -183,7 +183,8 @@ pub fn record_ts(record: &conway::LogRecord) -> Option<DateTime<Utc>> {
         | LogRecord::ContextMask { ts, .. }
         | LogRecord::ContextPathSet { ts, .. }
         | LogRecord::ContextPathNamed { ts, .. }
-        | LogRecord::PermissionDecisionRecord { ts, .. } => Some(*ts),
+        | LogRecord::PermissionDecisionRecord { ts, .. }
+        | LogRecord::OperatorShellRecord { ts, .. } => Some(*ts),
         _ => None,
     }
 }

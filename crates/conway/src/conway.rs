@@ -1721,6 +1721,60 @@ impl Conway {
             .await?)
     }
 
+    /// Records an operator-typed `!` shell command durably, WITHOUT
+    /// admitting it to context -- see [`conway_core::log::LogRecord::
+    /// OperatorShellRecord`]'s own doc for the full reasoning (why this is
+    /// a new, additive variant rather than a `SystemNote`/`UserTurn`, and
+    /// why `conway_runtime::context::builder::ContextBuilder` never reads
+    /// it). Called from `conway-cli`'s `tui::app::shell_cmd` module ONLY
+    /// for the zero-token-cost bare `!command` form -- the `!> command`
+    /// form sends an ordinary [`SessionHandle::prompt_agent`] turn instead
+    /// (already durable, already context-admitted, no call here).
+    ///
+    /// An ordinary append, mirroring [`Self::mask_record`]'s own shape
+    /// immediately above: `seq`/`ts` are placeholders the store overwrites.
+    pub async fn record_operator_shell(
+        &self,
+        sid: SessionId,
+        command: String,
+        output: String,
+        exit_code: Option<i32>,
+        truncated: bool,
+    ) -> Result<LogSeq> {
+        Ok(self
+            .store
+            .append(
+                &sid,
+                LogRecord::OperatorShellRecord {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    command,
+                    output,
+                    exit_code,
+                    truncated,
+                },
+            )
+            .await?)
+    }
+
+    /// Whether `command` (a `!`-prefixed operator-typed shell command's own
+    /// text, with no leading `!`) is refused by an installed `deny` rule
+    /// targeting `bash` -- see `conway_runtime::permission::
+    /// PermissionBroker::deny_rule_for_shell_command`'s own doc for the
+    /// full reasoning (deny-only, no `prompt`/mode/hook/gate step). Returns
+    /// the matching rule's own [`conway_core::permission_pattern::Rule::
+    /// describe`] text, ready to show the operator naming what refused it
+    /// -- never the `Rule` itself, which this facade's public surface does
+    /// not otherwise expose as a refusal reason (mirroring how every other
+    /// deny-rendering call site in this crate already renders the rule
+    /// before crossing the facade boundary).
+    pub fn deny_rule_for_shell_command(&self, command: &str) -> Option<String> {
+        self.rt
+            .permission_broker()
+            .deny_rule_for_shell_command(command)
+            .map(|rule| rule.describe())
+    }
+
     /// Forks a *stored* session at an arbitrary point, offline -- no live
     /// parent agent is involved, and `SessionStore::fork`'s O(1)-by-
     /// reference contract (architecture §5.1/§8, D-11's local-unit `at_seq`)

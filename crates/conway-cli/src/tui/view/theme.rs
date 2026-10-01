@@ -227,7 +227,7 @@ pub struct Theme {
     /// informational, not a decision the user owes an answer to.
     pub help_border: Style,
     /// T7: the key/chord column in the `/help` overlay's rows (e.g.
-    /// `Ctrl-E`, `PageUp/PageDown`), distinguishing it from the plain
+    /// `Ctrl-O`, `PageUp/PageDown`), distinguishing it from the plain
     /// description text beside it. Default: `Modifier::BOLD` (no fg) --
     /// V7: was `Color::Green` + `Modifier::BOLD`. The split only needs
     /// distinguishing, not a status color, and green already means

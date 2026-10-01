@@ -45,6 +45,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::theme::Theme;
+use crate::tui::keybindings::Context;
 use crate::tui::state::{Activity, AppState, Entry, NodeStatus, ToolStatus};
 
 /// The streaming-line cursor: a block `▌` (U+258C) appended at RENDER
@@ -105,6 +106,13 @@ fn build_paragraph(state: &AppState, theme: &Theme) -> Paragraph<'static> {
 /// never baked into [`entry_lines`] output for settled entries (clean-copy
 /// invariant preserved -- see [`STREAMING_CURSOR`]'s doc).
 fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
+    // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: the collapsed-tool-output
+    // marker (`tool_lines`'s own `"… (+N lines, {key} to expand)"`) names
+    // `transcript.toggle_tool_output`'s CURRENT effective key(s) -- computed
+    // once here (it cannot change mid-render) rather than re-read per entry.
+    let toggle_keys = state
+        .keybindings
+        .keys_for(Context::Transcript, "toggle_tool_output");
     let streaming_assistant = matches!(state.activity, Activity::Responding);
     let streaming_reasoning = matches!(state.activity, Activity::Thinking);
     // Index of the last `Entry::Assistant` in the transcript, if any -- the
@@ -141,6 +149,7 @@ fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
                 entry,
                 state.tool_preview_lines,
                 state.show_timestamps,
+                &toggle_keys,
                 theme,
             );
             // Board item 01M1YVEJB6GAPST5YZET4KZZE2: a settled `edit`/
@@ -234,6 +243,13 @@ pub(super) fn wrapped_line_count(state: &AppState, width: u16) -> usize {
 /// transcript and must be found the same way).
 pub(super) fn entry_row_starts(state: &AppState, width: u16, scroll_row: u16) -> Vec<u16> {
     let theme = Theme::default();
+    // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: mirrors `build_lines`'s own
+    // `toggle_keys` -- the marker's text length (not just its presence)
+    // affects wrapped row counts, so this measurement must use the SAME
+    // effective key(s) `build_lines`/`draw` actually render with.
+    let toggle_keys = state
+        .keybindings
+        .keys_for(Context::Transcript, "toggle_tool_output");
     // Mirror `build_lines`'s streaming-cursor attachment exactly. The cursor
     // is a single character appended to the LAST line of the last
     // assistant/reasoning entry while that entry is streaming -- it adds no
@@ -272,6 +288,7 @@ pub(super) fn entry_row_starts(state: &AppState, width: u16, scroll_row: u16) ->
             entry,
             state.tool_preview_lines,
             state.show_timestamps,
+            &toggle_keys,
             &theme,
         );
         // Mirrors `build_lines`'s identical append just above (see that
@@ -326,10 +343,30 @@ pub(super) fn entry_row_starts(state: &AppState, width: u16, scroll_row: u16) ->
 ///   single dim line, no prefix, right where `AppState::apply` pushed it
 ///   (chronologically beneath the tool call it belongs to -- see that
 ///   variant's own doc).
+/// - `Entry::Shell` (board item `01M1YVFRPH0DCE8N0DR5BS5BRT`) renders a
+///   `! ` (or `!> ` for the to-model form) prefix on the command line,
+///   styled `theme.emphasized` -- chrome, not a model/operator-text color,
+///   since neither `theme.user` (the operator's own PROMPT text, not a
+///   command) nor `theme.assistant` fits. The output body renders
+///   `theme.dim`, the SAME slot a tool's own `progress`/`args:` lines
+///   already use (secondary content, never the headline). The final exit
+///   line reuses the established green-success/red-failure vocabulary
+///   (`theme.tool_done`/`theme.tool_failed`) rather than a new color, so a
+///   `!` command's own pass/fail reads exactly like every other
+///   success/failure in this theme.
+///
+/// `toggle_keys` (board item `01M3TEJPHQF4KHWBA6Y29Z33CY`): the CURRENT
+/// effective key(s) for `transcript.toggle_tool_output`, from
+/// `state.keybindings` -- threaded through to [`tool_lines`]'s own
+/// collapsed-output marker so it always names the real binding (defaults
+/// as overridden by `keybindings.json`, if any), never a hardcoded `Ctrl-E`/
+/// `Ctrl-O` literal. Empty (the action rebound to `[]`) renders a marker
+/// with no key name at all, rather than a stale or blank one.
 pub fn entry_lines(
     entry: &Entry,
     tool_cap: u32,
     show_timestamps: bool,
+    toggle_keys: &[String],
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     match entry {
@@ -387,7 +424,15 @@ pub fn entry_lines(
             ..
         } => {
             let mut lines = tool_lines(
-                name, *status, preview, args, progress, *expanded, tool_cap, theme,
+                name,
+                *status,
+                preview,
+                args,
+                progress,
+                *expanded,
+                tool_cap,
+                toggle_keys,
+                theme,
             );
             stamp_first(&mut lines, ts.as_ref(), show_timestamps, theme);
             lines
@@ -438,7 +483,68 @@ pub fn entry_lines(
         Entry::PermissionDecision { text, .. } => {
             vec![Line::from(Span::styled(text.clone(), theme.dim))]
         }
+        Entry::Shell {
+            command,
+            output,
+            exit_code,
+            truncated,
+            to_model,
+            ts,
+        } => {
+            let mut lines = shell_lines(command, output, *exit_code, *truncated, *to_model, theme);
+            stamp_first(&mut lines, ts.as_ref(), show_timestamps, theme);
+            lines
+        }
     }
+}
+
+/// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT`: [`Entry::Shell`]'s own
+/// rendering -- see that variant's own doc for the color choices. Plain
+/// ASCII prefix (`!`/`!>`), no box-drawing (the clean-copy invariant).
+fn shell_lines(
+    command: &str,
+    output: &str,
+    exit_code: Option<i32>,
+    truncated: bool,
+    to_model: bool,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    // Review round 1 (SIGNIFICANT finding 3, "unsanitized output"):
+    // `tui::app::shell_cmd` already sanitizes both `command` and `output`
+    // once, at capture time (`append_capped`/`App::spawn_shell_command`'s
+    // own `display_command`) -- this is the SAME `conway_core::text::
+    // sanitize_control_chars` call, applied again here as the render
+    // boundary's own defense-in-depth, matching this module's established
+    // "clean-copy enforced AT entry_lines, regardless of what upstream
+    // already guarantees" convention (the box-drawing-glyph invariant
+    // every other `Entry` variant is already held to). A raw ANSI/OSC
+    // escape sequence a command's own output carries (`curl`, `cat` of a
+    // downloaded file, ...) can therefore never reach a rendered `Span`
+    // even if some future caller ever constructs an `Entry::Shell` by a
+    // path that skips `apply_shell_done`.
+    let command = conway::sanitize_control_chars(command);
+    let output = conway::sanitize_control_chars(output);
+    let prefix = if to_model { "!> " } else { "! " };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(prefix.to_string(), theme.emphasized),
+        Span::styled(command, theme.emphasized),
+    ])];
+    for line in output.split('\n') {
+        lines.push(Line::from(Span::styled(line.to_string(), theme.dim)));
+    }
+    if truncated {
+        lines.push(Line::from(Span::styled(
+            "(output truncated)".to_string(),
+            theme.dim,
+        )));
+    }
+    let (status_text, status_style) = match exit_code {
+        Some(0) => ("exit 0".to_string(), theme.tool_done),
+        Some(code) => (format!("exit {code}"), theme.tool_failed),
+        None => ("killed".to_string(), theme.tool_failed),
+    };
+    lines.push(Line::from(Span::styled(status_text, status_style)));
+    lines
 }
 
 /// T4: assistant body lines with the `[modelname]> ` speaker marker on the
@@ -529,9 +635,10 @@ fn split_lines(text: &str, theme: &Theme) -> Vec<Line<'static>> {
 /// The tool's `[tag] name -- preview` line(s), with T5 folding. The stored
 /// `preview` is NEVER truncated -- the cap is render-time only. While
 /// `expanded` is `false`, only the first `cap` physical lines of the
-/// preview render, followed by a dim `… (+M lines, Ctrl-E to expand)`
+/// preview render, followed by a dim `… (+M lines, {key} to expand)`
 /// affordance (M = total - cap, total being the preview's physical line
-/// count). While `expanded` is `true`, the full preview renders. No
+/// count; `{key}` is `toggle_keys` -- see this function's own parameter
+/// doc). While `expanded` is `true`, the full preview renders. No
 /// box-drawing, no `Block` -- the clean-copy invariant (settled tool
 /// output) is preserved. A settled tool entry (non-empty preview) ends
 /// with a blank line + a dim plain `-` rule as a non-box separator.
@@ -545,6 +652,10 @@ fn split_lines(text: &str, theme: &Theme) -> Vec<Line<'static>> {
 /// the accumulated `Event::ToolProgress` notes (joined with `\n`); each
 /// note renders as a dim `-> {note}` line between the args line and the
 /// output block.
+///
+/// **Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`:** `toggle_keys` is
+/// `transcript.toggle_tool_output`'s CURRENT effective key(s) -- see
+/// [`entry_lines`]'s own doc on the parameter it threads this through from.
 #[allow(clippy::too_many_arguments)]
 fn tool_lines(
     name: &str,
@@ -554,6 +665,7 @@ fn tool_lines(
     progress: &str,
     expanded: bool,
     cap: u32,
+    toggle_keys: &[String],
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let (tag, style) = tool_status_style(status, theme);
@@ -641,7 +753,7 @@ fn tool_lines(
             );
             let hidden = total.saturating_sub(cap);
             lines.push(Line::from(Span::styled(
-                format!("… (+{hidden} lines, Ctrl-E to expand)"),
+                truncation_marker(hidden, toggle_keys),
                 theme.dim,
             )));
         }
@@ -660,7 +772,8 @@ fn tool_lines(
 /// T4: the maximum number of characters of the compact JSON args string
 /// shown in the collapsed one-line `args: …` preview. 120 is a
 /// comfortable single-row width on a typical terminal; longer args are
-/// truncated with a `…` sentinel and revealed in full by Ctrl-E.
+/// truncated with a `…` sentinel and revealed in full by
+/// `transcript.toggle_tool_output` (default `Ctrl-O`).
 const ARGS_COLLAPSED_LIMIT: usize = 120;
 
 /// Truncates `text` to at most `budget` CHARACTERS (not bytes), replacing
@@ -737,8 +850,9 @@ pub(super) fn node_status_style(status: NodeStatus, theme: &Theme) -> (&'static 
 /// once, at result time, in `AppState::finish_tool`, never recomputed from
 /// disk here or anywhere else in this render path) to `lines`, styled
 /// through the `diff_add`/`diff_del` theme slots and folded under the SAME
-/// `tool_preview_lines` cap + `Ctrl-E` affordance [`tool_lines`]'s own
-/// output preview already uses (reusing `entry.expanded` -- args, output,
+/// `tool_preview_lines` cap + [`truncation_marker`] affordance
+/// [`tool_lines`]'s own output preview already uses (reusing
+/// `entry.expanded` -- args, output,
 /// and now the diff all expand/collapse together via that one flag). A
 /// no-op for any entry that is not a settled `Entry::Tool` named `edit`/
 /// `write`, or one with nothing stored in `tool_diffs` (every other tool,
@@ -786,9 +900,36 @@ fn append_diff_lines(
     if !*expanded && total > cap {
         let hidden = total - cap;
         lines.push(Line::from(Span::styled(
-            format!("… (+{hidden} lines, Ctrl-E to expand)"),
+            truncation_marker(hidden, &toggle_keys(state)),
             theme.dim,
         )));
+    }
+}
+
+/// Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: `transcript.toggle_tool_output`'s
+/// CURRENT effective key(s), read from `state.keybindings` -- the single
+/// place [`append_diff_lines`] (which carries `state` directly) and
+/// [`build_lines`]/[`entry_row_starts`] (which compute this once and thread
+/// it through [`entry_lines`]/[`tool_lines`] as `toggle_keys`) both derive
+/// the collapsed-output marker's key name from, so the two can never
+/// disagree.
+fn toggle_keys(state: &AppState) -> Vec<String> {
+    state
+        .keybindings
+        .keys_for(Context::Transcript, "toggle_tool_output")
+}
+
+/// The collapsed-output marker text shared by [`tool_lines`]'s own output
+/// preview and [`append_diff_lines`]'s diff preview: `"… (+{hidden} lines,
+/// {key} to expand)"` naming the CURRENT effective key(s) for
+/// `transcript.toggle_tool_output`, or `"… (+{hidden} lines hidden)"` with
+/// no key name at all once that action is rebound to `[]` (deliberately
+/// disabled) -- never a stale or blank key name.
+fn truncation_marker(hidden: usize, toggle_keys: &[String]) -> String {
+    if toggle_keys.is_empty() {
+        format!("… (+{hidden} lines hidden)")
+    } else {
+        format!("… (+{hidden} lines, {} to expand)", toggle_keys.join("/"))
     }
 }
 
@@ -831,6 +972,18 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    /// The built-in `transcript.toggle_tool_output` default -- a test-only
+    /// stand-in for `state.keybindings.keys_for(..)`'s return value, used
+    /// everywhere this module's own tests call [`entry_lines`] directly
+    /// without a live `AppState` (production always threads the real
+    /// effective key through -- see [`build_lines`]'s own doc). The
+    /// `toggle_keys`-specific tests further below construct a REAL
+    /// [`crate::tui::keybindings::Keymap`] instead, to prove the marker
+    /// actually reads it rather than this fixture.
+    fn ctrl_o() -> Vec<String> {
+        vec!["Ctrl-O".to_string()]
+    }
+
     /// The machine-checkable half of criterion 2: no `Entry` variant's
     /// rendered text ever contains a box-drawing glyph. Combined with
     /// `draw`'s own lack of a `Block`/`Borders` (this module's doc comment),
@@ -871,10 +1024,18 @@ mod tests {
                 call_id: "c1".to_string(),
                 text: "allowed once · waited 4m 12s".to_string(),
             },
+            Entry::Shell {
+                command: "git status".to_string(),
+                output: "stdout:\nnothing to commit\n\nstderr:\n(empty)".to_string(),
+                exit_code: Some(0),
+                truncated: false,
+                to_model: false,
+                ts: None,
+            },
         ];
 
         for entry in &entries {
-            for line in entry_lines(entry, 3, false, &Theme::default()) {
+            for line in entry_lines(entry, 3, false, &ctrl_o(), &Theme::default()) {
                 let text = plain_text(&line);
                 assert!(
                     !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
@@ -884,12 +1045,57 @@ mod tests {
         }
     }
 
+    /// Review round 1, SIGNIFICANT finding 3 ("unsanitized output"): a raw
+    /// OSC/CSI escape sequence in an `Entry::Shell`'s `command`/`output`
+    /// must never reach a rendered `Span` -- the exact injection shape the
+    /// finding names (`curl`/`cat` of a downloaded file could put either
+    /// in real captured output), checked directly against `shell_lines`
+    /// (via `entry_lines`), not merely against the upstream sanitizer
+    /// `tui::app::shell_cmd` already applies (this is the render
+    /// boundary's OWN guarantee, independent of what produced the entry).
+    #[test]
+    fn entry_shell_neutralizes_raw_ansi_and_osc_escapes_in_command_and_output() {
+        const OSC_TITLE_INJECTION: &str = "\x1b]0;evil\x07";
+        const CSI_CLEAR_SCREEN: &str = "\x1b[2J";
+        let entry = Entry::Shell {
+            command: format!("echo hi{OSC_TITLE_INJECTION}"),
+            output: format!("before{CSI_CLEAR_SCREEN}after"),
+            exit_code: Some(0),
+            truncated: false,
+            to_model: false,
+            ts: None,
+        };
+
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
+        let text: String = lines.iter().map(plain_text).collect::<Vec<_>>().join("\n");
+
+        assert!(
+            !text.contains('\x1b'),
+            "a raw ESC byte must never reach a rendered Span: {text:?}"
+        );
+        assert!(
+            !text.contains(OSC_TITLE_INJECTION),
+            "the raw OSC sequence must not survive verbatim: {text:?}"
+        );
+        assert!(
+            !text.contains(CSI_CLEAR_SCREEN),
+            "the raw CSI sequence must not survive verbatim: {text:?}"
+        );
+        // The surrounding, harmless text must still be there -- this is a
+        // REPLACE, not a silent drop (`conway::sanitize_control_chars`'s
+        // own contract).
+        assert!(text.contains("echo hi"), "{text:?}");
+        assert!(text.contains("before"), "{text:?}");
+        assert!(text.contains("after"), "{text:?}");
+    }
+
     #[test]
     fn user_entry_keeps_the_you_prefix() {
         let lines = entry_lines(
             &Entry::User("hello".to_string()),
             3,
             false,
+            &ctrl_o(),
             &Theme::default(),
         );
         assert_eq!(lines.len(), 1);
@@ -1106,7 +1312,7 @@ mod tests {
         // must be visible, proving the viewport sits at the collapsed
         // `max_scroll` rather than floating in stale overscroll.
         assert!(
-            collapsed_text.contains("Ctrl-E to expand"),
+            collapsed_text.contains("Ctrl-O to expand"),
             "collapsed re-clamp must show the affordance at the new bottom: {collapsed_text:?}"
         );
     }
@@ -1130,6 +1336,7 @@ mod tests {
             },
             3,
             false,
+            &ctrl_o(),
             &Theme::default(),
         );
 
@@ -1153,6 +1360,7 @@ mod tests {
             },
             3,
             false,
+            &ctrl_o(),
             &Theme::default(),
         );
 
@@ -1178,6 +1386,7 @@ mod tests {
             },
             3,
             false,
+            &ctrl_o(),
             &theme,
         );
 
@@ -1205,6 +1414,7 @@ mod tests {
             },
             3,
             false,
+            &ctrl_o(),
             &theme,
         );
 
@@ -1279,6 +1489,7 @@ mod tests {
             },
             3,
             false,
+            &ctrl_o(),
             &Theme::default(),
         );
 
@@ -1495,7 +1706,7 @@ mod tests {
             summary: None,
             ts: None,
         };
-        for line in entry_lines(&entry, 3, false, &Theme::default()) {
+        for line in entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default()) {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(
                 !text.contains(STREAMING_CURSOR),
@@ -1588,13 +1799,17 @@ mod tests {
 
     /// Helper: the total rendered-line count for an entry at a given cap.
     fn rendered_line_count(entry: &Entry, cap: u32) -> usize {
-        entry_lines(entry, cap, false, &Theme::default()).len()
+        entry_lines(entry, cap, false, &ctrl_o(), &Theme::default()).len()
     }
 
-    /// The affordance text the collapsed branch emits, as plain text.
+    /// The affordance text the collapsed branch emits, as plain text --
+    /// matched on [`truncation_marker`]'s own `"… (+N lines"` prefix (never
+    /// a literal `"Ctrl-O to expand"` substring), so this helper still finds
+    /// the marker when `toggle_keys` names a DIFFERENT key, or none at all
+    /// (board item `01M3TEJPHQF4KHWBA6Y29Z33CY`'s remap/unbound tests).
     fn affordance_text(line: &Line) -> Option<String> {
         let text = plain_text(line);
-        if text.contains("Ctrl-E to expand") {
+        if text.starts_with("… (+") && text.contains("lines") {
             Some(text)
         } else {
             None
@@ -1602,7 +1817,7 @@ mod tests {
     }
 
     /// Acceptance: a 20-line preview collapsed under a cap of 3 renders
-    /// at most N+1 lines (the cap, plus the `… (+M lines, Ctrl-E to
+    /// at most N+1 lines (the cap, plus the `… (+M lines, Ctrl-O to
     /// expand)` affordance) -- NOT all 20. T4 separated the header from the
     /// preview block, so the total is 1 header + cap preview lines + 1
     /// affordance + 2 (blank + dim `-` separator) = `cap + 4`.
@@ -1610,14 +1825,14 @@ mod tests {
     fn collapsed_tool_preview_caps_at_n_plus_affordance() {
         let entry = collapsed_tool_with_n_lines(20);
         let cap = 3u32;
-        let lines = entry_lines(&entry, cap, false, &Theme::default());
+        let lines = entry_lines(&entry, cap, false, &ctrl_o(), &Theme::default());
 
         // The affordance line is present and names the hidden count:
         // 20 total - 3 shown = 17 hidden.
         let affordance = lines
             .iter()
             .find_map(|l| affordance_text(l))
-            .expect("collapsed preview must include the Ctrl-E affordance");
+            .expect("collapsed preview must include the Ctrl-O affordance");
         assert!(
             affordance.contains("+17 lines"),
             "affordance must name the hidden count: {affordance}"
@@ -1643,6 +1858,55 @@ mod tests {
         );
     }
 
+    /// Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`, acceptance check: "with a
+    /// remapped keymap ... marker show[s] the remapped key." A remapped
+    /// `toggle_keys` (as `build_lines`/`entry_row_starts` would pass after
+    /// a REAL `Keymap::load` of a `keybindings.json` rebind) renders the
+    /// NEW key, not the stale `Ctrl-O` default.
+    #[test]
+    fn collapsed_marker_names_a_remapped_toggle_key() {
+        let entry = collapsed_tool_with_n_lines(20);
+        let remapped = vec!["Ctrl-Z".to_string()];
+
+        let lines = entry_lines(&entry, 3, false, &remapped, &Theme::default());
+
+        let affordance = lines
+            .iter()
+            .find_map(|l| affordance_text(l))
+            .expect("collapsed preview must include an affordance");
+        assert!(
+            affordance.contains("Ctrl-Z to expand"),
+            "affordance must name the remapped key: {affordance}"
+        );
+        assert!(
+            !affordance.contains("Ctrl-O"),
+            "the stale default must not still appear once remapped: {affordance}"
+        );
+    }
+
+    /// The other half: `toggle_tool_output` rebound to `[]` (an empty
+    /// `toggle_keys`) renders a marker with NO key name at all -- not a
+    /// stale or blank one.
+    #[test]
+    fn collapsed_marker_omits_the_key_once_toggle_tool_output_is_unbound() {
+        let entry = collapsed_tool_with_n_lines(20);
+
+        let lines = entry_lines(&entry, 3, false, &[], &Theme::default());
+
+        let affordance = lines
+            .iter()
+            .find_map(|l| affordance_text(l))
+            .expect("collapsed preview must include an affordance even when unbound");
+        assert!(
+            affordance.contains("+17 lines"),
+            "the hidden count must still be named: {affordance}"
+        );
+        assert!(
+            !affordance.contains("to expand"),
+            "an unbound action must not name a key to press: {affordance}"
+        );
+    }
+
     /// Acceptance: with `expanded: true`, the full 20-line preview renders
     /// -- no affordance, no capping. The total is 1 header + 20 preview +
     /// 2 separator = 23.
@@ -1652,7 +1916,7 @@ mod tests {
         if let Entry::Tool { expanded, .. } = &mut entry {
             *expanded = true;
         }
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
 
         assert!(
             !lines.iter().any(|l| affordance_text(l).is_some()),
@@ -1683,7 +1947,7 @@ mod tests {
     #[test]
     fn short_tool_preview_is_not_collapsed() {
         let entry = collapsed_tool_with_n_lines(2);
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         assert!(
             !lines.iter().any(|l| affordance_text(l).is_some()),
             "a preview shorter than the cap must not show the affordance"
@@ -1697,7 +1961,7 @@ mod tests {
     #[test]
     fn collapsed_tool_preview_honors_a_configured_cap() {
         let entry = collapsed_tool_with_n_lines(20);
-        let lines = entry_lines(&entry, 5, false, &Theme::default());
+        let lines = entry_lines(&entry, 5, false, &ctrl_o(), &Theme::default());
         let affordance = lines
             .iter()
             .find_map(|l| affordance_text(l))
@@ -1714,7 +1978,7 @@ mod tests {
     #[test]
     fn tool_output_contains_no_box_drawing_glyphs_collapsed_or_expanded() {
         let collapsed = collapsed_tool_with_n_lines(20);
-        for line in entry_lines(&collapsed, 3, false, &Theme::default()) {
+        for line in entry_lines(&collapsed, 3, false, &ctrl_o(), &Theme::default()) {
             let text = plain_text(&line);
             assert!(
                 !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
@@ -1726,7 +1990,7 @@ mod tests {
         if let Entry::Tool { expanded, .. } = &mut expanded {
             *expanded = true;
         }
-        for line in entry_lines(&expanded, 3, false, &Theme::default()) {
+        for line in entry_lines(&expanded, 3, false, &ctrl_o(), &Theme::default()) {
             let text = plain_text(&line);
             assert!(
                 !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
@@ -1740,7 +2004,7 @@ mod tests {
     #[test]
     fn settled_tool_output_ends_with_a_blank_line_and_a_dim_plain_dash() {
         let entry = collapsed_tool_with_n_lines(2);
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         // The last line is the `-` rule; the second-to-last is blank.
         let last = plain_text(lines.last().expect("at least the separator"));
         assert_eq!(
@@ -1775,7 +2039,7 @@ mod tests {
             expanded: false,
             ts: None,
         };
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         assert_eq!(
             lines.len(),
             1,
@@ -1793,7 +2057,7 @@ mod tests {
     #[test]
     fn cap_of_zero_degrades_to_one_line() {
         let entry = collapsed_tool_with_n_lines(20);
-        let lines = entry_lines(&entry, 0, false, &Theme::default());
+        let lines = entry_lines(&entry, 0, false, &ctrl_o(), &Theme::default());
         // cap=1 -> 1 header + 1 content line + affordance + 2 separator = 5.
         assert_eq!(lines.len(), 5, "cap=0 degrades to cap=1: {lines:?}");
         let affordance = lines
@@ -1829,7 +2093,7 @@ mod tests {
             summary: None,
             ts: None,
         };
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         assert_eq!(lines.len(), 2);
         assert!(
             plain_text(&lines[0]).starts_with("thinking> pondering"),
@@ -1852,7 +2116,7 @@ mod tests {
             summary: None,
             ts: None,
         };
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         assert_eq!(lines.len(), 2);
         assert!(
             plain_text(&lines[0]).starts_with("[anthropic/claude-sonnet-4-6]> hello"),
@@ -1873,7 +2137,7 @@ mod tests {
             summary: None,
             ts: None,
         };
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         assert_eq!(lines.len(), 1);
         assert_eq!(plain_text(&lines[0]), "hello");
     }
@@ -1892,7 +2156,7 @@ mod tests {
             expanded: false,
             ts: None,
         };
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         let args_line = lines
             .iter()
             .map(plain_text)
@@ -1922,7 +2186,7 @@ mod tests {
             expanded: true,
             ts: None,
         };
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         let plain: Vec<String> = lines.iter().map(plain_text).collect();
         assert!(
             plain.iter().any(|t| t == "args:"),
@@ -1953,7 +2217,7 @@ mod tests {
             expanded: false,
             ts: None,
         };
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         let plain: Vec<String> = lines.iter().map(plain_text).collect();
         assert!(
             plain.iter().any(|t| t == "-> step 1"),
@@ -1977,10 +2241,10 @@ mod tests {
             ts: Some(ts),
         };
         // Off: no prefix.
-        let off = entry_lines(&entry, 3, false, &Theme::default());
+        let off = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         assert_eq!(plain_text(&off[0]), "hello");
         // On: `HH:MM ` prefix.
-        let on = entry_lines(&entry, 3, true, &Theme::default());
+        let on = entry_lines(&entry, 3, true, &ctrl_o(), &Theme::default());
         let expected = format!("{} hello", ts.format("%H:%M"));
         assert_eq!(plain_text(&on[0]), expected);
         // The timestamp span uses `theme.timestamp`.
@@ -1997,7 +2261,7 @@ mod tests {
             summary: Some("1m 6s · 1.4k tok (88% cached)".to_string()),
             ts: None,
         };
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         let last = plain_text(lines.last().expect("at least the summary"));
         assert_eq!(last, "1m 6s · 1.4k tok (88% cached)");
         assert_eq!(
@@ -2084,7 +2348,7 @@ mod tests {
             },
         ];
         for entry in &entries {
-            for line in entry_lines(entry, 3, true, &Theme::default()) {
+            for line in entry_lines(entry, 3, true, &ctrl_o(), &Theme::default()) {
                 let text = plain_text(&line);
                 assert!(
                     !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
@@ -2267,7 +2531,7 @@ mod tests {
 
         // Must not panic (the field-reported crash), and the collapsed
         // preview must still end in the `…` sentinel truncation produces.
-        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
         let args_line = lines
             .iter()
             .map(plain_text)
@@ -2332,7 +2596,7 @@ mod tests {
     }
 
     /// The diff folds under the SAME `tool_preview_lines` cap the output
-    /// preview already uses, with the identical `Ctrl-E to expand`
+    /// preview already uses, with the identical `Ctrl-O to expand`
     /// affordance wording, while `expanded` is `false`.
     #[test]
     fn a_collapsed_edit_entrys_diff_folds_under_the_preview_cap() {
@@ -2358,7 +2622,7 @@ mod tests {
 
         let lines = build_lines(&state, &Theme::default());
         let text = lines.iter().map(plain_text).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("Ctrl-E to expand"), "{text}");
+        assert!(text.contains("Ctrl-O to expand"), "{text}");
         assert!(
             !text.contains("-a"),
             "collapsed must hide lines past the cap: {text}"
@@ -2451,7 +2715,7 @@ mod tests {
             text: "allowed once · waited 4m 12s".to_string(),
         };
         let theme = Theme::default();
-        let lines = entry_lines(&entry, 3, false, &theme);
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &theme);
         assert_eq!(
             lines.len(),
             1,

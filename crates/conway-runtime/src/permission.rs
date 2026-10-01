@@ -2446,6 +2446,75 @@ impl PermissionBroker {
             .any(|(prefix, grant)| grant.covers(ctx) && prefix_matches(prefix, &call.rendered))
     }
 
+    /// The operator-typed `!` shell command's own entry point (board item
+    /// `01M1YVFRPH0DCE8N0DR5BS5BRT`, "Run a shell command yourself"): does
+    /// `rendered` match an installed `deny` rule targeting `bash`?
+    ///
+    /// **Deliberately `deny_matches` alone -- not [`Self::decide`]'s
+    /// whole sequence.** The operator typing a command is not a model tool
+    /// call reaching the gate: there is no cache to consult, no
+    /// `PermissionMode` to apply (plan mode denies tool CATEGORIES the
+    /// model might invoke, not the operator's own typed line), no
+    /// `pre_tool_use` hook to run (hooks exist to catch what the model
+    /// does, and the operator is not the model), and no `PermissionGate` to
+    /// ask (the operator IS the one who would answer it -- asking them to
+    /// confirm their own typed command is friction with no one upstream
+    /// of them left to protect). Only one of `decide`'s steps is not about
+    /// mediating the MODEL: the `deny` rule, which an operator wrote (or
+    /// trusted a project file to install) as an unconditional refusal
+    /// regardless of who or what is asking -- see `deny_matches`'s own doc,
+    /// "checked for EVERY requester (no `GrantScope`)". This method reuses
+    /// that exact evaluator rather than restating it, so a `!` command is
+    /// refused by precisely the same rules a model-issued `bash` call
+    /// would be, never a second, independently-maintained check.
+    ///
+    /// **`prompt` rules deliberately do not apply here (a ruling, not an
+    /// omission).** A `prompt` rule exists to force a human look at a call
+    /// the MODEL is about to make unsupervised -- but the operator typing
+    /// `!git status` already *is* that human look; prompting them to
+    /// confirm their own keystroke would be pure friction with no
+    /// additional safety bought. `deny` still applies unconditionally
+    /// (above): an operator can refuse a whole class of command to
+    /// themselves too (e.g. a shared/CI environment's own `permissions.json`
+    /// refusing `rm -rf` for everyone, operator included), and this method
+    /// honors that.
+    ///
+    /// **The `ctx` this builds is a throwaway, not a real agent's.** Every
+    /// branch `rule_denies_or_prompts` can reach for a `bash`-shaped call
+    /// (`path_args: PathArgs::Unconfinable { .. }`) either ignores `ctx`
+    /// entirely (`Rule::matches_deny_render`, the common case) or -- for a
+    /// `When::PathsUnder` rule -- matches unconditionally without
+    /// consulting it (see that function's own doc: an `Unconfinable` tool's
+    /// deny/prompt check fails CLOSED, independent of any root). So the
+    /// `AgentId`/`SessionId`/`cwd`/`root` filled in below are never read by
+    /// any deny rule a `bash`-shaped call can match; they exist only to
+    /// satisfy `PermissionCtx`'s shape, the same way `deny_matches`'s own
+    /// test helper `bash_call` builds a throwaway `AuthorizedCall`.
+    pub fn deny_rule_for_shell_command(&self, rendered: &str) -> Option<Rule> {
+        let ctx = PermissionCtx {
+            agent_id: AgentId::new(),
+            agent_path: Vec::new(),
+            session: SessionId::new(),
+            cwd: PathBuf::new(),
+            root: AgentRoot::Unconfined,
+            // Inert: only deny rules are consulted here, never the
+            // in-project read default this field drives.
+            default_read_root: AgentRoot::Unconfined,
+        };
+        let call = AuthorizedCall {
+            call_id: "operator-shell".to_string(),
+            tool: ToolName::new("bash"),
+            category: ToolCategory::Execute,
+            arguments: serde_json::json!({ "command": rendered }),
+            rendered: rendered.to_string(),
+            path_args: PathArgs::Unconfinable {
+                checkable: &["cwd"],
+            },
+            render_kind: RenderKind::ShellCommand,
+        };
+        self.deny_matches(&ctx, &call)
+    }
+
     /// The first installed `deny` rule that refuses this call, if any.
     /// An earlier design item, D4 §3: checked for EVERY
     /// requester (no `GrantScope`), via the deny/prompt evaluator
@@ -3679,6 +3748,38 @@ mod tests {
             gate.call_count(),
             4,
             "an ArgsMatch grant on a shell tool must not auto-allow -- the gate is reached",
+        );
+    }
+
+    /// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` (operator-typed `!` shell
+    /// commands): [`PermissionBroker::deny_rule_for_shell_command`] refuses
+    /// a command matching an installed `deny` rule and names the rule --
+    /// the exact `bash:rm -rf` prefix rule a real `permissions.json` would
+    /// carry, installed through the SAME flat-pattern path
+    /// `remember_deny_pattern` already exercises elsewhere in this module,
+    /// not a structured `Rule` built by hand.
+    #[tokio::test]
+    async fn deny_rule_for_shell_command_names_the_matching_rule() {
+        let broker = PermissionBroker::new(Arc::new(AllowAlwaysGate), EventBus::new(64));
+        broker.remember_deny_pattern(
+            PatternRule::parse("bash:rm -rf").expect("valid pattern"),
+            PatternOrigin::Interactive,
+        );
+
+        let refused = broker.deny_rule_for_shell_command("rm -rf x");
+        let rule = refused.expect("the prefix match must refuse this command");
+        assert!(
+            rule.describe().contains("rm -rf"),
+            "the rule's own description must name what it matched: {}",
+            rule.describe()
+        );
+
+        // A command the deny rule's prefix does not cover is NOT refused --
+        // proves this is a real prefix match, not an unconditional refusal
+        // of every `!` command once any deny rule exists.
+        assert!(
+            broker.deny_rule_for_shell_command("git status").is_none(),
+            "a non-matching command must not be refused"
         );
     }
 

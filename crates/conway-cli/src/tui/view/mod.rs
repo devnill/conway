@@ -47,6 +47,10 @@ mod input_box;
 // so `help.rs` (a sibling) and a future V4 settings module can both reach
 // them the same way `agents.rs`'s recipe-label helpers are already shared.
 pub(crate) mod menu;
+// Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the `@`-mention completion
+// overlay -- `pub` (not `pub(crate)`) matching `palette`'s own visibility,
+// since both are reached from `input.rs`/`app.rs`.
+pub mod mentions;
 pub(crate) mod modal;
 pub mod palette;
 // V4: the `/settings` menu, the first real caller of `menu`/`modal` beyond
@@ -133,7 +137,15 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     input_box::draw(frame, areas.input, state, theme);
     status::draw(frame, areas.status, state, theme);
 
-    if state.palette_source().starts_with('/') {
+    // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the `@`-mention list and the
+    // slash palette are mutually exclusive on screen -- the mention list
+    // wins when both COULD apply (e.g. `/fork @` still starts with `/`),
+    // mirroring `input.rs::resolve_keymap_action`'s own priority order
+    // exactly, so the overlay on screen always matches which surface is
+    // actually driving the keyboard.
+    if state.mention_open() {
+        mentions::draw_overlay(frame, areas.input, state);
+    } else if state.palette_source().starts_with('/') {
         palette::draw_overlay(
             frame,
             areas.input,
@@ -2732,9 +2744,32 @@ mod tests {
             "{text}"
         );
 
-        // tools and display
-        assert!(text.contains("Ctrl-E"), "{text}");
+        // tools and display -- board item `01M3TEJPHQF4KHWBA6Y29Z33CY`:
+        // `toggle_tool_output`'s default moved to `Ctrl-O`.
+        assert!(text.contains("Ctrl-O"), "{text}");
         assert!(text.contains("expand/collapse all tool output"), "{text}");
+
+        // prompt editing -- the readline-shaped actions the same board item
+        // added: `line_start`/`line_end`/`kill_to_start`/`kill_to_end`.
+        assert!(text.contains("Ctrl-A"), "{text}");
+        assert!(
+            text.contains("move the cursor to the start of the current line"),
+            "{text}"
+        );
+        assert!(
+            text.contains("move the cursor to the end of the current line"),
+            "{text}"
+        );
+        assert!(text.contains("Ctrl-U"), "{text}");
+        assert!(
+            text.contains("delete from the cursor to the start of the current line"),
+            "{text}"
+        );
+        assert!(text.contains("Ctrl-K"), "{text}");
+        assert!(
+            text.contains("delete from the cursor to the end of the current line"),
+            "{text}"
+        );
 
         // settings menu (V4)
         assert!(text.contains("settings menu"), "{text}");

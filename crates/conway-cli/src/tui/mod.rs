@@ -22,6 +22,7 @@ pub mod gate;
 pub mod history;
 pub mod input;
 pub mod keybindings;
+pub mod mentions;
 pub mod model_picker;
 pub mod session_picker;
 pub mod state;

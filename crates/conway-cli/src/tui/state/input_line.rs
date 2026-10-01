@@ -24,16 +24,42 @@ impl AppState {
     /// Re-anchors the palette to whatever the user just typed and clears the
     /// arrow highlight. Called after every edit to `input` in
     /// `input.rs`, so typing always re-filters live from the new text.
+    ///
+    /// Board item `01M1YVF4X864GKSGZM4PSCTMEH`: this is also the ONE funnel
+    /// [`Self::sync_mention`] rides on -- every `input`-mutating call site
+    /// already calls this after an edit, so the `@`-mention completion
+    /// list stays honest the same way the slash palette's own stem already
+    /// does, with no second call site to remember.
     pub fn sync_palette_stem(&mut self) {
         self.palette_stem = self.input.clone();
         self.palette_selected = None;
+        self.sync_mention(false);
+    }
+
+    /// Review finding (minor, round 1): identical to [`Self::
+    /// sync_palette_stem`] except it tells [`Self::sync_mention`] the edit
+    /// that just happened was a bracketed paste, not ordinary typing --
+    /// `input.rs::handle_paste` calls this instead of the plain version, so
+    /// a paste that happens to open a NEW `@`-mention is distinguishable
+    /// later from one opened by typing (see `AppState::
+    /// mention_blocks_enter_accept`'s own doc for why that distinction
+    /// exists at all: an accidental `@property`-shaped paste must not let a
+    /// bare `Enter` silently accept a candidate instead of submitting).
+    pub fn sync_palette_stem_after_paste(&mut self) {
+        self.palette_stem = self.input.clone();
+        self.palette_selected = None;
+        self.sync_mention(true);
     }
 
     /// Closes the palette navigation state: called when `input` is
     /// submitted, so a fresh line starts with no stem and no highlight.
+    /// Also closes any open mention-completion list for the same reason --
+    /// a submitted line leaves nothing for either overlay to stay anchored
+    /// to.
     pub fn clear_palette(&mut self) {
         self.palette_stem.clear();
         self.palette_selected = None;
+        self.close_mention();
     }
 
     /// The cursor's (line, column) position within [`Self::input`], both

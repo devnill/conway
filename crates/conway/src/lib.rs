@@ -107,6 +107,22 @@ pub use conway_core::ports::{
     PermissionGate, Plugin, RenderKind, Router, RouterBuildContext, RouterBundle, RouterFactory,
     SessionStore, Tool,
 };
+/// Review round 1 on board item `01M1YVFRPH0DCE8N0DR5BS5BRT` (SIGNIFICANT
+/// finding 3, "unsanitized output"): re-exported the SAME way
+/// [`plugin::kill_group`] is (that re-export's own doc states the general
+/// argument), for the identical reason -- `conway-cli` is "built entirely
+/// over the `conway` facade" (this crate's own `Cargo.toml` description)
+/// and must never reach for `conway-core` directly in PRODUCTION code
+/// (only its test-only dev-dependency, used solely inside `#[cfg(test)]`,
+/// predates this and stays that way). `conway-cli`'s own `tui::app::
+/// shell_cmd`/`tui::view::transcript` now call this to neutralize a raw
+/// ANSI/OSC escape sequence a `!` command's own captured output can carry
+/// before it ever reaches a rendered `Span` or a to-model prompt --
+/// `conway_runtime::tools::runner::sanitize_rendered` already depends on
+/// this exact function for the identical class of problem (a tool's own
+/// `rendered` text), so this re-export gives a facade-only consumer the
+/// SAME one implementation, never a second one.
+pub use conway_core::text::sanitize_control_chars;
 
 /// The shared error type [`RouterFactory::build`] and [`BackendFactory::
 /// build`] both return -- `conway_core::error::ConwayError`, distinct from

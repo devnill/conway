@@ -23,13 +23,13 @@
 //! into, mirroring [`crate::tui::history`]'s own `history` file placement
 //! exactly). Its own file, never a `settings.json` key: `{ "context":
 //! { "action": ["key", ...] } }`, e.g.
-//! `{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}`.
+//! `{"transcript": {"toggle_tool_output": ["Ctrl-Z"]}}`.
 //!
 //! An entry a file supplies REPLACES that action's default chords wholesale
-//! -- it never merges with them. Rebinding `toggle_tool_output` off
-//! `Ctrl-E` really turns `Ctrl-E` off; a rebind that only ADDED the new key
-//! alongside the old one would not be a rebind at all. Binding an action to
-//! `[]` disables it with no replacement.
+//! -- it never merges with them. Rebinding `toggle_tool_output` off its
+//! default `Ctrl-O` really turns `Ctrl-O` off; a rebind that only ADDED the
+//! new key alongside the old one would not be a rebind at all. Binding an
+//! action to `[]` disables it with no replacement.
 //!
 //! The same key bound in two DIFFERENT contexts is fine -- at most one
 //! context is ever active at dispatch time, so there is nothing to
@@ -105,6 +105,11 @@ pub enum Context {
     Palette,
     /// The `/settings` menu.
     Settings,
+    /// The `@`-mention completion list (board item
+    /// `01M1YVF4X864GKSGZM4PSCTMEH`): file-path candidates under `cwd`, or
+    /// (while composing `/fork`/`/spawn`) live agent names/ids -- see
+    /// `crate::tui::mentions`'s own doc.
+    Mentions,
 }
 
 impl Context {
@@ -119,12 +124,13 @@ impl Context {
             Context::AgentsPanel => "agents_panel",
             Context::Palette => "palette",
             Context::Settings => "settings",
+            Context::Mentions => "mentions",
         }
     }
 
     /// Every context, in the order [`ACTIONS`]/`/help`/the docs table list
     /// them.
-    pub fn all() -> [Context; 6] {
+    pub fn all() -> [Context; 7] {
         [
             Context::Prompt,
             Context::Transcript,
@@ -132,6 +138,7 @@ impl Context {
             Context::AgentsPanel,
             Context::Palette,
             Context::Settings,
+            Context::Mentions,
         ]
     }
 
@@ -165,6 +172,35 @@ pub const ACTIONS: &[ActionSpec] = &[
             "open the current input in $VISUAL/$EDITOR (falling back to vi if neither is set)",
         defaults: &["Ctrl-G"],
     },
+    // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY` (operator ruling, 2026-09-30):
+    // the readline/Claude-Code-shaped prompt defaults. All four operate on
+    // the CURRENT line of a multi-line draft, never the whole buffer --
+    // readline's own Ctrl-A/Ctrl-E/Ctrl-U/Ctrl-K, applied per-line -- see
+    // `input.rs::current_line_bounds`'s own doc.
+    ActionSpec {
+        context: Context::Prompt,
+        name: "line_start",
+        description: "move the cursor to the start of the current line",
+        defaults: &["Ctrl-A"],
+    },
+    ActionSpec {
+        context: Context::Prompt,
+        name: "line_end",
+        description: "move the cursor to the end of the current line",
+        defaults: &["Ctrl-E"],
+    },
+    ActionSpec {
+        context: Context::Prompt,
+        name: "kill_to_start",
+        description: "delete from the cursor to the start of the current line",
+        defaults: &["Ctrl-U"],
+    },
+    ActionSpec {
+        context: Context::Prompt,
+        name: "kill_to_end",
+        description: "delete from the cursor to the end of the current line",
+        defaults: &["Ctrl-K"],
+    },
     ActionSpec {
         context: Context::Prompt,
         name: "delete_word_back",
@@ -183,11 +219,28 @@ pub const ACTIONS: &[ActionSpec] = &[
         description: "recall the next input-history entry",
         defaults: &["Ctrl-N"],
     },
+    // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: plain-`Tab` path completion
+    // (point 3) -- completes the path-shaped word ending at the cursor,
+    // when NO `@`-mention overlay is open (`mentions.accept`, below, owns
+    // `Tab` while one IS open; the two never both apply at once, the same
+    // "same key, different context" shape `toggle_tool_output`/`line_end`
+    // already use for `Ctrl-O`/`Ctrl-E`).
+    ActionSpec {
+        context: Context::Prompt,
+        name: "complete_path",
+        description: "complete the path-shaped word under the cursor",
+        defaults: &["Tab"],
+    },
     ActionSpec {
         context: Context::Transcript,
         name: "toggle_tool_output",
+        // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: moved off `Ctrl-E` (now
+        // `prompt.line_end`, the readline default) onto `Ctrl-O` --
+        // Claude Code's own key for the same affordance. An operator
+        // keymap entry for this action still wins over this default,
+        // exactly as any other rebind does.
         description: "expand/collapse all tool output",
-        defaults: &["Ctrl-E"],
+        defaults: &["Ctrl-O"],
     },
     ActionSpec {
         context: Context::Transcript,
@@ -319,6 +372,38 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: Context::Settings,
         name: "close",
         description: "close the settings menu",
+        defaults: &["Esc"],
+    },
+    // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the `@`-mention completion
+    // list. `accept` deliberately carries TWO default chords -- `Tab` and
+    // `Enter` both insert the highlighted candidate, matching the item
+    // spec ("Tab or Enter inserts the selected path"). `Enter` here wins
+    // over the prompt's own hardcoded submit arm only while a mention is
+    // actually open (`input.rs::resolve_keymap_action` checks this context
+    // FIRST, before anything else, exactly like `Settings::activate`
+    // already reuses `Enter` inside its own, mutually-exclusive surface).
+    ActionSpec {
+        context: Context::Mentions,
+        name: "navigate_up",
+        description: "move the mention-completion selection up",
+        defaults: &["Up"],
+    },
+    ActionSpec {
+        context: Context::Mentions,
+        name: "navigate_down",
+        description: "move the mention-completion selection down",
+        defaults: &["Down"],
+    },
+    ActionSpec {
+        context: Context::Mentions,
+        name: "accept",
+        description: "insert the highlighted mention candidate",
+        defaults: &["Tab", "Enter"],
+    },
+    ActionSpec {
+        context: Context::Mentions,
+        name: "close",
+        description: "close the mention-completion list without inserting anything",
         defaults: &["Esc"],
     },
 ];
@@ -701,41 +786,44 @@ mod tests {
 
         let keymap = Keymap::load(&path).expect("a missing file must not be a load error");
 
-        assert!(keymap.matches(Context::Transcript, "toggle_tool_output", ctrl('e')));
+        // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: the built-in default is
+        // now `Ctrl-O`, not `Ctrl-E` (which is `prompt.line_end`).
+        assert!(keymap.matches(Context::Transcript, "toggle_tool_output", ctrl('o')));
+        assert!(keymap.matches(Context::Prompt, "line_end", ctrl('e')));
     }
 
     /// Acceptance check (a), first half: rebinding `toggle_tool_output` to
-    /// `Ctrl-O` makes `Ctrl-O` match it. A wrong implementation that never
+    /// `Ctrl-Z` makes `Ctrl-Z` match it. A wrong implementation that never
     /// reads the file at all (defaults only, ignoring `keybindings.json`
     /// entirely) fails THIS half.
     #[test]
-    fn rebinding_toggle_tool_output_to_ctrl_o_makes_ctrl_o_match() {
+    fn rebinding_toggle_tool_output_to_ctrl_z_makes_ctrl_z_match() {
         let path = write_temp(
-            "rebind-ctrl-o-matches",
-            r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#,
+            "rebind-ctrl-z-matches",
+            r#"{"transcript": {"toggle_tool_output": ["Ctrl-Z"]}}"#,
         );
 
         let keymap = Keymap::load(&path).expect("a valid rebind must load");
 
-        assert!(keymap.matches(Context::Transcript, "toggle_tool_output", ctrl('o')));
+        assert!(keymap.matches(Context::Transcript, "toggle_tool_output", ctrl('z')));
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Acceptance check (a), second half: the SAME rebind makes `Ctrl-E`
-    /// stop matching. A wrong implementation that only ADDS `Ctrl-O` as a
-    /// second binding (rather than REPLACING the default) passes the first
-    /// half above but fails THIS one -- the whole reason this is a
-    /// two-halves check, not one.
+    /// Acceptance check (a), second half: the SAME rebind makes the
+    /// built-in default `Ctrl-O` stop matching. A wrong implementation that
+    /// only ADDS `Ctrl-Z` as a second binding (rather than REPLACING the
+    /// default) passes the first half above but fails THIS one -- the whole
+    /// reason this is a two-halves check, not one.
     #[test]
-    fn rebinding_toggle_tool_output_to_ctrl_o_makes_ctrl_e_stop_matching() {
+    fn rebinding_toggle_tool_output_to_ctrl_z_makes_ctrl_o_stop_matching() {
         let path = write_temp(
-            "rebind-ctrl-o-removes-ctrl-e",
-            r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#,
+            "rebind-ctrl-z-removes-ctrl-o",
+            r#"{"transcript": {"toggle_tool_output": ["Ctrl-Z"]}}"#,
         );
 
         let keymap = Keymap::load(&path).expect("a valid rebind must load");
 
-        assert!(!keymap.matches(Context::Transcript, "toggle_tool_output", ctrl('e')));
+        assert!(!keymap.matches(Context::Transcript, "toggle_tool_output", ctrl('o')));
         let _ = std::fs::remove_file(&path);
     }
 

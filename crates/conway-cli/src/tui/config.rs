@@ -96,7 +96,7 @@ pub struct TuiSection {
     /// `[tui.tool_preview_lines]`: the cap on collapsed tool-preview
     /// lines in the TUI transcript. A tool entry whose stored `preview` has
     /// more physical lines than this renders the first N lines + a dim
-    /// `… (+M lines, Ctrl-E to expand)` affordance while the entry's
+    /// `… (+M lines, Ctrl-O to expand)` affordance while the entry's
     /// `expanded` flag is `false`; the full preview renders while `true`.
     /// The stored preview is never truncated -- the cap is render-time only.
     /// `None` (the default) means the TUI's built-in default of 3. The TUI
@@ -208,7 +208,7 @@ pub struct ThemeConfig {
     /// T7: the `/help` keybinding overlay's block border.
     pub help_border: Option<ThemeStyleConfig>,
     /// T7: the key/chord column in the `/help` keybinding overlay's rows
-    /// (e.g. `Ctrl-E`, `PageUp/PageDown`).
+    /// (e.g. `Ctrl-O`, `PageUp/PageDown`).
     pub help_key: Option<ThemeStyleConfig>,
     /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: an added line in a rendered
     /// `edit`/`write` diff (the permission prompt, the settled transcript

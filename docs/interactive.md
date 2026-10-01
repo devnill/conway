@@ -108,12 +108,16 @@ while you're composing:
 | `Alt-Enter` or `Shift-Enter` | Insert a literal newline instead of submitting (both are bound, since some terminals don't distinguish Shift-Enter from plain Enter). |
 | `Up` / `Down` | Move the cursor within a multi-line draft; once the cursor is already on the first/last line, scroll the transcript one line instead (bare arrows are also what a two-finger scroll arrives as — see "Why `Up`/`Down` scroll, not recall history" below). |
 | `Ctrl-P` / `Ctrl-N` | Recall older/newer entries from your input history, unconditionally — the readline pairing, and conway's one way to reach history from the keyboard. |
+| `Ctrl-A` / `Ctrl-E` | Move the cursor to the start/end of the current line. |
+| `Ctrl-U` / `Ctrl-K` | Delete from the cursor to the start/end of the current line. |
 | `Ctrl-W` | Delete the previous word. |
 | `Ctrl-G` | Edit the current input in `$VISUAL`/`$EDITOR` (falling back to `vi`) — see "Keybindings" below. |
 | `Home` / `End` | With the input box empty, jump the transcript to the top/tail instead of moving the cursor. |
 | `PageUp` / `PageDown` | Scroll the transcript a page at a time. |
 | `Ctrl-C` | Interrupt the current turn (or, pressed with nothing running, does nothing destructive on its own). Also abandons an in-flight `/ask`, if one is running — see below. |
 | `Ctrl-D` | Quit, when the input box is empty. |
+| `@` + a few letters | Open a file-mention completion list — see "Mentioning files," below. |
+| `Tab` | Inside an open mention list, insert the highlighted candidate; otherwise, complete the path-shaped word under the cursor. |
 
 Your input history persists across sessions (`~/.conway/history`, or under
 `$CONWAY_CONFIG_DIR/conway` if set) — it follows you across every project,
@@ -124,6 +128,155 @@ Every key above (except `Enter`/`Alt-Enter`/`Shift-Enter`/`Left`/`Right`/
 `Backspace`/`Home`/`End`/`Ctrl-C`/`Ctrl-D`) is rebindable — see
 "Keybindings" below for the file, the full action vocabulary, and exactly
 which keys stay fixed.
+
+A Ctrl or Alt chord that is not bound to anything is ignored rather than
+typed as its bare letter — pressing an unbound `Ctrl-X`, for instance,
+does nothing, instead of inserting an `x`.
+
+### Mentioning files
+
+Typing `@` at a word boundary (input start, or right after whitespace —
+typing it mid-word, as in an email address, never triggers this) opens a
+completion list of paths under your current working directory (or, with
+`--root` set, confined to that directory — the list never names a path
+outside it). Keep typing to filter it (a fuzzy, not-necessarily-contiguous
+match against the relative path, best match first); `Up`/`Down` move the
+highlight; `Tab` or `Enter` inserts the highlighted path (with a trailing
+space, so you can keep typing — a path containing a space is quoted,
+`@"release notes.md"`, and read back whole when you submit); `Esc` closes
+the list without inserting anything, and typing further inside the SAME
+`@`-token will not immediately reopen it.
+
+The walk never blocks the keyboard: it runs in the background and reports
+back when it finishes, so typing and scrolling keep working while it does
+(a `git`-backed walk that somehow gets stuck — a contended `.git/index.lock`,
+say — is itself wall-clock bounded and killed rather than left to hang).
+The list shows "scanning..." for the moment that takes, then fills in once
+the answer lands; if nothing has happened yet, `Tab`/`Enter`/arrows simply
+have nothing to act on until it does. The walk is cached for about 15
+seconds per directory, so typing several `@`-mentions in one message does
+not re-walk the tree for each one. In a git repository it shells out to
+`git ls-files --cached --others --exclude-standard` (the same listing `git
+status` is built on, so `.gitignore` is honored for free); outside one, a
+plain bounded directory walk skips `.git`, `target`, and `node_modules`.
+Either way the walk is capped by candidate count (and, for the non-git
+walk, by wall-clock time too) so a huge tree cannot make it take long; a
+capped listing says so in its own title rather than silently looking
+complete.
+
+While composing `/fork`/`/spawn`, the identical `@` trigger instead
+completes against this session's own LIVE agent ids (and names, if you've
+set any with `conway.names`) — `/fork`/`/spawn @<agent>`'s existing
+addressing convention, reusing the same list widget rather than a second
+one (agent lookups are in-memory, so they never go through the background
+walk above).
+
+**A pasted `@`-shaped block does not let a bare `Enter` accept.** Pasting
+text that happens to start with `@` at a word boundary (`@property` copied
+from a stylesheet, say) still opens the completion list — but a bare
+`Enter` right after submits your pasted text, rather than silently
+replacing it with whatever candidate happened to fuzzy-match. Once you
+arrow-navigate the list or keep typing into it, `Enter` accepts normally
+again; `Tab` always accepts, paste or not, since a paste never delivers a
+literal `Tab` keypress on its own.
+
+**What the model actually receives.** An `@`-mention is sent as plain text,
+exactly as typed — the model reads the file with its own tools, the same as
+any other path you type by hand. Alongside it, conway appends a clearly
+delimited line naming every `@`-mentioned path, so the model reads the
+mention as a reference rather than ordinary prose. (There is no facade
+primitive today for attaching that hint as separate turn metadata rather
+than inline text, so it shows up at the end of your own message, visibly,
+rather than hidden.) `@`-mentions never cause conway itself to read or send
+file contents — only what the model's own tool calls fetch, same as always.
+
+### Running a command yourself
+
+Half the time you want to run `git status` or `ls`, you do not want to
+spend tokens asking the model to do it for you — you want to type it and
+see it. A line beginning with `!` runs the rest as a shell command,
+without ever going through the model:
+
+```
+!git status
+```
+
+This runs `git status` with your own shell (`$SHELL -c`, falling back to
+`/bin/bash -c` if `$SHELL` is unset or empty — so your aliases and profile
+behave the way they would in an ordinary terminal) in the session's cwd,
+and shows its combined output and exit code right in the transcript, in
+its own styling (a `!` prefix on the command line, a dim output body, and
+a green/red exit line) — distinct from both your own messages and the
+model's. `Ctrl-C` while it runs kills the whole command (and anything it
+spawned) without touching conway itself; the command and its output are
+always capped to a bounded size, with a note if anything was cut, and any
+raw terminal control sequence a command's own output carries (from `curl`,
+or `cat` of a downloaded file, say) is neutralized before it is ever
+rendered, so it cannot repaint your terminal or rewrite its title. Quitting
+(`/quit`, `Ctrl-D`, or the double-`Ctrl-C` exit) while a `!` command is
+still running kills it too, the same way — nothing is left behind as an
+orphaned background process.
+
+**You see it coming before you press Enter.** The moment your draft starts
+with `!`, the input box's own title changes to `shell` (or `shell → model`
+for the `!>` form below) so you always know you are about to run a
+command, not send a message — never a silent switch sprung on you at
+submit time. If you genuinely want to send the model a message that
+happens to start with `!` (`!important`, say), prefix it with a backslash:
+`\!important` sends the literal text `!important` — the one backslash is
+stripped, nothing is executed, and the input box shows its ordinary
+`input` title the whole time (the backslash form is never mistaken for a
+command).
+
+**Zero token cost, by default.** The command and its output are recorded
+in this session's history (durably — it happened), but they are **never**
+sent to the model, and never count toward `/context`. If you want the
+model to see what you just ran — "run the tests and fix what fails" in one
+line — use `!>` instead of `!`:
+
+```
+!> cargo test -p conway-core
+```
+
+This runs the command exactly the same way, but then sends its output to
+the model as an ordinary message, as if you had typed `cargo test -p
+conway-core`'s output yourself. (It does cost tokens, same as any other
+message — that is the whole point of the `>`.)
+
+A bare `!` (or `!>`) with nothing after it runs nothing. `!!` repeats the
+most recently run `!`/`!>` command, in whichever form it ran.
+
+**A `!` command runs in the session's cwd at the time it STARTED** — not a
+live, `cd`-tracked one. If the model has since moved its own working
+directory with its `cd` tool mid-session, that move is not reflected here
+yet; `!` runs where the status line's `cwd` field says the session is.
+
+**The same `deny` rules a model-issued `bash` call would hit still refuse
+a `!` command, and name the rule that refused it.** A `permissions.json`
+`deny` entry targeting `bash` (`"bash:rm -rf"`, say) blocks `!rm -rf x`
+exactly as it would block the model trying the same thing — deny rules are
+unconditional, regardless of who is asking. `prompt` rules, the current
+permission mode, and `pre_tool_use` hooks do **not** apply to `!`: all
+three exist to put a human in the loop before the MODEL runs something —
+and typing `!` already IS that human, so there is nothing left for them to
+insert. `--root` does not confine a `!` command's string either, for the
+identical reason it does not confine a model-issued `bash` call's string
+(see [the permission prompt](#the-permission-prompt) and
+[`permissions.md`](permissions.md)): a shell command can reach any path it
+likes via redirection, `cd`, or a subprocess, so there is no finite scan
+that could confine it.
+
+`!` always runs unconfined today, even when `conway.confine`'s confined
+shell is installed and you have opted into it for the model's own `bash`
+tool — routing `!` through that same confinement is a disclosed
+follow-up, not yet built.
+
+There is no persistent shell session: each `!`/`!>` is one fresh process,
+so `cd`ing inside one `!` command has no effect on the next. A command
+that needs a real interactive terminal (a full-screen editor, a pager
+without `--no-pager`, anything that reads from a tty) will hang or behave
+oddly — this is not detected or refused, just not supported; redirect or
+pass a non-interactive flag instead.
 
 ### Why `Up`/`Down` scroll, not recall history
 
@@ -278,8 +431,9 @@ number is ever mistaken for the other.
 Tool calls appear inline in the transcript as they're proposed, run, and
 finish, each tagged with its state (`proposed`, `awaiting permission`,
 `running`, `done`, `failed`). A settled tool call's output is folded to its first few
-lines by default, with a dim `… (+N lines, Ctrl-E to expand)` affordance;
-`Ctrl-E` expands or collapses every tool entry in the transcript at once.
+lines by default, with a dim `… (+N lines, Ctrl-O to expand)` affordance
+(the marker always names your EFFECTIVE key, including a rebind);
+`Ctrl-O` expands or collapses every tool entry in the transcript at once.
 Reasoning traces (when the model streams them) and per-entry timestamps
 are shown according to your `/settings` preferences (below).
 
@@ -409,7 +563,7 @@ now, or an unreadable target) falls back to the raw JSON dump the same way
 every other tool's prompt already renders.
 
 Once you approve it, the settled transcript entry shows the identical
-diff, folded under the same line cap and `Ctrl-E` expand toggle every
+diff, folded under the same line cap and `Ctrl-O` expand toggle every
 other tool's output already uses (see "Watching a turn" above and the
 `/settings` menu's `tool_preview_lines` stepper below). It is computed
 exactly once, right when the call settles — never recomputed against
@@ -802,7 +956,7 @@ on it. The status markers:
 `/settings` opens a menu of six groups: **defaults** (the default role and
 the default model — see below), **display** (show reasoning traces, show
 timestamps), **tool output** (how many lines a folded tool call shows
-before `Ctrl-E` is needed), **permissions** (cycle the permission mode;
+before `Ctrl-O` is needed), **permissions** (cycle the permission mode;
 review or revoke individual grants under **allow** — flat and structured
 alike; read-only **deny** and **prompt** sections listing every rule —
 flat or structured — that any permissions file, trusted or not, has put in
@@ -949,7 +1103,7 @@ session | lineage | mode | model | ctx | tokens | activity | hint
 | `ctx` | `ctx 42%`, or `ctx 12.3k` when the model's context window isn't known | Cumulative context-window occupancy for the focused agent, from the same resolved `(backend, model)` capability index [`conway routes explain`](routing.md#asking-why-a-route-was-chosen) reads. When the window itself is only a `floor (assumed)` — the model's own dialect declares no sourced figure, so this is not a fact about this specific model — the figure carries that same marker: `ctx 31% floor (assumed)`. A `verified` (compiled-in table, or a dialect's own documented per-provider figure), `models.json` (an operator-editable override), or `probed` window never carries it. |
 | `tokens` | `1.4k tok (88% cached)`, or `1.4k tok (cache: not reported by ollama)` | The focused agent's cumulative token spend; the cached-percentage parenthetical is the prompt-cache hit rate — `cache_read / (input + cache_read + cache_write)`. **Declaration honesty**: the percentage shows whenever the backend actually reported cache figures for at least one cache-relevant token — including a genuine `0% cached` — and is omitted only when the denominator itself is 0 (no cache-relevant tokens processed yet). When the backend's wire format carries no cache field at all (e.g. Ollama's native `/api/chat` path, see [providers.md](providers.md)), the field instead shows `cache: not reported by <backend>` — a `0%` here would claim an observation the backend never made. |
 | `activity` | `⠋ thinking… 12s · +45 tok` while active, `⠋ asking… 12s` while an `/ask` is in flight, `idle` otherwise | The working indicator: elapsed time and new context tokens added this turn. An in-flight `/ask` takes this field over outright (its own clock, no token figure — it's a different agent than the one this field otherwise tracks). |
-| `hint` | `Enter submit · Ctrl-E expand · /help · /agents to view` | A persistent reminder of the essentials. Also names the focused agent when you're off-root and `lineage` isn't part of your configured fields. |
+| `hint` | `Enter submit · Ctrl-O expand · /help · /agents to view` | A persistent reminder of the essentials. The `expand` fragment always names `transcript.toggle_tool_output`'s effective key. Also names the focused agent when you're off-root and `lineage` isn't part of your configured fields. |
 | `git` | the current branch name | Read once at startup; omitted outside a git repo. |
 | `cwd` | the session's working directory | Omitted when unset. |
 
@@ -980,16 +1134,16 @@ same table (`crate::tui::keybindings::ACTIONS`, in `conway-cli`).
 ```json
 {
   "transcript": {
-    "toggle_tool_output": ["Ctrl-O"]
+    "toggle_tool_output": ["Ctrl-Z"]
   }
 }
 ```
 
 Top level: context name → `{ action: [key, key, ...] }`. An entry you
 supply REPLACES that action's default keys wholesale — rebinding
-`toggle_tool_output` off `Ctrl-E` really turns `Ctrl-E` off, not "off by
-default but still there." Binding an action to `[]` disables it with no
-replacement. The same key bound in two DIFFERENT contexts is fine (only
+`toggle_tool_output` off its default `Ctrl-O` really turns `Ctrl-O` off,
+not "off by default but still there." Binding an action to `[]` disables
+it with no replacement. The same key bound in two DIFFERENT contexts is fine (only
 one context is ever active at a time); the same key bound twice WITHIN one
 context is a load error.
 
@@ -1029,15 +1183,33 @@ the same list with your OWN effective bindings, not these defaults.
 
 - `prompt.open_editor` — default `Ctrl-G` — open the current input in
   `$VISUAL`/`$EDITOR` (see above).
+- `prompt.line_start` — default `Ctrl-A` — move the cursor to the start of
+  the current line.
+- `prompt.line_end` — default `Ctrl-E` — move the cursor to the end of the
+  current line.
+- `prompt.kill_to_start` — default `Ctrl-U` — delete from the cursor to the
+  start of the current line.
+- `prompt.kill_to_end` — default `Ctrl-K` — delete from the cursor to the
+  end of the current line.
 - `prompt.delete_word_back` — default `Ctrl-W` — delete the previous word.
 - `prompt.history_prev` — default `Ctrl-P` — recall the previous
   input-history entry.
 - `prompt.history_next` — default `Ctrl-N` — recall the next input-history
   entry.
+- `prompt.complete_path` — default `Tab` — complete the path-shaped word
+  under the cursor (see "Mentioning files," below). Only reached while no
+  `@`-mention list is open — `mentions.accept` (below) owns `Tab` while one
+  is.
+
+On a multi-line draft (`Alt-Enter`/`Shift-Enter`), all four of
+`line_start`/`line_end`/`kill_to_start`/`kill_to_end` act on the cursor's
+CURRENT line only, never the whole buffer. One deliberate difference from
+readline: `Ctrl-K` with the cursor already at the end of a line does
+nothing, rather than joining the next line onto this one.
 
 #### `transcript`
 
-- `transcript.toggle_tool_output` — default `Ctrl-E` — expand/collapse all
+- `transcript.toggle_tool_output` — default `Ctrl-O` — expand/collapse all
   tool output.
 - `transcript.scroll_page_up` — default `PageUp` — scroll the transcript up
   one page.
@@ -1078,6 +1250,17 @@ the same list with your OWN effective bindings, not these defaults.
   command up.
 - `permission_prompt.scroll_down` — default `PageDown` — scroll the shown
   command down.
+
+#### `mentions`
+
+- `mentions.navigate_up` — default `Up` — move the mention-completion
+  selection up.
+- `mentions.navigate_down` — default `Down` — move the mention-completion
+  selection down.
+- `mentions.accept` — default `Tab`, `Enter` — insert the highlighted
+  mention candidate.
+- `mentions.close` — default `Esc` — close the mention-completion list
+  without inserting anything.
 
 #### `settings`
 

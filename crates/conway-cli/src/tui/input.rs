@@ -1857,6 +1857,28 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         // the catch-all below -- `Action::None` for a named key, or plain
         // text insertion for `v` itself, exactly like any other
         // unrecognized keystroke.
+        //
+        // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY` (closing item
+        // `01M3SJC96P99V9KNT7TDJBWZ66` point 1): a Ctrl OR Alt chord that
+        // reached here unconsumed by every action above is an UNBOUND
+        // chord, not a character to type -- DOGFOOD 2 found `Ctrl-U`
+        // (unbound before `kill_to_start` below was added to `ACTIONS`)
+        // typing a literal "u", turning `/` `Ctrl-U` `/settings` into
+        // `unknown command /u/settings`. A chord with EXACTLY ONE of
+        // Ctrl/Alt held is swallowed here; a chord with BOTH held (how a
+        // terminal typically reports an AltGr-produced character on
+        // layouts that need it) and a chord with Shift alone (an ordinary
+        // capital letter) are left alone and fall through to the ordinary
+        // insert below, since those really are text the terminal means to
+        // deliver. `Ctrl-C`/`Ctrl-D` never reach this arm at all -- this
+        // function's own top-of-body guard already returns for both before
+        // `resolve_keymap_action` is even called.
+        KeyCode::Char(_)
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                != key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            Action::None
+        }
         KeyCode::Char(c) => {
             let idx = byte_index(&state.input, state.cursor);
             state.input.insert(idx, c);
@@ -1883,6 +1905,49 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
 /// while the panel is open, then the plain `prompt`/`transcript` actions --
 /// see each check's own placement below for why.
 fn resolve_keymap_action(state: &mut AppState, key: KeyEvent) -> Option<Action> {
+    // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the `@`-mention completion
+    // list takes TOP priority, ahead of even the slash palette -- the two
+    // CAN be open at once (`/fork @` starts with `/`, so `palette_source`
+    // still shows a `/`-prefixed stem, even though nothing in
+    // `commands::builtin_commands()` actually matches it any more once a
+    // space follows `/fork`), and the mention list is the surface actually
+    // in front of the cursor. Gated on `AppState::mention_open` (the
+    // overlay is actually showing), NOT `mention_query` (merely "the
+    // cursor sits inside an `@`-token") -- see that method's own doc for
+    // why the distinction matters: an `Esc`-dismissed list must let a
+    // SECOND `Esc` fall through to its ordinary meaning, not keep eating it
+    // forever just because the cursor never left the token. Each check
+    // only consumes the key when the mention action itself fires
+    // (`mention_navigate`/`accept_mention` return whether they did) --
+    // `Tab`/`Enter`/arrows fall through to their ordinary meaning when
+    // there is nothing to navigate/accept (e.g. a fragment with zero
+    // matches), exactly mirroring `palette_navigate`'s own "false means let
+    // it fall through" contract below.
+    if state.mention_open() {
+        if state
+            .keybindings
+            .matches(Context::Mentions, "navigate_up", key)
+            && mention_navigate(state, -1)
+        {
+            return Some(Action::None);
+        }
+        if state
+            .keybindings
+            .matches(Context::Mentions, "navigate_down", key)
+            && mention_navigate(state, 1)
+        {
+            return Some(Action::None);
+        }
+        if state.keybindings.matches(Context::Mentions, "accept", key) && accept_mention(state, key)
+        {
+            return Some(Action::None);
+        }
+        if state.keybindings.matches(Context::Mentions, "close", key) {
+            state.dismiss_mention();
+            return Some(Action::None);
+        }
+    }
+
     // Palette navigation takes priority over the agent panel and the plain
     // prompt/transcript actions -- mirrors the pre-keymap `KeyCode::Up`/
     // `KeyCode::Down` arms' own ordering exactly. `palette_navigate` itself
@@ -1973,7 +2038,57 @@ fn resolve_keymap_action(state: &mut AppState, key: KeyEvent) -> Option<Action> 
         return Some(Action::None);
     }
 
-    // T5: `toggle_tool_output` (default `Ctrl-E`) expands/collapses ALL
+    // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY` (operator ruling, 2026-09-30):
+    // the readline-shaped `line_start`/`line_end`/`kill_to_start`/
+    // `kill_to_end` actions. All four operate on the CURRENT line of a
+    // multi-line draft, never the whole buffer -- see
+    // `current_line_bounds`'s own doc.
+    if state
+        .keybindings
+        .matches(Context::Prompt, "line_start", key)
+    {
+        move_cursor_to_line_start(state);
+        return Some(Action::None);
+    }
+    if state.keybindings.matches(Context::Prompt, "line_end", key) {
+        move_cursor_to_line_end(state);
+        return Some(Action::None);
+    }
+    if state
+        .keybindings
+        .matches(Context::Prompt, "kill_to_start", key)
+    {
+        kill_to_line_start(state);
+        state.sync_palette_stem();
+        return Some(Action::None);
+    }
+    if state
+        .keybindings
+        .matches(Context::Prompt, "kill_to_end", key)
+    {
+        kill_to_line_end(state);
+        state.sync_palette_stem();
+        return Some(Action::None);
+    }
+
+    // Board item `01M1YVF4X864GKSGZM4PSCTMEH` (point 3): plain `Tab` path
+    // completion -- only reached when no `@`-mention list is open (the
+    // block at the very top of this function already claimed `Tab` via
+    // `mentions.accept` whenever one is). `complete_path_at_cursor` itself
+    // decides whether the word under the cursor "looks like a path" (it
+    // matches at least one real candidate); a `false` return falls through
+    // to the end of this function unconsumed, so `Tab` stays its pre-item
+    // no-op when there is nothing sensible to complete.
+    if state
+        .keybindings
+        .matches(Context::Prompt, "complete_path", key)
+        && complete_path_at_cursor(state)
+    {
+        return Some(Action::None);
+    }
+
+    // T5: `toggle_tool_output` (default `Ctrl-O`, moved off `Ctrl-E` by the
+    // same board item above) expands/collapses ALL
     // tool entries in the transcript at once (MVP -- no per-entry
     // selection). Pure state mutation --
     // `AppState::toggle_all_tool_entries_expanded` flips `expanded` on
@@ -2056,6 +2171,117 @@ fn palette_navigate(state: &mut AppState, delta: isize) -> bool {
     true
 }
 
+/// Moves the `@`-mention completion list's selection by `delta`, wrapping
+/// -- the EXACT same shape as [`palette_navigate`], just over
+/// [`AppState::mention_matches`] instead of the slash palette's own
+/// candidate list. Returns whether it fired (candidates non-empty), so the
+/// caller can let the key fall through to its ordinary meaning when the
+/// current fragment matches nothing.
+fn mention_navigate(state: &mut AppState, delta: isize) -> bool {
+    let len = state.mention_matches().len();
+    if len == 0 {
+        return false;
+    }
+    let next = match state.mention_selected {
+        None => {
+            if delta > 0 {
+                0
+            } else {
+                len - 1
+            }
+        }
+        Some(i) => (i.min(len - 1) as isize + delta).rem_euclid(len as isize) as usize,
+    };
+    state.mention_selected = Some(next);
+    true
+}
+
+/// Accepts the highlighted (or, with no arrow press yet, the FIRST)
+/// mention candidate: replaces the `@<fragment>` token at the cursor with
+/// `mentions::accept_mention_text`'s own rendering of it (a trailing
+/// space, deliberately -- see below) and closes the overlay. Returns
+/// whether it fired; `false` with nothing to accept (an empty candidate
+/// list, or `key` is `Enter` and [`AppState::mention_blocks_enter_accept`]
+/// says this list must not let `Enter` accept -- see that method's own doc)
+/// lets `Tab`/`Enter` fall through to their ordinary meaning -- plain path
+/// completion for `Tab`, submit for `Enter`.
+///
+/// **Why a trailing space.** Without one, the cursor lands immediately
+/// after the inserted `@<candidate>` text -- itself a non-whitespace run
+/// starting with `@` at a word boundary, i.e. exactly what
+/// [`crate::tui::mentions::active_mention`] considers an OPEN mention. The
+/// very next call to [`AppState::sync_mention`] (fired by the
+/// `sync_palette_stem` this function itself calls, below) would then
+/// re-open the list it was just told to close, with the inserted path
+/// itself as the fragment. A trailing space breaks that word boundary --
+/// the same reason a shell's own filename completion inserts one -- and
+/// doubles as the natural separator before whatever text comes next.
+fn accept_mention(state: &mut AppState, key: KeyEvent) -> bool {
+    if key.code == KeyCode::Enter && state.mention_blocks_enter_accept() {
+        return false;
+    }
+    let Some(query) = state.mention_query() else {
+        return false;
+    };
+    let matches = state.mention_matches();
+    let chosen = state
+        .mention_selected
+        .and_then(|i| matches.get(i).copied())
+        .or_else(|| matches.first().copied());
+    let Some(chosen) = chosen else {
+        return false;
+    };
+    let replacement = super::mentions::accept_mention_text(chosen);
+    let start_b = byte_index(&state.input, query.start);
+    let end_b = byte_index(&state.input, query.start + 1 + char_count(&query.fragment));
+    state.input.replace_range(start_b..end_b, &replacement);
+    state.cursor = query.start + char_count(&replacement);
+    state.close_mention();
+    state.sync_palette_stem();
+    true
+}
+
+/// `Tab` in the plain prompt, with no `@`-mention open (point 3): completes
+/// the path-shaped word ending at the cursor using the SAME shared,
+/// TTL-cached walk the `@`-mention overlay uses
+/// ([`AppState::path_scan_cached_if_fresh`]). Returns whether it fired --
+/// `false` when there is no word to complete, the cache has nothing fresh
+/// YET (a background warm-up is queued instead -- see below -- so the NEXT
+/// press can complete once it lands), or the word matches no real path at
+/// all (the operational definition of "does not look like a path" used
+/// here: rather than a separate heuristic, a word that matches nothing
+/// real is simply left alone).
+///
+/// **Never walks the filesystem itself** (review finding CRITICAL, round
+/// 1: the OLD version of this function did, via `AppState::
+/// path_scan_cached`, which blocked `handle_key` -- and so the whole TUI --
+/// for as long as the walk took). A cache miss instead calls
+/// [`AppState::request_path_scan_warm_up`] and returns `false`, leaving
+/// `Tab` a no-op for THIS press -- exactly its pre-item behavior -- while
+/// `App::run`'s loop spawns the actual walk off-loop
+/// (`app/mention_scan.rs`), the same "queue it, don't block for it"
+/// treatment `complete_path_at_cursor`'s sibling `sync_mention` already
+/// gets for the `@`-mention overlay's own cache misses.
+fn complete_path_at_cursor(state: &mut AppState) -> bool {
+    let Some((start, word)) = super::mentions::word_before_cursor(&state.input, state.cursor)
+    else {
+        return false;
+    };
+    let Some(scan) = state.path_scan_cached_if_fresh() else {
+        state.request_path_scan_warm_up();
+        return false;
+    };
+    let Some(completed) = super::mentions::tab_complete(&scan.paths, &word) else {
+        return false;
+    };
+    let start_b = byte_index(&state.input, start);
+    let end_b = byte_index(&state.input, state.cursor);
+    state.input.replace_range(start_b..end_b, &completed);
+    state.cursor = start + char_count(&completed);
+    state.sync_palette_stem();
+    true
+}
+
 fn char_count(s: &str) -> usize {
     s.chars().count()
 }
@@ -2105,7 +2331,13 @@ pub fn handle_paste(state: &mut AppState, text: &str) {
     let idx = byte_index(&state.input, state.cursor);
     state.input.insert_str(idx, text);
     state.cursor += char_count(text);
-    state.sync_palette_stem();
+    // Review finding (minor, round 1): NOT `sync_palette_stem` -- a paste
+    // that happens to open a `@`-mention (e.g. pasting `@property` from a
+    // stylesheet) must be distinguishable from ordinary typing, so `Enter`
+    // right afterward submits rather than silently accepting a candidate.
+    // See `AppState::sync_palette_stem_after_paste`/`mention_blocks_enter_
+    // accept`'s own docs.
+    state.sync_palette_stem_after_paste();
 }
 
 /// `Up`/`Down` within a multi-line draft: moves the cursor to the
@@ -2166,6 +2398,68 @@ fn delete_word_before_cursor(state: &mut AppState) {
     let end_byte = byte_index(&state.input, state.cursor);
     state.input.replace_range(start_byte..end_byte, "");
     state.cursor = start;
+}
+
+/// The current line's `[start, end)` char-index bounds within a (possibly
+/// multi-line) draft -- `start` is the char index right after the
+/// preceding `\n` (0 on the first line), `end` is the char index of that
+/// line's own trailing `\n` (`input`'s own length, on the last line).
+/// Shared by [`move_cursor_to_line_start`]/[`move_cursor_to_line_end`]/
+/// [`kill_to_line_start`]/[`kill_to_line_end`] -- the readline-shaped
+/// `prompt.line_start`/`line_end`/`kill_to_start`/`kill_to_end` actions
+/// (board item `01M3TEJPHQF4KHWBA6Y29Z33CY`, the operator's 2026-09-30
+/// ruling) all operate on the CURRENT line of a multi-line draft, never
+/// the whole buffer -- mirroring [`move_cursor_line`]'s own line-bounds
+/// math just above, but computing one line's span rather than walking to
+/// an adjacent one.
+fn current_line_bounds(state: &AppState) -> (usize, usize) {
+    let lines: Vec<&str> = state.input.split('\n').collect();
+    let (line_idx, _) = state.cursor_line_col();
+    let start: usize = lines[..line_idx].iter().map(|l| char_count(l) + 1).sum();
+    let end = start + char_count(lines[line_idx]);
+    (start, end)
+}
+
+/// `prompt.line_start` (default `Ctrl-A`): moves the cursor to the start of
+/// its CURRENT line -- on a multi-line draft this stops at the line's own
+/// start, never the whole buffer's (readline's own Ctrl-A, applied
+/// per-line, per the operator's ruling).
+fn move_cursor_to_line_start(state: &mut AppState) {
+    let (start, _) = current_line_bounds(state);
+    state.cursor = start;
+}
+
+/// `prompt.line_end` (default `Ctrl-E`): [`move_cursor_to_line_start`]'s
+/// counterpart -- moves the cursor to the end of its current line.
+fn move_cursor_to_line_end(state: &mut AppState) {
+    let (_, end) = current_line_bounds(state);
+    state.cursor = end;
+}
+
+/// `prompt.kill_to_start` (default `Ctrl-U`): deletes from the cursor back
+/// to the start of its current line, moving the cursor there -- a no-op
+/// when the cursor is already at the line's start.
+fn kill_to_line_start(state: &mut AppState) {
+    let (start, _) = current_line_bounds(state);
+    if state.cursor > start {
+        let start_byte = byte_index(&state.input, start);
+        let end_byte = byte_index(&state.input, state.cursor);
+        state.input.replace_range(start_byte..end_byte, "");
+        state.cursor = start;
+    }
+}
+
+/// `prompt.kill_to_end` (default `Ctrl-K`): [`kill_to_line_start`]'s
+/// counterpart -- deletes from the cursor forward to the end of its
+/// current line. The cursor itself never moves (nothing after it on that
+/// line remains once the deletion lands).
+fn kill_to_line_end(state: &mut AppState) {
+    let (_, end) = current_line_bounds(state);
+    if state.cursor < end {
+        let start_byte = byte_index(&state.input, state.cursor);
+        let end_byte = byte_index(&state.input, end);
+        state.input.replace_range(start_byte..end_byte, "");
+    }
 }
 
 #[cfg(test)]
@@ -2868,12 +3162,16 @@ mod tests {
         );
     }
 
-    // ---- T5: Ctrl-E toggles all tool entries' `expanded` flag ----
+    // ---- T5, moved off `Ctrl-E` by board item `01M3TEJPHQF4KHWBA6Y29Z33CY`
+    // (operator ruling, 2026-09-30): `Ctrl-O` toggles all tool entries'
+    // `expanded` flag; `Ctrl-E` is now `prompt.line_end` (see the
+    // `prompt.line_start`/`line_end`/`kill_to_start`/`kill_to_end` tests
+    // further below) ----
 
     use crate::tui::state::{Entry, ToolStatus};
 
     #[test]
-    fn ctrl_e_toggles_all_tool_entries_expanded() {
+    fn ctrl_o_toggles_all_tool_entries_expanded_by_default() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Tool {
             call_id: "c1".to_string(),
@@ -2896,12 +3194,12 @@ mod tests {
             ts: None,
         });
 
-        // Ctrl-E: pure state mutation, returns `Action::None` (mirrors the
+        // Ctrl-O: pure state mutation, returns `Action::None` (mirrors the
         // `v` visibility-filter key's direct-mutation pattern).
         assert_eq!(
-            handle_key(&mut state, ctrl_key(KeyCode::Char('e'))),
+            handle_key(&mut state, ctrl_key(KeyCode::Char('o'))),
             Action::None,
-            "Ctrl-E must report Action::None (the toggle is pure state)"
+            "Ctrl-O must report Action::None (the toggle is pure state)"
         );
         let all_expanded: Vec<bool> = state
             .transcript
@@ -2911,10 +3209,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(all_expanded, vec![true, true], "Ctrl-E must expand ALL");
+        assert_eq!(all_expanded, vec![true, true], "Ctrl-O must expand ALL");
 
-        // A second Ctrl-E collapses them again (involution).
-        handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+        // A second Ctrl-O collapses them again (involution).
+        handle_key(&mut state, ctrl_key(KeyCode::Char('o')));
         let all_expanded: Vec<bool> = state
             .transcript
             .iter()
@@ -2926,9 +3224,9 @@ mod tests {
         assert_eq!(all_expanded, vec![false, false]);
     }
 
-    /// Ctrl-E must NOT touch `scroll`/`follow_tail` (the no-snap contract).
+    /// Ctrl-O must NOT touch `scroll`/`follow_tail` (the no-snap contract).
     #[test]
-    fn ctrl_e_does_not_touch_scroll_or_follow_tail() {
+    fn ctrl_o_does_not_touch_scroll_or_follow_tail() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Tool {
             call_id: "c1".to_string(),
@@ -2943,17 +3241,17 @@ mod tests {
         state.scroll = 5;
         state.follow_tail = false;
 
-        handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+        handle_key(&mut state, ctrl_key(KeyCode::Char('o')));
 
-        assert_eq!(state.scroll, 5, "Ctrl-E must not change scroll");
-        assert!(!state.follow_tail, "Ctrl-E must not change follow_tail");
+        assert_eq!(state.scroll, 5, "Ctrl-O must not change scroll");
+        assert!(!state.follow_tail, "Ctrl-O must not change follow_tail");
     }
 
-    /// A bare `e` (no modifier) must remain ordinary text input -- Ctrl-E
-    /// is the binding, not `e` (D-keys: no bare printable keys as
-    /// bindings). This is the load-bearing reason the binding is on Ctrl-E.
+    /// A bare `o` (no modifier) must remain ordinary text input -- Ctrl-O
+    /// is the binding, not `o` (D-keys: no bare printable keys as
+    /// bindings). This is the load-bearing reason the binding is on Ctrl-O.
     #[test]
-    fn bare_e_types_into_the_input_box_not_toggles() {
+    fn bare_o_types_into_the_input_box_not_toggles() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Tool {
             call_id: "c1".to_string(),
@@ -2967,13 +3265,13 @@ mod tests {
         });
 
         assert_eq!(
-            handle_key(&mut state, key(KeyCode::Char('e'))),
+            handle_key(&mut state, key(KeyCode::Char('o'))),
             Action::None
         );
-        assert_eq!(state.input, "e", "bare `e` must type into the input box");
+        assert_eq!(state.input, "o", "bare `o` must type into the input box");
         // The tool entry is untouched.
         match &state.transcript[0] {
-            Entry::Tool { expanded, .. } => assert!(!*expanded, "bare `e` must not toggle"),
+            Entry::Tool { expanded, .. } => assert!(!*expanded, "bare `o` must not toggle"),
             other => panic!("expected Tool, got {other:?}"),
         }
     }
@@ -2993,7 +3291,7 @@ mod tests {
     }
 
     /// A bare `g` (no modifier) must remain ordinary text input -- mirrors
-    /// [`bare_e_types_into_the_input_box_not_toggles`]'s own reasoning for
+    /// [`bare_o_types_into_the_input_box_not_toggles`]'s own reasoning for
     /// the identical shape.
     #[test]
     fn bare_g_types_into_the_input_box_not_open_editor() {
@@ -3017,14 +3315,17 @@ mod tests {
         path
     }
 
-    /// Acceptance check (a), driven through the REAL `handle_key`
-    /// dispatcher (not just `Keymap::matches` in isolation, which
-    /// `keybindings.rs`'s own tests already cover): rebinding
-    /// `transcript.toggle_tool_output` off `Ctrl-E` onto `Ctrl-O` makes
-    /// `Ctrl-O` toggle every tool entry's `expanded` flag.
+    /// Item `01M3TEJPHQF4KHWBA6Y29Z33CY` point 2: "An operator keymap
+    /// binding it explicitly still wins" -- driven through the REAL
+    /// `handle_key` dispatcher (not just `Keymap::matches` in isolation,
+    /// which `keybindings.rs`'s own tests already cover). Rebinding
+    /// `transcript.toggle_tool_output` onto `Ctrl-Z` makes `Ctrl-Z` toggle
+    /// it, and REPLACES the `Ctrl-O` default wholesale (a wrong
+    /// implementation that only ADDS `Ctrl-Z` alongside the default would
+    /// pass the first half but fail the second).
     #[test]
-    fn rebound_ctrl_o_toggles_tool_output_through_handle_key() {
-        let path = write_temp_keymap(r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#);
+    fn an_explicit_keymap_rebind_of_toggle_tool_output_still_wins_over_the_ctrl_o_default() {
+        let path = write_temp_keymap(r#"{"transcript": {"toggle_tool_output": ["Ctrl-Z"]}}"#);
         let mut state = AppState::new(AgentId::new());
         state.keybindings = keybindings::Keymap::load(&path).expect("a valid rebind must load");
         state.transcript.push(Entry::Tool {
@@ -3038,66 +3339,244 @@ mod tests {
             ts: None,
         });
 
-        handle_key(&mut state, ctrl_key(KeyCode::Char('o')));
-
+        handle_key(&mut state, ctrl_key(KeyCode::Char('z')));
         match &state.transcript[0] {
             Entry::Tool { expanded, .. } => {
-                assert!(*expanded, "rebound Ctrl-O must toggle tool output on")
+                assert!(*expanded, "the rebound Ctrl-Z must toggle tool output on")
             }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+
+        // The Ctrl-O default no longer fires -- an unbound Ctrl chord is
+        // swallowed, not typed, so `input` stays empty too.
+        let action = handle_key(&mut state, ctrl_key(KeyCode::Char('o')));
+        assert_eq!(action, Action::None);
+        assert!(
+            state.input.is_empty(),
+            "an unbound Ctrl-O must not be typed as text either"
+        );
+        match &state.transcript[0] {
+            Entry::Tool { expanded, .. } => assert!(
+                *expanded,
+                "Ctrl-O must no longer toggle once the action is rebound elsewhere \
+                 (still true/unchanged from the Ctrl-Z toggle above)"
+            ),
             other => panic!("expected Tool, got {other:?}"),
         }
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Acceptance check (a)'s OTHER half, through `handle_key`: the SAME
-    /// rebind must make `Ctrl-E` STOP toggling tool output. Since
-    /// `toggle_tool_output` is the only thing that ever consumed `Ctrl-E`
-    /// in `Mode::Normal`, an unbound `Ctrl-E` falls all the way through to
-    /// the plain `Char(c)` insert arm (which does not check modifiers,
-    /// mirroring every other bare-`Char` arm in this module) -- so a wrong
-    /// implementation that only ADDS `Ctrl-O` alongside the old default
-    /// (rather than REPLACING it) is caught here by `state.input` staying
-    /// EMPTY instead of gaining an inserted `"e"`, even though the
-    /// returned `Action::None` looks identical either way.
+    // ---- board item `01M3TEJPHQF4KHWBA6Y29Z33CY` (operator ruling,
+    // 2026-09-30): the readline-shaped `prompt.line_start`/`line_end`/
+    // `kill_to_start`/`kill_to_end` actions, each operating on the CURRENT
+    // line of a (possibly multi-line) draft ----
+
     #[test]
-    fn rebinding_off_ctrl_e_makes_ctrl_e_fall_through_to_plain_text_input() {
-        let path = write_temp_keymap(r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#);
+    fn ctrl_a_moves_cursor_to_line_start() {
         let mut state = AppState::new(AgentId::new());
-        state.keybindings = keybindings::Keymap::load(&path).expect("a valid rebind must load");
-        state.transcript.push(Entry::Tool {
-            call_id: "c1".to_string(),
-            name: "bash".to_string(),
-            status: ToolStatus::Finished { is_error: false },
-            preview: "a\nb\nc".to_string(),
-            args: String::new(),
-            progress: String::new(),
-            expanded: false,
-            ts: None,
-        });
-
-        let action = handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+        state.input = "hello world".to_string();
+        state.cursor = 7; // between "world"'s 'w' and 'o'
 
         assert_eq!(
-            action,
-            Action::None,
-            "plain-text insertion also reports Action::None -- see this test's own doc for \
-             why the REAL assertion is on state, not the action"
+            handle_key(&mut state, ctrl_key(KeyCode::Char('a'))),
+            Action::None
+        );
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.input, "hello world", "Ctrl-A must not edit the text");
+    }
+
+    #[test]
+    fn ctrl_e_moves_cursor_to_line_end() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello world".to_string();
+        state.cursor = 3;
+
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('e'))),
+            Action::None
+        );
+        assert_eq!(state.cursor, char_count("hello world"));
+        assert_eq!(state.input, "hello world", "Ctrl-E must not edit the text");
+    }
+
+    /// A bare `e` (no modifier) stays ordinary text input -- the binding is
+    /// Ctrl-E, never bare `e` (D-keys: no bare printable keys as bindings).
+    #[test]
+    fn bare_e_types_into_the_input_box_not_line_end() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('e'))),
+            Action::None
+        );
+        assert_eq!(state.input, "e", "bare `e` must type into the input box");
+    }
+
+    #[test]
+    fn ctrl_a_and_ctrl_e_operate_on_the_current_line_of_a_multi_line_draft() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "first\nsecond line\nthird".to_string();
+        // Cursor mid-way through "second line" (line 1).
+        state.cursor = "first\nsecond".chars().count();
+        assert_eq!(state.cursor_line_col(), (1, 6));
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('a')));
+        assert_eq!(
+            state.cursor_line_col(),
+            (1, 0),
+            "Ctrl-A must stop at the CURRENT line's start, not the whole buffer's"
+        );
+
+        state.cursor = "first\nsecond".chars().count();
+        handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+        assert_eq!(
+            state.cursor_line_col(),
+            (1, "second line".chars().count()),
+            "Ctrl-E must stop at the CURRENT line's end, not the whole buffer's"
         );
         assert_eq!(
-            state.input, "e",
-            "Ctrl-E must no longer be recognized as toggle_tool_output once rebound off -- it \
-             falls through to the ordinary Char('e') insert arm"
+            state.input, "first\nsecond line\nthird",
+            "neither action edits the text"
         );
-        match &state.transcript[0] {
-            Entry::Tool { expanded, .. } => {
-                assert!(
-                    !*expanded,
-                    "a rebound-off Ctrl-E must not toggle tool output"
-                )
-            }
-            other => panic!("expected Tool, got {other:?}"),
-        }
-        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ctrl_u_kills_from_cursor_to_line_start() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello world".to_string();
+        state.cursor = 7; // between "world"'s 'w' and 'o'
+
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('u'))),
+            Action::None
+        );
+        assert_eq!(state.input, "orld");
+        assert_eq!(state.cursor, 0);
+    }
+
+    #[test]
+    fn ctrl_u_at_line_start_is_a_noop() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello".to_string();
+        state.cursor = 0;
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('u')));
+
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.cursor, 0);
+    }
+
+    #[test]
+    fn ctrl_u_only_kills_the_current_line_of_a_multi_line_draft() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "first\nsecond line".to_string();
+        state.cursor = "first\nsecond".chars().count();
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('u')));
+
+        assert_eq!(
+            state.input, "first\n line",
+            "Ctrl-U must not touch the line above"
+        );
+        assert_eq!(state.cursor_line_col(), (1, 0));
+    }
+
+    #[test]
+    fn ctrl_k_kills_from_cursor_to_line_end() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello world".to_string();
+        state.cursor = 5; // right after "hello"
+
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('k'))),
+            Action::None
+        );
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.cursor, 5, "Ctrl-K must not move the cursor");
+    }
+
+    #[test]
+    fn ctrl_k_at_line_end_is_a_noop() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello".to_string();
+        state.cursor = 5;
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('k')));
+
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.cursor, 5);
+    }
+
+    #[test]
+    fn ctrl_k_only_kills_the_current_line_of_a_multi_line_draft() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "first line\nsecond".to_string();
+        state.cursor = 5; // between "first" and " line"
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('k')));
+
+        assert_eq!(
+            state.input, "first\nsecond",
+            "Ctrl-K must not touch the line below"
+        );
+        assert_eq!(state.cursor, 5);
+    }
+
+    // ---- board item `01M3TEJPHQF4KHWBA6Y29Z33CY` point 3 (closing item
+    // `01M3SJC96P99V9KNT7TDJBWZ66` point 1): an unbound Ctrl/Alt chord is
+    // swallowed, never typed as the bare letter ----
+
+    #[test]
+    fn an_unbound_ctrl_chord_is_ignored_not_typed() {
+        let mut state = AppState::new(AgentId::new());
+        // `Ctrl-Z` has no default action anywhere in `ACTIONS`.
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('z'))),
+            Action::None
+        );
+        assert!(
+            state.input.is_empty(),
+            "an unbound Ctrl-Z must not type 'z' into the input box"
+        );
+    }
+
+    #[test]
+    fn an_unbound_alt_chord_is_ignored_not_typed() {
+        let mut state = AppState::new(AgentId::new());
+        let alt_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT);
+        assert_eq!(handle_key(&mut state, alt_z), Action::None);
+        assert!(
+            state.input.is_empty(),
+            "an unbound Alt-Z must not type 'z' into the input box"
+        );
+    }
+
+    /// A chord with BOTH Ctrl and Alt held is how a terminal typically
+    /// reports an AltGr-produced character on layouts that need it -- that
+    /// is genuine text the terminal means to deliver, never swallowed.
+    #[test]
+    fn a_ctrl_alt_chord_still_types_its_character() {
+        let mut state = AppState::new(AgentId::new());
+        let altgr_z = KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_eq!(handle_key(&mut state, altgr_z), Action::None);
+        assert_eq!(
+            state.input, "z",
+            "a Ctrl+Alt character (AltGr emulation) must still be typed"
+        );
+    }
+
+    /// Shift alone (an ordinary capital letter) is never swallowed -- only
+    /// Ctrl/Alt chords are.
+    #[test]
+    fn a_shift_only_chord_still_types_its_character() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(
+            handle_key(&mut state, shift_key(KeyCode::Char('Z'))),
+            Action::None
+        );
+        assert_eq!(state.input, "Z");
     }
 
     /// A load error must refuse the WHOLE file, not just skip the bad
@@ -5781,5 +6260,456 @@ mod tests {
         let action = handle_key(&mut state, key(KeyCode::Tab));
 
         assert_eq!(action, Action::None);
+    }
+
+    // ---- `@`-mention completion (board item `01M1YVF4X864GKSGZM4PSCTMEH`) ----
+
+    /// Review finding (CRITICAL, round 1): a Path-mode mention/Tab-warm-up
+    /// cache miss no longer scans synchronously -- it queues a request
+    /// instead (`AppState::take_pending_mention_scan_request`). This test
+    /// helper plays the part `App::run`'s loop/`app/mention_scan.rs` play in
+    /// production: drain the request, run the REAL walk, and apply it --
+    /// so every test below still exercises the genuine `mentions::
+    /// scan_paths` behavior against its own fixture tree, just with the
+    /// (now explicit, rather than implicit) background round trip in
+    /// between. A no-op when nothing is pending, so it is safe to call
+    /// after an action that may or may not have queued one.
+    fn resolve_pending_mention_scan(state: &mut AppState) {
+        let Some(request) = state.take_pending_mention_scan_request() else {
+            return;
+        };
+        let scan =
+            crate::tui::mentions::scan_paths(&request.root, crate::tui::mentions::DEFAULT_SCAN_CAP);
+        state.apply_mention_scan_result(request.anchor, request.root, scan);
+    }
+
+    fn mention_tempdir(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "conway-input-mentions-test-{}-{}-{name}",
+            std::process::id(),
+            {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static COUNTER: AtomicU64 = AtomicU64::new(0);
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            }
+        ));
+        std::fs::create_dir_all(&path).expect("tempdir must be creatable");
+        path
+    }
+
+    /// Acceptance 1: `@` + a fragment lists matching paths, and `Enter`
+    /// inserts the highlighted one.
+    #[test]
+    fn at_fragment_lists_matches_and_enter_inserts_the_first_one() {
+        let root = mention_tempdir("accept");
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(root.join("mod.rs"), "// mod, no 'a' -- must not match 'ma'").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        type_str(&mut state, "look at @ma");
+        resolve_pending_mention_scan(&mut state);
+        assert_eq!(
+            state.mention_matches(),
+            vec!["main.rs"],
+            "only 'main.rs' has an 'a' after 'm' -- 'mod.rs' must not match"
+        );
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::None,
+            "Enter must be consumed by the mention list"
+        );
+        assert_eq!(state.input, "look at @main.rs ");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `Tab` accepts exactly like `Enter` does.
+    #[test]
+    fn tab_also_accepts_the_highlighted_mention() {
+        let root = mention_tempdir("tab-accept");
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        type_str(&mut state, "@main");
+        resolve_pending_mention_scan(&mut state);
+        let action = handle_key(&mut state, key(KeyCode::Tab));
+        assert_eq!(action, Action::None);
+        assert_eq!(state.input, "@main.rs ");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review finding (SIGNIFICANT, round 1): accepting a candidate whose
+    /// path contains a space must insert something the submitted prompt's
+    /// own extraction can recover WHOLE, not truncate at the first space.
+    #[test]
+    fn accepting_a_space_containing_path_round_trips_through_the_submitted_hint() {
+        let root = mention_tempdir("space-path");
+        std::fs::write(root.join("release notes.md"), "# notes").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        type_str(&mut state, "please check @rel");
+        resolve_pending_mention_scan(&mut state);
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::None,
+            "Enter must be consumed by the mention list"
+        );
+        assert_eq!(
+            state.input, "please check @\"release notes.md\" ",
+            "a space-containing candidate must be quoted on insert"
+        );
+
+        let hint = crate::tui::mentions::append_mention_hint(state.input.clone());
+        assert!(
+            hint.contains("release notes.md"),
+            "the hint must name the WHOLE path, not truncate at the first space: {hint}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `Down` lands on the first match (mirroring the slash palette's own
+    /// "no selection yet" convention); a SECOND `Down` moves on to the
+    /// next one.
+    #[test]
+    fn arrow_navigation_selects_a_different_candidate() {
+        let root = mention_tempdir("arrow");
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(root.join("markdown.rs"), "// md").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        type_str(&mut state, "@ma");
+        resolve_pending_mention_scan(&mut state);
+        assert_eq!(state.mention_matches(), vec!["main.rs", "markdown.rs"]);
+
+        handle_key(&mut state, key(KeyCode::Down));
+        handle_key(&mut state, key(KeyCode::Down));
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(action, Action::None);
+        assert_eq!(state.input, "@markdown.rs ");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `Esc` closes the list without inserting anything, and typing one
+    /// more character inside the SAME token does not immediately re-open
+    /// it (the dismissal must stick, not just last one keystroke).
+    #[test]
+    fn esc_closes_the_mention_list_without_inserting() {
+        let root = mention_tempdir("esc");
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        type_str(&mut state, "@main");
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+        assert_eq!(action, Action::None);
+        assert_eq!(state.input, "@main", "Esc must not change the typed text");
+        assert!(!state.mention_open(), "the overlay must be closed");
+
+        type_str(&mut state, ".");
+        assert!(
+            !state.mention_open(),
+            "typing further inside the SAME dismissed token must not re-open the overlay"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A second `Esc`, once the overlay is already dismissed, falls
+    /// through to its ordinary meaning (returning focus to the root) rather
+    /// than being eaten by a list that is no longer on screen.
+    #[test]
+    fn a_second_esc_after_dismissal_falls_through_to_its_ordinary_meaning() {
+        let root = mention_tempdir("esc-second");
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        let other = AgentId::new();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+        state.focus_agent(other);
+
+        type_str(&mut state, "@main");
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert!(!state.mention_open());
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+        assert_eq!(
+            action,
+            Action::FocusAgent(state.root_agent()),
+            "a second Esc must fall through to the ordinary 'return to root' behavior"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Acceptance 2: under `--root` (`mention_scan_root` pointed at a
+    /// confinement directory), no candidate outside it ever appears, even
+    /// when the process's own cwd has sibling files the walk could
+    /// otherwise have reached.
+    #[test]
+    fn confinement_root_keeps_candidates_from_outside_it() {
+        let root = mention_tempdir("confine-root");
+        let confined = root.join("project");
+        std::fs::create_dir_all(&confined).unwrap();
+        std::fs::write(confined.join("inside.rs"), "// inside the root").unwrap();
+        std::fs::write(
+            root.join("outside.rs"),
+            "// a sibling OUTSIDE the confined root",
+        )
+        .unwrap();
+
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = confined.clone();
+
+        type_str(&mut state, "@");
+        resolve_pending_mention_scan(&mut state);
+        let matches = state.mention_matches();
+        assert!(matches.contains(&"inside.rs"));
+        assert!(
+            !matches.contains(&"outside.rs"),
+            "a confined walk must never surface a sibling outside the root: {matches:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review finding (CRITICAL, round 1), the literal acceptance test:
+    /// opening a fresh `@`-mention against a root whose walk would be slow
+    /// if it ran synchronously must not make `handle_key` itself slow --
+    /// `input` still updates immediately (the keystroke was not swallowed
+    /// waiting on a scan) and the overlay is left in the "pending" state
+    /// (empty candidates, `mention_scan_pending()`), never populated on
+    /// this call. A root with several thousand flat files forces the
+    /// manual (non-git) walk to spend real time near its own
+    /// `MANUAL_WALK_TIME_BUDGET` -- if `handle_key` ever regressed back to
+    /// calling `mentions::scan_paths` synchronously, this test would take
+    /// on the order of that budget (hundreds of milliseconds) instead of
+    /// microseconds, and the generous 50ms assertion below would catch it.
+    #[test]
+    fn handle_key_does_not_block_on_a_slow_scan() {
+        let root = mention_tempdir("slow-scan");
+        for i in 0..4000 {
+            std::fs::write(root.join(format!("file-{i:05}.txt")), "x").unwrap();
+        }
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        let start = std::time::Instant::now();
+        handle_key(&mut state, key(KeyCode::Char('@')));
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            state.input, "@",
+            "the keystroke itself must still land immediately"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "handle_key must return promptly, not wait out the walk's own budget: {elapsed:?}"
+        );
+        assert!(
+            state.mention_matches().is_empty(),
+            "candidates must stay empty until the background scan reports back"
+        );
+        assert!(
+            state.mention_scan_pending(),
+            "the overlay must know a scan is in flight"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `/fork @` addresses agents, not paths -- the mention list must never
+    /// walk the filesystem for it.
+    #[test]
+    fn fork_at_sign_completes_agent_ids_not_paths() {
+        let root = mention_tempdir("fork-agents");
+        std::fs::write(root.join("decoy.rs"), "// must not appear").unwrap();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.mention_scan_root = root.clone();
+
+        type_str(&mut state, "/fork @");
+        assert_eq!(state.mention_matches(), vec![agent.to_string()]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The mention list takes priority over the slash palette: `/fork @`
+    /// still starts with `/` (so `palette_source` would normally show
+    /// something), but `Down`/`Enter` must drive the mention list, not the
+    /// (empty, since nothing matches `"/fork @"`) palette.
+    #[test]
+    fn mention_list_wins_priority_over_the_slash_palette() {
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        type_str(&mut state, "/fork @");
+        assert!(state.palette_source().starts_with('/'));
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::None,
+            "the mention accept must consume Enter"
+        );
+        assert_eq!(state.input, format!("/fork @{agent} "));
+    }
+
+    // ---- paste must not let Enter silently accept (review finding minor,
+    // round 1) ----
+
+    /// A pasted `@property`-shaped block opens the mention list (nothing
+    /// wrong with that on its own), but a bare `Enter` right after must
+    /// fall through to submit, not silently accept whatever candidate
+    /// fuzzy-matches -- the operator pasted text, they did not ask to
+    /// browse a file list.
+    #[test]
+    fn a_pasted_at_mention_does_not_let_enter_accept() {
+        let root = mention_tempdir("paste-no-accept");
+        std::fs::write(root.join("property.rs"), "// decoy").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        handle_paste(&mut state, "@property");
+        resolve_pending_mention_scan(&mut state);
+        assert!(
+            state.mention_open(),
+            "a pasted @-shaped block still opens the list"
+        );
+        assert!(
+            !state.mention_matches().is_empty(),
+            "the fixture file must actually match, or this test proves nothing"
+        );
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(
+            action,
+            Action::Submit("@property".to_string()),
+            "Enter must submit the pasted text verbatim, not accept a candidate"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The same pasted mention, but the operator then arrow-navigates the
+    /// list before pressing `Enter` -- that IS deliberate interaction, so
+    /// `Enter` accepts normally.
+    #[test]
+    fn a_pasted_at_mention_lets_enter_accept_once_the_operator_navigates() {
+        let root = mention_tempdir("paste-then-navigate");
+        std::fs::write(root.join("property.rs"), "// decoy").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        handle_paste(&mut state, "@property");
+        resolve_pending_mention_scan(&mut state);
+        handle_key(&mut state, key(KeyCode::Down));
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(
+            action,
+            Action::None,
+            "Enter must be consumed, accepting the navigated-to row"
+        );
+        assert_eq!(state.input, "@property.rs ");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The same pasted mention, but the operator keeps typing into it --
+    /// also deliberate interaction, so `Enter` accepts normally once more.
+    #[test]
+    fn a_pasted_at_mention_lets_enter_accept_once_the_operator_types_more() {
+        let root = mention_tempdir("paste-then-type");
+        std::fs::write(root.join("property.rs"), "// decoy").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        handle_paste(&mut state, "@prop");
+        resolve_pending_mention_scan(&mut state);
+        type_str(&mut state, "erty");
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(state.input, "@property.rs ");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `Tab` is unaffected by the paste gate -- a bracketed paste never
+    /// delivers a literal `Tab` keypress on its own, so reaching the
+    /// mention list via `Tab` always means a real, deliberate keystroke.
+    #[test]
+    fn tab_still_accepts_a_pasted_at_mention_with_no_navigation() {
+        let root = mention_tempdir("paste-tab-accept");
+        std::fs::write(root.join("property.rs"), "// decoy").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        handle_paste(&mut state, "@property");
+        resolve_pending_mention_scan(&mut state);
+
+        let action = handle_key(&mut state, key(KeyCode::Tab));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(state.input, "@property.rs ");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Acceptance 3: plain `Tab` (no `@`) completes a path-shaped word.
+    #[test]
+    fn plain_tab_completes_a_path_shaped_word() {
+        let root = mention_tempdir("plain-tab");
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        type_str(&mut state, "read ma");
+        // The FIRST press hits a cold cache: it queues a background warm-up
+        // and stays a no-op for THIS press (review finding CRITICAL, round
+        // 1 -- `Tab` must never block waiting for the walk).
+        let first_action = handle_key(&mut state, key(KeyCode::Tab));
+        assert_eq!(first_action, Action::None);
+        assert_eq!(
+            state.input, "read ma",
+            "the first press must not complete yet"
+        );
+        resolve_pending_mention_scan(&mut state);
+
+        // The SECOND press reads the now-warm cache and completes.
+        let second_action = handle_key(&mut state, key(KeyCode::Tab));
+        assert_eq!(second_action, Action::None);
+        assert_eq!(state.input, "read main.rs");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A word that matches nothing real leaves `Tab` a no-op, exactly as it
+    /// was before `prompt.complete_path` existed (no literal tab character
+    /// is ever inserted).
+    #[test]
+    fn plain_tab_is_a_no_op_when_nothing_matches() {
+        let root = mention_tempdir("plain-tab-no-match");
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        let mut state = AppState::new(AgentId::new());
+        state.mention_scan_root = root.clone();
+
+        type_str(&mut state, "hello");
+        let action = handle_key(&mut state, key(KeyCode::Tab));
+        assert_eq!(action, Action::None);
+        assert_eq!(state.input, "hello");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
