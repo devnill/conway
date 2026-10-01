@@ -2497,6 +2497,9 @@ impl PermissionBroker {
             session: SessionId::new(),
             cwd: PathBuf::new(),
             root: AgentRoot::Unconfined,
+            // Inert: only deny rules are consulted here, never the
+            // in-project read default this field drives.
+            default_read_root: AgentRoot::Unconfined,
         };
         let call = AuthorizedCall {
             call_id: "operator-shell".to_string(),
