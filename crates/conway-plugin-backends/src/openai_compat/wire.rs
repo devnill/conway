@@ -51,6 +51,7 @@ pub(crate) fn build_request_body(
     parallel_tool_calls: bool,
     stream: bool,
     context_window: Option<u32>,
+    model_reasoning: Option<bool>,
 ) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model.as_str()));
@@ -98,10 +99,16 @@ pub(crate) fn build_request_body(
     if !req.params.stop.is_empty() {
         body.insert("stop".into(), json!(req.params.stop));
     }
-    if let Some(effort) = reasoning_effort(req, profile) {
+    let reasoning_effort_value = reasoning_effort(req, profile, model_reasoning);
+    if let Some(effort) = &reasoning_effort_value {
         body.insert("reasoning_effort".into(), json!(effort));
     }
-    warn_ignored_params(req);
+    warn_ignored_params(
+        req,
+        profile,
+        model_reasoning,
+        reasoning_effort_value.is_some(),
+    );
     if profile.sends_num_ctx {
         if let Some(window) = context_window {
             body.insert("options".into(), json!({ "num_ctx": window }));
@@ -118,45 +125,152 @@ pub(crate) fn build_request_body(
     Value::Object(body)
 }
 
-/// Reads a caller-supplied reasoning effort level out of
-/// `params.extra["reasoning_effort"]` and serializes it verbatim as the
-/// OpenAI `reasoning_effort` chat-completion field, e.g. `"low"` /
-/// `"medium"` / `"high"`.
+/// The RAW configured `params.extra["reasoning_effort"]` value, gated on
+/// whether this profile carries the field at all AND whether THIS model is
+/// known not to support it -- shared by [`reasoning_effort`] (this module's
+/// own string-typed `reasoning_effort` field) and
+/// `openai_compat/ollama_native.rs`'s native `think` field (which, unlike
+/// this one, also accepts a JSON boolean -- see that module's own doc).
 ///
-/// `GenerateRequest` has no dedicated reasoning-effort field yet — that
-/// caller-facing knob and its plumbing into `params.extra` is a
-/// a separate concern, outside this module's scope; `extra` is the only
-/// existing field that reaches this wire layer. Emitted only when
-/// `profile.sends_reasoning_effort`, mirroring the `parallel_tool_calls`
-/// gating above: other OpenAI-compatible servers 400 on a field they don't
-/// recognize.
-fn reasoning_effort(req: &GenerateRequest, profile: &Profile) -> Option<String> {
-    if !profile.sends_reasoning_effort {
+/// `model_reasoning` is this exact model's DECLARED reasoning/thinking
+/// support (`OpenAiCompatBackend::model_reasoning_declaration`, ultimately
+/// `ModelMetadata::reasoning`): `Some(false)` is the only value this
+/// function treats as disqualifying -- confirmed live, 2026-09-30, both
+/// Ollama endpoints answer a loud `400` (`"<model>" does not support
+/// thinking`) for a model that does not support it, so a model explicitly
+/// DECLARED not to is never sent the field regardless of what the caller
+/// configured. `None` (no declaration at all -- confirmed live the same day
+/// to be the common case: most local Ollama models, including thinking-
+/// capable ones, carry no `models.json`/bundled metadata entry) is treated
+/// the same as `Some(true)`: sent. Silently treating `None` as "does not
+/// support" would re-skip reasoning for exactly the undescribed
+/// thinking-capable models this item exists to stop silently dropping; the
+/// cost of guessing wrong the other way (an undescribed model that
+/// genuinely does not support thinking) is a single loud, attributable
+/// `BackendError::BadRequest` naming the model (`crate::error::
+/// extract_message`), never a silent no-op and never a retry storm
+/// (`HttpClient::send_with_retry` never retries a `400`) -- an operator who
+/// hits it adds a `reasoning = false` entry for that model and the warning
+/// path below starts firing for it from then on.
+pub(crate) fn reasoning_effort_candidate<'a>(
+    req: &'a GenerateRequest,
+    profile: &Profile,
+    model_reasoning: Option<bool>,
+) -> Option<&'a Value> {
+    if !profile.sends_reasoning_effort || model_reasoning == Some(false) {
         return None;
     }
-    req.params
-        .extra
-        .get("reasoning_effort")
+    req.params.extra.get("reasoning_effort")
+}
+
+/// Reads a caller-supplied reasoning effort level out of
+/// `params.extra["reasoning_effort"]` -- verbatim, no per-LEVEL validation
+/// (see `Profile::sends_reasoning_effort`'s own doc for why a level string
+/// outside a model's own set is still sent rather than rejected locally):
+/// the caller here is this module's own `build_request_body`, for the
+/// ordinary OpenAI-compatible `reasoning_effort` chat-completion field
+/// (e.g. `"low"` / `"medium"` / `"high"`), which — confirmed live,
+/// 2026-09-30 — is a genuinely TYPED string field on Ollama's own
+/// OpenAI-compatible endpoint (a non-string value answers a structured
+/// `400` naming the field), so only a JSON string is ever extracted here; a
+/// configured JSON boolean is read by `openai_compat/ollama_native.rs`'s
+/// own native counterpart instead (its `think` field accepts one), never by
+/// this one.
+///
+/// `pub(crate)`, not private, for `openai_compat/ollama_native.rs`'s access
+/// to [`reasoning_effort_candidate`], the per-MODEL gate this function and
+/// that module's own `think`-field logic share.
+pub(crate) fn reasoning_effort(
+    req: &GenerateRequest,
+    profile: &Profile,
+    model_reasoning: Option<bool>,
+) -> Option<String> {
+    reasoning_effort_candidate(req, profile, model_reasoning)
         .and_then(Value::as_str)
         .map(str::to_string)
 }
 
-/// Warns, once per request, about a `SamplingParams` field this generic
-/// OpenAI-compatible wire body never reads -- the same declaration-honesty
-/// concern `anthropic::wire`'s own `warn_ignored_params` documents. `seed`
-/// is the one typed field with no equivalent here: `ollama_native.rs`'s own
-/// `build_native_request_body` DOES send `params.seed` (Ollama's native
-/// `/api/chat` supports it), but that is a separate body-construction
-/// function this one's callers never invoke together with this one -- see
-/// `openai_compat/mod.rs`'s `generate`/`stream`, which choose exactly one
-/// of the two per request depending on `profile.dialect`.
-fn warn_ignored_params(req: &GenerateRequest) {
+/// Warns, once per request, about a `SamplingParams`/`extra` field this
+/// generic OpenAI-compatible wire body never reads -- the same
+/// declaration-honesty concern `anthropic::wire`'s own `warn_ignored_params`
+/// documents, extended to `extra` (board item dogfood-02/thinking-role
+/// silently dropped): a `roles.<alias>.params.extra` key that reaches this
+/// far and then does nothing is the same class of silent gap a dropped
+/// TYPED field is, and `conway::config::schema::RoleParams`'s own doc
+/// already promises every such key is warned about, never just accepted.
+///
+/// `seed` is the one typed field with no equivalent here:
+/// `ollama_native.rs`'s own `build_native_request_body` DOES send
+/// `params.seed` (Ollama's native `/api/chat` supports it), but that is a
+/// separate body-construction function this one's callers never invoke
+/// together with this one -- see `openai_compat/mod.rs`'s `generate`/
+/// `stream`, which choose exactly one of the two per request depending on
+/// `profile.dialect`.
+///
+/// `reasoning_effort_sent` is whether [`reasoning_effort`] actually put a
+/// value in the body for THIS request -- `false` covers "this profile does
+/// not send `reasoning_effort` at all" (`!profile.sends_reasoning_effort`),
+/// "the configured value was not a JSON string"
+/// (`reasoning_effort`'s own `Value::as_str` gate), and "this exact `model`
+/// is DECLARED not to support it" (`model_reasoning == Some(false)`,
+/// [`reasoning_effort_candidate`]'s own gate) -- `model_reasoning` is passed
+/// through again here (not re-derived from `reasoning_effort_sent` alone)
+/// specifically so THIS one reason gets its own message naming the model,
+/// per board item dogfood-02/reasoning-effort-crashes-a-non-thinking-model:
+/// a caller silently discovering "nothing happened" for a model-capability
+/// mismatch is a materially different, more actionable fact than a
+/// profile-wide gate or a typo'd value, and deserves to be told which.
+///
+/// Every OTHER `extra` key is warned about unconditionally: this body
+/// builder has no generic passthrough (`docs/routing.md`'s "Sampling and
+/// reasoning params" section says so explicitly) -- a key this module does
+/// not name is simply never read, so "ignored" is always the true answer
+/// for it.
+fn warn_ignored_params(
+    req: &GenerateRequest,
+    profile: &Profile,
+    model_reasoning: Option<bool>,
+    reasoning_effort_sent: bool,
+) {
     if req.params.seed.is_some() {
         tracing::warn!(
             field = "seed",
             backend = "openai-compat",
             "params field \"seed\" ignored by backend \"openai-compat\": this profile's chat \
              completions endpoint does not send a seed parameter"
+        );
+    }
+    if req.params.extra.contains_key("reasoning_effort") && !reasoning_effort_sent {
+        if model_reasoning == Some(false) {
+            let model = req.model.as_str();
+            tracing::warn!(
+                field = "reasoning_effort",
+                backend = "openai-compat",
+                model,
+                "params.extra field \"reasoning_effort\" ignored by backend \"openai-compat\": \
+                 model \"{model}\" is declared not to support reasoning/thinking"
+            );
+        } else {
+            let profile_id = profile.id.as_str();
+            tracing::warn!(
+                field = "reasoning_effort",
+                backend = "openai-compat",
+                profile = profile_id,
+                "params.extra field \"reasoning_effort\" ignored by backend \"openai-compat\" \
+                 (profile \"{profile_id}\"): this profile does not send a reasoning_effort \
+                 field, or the configured value is not a string"
+            );
+        }
+    }
+    for key in req.params.extra.keys() {
+        if key == "reasoning_effort" {
+            continue; // handled above, sent or explained
+        }
+        tracing::warn!(
+            field = %key,
+            backend = "openai-compat",
+            "params.extra field \"{key}\" ignored by backend \"openai-compat\": no wire mapping \
+             reads this key, so the provider never receives it"
         );
     }
 }
@@ -660,12 +774,14 @@ mod tests {
             true,
             false,
             None,
+            None,
         );
         let without_hint_body = build_request_body(
             &req_without_hint,
             &Dialect::OpenAi.profile(),
             true,
             false,
+            None,
             None,
         );
         assert_eq!(
@@ -686,11 +802,13 @@ mod tests {
             },
             prefix_key: None,
         };
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
+        let openai_body =
+            build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None, None);
         assert_eq!(openai_body["max_completion_tokens"], 256);
         assert!(openai_body.get("max_tokens").is_none());
 
-        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), false, false, None);
+        let ollama_body =
+            build_request_body(&req, &Dialect::Ollama.profile(), false, false, None, None);
         assert_eq!(ollama_body["max_tokens"], 256);
         assert!(ollama_body.get("max_completion_tokens").is_none());
     }
@@ -712,14 +830,16 @@ mod tests {
             prefix_key: None,
         };
 
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), true, false, None);
+        let openai_body =
+            build_request_body(&req, &Dialect::OpenAi.profile(), true, false, None, None);
         assert_eq!(openai_body["parallel_tool_calls"], true);
 
-        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), true, false, None);
+        let ollama_body =
+            build_request_body(&req, &Dialect::Ollama.profile(), true, false, None, None);
         assert!(ollama_body.get("parallel_tool_calls").is_none());
 
         let openai_body_false_cap =
-            build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
+            build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None, None);
         assert!(openai_body_false_cap.get("parallel_tool_calls").is_none());
     }
 
@@ -732,17 +852,25 @@ mod tests {
             params: SamplingParams::default(),
             prefix_key: None,
         };
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, true, None);
+        let openai_body =
+            build_request_body(&req, &Dialect::OpenAi.profile(), false, true, None, None);
         assert_eq!(openai_body["stream"], true);
         assert_eq!(openai_body["stream_options"]["include_usage"], true);
 
-        let vllm_body = build_request_body(&req, &Dialect::VllmHermes.profile(), false, true, None);
+        let vllm_body = build_request_body(
+            &req,
+            &Dialect::VllmHermes.profile(),
+            false,
+            true,
+            None,
+            None,
+        );
         assert_eq!(vllm_body["stream"], true);
         assert!(vllm_body.get("stream_options").is_none());
     }
 
     #[test]
-    fn reasoning_effort_is_emitted_only_for_openai_dialect_when_set() {
+    fn reasoning_effort_is_emitted_for_openai_and_ollama_but_not_an_unverified_dialect_when_set() {
         let mut req = GenerateRequest {
             model: ModelId::new("m"),
             segments: vec![],
@@ -750,17 +878,38 @@ mod tests {
             params: SamplingParams::default(),
             prefix_key: None,
         };
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
+        let openai_body =
+            build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None, None);
         assert!(openai_body.get("reasoning_effort").is_none());
 
         req.params
             .extra
             .insert("reasoning_effort".into(), json!("high"));
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
+        let openai_body =
+            build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None, None);
         assert_eq!(openai_body["reasoning_effort"], "high");
 
-        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), false, false, None);
-        assert!(ollama_body.get("reasoning_effort").is_none());
+        // `ollama`'s own `sends_reasoning_effort` flipped true 2026-09-30:
+        // Ollama's OpenAI-compatible endpoint has a genuine typed
+        // `reasoning_effort` field (see `BUILT_IN_PROFILES`'s own comment on
+        // that entry in `profile.rs` for the live-server evidence) -- the
+        // dogfood-02 bug this item fixes was exactly this value being
+        // silently dropped here.
+        let ollama_body =
+            build_request_body(&req, &Dialect::Ollama.profile(), false, false, None, None);
+        assert_eq!(ollama_body["reasoning_effort"], "high");
+
+        // A dialect this crate has never verified against the field at all
+        // still drops it -- unchanged, conservative behavior.
+        let vllm_body = build_request_body(
+            &req,
+            &Dialect::VllmHermes.profile(),
+            false,
+            false,
+            None,
+            None,
+        );
+        assert!(vllm_body.get("reasoning_effort").is_none());
     }
 
     // -----------------------------------------------------------------
@@ -848,7 +997,7 @@ mod tests {
     fn seed_param_ignored_by_openai_compat_logs_exactly_one_warning_naming_field_and_backend() {
         let (log, _guard) = install_capture();
         let req = seed_request(Some(7));
-        build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
+        build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None, None);
 
         assert_eq!(
             log.count(),
@@ -867,7 +1016,241 @@ mod tests {
     fn no_seed_param_logs_no_warning() {
         let (log, _guard) = install_capture();
         let req = seed_request(None);
-        build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
+        build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None, None);
+        assert_eq!(log.count(), 0);
+    }
+
+    fn extra_request(extra: serde_json::Map<String, Value>) -> GenerateRequest {
+        GenerateRequest {
+            model: ModelId::new("m"),
+            segments: vec![],
+            tools: vec![],
+            params: SamplingParams {
+                extra,
+                ..SamplingParams::default()
+            },
+            prefix_key: None,
+        }
+    }
+
+    /// **The break-the-guard target for this item**: DOGFOOD 2 found
+    /// `roles.thinking.params.extra.reasoning_effort` reaching a dialect
+    /// whose profile does not send it (at the time, every built-in
+    /// `ollama` profile) with NO signal at all -- the provider never saw
+    /// the setting, and nothing told the operator so. A dialect that still
+    /// does not send `reasoning_effort` (unlike `ollama` since this item)
+    /// must warn exactly like `seed` does, naming the field and the
+    /// backend.
+    #[test]
+    fn reasoning_effort_dropped_by_a_dialect_that_does_not_send_it_logs_a_warning() {
+        let (log, _guard) = install_capture();
+        let mut extra = serde_json::Map::new();
+        extra.insert("reasoning_effort".into(), json!("high"));
+        let req = extra_request(extra);
+
+        build_request_body(
+            &req,
+            &Dialect::VllmHermes.profile(),
+            false,
+            false,
+            None,
+            None,
+        );
+
+        assert_eq!(
+            log.count(),
+            1,
+            "exactly one warning must be logged for one dropped extra key"
+        );
+        assert!(
+            log.contains("reasoning_effort"),
+            "warning must name the dropped field"
+        );
+        assert!(
+            log.contains("openai-compat"),
+            "warning must name the backend"
+        );
+    }
+
+    /// The same `extra.reasoning_effort` key, same value, against a profile
+    /// that DOES send it (`ollama`, since this item): no warning, because
+    /// nothing was dropped.
+    #[test]
+    fn reasoning_effort_sent_by_ollama_logs_no_warning() {
+        let (log, _guard) = install_capture();
+        let mut extra = serde_json::Map::new();
+        extra.insert("reasoning_effort".into(), json!("high"));
+        let req = extra_request(extra);
+
+        let body = build_request_body(&req, &Dialect::Ollama.profile(), false, false, None, None);
+
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(log.count(), 0);
+    }
+
+    // -----------------------------------------------------------------
+    // Per-MODEL gating (board item dogfood-02/reasoning-effort-crashes-
+    // a-non-thinking-model): confirmed live, 2026-09-30, against a local
+    // Ollama 0.35.0 -- `POST /v1/chat/completions {"model":"ministral-3:8b",
+    // ..., "reasoning_effort":"high"}` answers a structured `400
+    // invalid_request_error`, `"\"ministral-3:8b\" does not support
+    // thinking"`, while the SAME request against `qwen3.8:27b-mlx` (a real
+    // local reasoning-capable model) answers `200`. Gating on this crate's
+    // collapsed `Capabilities::reasoning: bool` would have been wrong: that
+    // field defaults `false` for ANY model with no `ModelMetadata` entry,
+    // and `qwen3.8:27b-mlx` itself has none -- these tests exercise
+    // `model_reasoning: Option<bool>` (`ModelMetadata::reasoning`'s own
+    // tri-state) directly instead.
+    // -----------------------------------------------------------------
+
+    fn extra_request_for_model(
+        model: &str,
+        extra: serde_json::Map<String, Value>,
+    ) -> GenerateRequest {
+        GenerateRequest {
+            model: ModelId::new(model),
+            segments: vec![],
+            tools: vec![],
+            params: SamplingParams {
+                extra,
+                ..SamplingParams::default()
+            },
+            prefix_key: None,
+        }
+    }
+
+    /// A model DECLARED reasoning-capable (`Some(true)`, e.g. a
+    /// `models.json`/bundled entry naming `qwen3.8:27b-mlx`): the field is
+    /// sent, same as the undeclared (`None`) case.
+    #[test]
+    fn reasoning_effort_is_sent_when_the_model_is_declared_reasoning_capable() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("reasoning_effort".into(), json!("high"));
+        let req = extra_request_for_model("qwen3.8:27b-mlx", extra);
+
+        let body = build_request_body(
+            &req,
+            &Dialect::Ollama.profile(),
+            false,
+            false,
+            None,
+            Some(true),
+        );
+
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    /// **ACCEPTANCE (the critical fix)**: a model DECLARED NOT
+    /// reasoning-capable (`Some(false)`, e.g. `ministral-3:8b`) never gets
+    /// the field, regardless of what the role configured -- the body carries
+    /// no `reasoning_effort` key at all, and the dropped setting is warned
+    /// about BY NAME, not silently discarded the way the original bug (an
+    /// untyped dialect gate) or a blind send (the regression this review
+    /// round caught) both were.
+    #[test]
+    fn reasoning_effort_is_skipped_and_warned_when_the_model_is_declared_not_reasoning_capable() {
+        let (log, _guard) = install_capture();
+        let mut extra = serde_json::Map::new();
+        extra.insert("reasoning_effort".into(), json!("high"));
+        let req = extra_request_for_model("ministral-3:8b", extra);
+
+        let body = build_request_body(
+            &req,
+            &Dialect::Ollama.profile(),
+            false,
+            false,
+            None,
+            Some(false),
+        );
+
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "a model declared not to support reasoning must never receive the field: {body}"
+        );
+        assert_eq!(log.count(), 1);
+        assert!(
+            log.contains("ministral-3:8b"),
+            "the warning must name the model, not just the field/backend"
+        );
+        assert!(log.contains("reasoning_effort"));
+        assert!(log.contains("openai-compat"));
+    }
+
+    /// The "unknown" policy this item chose: no declaration at all
+    /// (`None`, the common case -- confirmed live the same day that most
+    /// local Ollama models, including every thinking-capable one tested,
+    /// have no metadata entry) still sends the field, exactly like
+    /// `Some(true)`. See [`reasoning_effort_candidate`]'s own doc for why
+    /// treating `None` as "unsupported" was rejected.
+    #[test]
+    fn reasoning_effort_is_sent_when_the_model_has_no_reasoning_declaration_at_all() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("reasoning_effort".into(), json!("high"));
+        let req = extra_request_for_model("qwen3.8:27b-mlx", extra);
+
+        let body = build_request_body(&req, &Dialect::Ollama.profile(), false, false, None, None);
+
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    /// A configured JSON BOOLEAN is DROPPED (warned, not sent) on the
+    /// OpenAI-compatible `reasoning_effort` field, regardless of the
+    /// model's own reasoning declaration -- confirmed live, 2026-09-30:
+    /// Ollama's OpenAI-compatible endpoint types `reasoning_effort` as a
+    /// Go `string`, and a non-string value answers a structured `400`
+    /// naming the exact field. `openai_compat/ollama_native.rs`'s own
+    /// `think` field is where a configured boolean reaches the wire
+    /// instead (its own `a_configured_boolean_is_forwarded_to_the_native_
+    /// think_field` test) -- the two endpoints genuinely differ in which
+    /// JSON types they accept, so this module staying string-only is
+    /// correct, not a residual gap.
+    #[test]
+    fn a_configured_boolean_is_dropped_and_warned_on_the_openai_compatible_endpoint() {
+        let (log, _guard) = install_capture();
+        let mut extra = serde_json::Map::new();
+        extra.insert("reasoning_effort".into(), json!(true));
+        let req = extra_request_for_model("gemma4:e4b", extra);
+
+        let body = build_request_body(
+            &req,
+            &Dialect::Ollama.profile(),
+            false,
+            false,
+            None,
+            Some(true),
+        );
+
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(log.count(), 1);
+        assert!(log.contains("reasoning_effort"));
+    }
+
+    /// Any `extra` key this wire layer has no mapping for at all (not just
+    /// `reasoning_effort`) is warned about, naming the field and the
+    /// backend -- `docs/routing.md`'s "Sampling and reasoning params"
+    /// section documents this as the actual behavior, not the generic
+    /// passthrough an earlier draft of that doc claimed.
+    #[test]
+    fn an_unrecognized_extra_key_logs_a_warning_naming_the_field_and_backend() {
+        let (log, _guard) = install_capture();
+        let mut extra = serde_json::Map::new();
+        extra.insert("some_unrecognized_key".into(), json!("value"));
+        let req = extra_request(extra);
+
+        build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None, None);
+
+        assert_eq!(log.count(), 1);
+        assert!(log.contains("some_unrecognized_key"));
+        assert!(log.contains("openai-compat"));
+    }
+
+    /// An empty `extra` map logs nothing -- the warning is about a key that
+    /// was actually set and then dropped, never ambient noise.
+    #[test]
+    fn empty_extra_logs_no_warning() {
+        let (log, _guard) = install_capture();
+        let req = extra_request(serde_json::Map::new());
+        build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None, None);
         assert_eq!(log.count(), 0);
     }
 
@@ -1143,6 +1526,7 @@ mod tests {
             false,
             false,
             Some(131_072),
+            None,
         );
         assert_eq!(body["options"]["num_ctx"], 131_072);
     }
@@ -1158,6 +1542,7 @@ mod tests {
             &Dialect::Ollama.profile(),
             false,
             false,
+            None,
             None,
         );
         assert!(
@@ -1178,8 +1563,14 @@ mod tests {
             Dialect::LmStudio.profile(),
             Dialect::LlamaCppServer.profile(),
         ] {
-            let body =
-                build_request_body(&minimal_request(), &profile, false, false, Some(131_072));
+            let body = build_request_body(
+                &minimal_request(),
+                &profile,
+                false,
+                false,
+                Some(131_072),
+                None,
+            );
             assert!(
                 body.get("options").is_none(),
                 "{} must never emit options.num_ctx",

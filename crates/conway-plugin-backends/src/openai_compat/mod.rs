@@ -173,6 +173,27 @@ impl OpenAiCompatBackend {
     fn use_native_ollama_chat(&self, context_window: Option<u32>) -> bool {
         self.profile.sends_num_ctx && context_window.is_some()
     }
+
+    /// This exact `model`'s DECLARED reasoning/thinking support, straight
+    /// from `ModelMetadataStore` (board item dogfood-02/reasoning-effort
+    /// crashes a non-thinking model) — `Some(true)`/`Some(false)` only when
+    /// a bundled or `models.json` entry actually says so; `None` for every
+    /// model this crate has no metadata entry for at all (confirmed live,
+    /// 2026-09-30: most local Ollama models, including every thinking-
+    /// capable one this crate was tested against, have no entry). `None` is
+    /// genuinely "unknown", never silently treated as "false" the way
+    /// `Capabilities::reasoning: bool` collapses it for ROUTING's capability
+    /// floor (`build_capabilities`'s own doc) -- reusing that collapsed
+    /// value here would re-skip reasoning for every undescribed
+    /// thinking-capable model, recreating this exact item's original bug.
+    /// `wire::reasoning_effort`/`ollama_native`'s own native counterpart
+    /// decide what each of the three answers means for whether to actually
+    /// send the field.
+    fn model_reasoning_declaration(&self, model: &ModelId) -> Option<bool> {
+        self.models
+            .get(model)
+            .and_then(|metadata| metadata.reasoning)
+    }
 }
 
 #[async_trait]
@@ -258,12 +279,14 @@ impl Backend for OpenAiCompatBackend {
     async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
         let caps = self.capabilities(&req.model);
         let context_window = self.context_window_to_request(&req.model);
+        let model_reasoning = self.model_reasoning_declaration(&req.model);
         if self.use_native_ollama_chat(context_window) {
             let body = ollama_native::build_native_request_body(
                 &req,
                 &self.profile,
                 false,
                 context_window,
+                model_reasoning,
             );
             let url = self.native_chat_url();
             let cancel = CancellationToken::new();
@@ -285,6 +308,7 @@ impl Backend for OpenAiCompatBackend {
             caps.parallel_tool_calls,
             false,
             context_window,
+            model_reasoning,
         );
         let url = self.chat_url();
         let cancel = CancellationToken::new();
@@ -307,9 +331,15 @@ impl Backend for OpenAiCompatBackend {
     ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError> {
         let caps = self.capabilities(&req.model);
         let context_window = self.context_window_to_request(&req.model);
+        let model_reasoning = self.model_reasoning_declaration(&req.model);
         if self.use_native_ollama_chat(context_window) {
-            let body =
-                ollama_native::build_native_request_body(&req, &self.profile, true, context_window);
+            let body = ollama_native::build_native_request_body(
+                &req,
+                &self.profile,
+                true,
+                context_window,
+                model_reasoning,
+            );
             let url = self.native_chat_url();
             let cancel = CancellationToken::new();
             let make = || self.request_builder(url.clone(), &body);
@@ -326,6 +356,7 @@ impl Backend for OpenAiCompatBackend {
             caps.parallel_tool_calls,
             true,
             context_window,
+            model_reasoning,
         );
         let url = self.chat_url();
         let cancel = CancellationToken::new();
@@ -360,8 +391,15 @@ impl Backend for OpenAiCompatBackend {
     ) -> Result<Admission, BackendError> {
         let caps = self.capabilities(&req.model);
         let context_window = self.context_window_to_request(&req.model);
+        let model_reasoning = self.model_reasoning_declaration(&req.model);
         let body = if self.use_native_ollama_chat(context_window) {
-            ollama_native::build_native_request_body(req, &self.profile, false, context_window)
+            ollama_native::build_native_request_body(
+                req,
+                &self.profile,
+                false,
+                context_window,
+                model_reasoning,
+            )
         } else {
             wire::build_request_body(
                 req,
@@ -369,6 +407,7 @@ impl Backend for OpenAiCompatBackend {
                 caps.parallel_tool_calls,
                 false,
                 context_window,
+                model_reasoning,
             )
         };
         let est_tokens = crate::admission::estimate_wire_tokens(&body);

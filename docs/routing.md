@@ -451,10 +451,26 @@ OpenAI-compatible server's `reasoning_effort`:
 `thinking` turns a hard problem's effort up: `extra.reasoning_budget_tokens`
 reaches the Anthropic Messages API's `thinking: {type: "enabled",
 budget_tokens: ...}` field verbatim (see `conway-plugin-backends`'
-`anthropic::wire` module). `fast` turns a mechanical one's effort down —
-a smaller model, and `temperature: 0` for deterministic output — the exact
-inverse case. Switch between them with `/role`, the same top-level,
-session-scoped command ["Viewing and changing the default from the
+`anthropic::wire` module), and `extra.reasoning_effort` reaches an
+OpenAI-compatible provider's own `reasoning_effort` request field the same
+way — including a local Ollama server, confirmed to accept a genuine
+`reasoning_effort` string on its OpenAI-compatible endpoint (and, on
+Ollama's NATIVE endpoint — used instead once a session has a resolved
+context window, see ["Capability matching"](#capability-matching) above —
+the same `extra.reasoning_effort` value reaches Ollama's own `think` field,
+which also accepts a plain boolean for a boolean-only thinking model;
+`reasoning_effort` itself stays string-only, since Ollama's own
+OpenAI-compatible endpoint types that one field strictly as a string).
+Ollama additionally gates BOTH wire names per model: a model declared
+(`models.json`/bundled metadata) NOT to support reasoning never receives
+the field at all, warned by name instead — see
+[`docs/providers.md`'s "Turning reasoning
+up"](providers.md#turning-reasoning-up-reasoning_effort-and-think) for the
+full three-way policy and why an undescribed model still gets the field by
+default. `fast` turns a mechanical one's effort down — a smaller model, and
+`temperature: 0` for deterministic output — the exact inverse case. Switch
+between them with `/role`, the same top-level, session-scoped command
+["Viewing and changing the default from the
 TUI"](#viewing-and-changing-the-default-from-the-tui) already covers for
 `default_role`: `/role thinking` for the next hard problem, `/role fast`
 once it's mechanical again. There is no separate `/effort` command and no
@@ -467,15 +483,28 @@ every other provider-shaped setting for that chain lives.
 `ConwayConfig::routing()` is the one place `roles.<alias>.params` is
 resolved into `conway_core::routing::RoleConfig::params` — every backend
 adapter reads the resolved value off its request; none re-derives it from
-`settings.json`. An `extra` key a backend's own wire layer does not
-recognize is passed through untouched (no validation at this layer; the
-provider's own request either accepts or rejects it, exactly as if you'd
-sent it by hand). A TYPED field a backend has no equivalent for — today,
-`seed`, on both shipped adapters' primary request path — logs one
-`tracing::warn!` naming the field and the backend the first time that
-request is built, rather than silently doing nothing: a setting that has
-no effect and no explanation is exactly the kind of gap this project tries
-not to leave standing.
+`settings.json`. Neither shipped adapter has a generic passthrough: each
+wire-body builder reads a short, named list of `extra` keys (today,
+`reasoning_budget_tokens` for Anthropic; `reasoning_effort` for an
+OpenAI-compatible dialect that declares it can carry one) and nothing else
+in `extra` ever reaches the request body. An `extra` key outside that named
+list — whether it is a typo, a key meant for a different provider, or a
+real key the current dialect has not been verified to accept — is
+**warned and dropped**, never silently accepted and never forwarded
+unvalidated: a generic passthrough would mean the FIRST time conway sends
+an operator's typo'd or provider-mismatched key to some OpenAI-compatible
+server is also the first time anyone finds out whether that server 400s on
+an unrecognized field, exactly the failure `sends_reasoning_effort`'s own
+per-dialect gate exists to avoid (see [`docs/providers.md`'s "Turning
+reasoning up"](providers.md#turning-reasoning-up-reasoning_effort-and-think)).
+A TYPED field a
+backend has no equivalent for — today, `seed`, on both shipped adapters'
+*OpenAI-compatible* request path (Ollama's native endpoint DOES send
+`seed`) — gets the identical treatment. Either way, the first time a
+request is built with a setting that goes nowhere, conway logs one
+`tracing::warn!` naming the field and the backend, rather than silently
+doing nothing: a setting that has no effect and no explanation is exactly
+the kind of gap this project tries not to leave standing.
 
 To see what a role's effective `params` actually resolved to without
 sending a real request, `conway routes explain <role>` prints it on its own

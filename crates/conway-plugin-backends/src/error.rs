@@ -38,8 +38,18 @@ fn is_context_overflow(body: &str) -> bool {
 }
 
 /// The provider `error.message` field when `body` is JSON shaped like
-/// `{"error":{"message":...}}` (Anthropic and OpenAI both use this shape),
-/// else the first 512 bytes of `body`.
+/// `{"error":{"message":...}}` (Anthropic and OpenAI both use this shape,
+/// and Ollama's OWN OpenAI-compatible endpoint matches it too), OR the
+/// `error` field directly when it is a flat JSON STRING rather than a
+/// nested object — Ollama's NATIVE `/api/chat`/`/api/show` error shape,
+/// confirmed live 2026-09-30: a 400 for a model that does not support
+/// reasoning answers `{"error":"\"ministral-3:8b\" does not support
+/// thinking"}`, which the nested-object branch above cannot read (`Value::
+/// get("message")` on a JSON string returns `None`, not a fallback) —
+/// without this second branch, every native-endpoint 400 fell through to
+/// the generic `truncate_bytes` case below, turning a clear, attributable,
+/// provider-supplied reason into raw JSON. Else the first 512 bytes of
+/// `body`.
 fn extract_message(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
         if let Some(message) = value
@@ -47,6 +57,9 @@ fn extract_message(body: &str) -> String {
             .and_then(|error| error.get("message"))
             .and_then(|message| message.as_str())
         {
+            return message.to_string();
+        }
+        if let Some(message) = value.get("error").and_then(serde_json::Value::as_str) {
             return message.to_string();
         }
     }
@@ -288,6 +301,28 @@ mod tests {
     fn extracts_provider_error_message_from_json_error_shape() {
         match classify(400, r#"{"error":{"message":"bad field: foo"}}"#, None) {
             BackendError::BadRequest { detail } => assert_eq!(detail, "bad field: foo"),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    /// **ACCEPTANCE**: Ollama's NATIVE `/api/chat`/`/api/show` error shape
+    /// is a flat JSON STRING under `"error"`, not nested under `.message`
+    /// -- confirmed live, 2026-09-30, a real 400 for a model that does not
+    /// support reasoning: `{"error":"\"ministral-3:8b\" does not support
+    /// thinking"}`. `extract_message` must read it directly, not fall
+    /// through to the generic truncated-body case -- the provider's own
+    /// clear, attributable reason must survive into `BackendError::
+    /// BadRequest`'s `detail`, naming the model.
+    #[test]
+    fn extracts_provider_error_message_from_ollama_native_flat_string_error_shape() {
+        match classify(
+            400,
+            r#"{"error":"\"ministral-3:8b\" does not support thinking"}"#,
+            None,
+        ) {
+            BackendError::BadRequest { detail } => {
+                assert_eq!(detail, "\"ministral-3:8b\" does not support thinking");
+            }
             other => panic!("expected BadRequest, got {other:?}"),
         }
     }

@@ -1569,6 +1569,50 @@ fn assumed_floor_honesty_note(kind: &str, dialect: Option<&str>) -> Option<Strin
 // item adds no THIRD source of truth on top of `ContextTokensSource`,
 // only a THIRD, no-models.json-entry-required caller of the same two
 // facts guided setup's own confirm step already reads.
+//
+// **2026-09-30 correction, board item `01M3T76R6RGWK83ERATQATBM1H`: the
+// "no models.json entry -> ask `context_window_is_verified`" fallback
+// above missed a real source of truth, and falsely nagged about a floor a
+// real turn never actually runs against.** Dogfooding against
+// `ollama_cloud/glm-5.2`/`glm-5.3` -- a `models.json`-free config, exactly
+// `HOSTED_CHOICES`' own guided-setup output -- opened every session with
+// "conway has no confirmed context window ... 32768-token limit", even
+// though `conway_plugin_backends::model_metadata`'s bundled `DEFAULTS`
+// table has declared `1_048_576` for both ids since the glm-5.2/5.3
+// regressions were fixed (`crates/conway-plugin-backends/tests/
+// glm_context_window.rs` already proves the REAL admission bound a turn
+// runs against is that bundled figure, not the floor -- unaffected by this
+// correction, which touches only THIS notice). The root cause: `indexed_
+// source` is `None` whenever the pair was never added to `models.json`
+// (`ConwayBuilder::build`'s own `model_refs` -- the set `CapabilityIndex::
+// from_backends` ever queries a backend about -- is built from `models.
+// json`'s OWN keys alone, `crates/conway/src/builder.rs`'s step 5), so the
+// index built from it never saw this pair either; the old fallback then
+// asked only "does `models.json` name this pair" and "is the DIALECT's own
+// baseline verified" -- neither of which is the question a real
+// `OpenAiCompatBackend::capabilities()` call actually answers for this
+// model, which also consults `ModelMetadataStore::defaults()` (bare
+// model-id keyed, loaded unconditionally by every openai-compat backend
+// regardless of `models.json`) BEFORE ever falling to the dialect floor
+// (`OpenAiCompatBackend::capability_inputs`'s own `metadata: self.models.
+// get(model)`). [`bundled_model_metadata_declares_window`] asks that exact
+// third question, over the SAME bundled table, so this notice's fallback
+// can no longer be wrong about a pair the real admission path already
+// resolves correctly. It changes nothing about `indexed_source: Some(_)`
+// (still authoritative, unconditionally) or the `already_has_metadata_
+// entry` check (an explicit, operator- or probe-written `models.json`
+// entry still always wins) -- only the final `None`-branch fallback gains
+// this one additional real signal.
+//
+// **What this correction does NOT claim to fix:** a model string the
+// bundled table's own bare-id/normalized lookup cannot bridge to its entry
+// -- e.g. `glm-5.2:cloud` (`ModelMetadataStore::normalize_model_id` turns
+// that into `glm-5.2-cloud`, which matches neither the exact nor the
+// normalized form of the stored `glm-5.2` key) -- still resolves `Unverified`
+// end to end, notice AND real admission bound alike: for that exact model
+// string this notice SHOULD still fire, and correctly does (traced, not
+// fixed, here -- that is a different item's own scope; see this function's
+// own doc for the pointer).
 // ---------------------------------------------------------------------
 
 /// Pure: `None` unless the pair this session's first turn is about to run
@@ -1585,11 +1629,12 @@ fn assumed_floor_honesty_note(kind: &str, dialect: Option<&str>) -> Option<Strin
 /// re-asking about a window already confirmed" ruling protects, unchanged
 /// here.
 ///
-/// `already_has_metadata_entry`/`indexed_source` are pre-resolved by the
-/// caller ([`resolve_first_turn_floor_notice`], below) rather than looked
-/// up here, so a test can drive every branch directly without building a
-/// live [`conway::Conway`] -- this module's own testability split (top
-/// doc), extended to this pair of functions.
+/// `already_has_metadata_entry`/`indexed_source`/`bundled_metadata_
+/// declares_window` are pre-resolved by the caller ([`resolve_first_turn_
+/// floor_notice`], below) rather than looked up here, so a test can drive
+/// every branch directly without building a live [`conway::Conway`] -- this
+/// module's own testability split (top doc), extended to this pair of
+/// functions.
 ///
 /// `indexed_source`, when `Some`, is authoritative and decided FIRST: the
 /// router's own `CapabilityIndex` is the one place `Override`/`Metadata`/
@@ -1601,13 +1646,21 @@ fn assumed_floor_honesty_note(kind: &str, dialect: Option<&str>) -> Option<Strin
 /// effect (no capability index reached at all -- `conway_core::routing::
 /// MinimalRouter`'s own doc, "this type indexes no capabilities") or this
 /// exact pair was never indexed (no `models.json` entry): this function
-/// then falls back to the SAME `already_has_metadata_entry`/
-/// `context_window_is_verified` check `resolve_context_window_for_setup`
-/// already makes, which answers correctly in both of those `None` cases
-/// without ever needing to reach a live `Backend`.
+/// then falls back to `already_has_metadata_entry`/`context_window_is_
+/// verified` (the same check `resolve_context_window_for_setup` already
+/// makes) **plus `bundled_metadata_declares_window`** (board item
+/// `01M3T76R6RGWK83ERATQATBM1H` -- see this item's own doc immediately
+/// above): a bare model id the shipped `ModelMetadataStore::defaults()`
+/// table already names (`glm-5.2`, `glm-5.3`, ...) means a real
+/// `OpenAiCompatBackend::capabilities()` call for this pair ALREADY
+/// resolves a real window, with or without a `models.json` entry -- so this
+/// notice must not claim otherwise. All three must be false (and the
+/// dialect unverified) for the floor to actually be what a turn would run
+/// against.
 pub(crate) fn first_turn_floor_notice(
     already_has_metadata_entry: bool,
     indexed_source: Option<conway::ContextTokensSource>,
+    bundled_metadata_declares_window: bool,
     key: &str,
     kind: &str,
     dialect: Option<&str>,
@@ -1615,7 +1668,11 @@ pub(crate) fn first_turn_floor_notice(
     let is_unverified = match indexed_source {
         Some(conway::ContextTokensSource::Unverified) => true,
         Some(_) => return None,
-        None => !already_has_metadata_entry && !context_window_is_verified(kind, dialect),
+        None => {
+            !already_has_metadata_entry
+                && !bundled_metadata_declares_window
+                && !context_window_is_verified(kind, dialect)
+        }
     };
     if !is_unverified {
         return None;
@@ -1628,6 +1685,39 @@ pub(crate) fn first_turn_floor_notice(
          measurement, and this model's real window may be very different. Set one in \
          models.json (see docs/providers.md) before it costs a run."
     ))
+}
+
+/// Whether `conway_plugin_backends`' bundled per-model metadata table
+/// (`ModelMetadataStore::defaults()`, keyed by the BARE model id --
+/// compile-time-embedded, no file read, no network call) already declares a
+/// real `max_context_tokens` for `model` -- the SAME table, and the SAME
+/// lookup (`ModelMetadataStore::get`, exact-then-normalized), every real
+/// openai-compat `Backend::capabilities()`/`context_window_source()` call
+/// consults UNCONDITIONALLY (`OpenAiCompatBackend::new` always loads
+/// `ModelMetadataStore::defaults()`, merged with a per-backend
+/// `metadata_path` file when one is configured -- never reached from this
+/// facade's own `settings.json` today, so `defaults()` alone is exactly
+/// what every real instance in this codebase resolves against; see this
+/// item's own doc above for the full chain). Reused here, never
+/// re-derived: calling `ModelMetadataStore::get` directly is what keeps this
+/// query and `OpenAiCompatBackend::capability_inputs`'s own `self.models.
+/// get(model)` from silently drifting apart (P-14).
+///
+/// Only `kind == "openai-compat"` can answer `true`: that is the one kind
+/// proven to consult this table. `AnthropicBackend` builds no
+/// `ModelMetadataStore` at all, and `kind` is an open string resolved
+/// against whatever backend factories are registered, so a third-party kind
+/// whose model id happens to collide with a bundled id must NOT be assumed
+/// to share this resolution. Every other kind answers `false`, which leaves
+/// the notice firing (the safe direction) rather than silencing it.
+pub(crate) fn bundled_model_metadata_declares_window(kind: &str, model: &str) -> bool {
+    if kind != conway_plugin_backends::OPENAI_COMPAT_KIND {
+        return false;
+    }
+    conway_plugin_backends::model_metadata::ModelMetadataStore::defaults()
+        .get(&conway::backend::ModelId::new(model))
+        .and_then(|m| m.max_context_tokens)
+        .is_some()
 }
 
 /// The imperative half: resolves whichever `(backend, model)` this
@@ -1682,9 +1772,12 @@ pub fn resolve_first_turn_floor_notice(
     let entry = conway.config().backends.get(model_ref.backend.as_str())?;
     let already_has_metadata_entry = conway.model_metadata().models.contains_key(&key);
     let indexed_source = conway.capability_index().context_window_source(&model_ref);
+    let bundled_metadata_declares_window =
+        bundled_model_metadata_declares_window(&entry.kind, model_ref.model.as_str());
     first_turn_floor_notice(
         already_has_metadata_entry,
         indexed_source,
+        bundled_metadata_declares_window,
         &key,
         &entry.kind,
         entry.dialect.as_deref(),
@@ -2698,24 +2791,39 @@ mod tests {
         );
     }
 
-    // ---- first_turn_floor_notice (board item `01M2N2GJ9K7QEABGZD7R9GVT3Y`) ----
+    // ---- first_turn_floor_notice (board item `01M2N2GJ9K7QEABGZD7R9GVT3Y`,
+    // ---- corrected by board item `01M3T76R6RGWK83ERATQATBM1H`) ----
+
+    // `ollama_cloud/glm-5.3`'s own board item (`01M2N2GJ9K7QEABGZD7R9GVT3Y`)
+    // originally used THIS exact pair as its "fires" reproduction. That was
+    // itself wrong, discovered by dogfooding: `glm-5.3` is one of the two
+    // ids (alongside `glm-5.2`) `conway_plugin_backends::model_metadata`'s
+    // bundled `DEFAULTS` table declares a real `1_048_576`-token window
+    // for -- a real `OpenAiCompatBackend::capabilities()` call for that pair
+    // ALREADY resolves correctly, `models.json` entry or not, so the
+    // notice claiming otherwise was the actual defect (this item's own top
+    // doc has the full trace). The "fires" tests below now use a model this
+    // crate truly has no opinion about (`mystery-model-9000b`) so they keep
+    // proving the genuinely-unverified case; the bundled-defaults
+    // suppression itself is proved by the new tests immediately after.
 
     #[test]
     fn first_turn_floor_notice_fires_for_an_unindexed_unverified_dialect() {
         // No `models.json` entry (`already_has_metadata_entry: false`), no
         // capability-index entry at all (`indexed_source: None` --
-        // `MinimalRouter`, or a `DeclarativeRouter` pair never indexed) --
-        // the literal `ollama_cloud/glm-5.3` reproduction this item exists
-        // to close.
+        // `MinimalRouter`, or a `DeclarativeRouter` pair never indexed),
+        // and no bundled per-model declaration either -- a genuinely
+        // undescribed model on an unverified dialect.
         let msg = first_turn_floor_notice(
             false,
             None,
-            "ollama_cloud/glm-5.3",
+            false,
+            "ollama_cloud/mystery-model-9000b",
             "openai-compat",
             Some("ollama"),
         );
         let msg = msg.expect("an unindexed, unverified dialect must produce a notice");
-        assert!(msg.contains("ollama_cloud/glm-5.3"));
+        assert!(msg.contains("ollama_cloud/mystery-model-9000b"));
         assert!(
             msg.contains(CONTEXT_WINDOW_PROVENANCE_ASSUMED),
             "must use the SAME provenance vocabulary the setup-time surface and `conway routes \
@@ -2740,7 +2848,8 @@ mod tests {
                 first_turn_floor_notice(
                     false,
                     Some(source),
-                    "ollama_cloud/glm-5.3",
+                    false,
+                    "ollama_cloud/mystery-model-9000b",
                     "openai-compat",
                     Some("ollama"),
                 ),
@@ -2756,9 +2865,14 @@ mod tests {
         // `DeclarativeRouter` pair that IS `models.json`-indexed but whose
         // resolved source is still the floor) -- this is the one case
         // `indexed_source: Some(..)` must fire, unlike every other `Some`.
+        // `bundled_metadata_declares_window: true` must NOT save it here --
+        // `indexed_source` is authoritative and decided FIRST (this
+        // function's own doc): the router's own index already looked past
+        // the bundled table and still landed on `Unverified`.
         let msg = first_turn_floor_notice(
             true,
             Some(conway::ContextTokensSource::Unverified),
+            true,
             "ollama_cloud/glm-5.3",
             "openai-compat",
             Some("ollama"),
@@ -2777,7 +2891,8 @@ mod tests {
             first_turn_floor_notice(
                 true,
                 None,
-                "ollama_cloud/glm-5.3",
+                false,
+                "ollama_cloud/mystery-model-9000b",
                 "openai-compat",
                 Some("ollama"),
             ),
@@ -2794,6 +2909,7 @@ mod tests {
             first_turn_floor_notice(
                 false,
                 None,
+                false,
                 "openai/gpt-4o-mini",
                 "openai-compat",
                 Some("openai"),
@@ -2801,7 +2917,14 @@ mod tests {
             None,
         );
         assert_eq!(
-            first_turn_floor_notice(false, None, "anthropic/claude-sonnet-5", "anthropic", None),
+            first_turn_floor_notice(
+                false,
+                None,
+                false,
+                "anthropic/claude-sonnet-5",
+                "anthropic",
+                None
+            ),
             None,
         );
     }
@@ -2811,7 +2934,8 @@ mod tests {
         let msg = first_turn_floor_notice(
             false,
             None,
-            "ollama_cloud/glm-5.3",
+            false,
+            "ollama_cloud/mystery-model-9000b",
             "openai-compat",
             Some("ollama"),
         )
@@ -2823,6 +2947,125 @@ mod tests {
             "must name the EXACT floor number a real turn would silently use, not a vague \
              'small default': {msg}"
         );
+    }
+
+    /// **THE REGRESSION this item exists to close.** `ollama_cloud/glm-5.2`
+    /// (and `glm-5.3`) with NO `models.json` entry at all, under
+    /// `MinimalRouter` (`indexed_source: None`) -- `HOSTED_CHOICES`' own
+    /// guided-setup output, dogfooded 2026-09-30. Before this item's fix,
+    /// `bundled_metadata_declares_window` did not exist and this returned
+    /// `Some(..)`, falsely claiming a 32,768-token floor a real turn never
+    /// actually runs against (`crates/conway-plugin-backends/tests/
+    /// glm_context_window.rs` proves the real admission bound is
+    /// `1_048_576`).
+    #[test]
+    fn first_turn_floor_notice_is_silent_for_glm_5_2_and_5_3_once_bundled_metadata_declares_a_window(
+    ) {
+        for key in ["ollama_cloud/glm-5.2", "ollama_cloud/glm-5.3"] {
+            assert_eq!(
+                first_turn_floor_notice(false, None, true, key, "openai-compat", Some("ollama")),
+                None,
+                "a model the bundled defaults table already declares a window for must not be \
+                 reported as unconfirmed: {key}"
+            );
+        }
+    }
+
+    /// BREAK-THE-GUARD for the regression test immediately above: the
+    /// identical inputs, but `bundled_metadata_declares_window: false` (as
+    /// it always was before this item's fix) -- proves the suppression
+    /// above is genuinely conditioned on that new signal, not an
+    /// accidental pass from `already_has_metadata_entry`/`indexed_source`
+    /// alone.
+    #[test]
+    fn first_turn_floor_notice_still_fires_for_the_same_pair_without_the_bundled_signal() {
+        assert!(
+            first_turn_floor_notice(
+                false,
+                None,
+                false,
+                "ollama_cloud/glm-5.2",
+                "openai-compat",
+                Some("ollama"),
+            )
+            .is_some(),
+            "without `bundled_metadata_declares_window`, the old (buggy) behavior must reproduce \
+             exactly -- proving the fix above is not a no-op"
+        );
+    }
+
+    // ---- bundled_model_metadata_declares_window (board item
+    // ---- `01M3T76R6RGWK83ERATQATBM1H`) ----
+
+    #[test]
+    fn bundled_model_metadata_declares_window_true_for_glm_5_2_and_5_3() {
+        // The exact two ids this item's own dogfooding reproduction named,
+        // read off the SAME bundled table `OpenAiCompatBackend` itself
+        // consults for real admission -- never a hand-built stand-in value.
+        assert!(bundled_model_metadata_declares_window(
+            "openai-compat",
+            "glm-5.2"
+        ));
+        assert!(bundled_model_metadata_declares_window(
+            "openai-compat",
+            "glm-5.3"
+        ));
+    }
+
+    #[test]
+    fn bundled_model_metadata_declares_window_false_for_an_undescribed_model() {
+        assert!(!bundled_model_metadata_declares_window(
+            "openai-compat",
+            "mystery-model-9000b"
+        ));
+    }
+
+    #[test]
+    fn bundled_model_metadata_declares_window_false_for_anthropic_kind_even_naming_a_bundled_id() {
+        // `AnthropicBackend` builds no `ModelMetadataStore` at all -- this
+        // must stay `false` for `kind == "anthropic"` regardless of whether
+        // the bare model string happens to collide with an entry this
+        // table carries for an unrelated backend kind.
+        assert!(!bundled_model_metadata_declares_window(
+            "anthropic",
+            "glm-5.2"
+        ));
+    }
+
+    #[test]
+    fn bundled_model_metadata_declares_window_false_for_any_kind_but_openai_compat() {
+        // `kind` is an open string; a third-party backend kind whose model id
+        // collides with a bundled id must not be assumed to read the bundled
+        // table, or the notice would go silent while that backend's real
+        // admission bound is still the floor.
+        assert!(bundled_model_metadata_declares_window(
+            "openai-compat",
+            "glm-5.2"
+        ));
+        assert!(!bundled_model_metadata_declares_window(
+            "thirdparty-stub",
+            "glm-5.2"
+        ));
+        assert!(!bundled_model_metadata_declares_window(
+            "bedrock", "glm-5.3"
+        ));
+    }
+
+    #[test]
+    fn bundled_model_metadata_declares_window_false_for_a_cloud_tag_suffixed_variant() {
+        // Traced, not fixed, here (a different board item's own scope --
+        // see this module's top doc on `01M3T76R6RGWK83ERATQATBM1H`):
+        // `glm-5.2:cloud` is NOT bridged to the bundled `glm-5.2` entry by
+        // `ModelMetadataStore::get`'s exact-then-normalized lookup
+        // (`normalize_model_id` turns the QUERY into `glm-5.2-cloud`, which
+        // matches neither the raw nor the normalized form of the STORED
+        // `glm-5.2` key) -- so a real `OpenAiCompatBackend` resolves
+        // `Unverified` end to end for that exact model string, and this
+        // notice correctly still fires for it.
+        assert!(!bundled_model_metadata_declares_window(
+            "openai-compat",
+            "glm-5.2:cloud"
+        ));
     }
 
     // ---- validate_context_window_input (board item: setup-time context ----

@@ -491,7 +491,22 @@ supports_stream_options = true
 flatten_multiblock_user = true
 sends_parallel_tool_calls = false
 uses_max_completion_tokens = false
-sends_reasoning_effort = false
+# VERIFIED 2026-09-30 against a live local Ollama 0.35.0 (board item
+# dogfood-02/thinking-role-silently-dropped): Ollama's OpenAI-compatible
+# `/v1/chat/completions` endpoint has a genuine, TYPED `reasoning_effort`
+# string field -- sending a non-string value (`"reasoning_effort": false`)
+# answers a structured `400 invalid_request_error` naming the exact Go
+# struct field, `ChatCompletionRequest.reasoning_effort`, proving the server
+# recognizes this key rather than silently swallowing it as unknown JSON.
+# `GET /api/show` for a thinking-capable model (`qwen3.8:27b-mlx`) reports a
+# `"thinking"` capability with named levels (`["low","medium","xhigh"]` for
+# that model; other models use different level sets, e.g. `["high","max"]`,
+# or a plain boolean) -- Ollama tolerates a level string outside a given
+# model's own set without erroring (confirmed with `"xhigh"` against a model
+# that does not list it), so this crate sends the caller's string through
+# verbatim, exactly like every other `sends_reasoning_effort` profile, with
+# no per-model validation table of its own.
+sends_reasoning_effort = true
 tool_call_style = "tolerant"
 tool_calling = "non_streaming"
 max_context_tokens = 32768
@@ -844,6 +859,24 @@ mod tests {
             Dialect::LlamaCppServer,
         ] {
             assert!(!dialect.profile().sends_num_ctx, "{dialect:?}");
+        }
+    }
+
+    /// `openai` and `ollama` both send a caller-supplied `reasoning_effort`
+    /// request field -- `ollama`'s own gate flipped true 2026-09-30 (see
+    /// `BUILT_IN_PROFILES`' own comment on that entry for the live-server
+    /// evidence). The other three built-in profiles are unverified against
+    /// this field and stay conservative.
+    #[test]
+    fn openai_and_ollama_send_reasoning_effort() {
+        assert!(Dialect::OpenAi.profile().sends_reasoning_effort);
+        assert!(Dialect::Ollama.profile().sends_reasoning_effort);
+        for dialect in [
+            Dialect::VllmHermes,
+            Dialect::LmStudio,
+            Dialect::LlamaCppServer,
+        ] {
+            assert!(!dialect.profile().sends_reasoning_effort, "{dialect:?}");
         }
     }
 
