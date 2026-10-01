@@ -76,7 +76,7 @@ pub enum Entry {
         /// only `name` was stored). Serialized to a compact JSON string at
         /// apply time. Rendered as a one-line truncated `args: …` preview
         /// while collapsed and pretty-printed (multi-line) while expanded.
-        /// Reuses the `expanded` flag + Ctrl-E toggle below -- args and
+        /// Reuses the `expanded` flag + Ctrl-O toggle below -- args and
         /// output expand/collapse together (the single flag governs both).
         args: String,
         /// T4: accumulated `Event::ToolProgress { call_id, note }` notes
@@ -88,7 +88,7 @@ pub enum Entry {
         /// T5: whether this tool entry's preview is shown in full (`true`)
         /// or collapsed to the `tool_preview_lines` cap + a dim affordance
         /// (`false`, the default). Flipped on EVERY `Entry::Tool` at once by
-        /// [`AppState::toggle_all_tool_entries_expanded`] (the `Ctrl-E`
+        /// [`AppState::toggle_all_tool_entries_expanded`] (the `Ctrl-O`
         /// keybinding). The flag is kept on the entry itself -- not derived
         /// from a single global toggle -- so a future per-entry selective
         /// expand (tool-args reuse, or a transcript-cursor selection)
@@ -96,7 +96,7 @@ pub enum Entry {
         /// branch in `view/transcript.rs::tool_lines` reads this plus the
         /// stored `preview` (which is NEVER truncated -- the cap is
         /// render-time only) and emits either the first N lines + a `… (+M
-        /// lines, Ctrl-E to expand)` affordance or the full content. T4
+        /// lines, Ctrl-O to expand)` affordance or the full content. T4
         /// reuses the same `expanded` flag + render branch for tool-args
         /// previews: a one-line-truncated args preview is the same shape
         /// (collapsed: cap lines + affordance; expanded: full), just with a
@@ -186,7 +186,7 @@ pub enum ToolStatus {
 
 impl AppState {
     /// T5: flips `expanded` on EVERY `Entry::Tool` in the transcript at once
-    /// (the `Ctrl-E` keybinding). MVP is all-at-once -- there is no
+    /// (the `Ctrl-O` keybinding). MVP is all-at-once -- there is no
     /// transcript-cursor/selection state, so "expand/collapse all" is the
     /// only meaningful toggle. Pure state mutation: does NOT touch
     /// `scroll`/`follow_tail`/`max_scroll` -- the next render's existing

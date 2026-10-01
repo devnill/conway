@@ -495,7 +495,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#,
+            r#"{"transcript": {"toggle_tool_output": ["Ctrl-Z"]}}"#,
         )
         .expect("write must succeed");
         let keymap = keybindings::Keymap::load(&path).expect("a valid rebind must load");
@@ -514,9 +514,11 @@ mod tests {
             .map(|(binding, _)| binding)
             .expect("toggle_tool_output must be one of the transcript rows");
 
-        assert_eq!(toggle_row.keys, "Ctrl-O", "must show the rebound key");
+        // Ctrl-Z, not Ctrl-O: Ctrl-O is now the compiled-in default, so a
+        // rebind to it could not tell "rebind honoured" from "rebind ignored".
+        assert_eq!(toggle_row.keys, "Ctrl-Z", "must show the rebound key");
         assert_ne!(
-            toggle_row.keys, "Ctrl-E",
+            toggle_row.keys, "Ctrl-O",
             "must NOT show the compiled-in default once rebound"
         );
     }

@@ -113,8 +113,12 @@
 //!   advancing braille frames carry liveness without strobing). While
 //!   idle: just `idle`.
 //! - `hint` -- a persistent keybinding/affordance hint:
-//!   `Enter submit · Ctrl-E expand · /help · /agents to {view|hide}`,
-//!   plus `focused: <id>` when the transcript is focused on a non-root
+//!   `Enter submit · Ctrl-O expand · /help · /agents to {view|hide}` --
+//!   the `expand` fragment always names `transcript.toggle_tool_output`'s
+//!   CURRENT effective key (board item `01M3TEJPHQF4KHWBA6Y29Z33CY`:
+//!   `state.keybindings`, not a hardcoded `Ctrl-E`/`Ctrl-O` literal), and
+//!   is omitted entirely once that action is rebound to `[]` -- plus
+//!   `focused: <id>` when the transcript is focused on a non-root
 //!   agent **and `lineage` is NOT part of the resolved field list** (this
 //!   item: `lineage` already names the focused agent off-root, so keeping
 //!   this note unconditionally would say the same thing twice on the
@@ -241,6 +245,7 @@ use super::theme::Theme;
 use conway::{AgentId, ContextTokensSource, PermissionMode, ResultStatus};
 
 use crate::tui::config::StatusLineConfig;
+use crate::tui::keybindings::Context;
 use crate::tui::state::{should_animate, Activity, AppState, Mode, SPINNER_FRAMES};
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
@@ -1228,7 +1233,22 @@ fn hint_ladder(state: &AppState, theme: &Theme, lineage_present: bool) -> Vec<Ve
     // of this information actually lives -- and the display toggles move to
     // the settings menu (V4). `/agents` keeps its affordance because it is a
     // stateful toggle whose current state the hint reports.
-    let mut full = format!("Enter submit · Ctrl-E expand · /help · {agents_hint}");
+    //
+    // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: the `expand` fragment names
+    // `transcript.toggle_tool_output`'s CURRENT effective key(s) from
+    // `state.keybindings` -- never a hardcoded `Ctrl-E`/`Ctrl-O` literal --
+    // so a `keybindings.json` rebind shows up here immediately. An action
+    // rebound to `[]` (deliberately disabled) drops the fragment entirely
+    // rather than rendering an empty/stale hint.
+    let toggle_keys = state
+        .keybindings
+        .keys_for(Context::Transcript, "toggle_tool_output");
+    let expand_hint =
+        (!toggle_keys.is_empty()).then(|| format!("{} expand", toggle_keys.join("/")));
+    let mut full = match &expand_hint {
+        Some(hint) => format!("Enter submit · {hint} · /help · {agents_hint}"),
+        None => format!("Enter submit · /help · {agents_hint}"),
+    };
     // name which agent's conversation is currently shown whenever
     // it is not the root -- the root case stays silent (an always-on
     // "focused: root" would be noise for the overwhelmingly common case).
@@ -2013,7 +2033,7 @@ mod tests {
         let ctx = line.find("ctx").unwrap();
         let tok = line.find("0 tok").unwrap();
         let idle = line.find("idle").unwrap();
-        let hint = line.find("Ctrl-E").unwrap();
+        let hint = line.find("Ctrl-O").unwrap();
         // `model` is omitted (no ModelDecision yet) -- assert it's absent.
         assert!(!line.contains("anthropic/"));
         // Order: ready < ctx < tok < idle < hint.
@@ -2036,7 +2056,7 @@ mod tests {
         let ctx = line.find("ctx").unwrap();
         let tok = line.find("0 tok").unwrap();
         let thinking = line.find("thinking…").unwrap();
-        let hint = line.find("Ctrl-E").unwrap();
+        let hint = line.find("Ctrl-O").unwrap();
         assert!(!line.contains("ready"), "{line}");
         assert!(!line.contains(" idle"), "{line}");
         assert!(running < ctx, "mode precedes ctx: {line}");
@@ -2062,7 +2082,7 @@ mod tests {
         let line = status_line(&state);
         let cwd = line.find("/home/user/conway").unwrap();
         let git = line.find("main").unwrap();
-        let hint = line.find("Ctrl-E").unwrap();
+        let hint = line.find("Ctrl-O").unwrap();
         let idle = line.find("idle").unwrap();
         let tok = line.find("0 tok").unwrap();
         let ctx = line.find("ctx 25%").unwrap();
@@ -2096,7 +2116,7 @@ mod tests {
         let line = status_line(&state);
         let cwd = line.find("/home/user/conway").unwrap();
         let git = line.find("main").unwrap();
-        let hint = line.find("Ctrl-E").unwrap();
+        let hint = line.find("Ctrl-O").unwrap();
         let thinking = line.find("thinking…").unwrap();
         let tok = line.find("0 tok").unwrap();
         let ctx = line.find("ctx 25%").unwrap();
@@ -2425,7 +2445,7 @@ mod tests {
         assert!(tok < mode, "{line}");
         assert!(mode < ctx, "{line}");
         assert!(!line.contains("idle"), "activity dropped: {line}");
-        assert!(!line.contains("Ctrl-E"), "hint dropped: {line}");
+        assert!(!line.contains("Ctrl-O"), "hint dropped: {line}");
     }
 
     #[test]
@@ -2448,7 +2468,7 @@ mod tests {
         let line = status_line(&state);
         assert!(line.contains("ready"));
         assert!(line.contains("idle"));
-        assert!(line.contains("Ctrl-E"));
+        assert!(line.contains("Ctrl-O"));
     }
 
     /// V6: the footer names KEYS, not commands. It used to enumerate
@@ -2462,7 +2482,7 @@ mod tests {
         let line = status_line(&state);
 
         assert!(line.contains("Enter submit"), "{line}");
-        assert!(line.contains("Ctrl-E expand"), "{line}");
+        assert!(line.contains("Ctrl-O expand"), "{line}");
         assert!(line.contains("/help"), "{line}");
         assert!(line.contains("/agents"), "{line}");
 
@@ -2476,6 +2496,62 @@ mod tests {
             !line.contains("/timestamps"),
             "the footer must not enumerate display toggles: {line}"
         );
+    }
+
+    fn write_temp_keymap(name: &str, contents: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "conway-status-keymap-test-{}-{}-{name}.json",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, contents).expect("write must succeed against a writable temp path");
+        path
+    }
+
+    /// Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`, acceptance check: "with a
+    /// remapped keymap, footer ... show[s] the remapped key." Driven
+    /// through a REAL `Keymap::load`, never a hand-built `AppState` that
+    /// bypasses the file -- the whole point is that the hint reads
+    /// `state.keybindings`, not a hardcoded literal.
+    #[test]
+    fn hint_names_a_remapped_toggle_tool_output_key() {
+        let path = write_temp_keymap(
+            "remap",
+            r#"{"transcript": {"toggle_tool_output": ["Ctrl-Z"]}}"#,
+        );
+        let mut state = AppState::new(AgentId::new());
+        state.keybindings =
+            crate::tui::keybindings::Keymap::load(&path).expect("a valid rebind must load");
+        let _ = std::fs::remove_file(&path);
+
+        let line = status_line(&state);
+
+        assert!(line.contains("Ctrl-Z expand"), "{line}");
+        assert!(
+            !line.contains("Ctrl-O"),
+            "the stale default must not still show once rebound: {line}"
+        );
+    }
+
+    /// The other half: `toggle_tool_output` rebound to `[]` (deliberately
+    /// disabled) drops the `expand` fragment entirely, rather than
+    /// rendering a stale or empty one.
+    #[test]
+    fn hint_omits_the_expand_fragment_once_toggle_tool_output_is_unbound() {
+        let path = write_temp_keymap("unbind", r#"{"transcript": {"toggle_tool_output": []}}"#);
+        let mut state = AppState::new(AgentId::new());
+        state.keybindings =
+            crate::tui::keybindings::Keymap::load(&path).expect("a valid rebind must load");
+        let _ = std::fs::remove_file(&path);
+
+        let line = status_line(&state);
+
+        assert!(!line.contains("expand"), "{line}");
+        assert!(!line.contains("Ctrl-O"), "{line}");
+        assert!(line.contains("Enter submit"), "{line}");
+        assert!(line.contains("/help"), "{line}");
     }
 
     #[test]
@@ -3296,7 +3372,7 @@ mod tests {
 
         let expected = format!(
             " session {} | ready | ctx 0 | 0 tok | idle | Enter submit · \
-             Ctrl-E expand · /help · /agents to view ",
+             Ctrl-O expand · /help · /agents to view ",
             agents::short_agent_id(root)
         );
         assert_eq!(status_line(&state), expected);

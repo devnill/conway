@@ -2690,9 +2690,32 @@ mod tests {
             "{text}"
         );
 
-        // tools and display
-        assert!(text.contains("Ctrl-E"), "{text}");
+        // tools and display -- board item `01M3TEJPHQF4KHWBA6Y29Z33CY`:
+        // `toggle_tool_output`'s default moved to `Ctrl-O`.
+        assert!(text.contains("Ctrl-O"), "{text}");
         assert!(text.contains("expand/collapse all tool output"), "{text}");
+
+        // prompt editing -- the readline-shaped actions the same board item
+        // added: `line_start`/`line_end`/`kill_to_start`/`kill_to_end`.
+        assert!(text.contains("Ctrl-A"), "{text}");
+        assert!(
+            text.contains("move the cursor to the start of the current line"),
+            "{text}"
+        );
+        assert!(
+            text.contains("move the cursor to the end of the current line"),
+            "{text}"
+        );
+        assert!(text.contains("Ctrl-U"), "{text}");
+        assert!(
+            text.contains("delete from the cursor to the start of the current line"),
+            "{text}"
+        );
+        assert!(text.contains("Ctrl-K"), "{text}");
+        assert!(
+            text.contains("delete from the cursor to the end of the current line"),
+            "{text}"
+        );
 
         // settings menu (V4)
         assert!(text.contains("settings menu"), "{text}");

@@ -1857,6 +1857,28 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         // the catch-all below -- `Action::None` for a named key, or plain
         // text insertion for `v` itself, exactly like any other
         // unrecognized keystroke.
+        //
+        // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY` (closing item
+        // `01M3SJC96P99V9KNT7TDJBWZ66` point 1): a Ctrl OR Alt chord that
+        // reached here unconsumed by every action above is an UNBOUND
+        // chord, not a character to type -- DOGFOOD 2 found `Ctrl-U`
+        // (unbound before `kill_to_start` below was added to `ACTIONS`)
+        // typing a literal "u", turning `/` `Ctrl-U` `/settings` into
+        // `unknown command /u/settings`. A chord with EXACTLY ONE of
+        // Ctrl/Alt held is swallowed here; a chord with BOTH held (how a
+        // terminal typically reports an AltGr-produced character on
+        // layouts that need it) and a chord with Shift alone (an ordinary
+        // capital letter) are left alone and fall through to the ordinary
+        // insert below, since those really are text the terminal means to
+        // deliver. `Ctrl-C`/`Ctrl-D` never reach this arm at all -- this
+        // function's own top-of-body guard already returns for both before
+        // `resolve_keymap_action` is even called.
+        KeyCode::Char(_)
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                != key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            Action::None
+        }
         KeyCode::Char(c) => {
             let idx = byte_index(&state.input, state.cursor);
             state.input.insert(idx, c);
@@ -1973,7 +1995,41 @@ fn resolve_keymap_action(state: &mut AppState, key: KeyEvent) -> Option<Action> 
         return Some(Action::None);
     }
 
-    // T5: `toggle_tool_output` (default `Ctrl-E`) expands/collapses ALL
+    // Board item `01M3TEJPHQF4KHWBA6Y29Z33CY` (operator ruling, 2026-09-30):
+    // the readline-shaped `line_start`/`line_end`/`kill_to_start`/
+    // `kill_to_end` actions. All four operate on the CURRENT line of a
+    // multi-line draft, never the whole buffer -- see
+    // `current_line_bounds`'s own doc.
+    if state
+        .keybindings
+        .matches(Context::Prompt, "line_start", key)
+    {
+        move_cursor_to_line_start(state);
+        return Some(Action::None);
+    }
+    if state.keybindings.matches(Context::Prompt, "line_end", key) {
+        move_cursor_to_line_end(state);
+        return Some(Action::None);
+    }
+    if state
+        .keybindings
+        .matches(Context::Prompt, "kill_to_start", key)
+    {
+        kill_to_line_start(state);
+        state.sync_palette_stem();
+        return Some(Action::None);
+    }
+    if state
+        .keybindings
+        .matches(Context::Prompt, "kill_to_end", key)
+    {
+        kill_to_line_end(state);
+        state.sync_palette_stem();
+        return Some(Action::None);
+    }
+
+    // T5: `toggle_tool_output` (default `Ctrl-O`, moved off `Ctrl-E` by the
+    // same board item above) expands/collapses ALL
     // tool entries in the transcript at once (MVP -- no per-entry
     // selection). Pure state mutation --
     // `AppState::toggle_all_tool_entries_expanded` flips `expanded` on
@@ -2166,6 +2222,68 @@ fn delete_word_before_cursor(state: &mut AppState) {
     let end_byte = byte_index(&state.input, state.cursor);
     state.input.replace_range(start_byte..end_byte, "");
     state.cursor = start;
+}
+
+/// The current line's `[start, end)` char-index bounds within a (possibly
+/// multi-line) draft -- `start` is the char index right after the
+/// preceding `\n` (0 on the first line), `end` is the char index of that
+/// line's own trailing `\n` (`input`'s own length, on the last line).
+/// Shared by [`move_cursor_to_line_start`]/[`move_cursor_to_line_end`]/
+/// [`kill_to_line_start`]/[`kill_to_line_end`] -- the readline-shaped
+/// `prompt.line_start`/`line_end`/`kill_to_start`/`kill_to_end` actions
+/// (board item `01M3TEJPHQF4KHWBA6Y29Z33CY`, the operator's 2026-09-30
+/// ruling) all operate on the CURRENT line of a multi-line draft, never
+/// the whole buffer -- mirroring [`move_cursor_line`]'s own line-bounds
+/// math just above, but computing one line's span rather than walking to
+/// an adjacent one.
+fn current_line_bounds(state: &AppState) -> (usize, usize) {
+    let lines: Vec<&str> = state.input.split('\n').collect();
+    let (line_idx, _) = state.cursor_line_col();
+    let start: usize = lines[..line_idx].iter().map(|l| char_count(l) + 1).sum();
+    let end = start + char_count(lines[line_idx]);
+    (start, end)
+}
+
+/// `prompt.line_start` (default `Ctrl-A`): moves the cursor to the start of
+/// its CURRENT line -- on a multi-line draft this stops at the line's own
+/// start, never the whole buffer's (readline's own Ctrl-A, applied
+/// per-line, per the operator's ruling).
+fn move_cursor_to_line_start(state: &mut AppState) {
+    let (start, _) = current_line_bounds(state);
+    state.cursor = start;
+}
+
+/// `prompt.line_end` (default `Ctrl-E`): [`move_cursor_to_line_start`]'s
+/// counterpart -- moves the cursor to the end of its current line.
+fn move_cursor_to_line_end(state: &mut AppState) {
+    let (_, end) = current_line_bounds(state);
+    state.cursor = end;
+}
+
+/// `prompt.kill_to_start` (default `Ctrl-U`): deletes from the cursor back
+/// to the start of its current line, moving the cursor there -- a no-op
+/// when the cursor is already at the line's start.
+fn kill_to_line_start(state: &mut AppState) {
+    let (start, _) = current_line_bounds(state);
+    if state.cursor > start {
+        let start_byte = byte_index(&state.input, start);
+        let end_byte = byte_index(&state.input, state.cursor);
+        state.input.replace_range(start_byte..end_byte, "");
+        state.cursor = start;
+    }
+}
+
+/// `prompt.kill_to_end` (default `Ctrl-K`): [`kill_to_line_start`]'s
+/// counterpart -- deletes from the cursor forward to the end of its
+/// current line. The cursor itself never moves (nothing after it on that
+/// line remains once the deletion lands).
+fn kill_to_line_end(state: &mut AppState) {
+    let (_, end) = current_line_bounds(state);
+    if state.cursor < end {
+        let start_byte = byte_index(&state.input, state.cursor);
+        let end_byte = byte_index(&state.input, end);
+        state.input.replace_range(start_byte..end_byte, "");
+    }
 }
 
 #[cfg(test)]
@@ -2868,12 +2986,16 @@ mod tests {
         );
     }
 
-    // ---- T5: Ctrl-E toggles all tool entries' `expanded` flag ----
+    // ---- T5, moved off `Ctrl-E` by board item `01M3TEJPHQF4KHWBA6Y29Z33CY`
+    // (operator ruling, 2026-09-30): `Ctrl-O` toggles all tool entries'
+    // `expanded` flag; `Ctrl-E` is now `prompt.line_end` (see the
+    // `prompt.line_start`/`line_end`/`kill_to_start`/`kill_to_end` tests
+    // further below) ----
 
     use crate::tui::state::{Entry, ToolStatus};
 
     #[test]
-    fn ctrl_e_toggles_all_tool_entries_expanded() {
+    fn ctrl_o_toggles_all_tool_entries_expanded_by_default() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Tool {
             call_id: "c1".to_string(),
@@ -2896,12 +3018,12 @@ mod tests {
             ts: None,
         });
 
-        // Ctrl-E: pure state mutation, returns `Action::None` (mirrors the
+        // Ctrl-O: pure state mutation, returns `Action::None` (mirrors the
         // `v` visibility-filter key's direct-mutation pattern).
         assert_eq!(
-            handle_key(&mut state, ctrl_key(KeyCode::Char('e'))),
+            handle_key(&mut state, ctrl_key(KeyCode::Char('o'))),
             Action::None,
-            "Ctrl-E must report Action::None (the toggle is pure state)"
+            "Ctrl-O must report Action::None (the toggle is pure state)"
         );
         let all_expanded: Vec<bool> = state
             .transcript
@@ -2911,10 +3033,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(all_expanded, vec![true, true], "Ctrl-E must expand ALL");
+        assert_eq!(all_expanded, vec![true, true], "Ctrl-O must expand ALL");
 
-        // A second Ctrl-E collapses them again (involution).
-        handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+        // A second Ctrl-O collapses them again (involution).
+        handle_key(&mut state, ctrl_key(KeyCode::Char('o')));
         let all_expanded: Vec<bool> = state
             .transcript
             .iter()
@@ -2926,9 +3048,9 @@ mod tests {
         assert_eq!(all_expanded, vec![false, false]);
     }
 
-    /// Ctrl-E must NOT touch `scroll`/`follow_tail` (the no-snap contract).
+    /// Ctrl-O must NOT touch `scroll`/`follow_tail` (the no-snap contract).
     #[test]
-    fn ctrl_e_does_not_touch_scroll_or_follow_tail() {
+    fn ctrl_o_does_not_touch_scroll_or_follow_tail() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Tool {
             call_id: "c1".to_string(),
@@ -2943,17 +3065,17 @@ mod tests {
         state.scroll = 5;
         state.follow_tail = false;
 
-        handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+        handle_key(&mut state, ctrl_key(KeyCode::Char('o')));
 
-        assert_eq!(state.scroll, 5, "Ctrl-E must not change scroll");
-        assert!(!state.follow_tail, "Ctrl-E must not change follow_tail");
+        assert_eq!(state.scroll, 5, "Ctrl-O must not change scroll");
+        assert!(!state.follow_tail, "Ctrl-O must not change follow_tail");
     }
 
-    /// A bare `e` (no modifier) must remain ordinary text input -- Ctrl-E
-    /// is the binding, not `e` (D-keys: no bare printable keys as
-    /// bindings). This is the load-bearing reason the binding is on Ctrl-E.
+    /// A bare `o` (no modifier) must remain ordinary text input -- Ctrl-O
+    /// is the binding, not `o` (D-keys: no bare printable keys as
+    /// bindings). This is the load-bearing reason the binding is on Ctrl-O.
     #[test]
-    fn bare_e_types_into_the_input_box_not_toggles() {
+    fn bare_o_types_into_the_input_box_not_toggles() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Tool {
             call_id: "c1".to_string(),
@@ -2967,13 +3089,13 @@ mod tests {
         });
 
         assert_eq!(
-            handle_key(&mut state, key(KeyCode::Char('e'))),
+            handle_key(&mut state, key(KeyCode::Char('o'))),
             Action::None
         );
-        assert_eq!(state.input, "e", "bare `e` must type into the input box");
+        assert_eq!(state.input, "o", "bare `o` must type into the input box");
         // The tool entry is untouched.
         match &state.transcript[0] {
-            Entry::Tool { expanded, .. } => assert!(!*expanded, "bare `e` must not toggle"),
+            Entry::Tool { expanded, .. } => assert!(!*expanded, "bare `o` must not toggle"),
             other => panic!("expected Tool, got {other:?}"),
         }
     }
@@ -2993,7 +3115,7 @@ mod tests {
     }
 
     /// A bare `g` (no modifier) must remain ordinary text input -- mirrors
-    /// [`bare_e_types_into_the_input_box_not_toggles`]'s own reasoning for
+    /// [`bare_o_types_into_the_input_box_not_toggles`]'s own reasoning for
     /// the identical shape.
     #[test]
     fn bare_g_types_into_the_input_box_not_open_editor() {
@@ -3017,14 +3139,17 @@ mod tests {
         path
     }
 
-    /// Acceptance check (a), driven through the REAL `handle_key`
-    /// dispatcher (not just `Keymap::matches` in isolation, which
-    /// `keybindings.rs`'s own tests already cover): rebinding
-    /// `transcript.toggle_tool_output` off `Ctrl-E` onto `Ctrl-O` makes
-    /// `Ctrl-O` toggle every tool entry's `expanded` flag.
+    /// Item `01M3TEJPHQF4KHWBA6Y29Z33CY` point 2: "An operator keymap
+    /// binding it explicitly still wins" -- driven through the REAL
+    /// `handle_key` dispatcher (not just `Keymap::matches` in isolation,
+    /// which `keybindings.rs`'s own tests already cover). Rebinding
+    /// `transcript.toggle_tool_output` onto `Ctrl-Z` makes `Ctrl-Z` toggle
+    /// it, and REPLACES the `Ctrl-O` default wholesale (a wrong
+    /// implementation that only ADDS `Ctrl-Z` alongside the default would
+    /// pass the first half but fail the second).
     #[test]
-    fn rebound_ctrl_o_toggles_tool_output_through_handle_key() {
-        let path = write_temp_keymap(r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#);
+    fn an_explicit_keymap_rebind_of_toggle_tool_output_still_wins_over_the_ctrl_o_default() {
+        let path = write_temp_keymap(r#"{"transcript": {"toggle_tool_output": ["Ctrl-Z"]}}"#);
         let mut state = AppState::new(AgentId::new());
         state.keybindings = keybindings::Keymap::load(&path).expect("a valid rebind must load");
         state.transcript.push(Entry::Tool {
@@ -3038,66 +3163,244 @@ mod tests {
             ts: None,
         });
 
-        handle_key(&mut state, ctrl_key(KeyCode::Char('o')));
-
+        handle_key(&mut state, ctrl_key(KeyCode::Char('z')));
         match &state.transcript[0] {
             Entry::Tool { expanded, .. } => {
-                assert!(*expanded, "rebound Ctrl-O must toggle tool output on")
+                assert!(*expanded, "the rebound Ctrl-Z must toggle tool output on")
             }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+
+        // The Ctrl-O default no longer fires -- an unbound Ctrl chord is
+        // swallowed, not typed, so `input` stays empty too.
+        let action = handle_key(&mut state, ctrl_key(KeyCode::Char('o')));
+        assert_eq!(action, Action::None);
+        assert!(
+            state.input.is_empty(),
+            "an unbound Ctrl-O must not be typed as text either"
+        );
+        match &state.transcript[0] {
+            Entry::Tool { expanded, .. } => assert!(
+                *expanded,
+                "Ctrl-O must no longer toggle once the action is rebound elsewhere \
+                 (still true/unchanged from the Ctrl-Z toggle above)"
+            ),
             other => panic!("expected Tool, got {other:?}"),
         }
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Acceptance check (a)'s OTHER half, through `handle_key`: the SAME
-    /// rebind must make `Ctrl-E` STOP toggling tool output. Since
-    /// `toggle_tool_output` is the only thing that ever consumed `Ctrl-E`
-    /// in `Mode::Normal`, an unbound `Ctrl-E` falls all the way through to
-    /// the plain `Char(c)` insert arm (which does not check modifiers,
-    /// mirroring every other bare-`Char` arm in this module) -- so a wrong
-    /// implementation that only ADDS `Ctrl-O` alongside the old default
-    /// (rather than REPLACING it) is caught here by `state.input` staying
-    /// EMPTY instead of gaining an inserted `"e"`, even though the
-    /// returned `Action::None` looks identical either way.
+    // ---- board item `01M3TEJPHQF4KHWBA6Y29Z33CY` (operator ruling,
+    // 2026-09-30): the readline-shaped `prompt.line_start`/`line_end`/
+    // `kill_to_start`/`kill_to_end` actions, each operating on the CURRENT
+    // line of a (possibly multi-line) draft ----
+
     #[test]
-    fn rebinding_off_ctrl_e_makes_ctrl_e_fall_through_to_plain_text_input() {
-        let path = write_temp_keymap(r#"{"transcript": {"toggle_tool_output": ["Ctrl-O"]}}"#);
+    fn ctrl_a_moves_cursor_to_line_start() {
         let mut state = AppState::new(AgentId::new());
-        state.keybindings = keybindings::Keymap::load(&path).expect("a valid rebind must load");
-        state.transcript.push(Entry::Tool {
-            call_id: "c1".to_string(),
-            name: "bash".to_string(),
-            status: ToolStatus::Finished { is_error: false },
-            preview: "a\nb\nc".to_string(),
-            args: String::new(),
-            progress: String::new(),
-            expanded: false,
-            ts: None,
-        });
-
-        let action = handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+        state.input = "hello world".to_string();
+        state.cursor = 7; // between "world"'s 'w' and 'o'
 
         assert_eq!(
-            action,
-            Action::None,
-            "plain-text insertion also reports Action::None -- see this test's own doc for \
-             why the REAL assertion is on state, not the action"
+            handle_key(&mut state, ctrl_key(KeyCode::Char('a'))),
+            Action::None
+        );
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.input, "hello world", "Ctrl-A must not edit the text");
+    }
+
+    #[test]
+    fn ctrl_e_moves_cursor_to_line_end() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello world".to_string();
+        state.cursor = 3;
+
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('e'))),
+            Action::None
+        );
+        assert_eq!(state.cursor, char_count("hello world"));
+        assert_eq!(state.input, "hello world", "Ctrl-E must not edit the text");
+    }
+
+    /// A bare `e` (no modifier) stays ordinary text input -- the binding is
+    /// Ctrl-E, never bare `e` (D-keys: no bare printable keys as bindings).
+    #[test]
+    fn bare_e_types_into_the_input_box_not_line_end() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('e'))),
+            Action::None
+        );
+        assert_eq!(state.input, "e", "bare `e` must type into the input box");
+    }
+
+    #[test]
+    fn ctrl_a_and_ctrl_e_operate_on_the_current_line_of_a_multi_line_draft() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "first\nsecond line\nthird".to_string();
+        // Cursor mid-way through "second line" (line 1).
+        state.cursor = "first\nsecond".chars().count();
+        assert_eq!(state.cursor_line_col(), (1, 6));
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('a')));
+        assert_eq!(
+            state.cursor_line_col(),
+            (1, 0),
+            "Ctrl-A must stop at the CURRENT line's start, not the whole buffer's"
+        );
+
+        state.cursor = "first\nsecond".chars().count();
+        handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+        assert_eq!(
+            state.cursor_line_col(),
+            (1, "second line".chars().count()),
+            "Ctrl-E must stop at the CURRENT line's end, not the whole buffer's"
         );
         assert_eq!(
-            state.input, "e",
-            "Ctrl-E must no longer be recognized as toggle_tool_output once rebound off -- it \
-             falls through to the ordinary Char('e') insert arm"
+            state.input, "first\nsecond line\nthird",
+            "neither action edits the text"
         );
-        match &state.transcript[0] {
-            Entry::Tool { expanded, .. } => {
-                assert!(
-                    !*expanded,
-                    "a rebound-off Ctrl-E must not toggle tool output"
-                )
-            }
-            other => panic!("expected Tool, got {other:?}"),
-        }
-        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ctrl_u_kills_from_cursor_to_line_start() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello world".to_string();
+        state.cursor = 7; // between "world"'s 'w' and 'o'
+
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('u'))),
+            Action::None
+        );
+        assert_eq!(state.input, "orld");
+        assert_eq!(state.cursor, 0);
+    }
+
+    #[test]
+    fn ctrl_u_at_line_start_is_a_noop() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello".to_string();
+        state.cursor = 0;
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('u')));
+
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.cursor, 0);
+    }
+
+    #[test]
+    fn ctrl_u_only_kills_the_current_line_of_a_multi_line_draft() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "first\nsecond line".to_string();
+        state.cursor = "first\nsecond".chars().count();
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('u')));
+
+        assert_eq!(
+            state.input, "first\n line",
+            "Ctrl-U must not touch the line above"
+        );
+        assert_eq!(state.cursor_line_col(), (1, 0));
+    }
+
+    #[test]
+    fn ctrl_k_kills_from_cursor_to_line_end() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello world".to_string();
+        state.cursor = 5; // right after "hello"
+
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('k'))),
+            Action::None
+        );
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.cursor, 5, "Ctrl-K must not move the cursor");
+    }
+
+    #[test]
+    fn ctrl_k_at_line_end_is_a_noop() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello".to_string();
+        state.cursor = 5;
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('k')));
+
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.cursor, 5);
+    }
+
+    #[test]
+    fn ctrl_k_only_kills_the_current_line_of_a_multi_line_draft() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "first line\nsecond".to_string();
+        state.cursor = 5; // between "first" and " line"
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('k')));
+
+        assert_eq!(
+            state.input, "first\nsecond",
+            "Ctrl-K must not touch the line below"
+        );
+        assert_eq!(state.cursor, 5);
+    }
+
+    // ---- board item `01M3TEJPHQF4KHWBA6Y29Z33CY` point 3 (closing item
+    // `01M3SJC96P99V9KNT7TDJBWZ66` point 1): an unbound Ctrl/Alt chord is
+    // swallowed, never typed as the bare letter ----
+
+    #[test]
+    fn an_unbound_ctrl_chord_is_ignored_not_typed() {
+        let mut state = AppState::new(AgentId::new());
+        // `Ctrl-Z` has no default action anywhere in `ACTIONS`.
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('z'))),
+            Action::None
+        );
+        assert!(
+            state.input.is_empty(),
+            "an unbound Ctrl-Z must not type 'z' into the input box"
+        );
+    }
+
+    #[test]
+    fn an_unbound_alt_chord_is_ignored_not_typed() {
+        let mut state = AppState::new(AgentId::new());
+        let alt_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT);
+        assert_eq!(handle_key(&mut state, alt_z), Action::None);
+        assert!(
+            state.input.is_empty(),
+            "an unbound Alt-Z must not type 'z' into the input box"
+        );
+    }
+
+    /// A chord with BOTH Ctrl and Alt held is how a terminal typically
+    /// reports an AltGr-produced character on layouts that need it -- that
+    /// is genuine text the terminal means to deliver, never swallowed.
+    #[test]
+    fn a_ctrl_alt_chord_still_types_its_character() {
+        let mut state = AppState::new(AgentId::new());
+        let altgr_z = KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_eq!(handle_key(&mut state, altgr_z), Action::None);
+        assert_eq!(
+            state.input, "z",
+            "a Ctrl+Alt character (AltGr emulation) must still be typed"
+        );
+    }
+
+    /// Shift alone (an ordinary capital letter) is never swallowed -- only
+    /// Ctrl/Alt chords are.
+    #[test]
+    fn a_shift_only_chord_still_types_its_character() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(
+            handle_key(&mut state, shift_key(KeyCode::Char('Z'))),
+            Action::None
+        );
+        assert_eq!(state.input, "Z");
     }
 
     /// A load error must refuse the WHOLE file, not just skip the bad

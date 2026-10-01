@@ -108,6 +108,8 @@ while you're composing:
 | `Alt-Enter` or `Shift-Enter` | Insert a literal newline instead of submitting (both are bound, since some terminals don't distinguish Shift-Enter from plain Enter). |
 | `Up` / `Down` | Move the cursor within a multi-line draft; once the cursor is already on the first/last line, scroll the transcript one line instead (bare arrows are also what a two-finger scroll arrives as — see "Why `Up`/`Down` scroll, not recall history" below). |
 | `Ctrl-P` / `Ctrl-N` | Recall older/newer entries from your input history, unconditionally — the readline pairing, and conway's one way to reach history from the keyboard. |
+| `Ctrl-A` / `Ctrl-E` | Move the cursor to the start/end of the current line. |
+| `Ctrl-U` / `Ctrl-K` | Delete from the cursor to the start/end of the current line. |
 | `Ctrl-W` | Delete the previous word. |
 | `Ctrl-G` | Edit the current input in `$VISUAL`/`$EDITOR` (falling back to `vi`) — see "Keybindings" below. |
 | `Home` / `End` | With the input box empty, jump the transcript to the top/tail instead of moving the cursor. |
@@ -124,6 +126,10 @@ Every key above (except `Enter`/`Alt-Enter`/`Shift-Enter`/`Left`/`Right`/
 `Backspace`/`Home`/`End`/`Ctrl-C`/`Ctrl-D`) is rebindable — see
 "Keybindings" below for the file, the full action vocabulary, and exactly
 which keys stay fixed.
+
+A Ctrl or Alt chord that is not bound to anything is ignored rather than
+typed as its bare letter — pressing an unbound `Ctrl-X`, for instance,
+does nothing, instead of inserting an `x`.
 
 ### Why `Up`/`Down` scroll, not recall history
 
@@ -278,8 +284,9 @@ number is ever mistaken for the other.
 Tool calls appear inline in the transcript as they're proposed, run, and
 finish, each tagged with its state (`proposed`, `awaiting permission`,
 `running`, `done`, `failed`). A settled tool call's output is folded to its first few
-lines by default, with a dim `… (+N lines, Ctrl-E to expand)` affordance;
-`Ctrl-E` expands or collapses every tool entry in the transcript at once.
+lines by default, with a dim `… (+N lines, Ctrl-O to expand)` affordance
+(the marker always names your EFFECTIVE key, including a rebind);
+`Ctrl-O` expands or collapses every tool entry in the transcript at once.
 Reasoning traces (when the model streams them) and per-entry timestamps
 are shown according to your `/settings` preferences (below).
 
@@ -409,7 +416,7 @@ now, or an unreadable target) falls back to the raw JSON dump the same way
 every other tool's prompt already renders.
 
 Once you approve it, the settled transcript entry shows the identical
-diff, folded under the same line cap and `Ctrl-E` expand toggle every
+diff, folded under the same line cap and `Ctrl-O` expand toggle every
 other tool's output already uses (see "Watching a turn" above and the
 `/settings` menu's `tool_preview_lines` stepper below). It is computed
 exactly once, right when the call settles — never recomputed against
@@ -802,7 +809,7 @@ on it. The status markers:
 `/settings` opens a menu of six groups: **defaults** (the default role and
 the default model — see below), **display** (show reasoning traces, show
 timestamps), **tool output** (how many lines a folded tool call shows
-before `Ctrl-E` is needed), **permissions** (cycle the permission mode;
+before `Ctrl-O` is needed), **permissions** (cycle the permission mode;
 review or revoke individual grants under **allow** — flat and structured
 alike; read-only **deny** and **prompt** sections listing every rule —
 flat or structured — that any permissions file, trusted or not, has put in
@@ -949,7 +956,7 @@ session | lineage | mode | model | ctx | tokens | activity | hint
 | `ctx` | `ctx 42%`, or `ctx 12.3k` when the model's context window isn't known | Cumulative context-window occupancy for the focused agent, from the same resolved `(backend, model)` capability index [`conway routes explain`](routing.md#asking-why-a-route-was-chosen) reads. When the window itself is only a `floor (assumed)` — the model's own dialect declares no sourced figure, so this is not a fact about this specific model — the figure carries that same marker: `ctx 31% floor (assumed)`. A `verified` (compiled-in table, or a dialect's own documented per-provider figure), `models.json` (an operator-editable override), or `probed` window never carries it. |
 | `tokens` | `1.4k tok (88% cached)`, or `1.4k tok (cache: not reported by ollama)` | The focused agent's cumulative token spend; the cached-percentage parenthetical is the prompt-cache hit rate — `cache_read / (input + cache_read + cache_write)`. **Declaration honesty**: the percentage shows whenever the backend actually reported cache figures for at least one cache-relevant token — including a genuine `0% cached` — and is omitted only when the denominator itself is 0 (no cache-relevant tokens processed yet). When the backend's wire format carries no cache field at all (e.g. Ollama's native `/api/chat` path, see [providers.md](providers.md)), the field instead shows `cache: not reported by <backend>` — a `0%` here would claim an observation the backend never made. |
 | `activity` | `⠋ thinking… 12s · +45 tok` while active, `⠋ asking… 12s` while an `/ask` is in flight, `idle` otherwise | The working indicator: elapsed time and new context tokens added this turn. An in-flight `/ask` takes this field over outright (its own clock, no token figure — it's a different agent than the one this field otherwise tracks). |
-| `hint` | `Enter submit · Ctrl-E expand · /help · /agents to view` | A persistent reminder of the essentials. Also names the focused agent when you're off-root and `lineage` isn't part of your configured fields. |
+| `hint` | `Enter submit · Ctrl-O expand · /help · /agents to view` | A persistent reminder of the essentials. The `expand` fragment always names `transcript.toggle_tool_output`'s effective key. Also names the focused agent when you're off-root and `lineage` isn't part of your configured fields. |
 | `git` | the current branch name | Read once at startup; omitted outside a git repo. |
 | `cwd` | the session's working directory | Omitted when unset. |
 
@@ -980,16 +987,16 @@ same table (`crate::tui::keybindings::ACTIONS`, in `conway-cli`).
 ```json
 {
   "transcript": {
-    "toggle_tool_output": ["Ctrl-O"]
+    "toggle_tool_output": ["Ctrl-Z"]
   }
 }
 ```
 
 Top level: context name → `{ action: [key, key, ...] }`. An entry you
 supply REPLACES that action's default keys wholesale — rebinding
-`toggle_tool_output` off `Ctrl-E` really turns `Ctrl-E` off, not "off by
-default but still there." Binding an action to `[]` disables it with no
-replacement. The same key bound in two DIFFERENT contexts is fine (only
+`toggle_tool_output` off its default `Ctrl-O` really turns `Ctrl-O` off,
+not "off by default but still there." Binding an action to `[]` disables
+it with no replacement. The same key bound in two DIFFERENT contexts is fine (only
 one context is ever active at a time); the same key bound twice WITHIN one
 context is a load error.
 
@@ -1029,15 +1036,29 @@ the same list with your OWN effective bindings, not these defaults.
 
 - `prompt.open_editor` — default `Ctrl-G` — open the current input in
   `$VISUAL`/`$EDITOR` (see above).
+- `prompt.line_start` — default `Ctrl-A` — move the cursor to the start of
+  the current line.
+- `prompt.line_end` — default `Ctrl-E` — move the cursor to the end of the
+  current line.
+- `prompt.kill_to_start` — default `Ctrl-U` — delete from the cursor to the
+  start of the current line.
+- `prompt.kill_to_end` — default `Ctrl-K` — delete from the cursor to the
+  end of the current line.
 - `prompt.delete_word_back` — default `Ctrl-W` — delete the previous word.
 - `prompt.history_prev` — default `Ctrl-P` — recall the previous
   input-history entry.
 - `prompt.history_next` — default `Ctrl-N` — recall the next input-history
   entry.
 
+On a multi-line draft (`Alt-Enter`/`Shift-Enter`), all four of
+`line_start`/`line_end`/`kill_to_start`/`kill_to_end` act on the cursor's
+CURRENT line only, never the whole buffer. One deliberate difference from
+readline: `Ctrl-K` with the cursor already at the end of a line does
+nothing, rather than joining the next line onto this one.
+
 #### `transcript`
 
-- `transcript.toggle_tool_output` — default `Ctrl-E` — expand/collapse all
+- `transcript.toggle_tool_output` — default `Ctrl-O` — expand/collapse all
   tool output.
 - `transcript.scroll_page_up` — default `PageUp` — scroll the transcript up
   one page.

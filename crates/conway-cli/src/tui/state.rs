@@ -1177,7 +1177,7 @@ pub struct AppState {
     /// T5: the cap on collapsed tool-preview lines in the transcript
     /// (`[tui.tool_preview_lines]`, default 3). A tool entry whose stored
     /// `preview` has more physical lines than this renders the first N
-    /// lines followed by a dim `… (+M lines, Ctrl-E to expand)` affordance
+    /// lines followed by a dim `… (+M lines, Ctrl-O to expand)` affordance
     /// while `Entry::Tool::expanded` is `false`; the full preview renders
     /// while `expanded` is `true`. The stored `preview` is NEVER truncated
     /// -- the cap is render-time only. Set at `App::new` from

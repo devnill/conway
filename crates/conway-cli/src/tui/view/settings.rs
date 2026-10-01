@@ -33,7 +33,7 @@
 //! Three settings, deliberately -- everything else on `AppState` is either
 //! internal bookkeeping (scroll offsets, in-flight flags, palette state,
 //! ...) or already has its own dedicated, better-fitting UI (`v` cycles
-//! `/agents`' visibility filter in place; `Ctrl-E` expands/collapses tool
+//! `/agents`' visibility filter in place; `Ctrl-O` expands/collapses tool
 //! output in place). A setting earns a row here only if a user would
 //! deliberately reach for it as a persistent-for-the-session DISPLAY
 //! preference: `show_reasoning` (was `/thinking`), `show_timestamps` (was
@@ -270,6 +270,7 @@ use conway::backend_usability::Usability;
 use super::menu::{self, MenuNode, MenuState};
 use super::modal;
 use super::theme::Theme;
+use crate::tui::keybindings::Context;
 use crate::tui::state::AppState;
 
 /// [`MenuNode::Leaf`] ids -- opaque to `menu.rs`, interpreted only here and
@@ -852,6 +853,68 @@ fn bool_label(name: &str, value: bool) -> String {
     )
 }
 
+/// Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: the `/settings` footer's key
+/// hint, built from `Context::Settings`'s CURRENT effective bindings
+/// (`keymap.keys_for`) rather than the hardcoded `[Up/Down] move  [Enter]
+/// toggle/expand  [Left/Right] adjust  [Esc] close` literal this replaces
+/// -- a `keybindings.json` rebind shows up here immediately, and an action
+/// rebound to `[]` (deliberately disabled) drops its own fragment entirely.
+fn footer_hint(keymap: &crate::tui::keybindings::Keymap) -> String {
+    let mut parts = Vec::new();
+    if let Some(frag) = paired_key_hint(
+        &keymap.keys_for(Context::Settings, "move_up"),
+        &keymap.keys_for(Context::Settings, "move_down"),
+        "move up",
+        "move down",
+        "move",
+    ) {
+        parts.push(frag);
+    }
+    let activate = keymap.keys_for(Context::Settings, "activate");
+    if !activate.is_empty() {
+        parts.push(format!("[{}] toggle/expand", activate.join("/")));
+    }
+    if let Some(frag) = paired_key_hint(
+        &keymap.keys_for(Context::Settings, "step_left"),
+        &keymap.keys_for(Context::Settings, "step_right"),
+        "step down",
+        "step up",
+        "adjust",
+    ) {
+        parts.push(frag);
+    }
+    let close = keymap.keys_for(Context::Settings, "close");
+    if !close.is_empty() {
+        parts.push(format!("[{}] close", close.join("/")));
+    }
+    parts.join("  ")
+}
+
+/// Combines two paired actions' effective keys (e.g. `move_up`/`move_down`)
+/// into one bracketed fragment when both are bound (`"[Up/Down] move"`),
+/// falls back to naming just the one that IS bound with its own singular
+/// label when only one is, and omits the fragment entirely (`None`) when
+/// neither is -- so a rebind that disables only one half of a pair still
+/// reads correctly rather than silently keeping a stale key name.
+fn paired_key_hint(
+    a: &[String],
+    b: &[String],
+    a_label: &str,
+    b_label: &str,
+    combined_label: &str,
+) -> Option<String> {
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => None,
+        (false, false) => Some(format!(
+            "[{}/{}] {combined_label}",
+            a.join("/"),
+            b.join("/")
+        )),
+        (false, true) => Some(format!("[{}] {a_label}", a.join("/"))),
+        (true, false) => Some(format!("[{}] {b_label}", b.join("/"))),
+    }
+}
+
 /// Rows the settings modal's footer ALWAYS reserves: the key hint and the
 /// session-only disclosure -- mirroring every other ported surface's
 /// "footer rows are fixed, never squeezed by body growth" invariant
@@ -924,7 +987,7 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &
     menu::draw(frame, frame_areas.body_area, &tree, theme);
 
     let footer_lines = vec![
-        Line::from("[Up/Down] move  [Enter] toggle/expand  [Left/Right] adjust  [Esc] close"),
+        Line::from(footer_hint(&state.keybindings)),
         Line::from(Span::styled(SESSION_NOTE, theme.dim)),
     ];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
@@ -2273,5 +2336,71 @@ mod tests {
                 .draw(|f| draw(f, f.area(), &state, &Theme::default()))
                 .unwrap_or_else(|e| panic!("panicked/errored at {w}x{h}: {e}"));
         }
+    }
+
+    // ---- Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: the footer hint names
+    // the EFFECTIVE `Context::Settings` bindings, not a hardcoded literal ----
+
+    #[test]
+    fn footer_hint_names_the_default_bindings() {
+        let keymap = crate::tui::keybindings::Keymap::defaults();
+        let hint = footer_hint(&keymap);
+        assert_eq!(
+            hint,
+            "[Up/Down] move  [Enter] toggle/expand  [Left/Right] adjust  [Esc] close"
+        );
+    }
+
+    #[test]
+    fn footer_hint_names_a_remapped_close_key() {
+        let path = std::env::temp_dir().join(format!(
+            "conway-settings-footer-test-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"settings": {"close": ["Ctrl-Q"]}}"#)
+            .expect("write must succeed");
+        let keymap =
+            crate::tui::keybindings::Keymap::load(&path).expect("a valid rebind must load");
+        let _ = std::fs::remove_file(&path);
+
+        let hint = footer_hint(&keymap);
+
+        assert!(hint.contains("[Ctrl-Q] close"), "{hint}");
+        assert!(!hint.contains("[Esc] close"), "{hint}");
+    }
+
+    #[test]
+    fn footer_hint_omits_a_fragment_once_its_action_is_unbound() {
+        let path = std::env::temp_dir().join(format!(
+            "conway-settings-footer-unbind-test-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"settings": {"close": []}}"#).expect("write must succeed");
+        let keymap =
+            crate::tui::keybindings::Keymap::load(&path).expect("a valid rebind must load");
+        let _ = std::fs::remove_file(&path);
+
+        let hint = footer_hint(&keymap);
+
+        assert!(!hint.contains("close"), "{hint}");
+        // The other fragments stay present.
+        assert!(hint.contains("[Up/Down] move"), "{hint}");
+    }
+
+    #[test]
+    fn footer_hint_names_only_the_one_bound_half_of_a_rebound_pair() {
+        let path = std::env::temp_dir().join(format!(
+            "conway-settings-footer-half-pair-test-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"settings": {"move_down": []}}"#).expect("write must succeed");
+        let keymap =
+            crate::tui::keybindings::Keymap::load(&path).expect("a valid rebind must load");
+        let _ = std::fs::remove_file(&path);
+
+        let hint = footer_hint(&keymap);
+
+        assert!(hint.contains("[Up] move up"), "{hint}");
+        assert!(!hint.contains("Down"), "{hint}");
     }
 }
