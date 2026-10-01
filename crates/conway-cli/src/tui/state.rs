@@ -40,6 +40,7 @@ use super::gate::PendingPrompt;
 mod agent_panel;
 mod agent_tree;
 mod input_line;
+mod mentions;
 mod modal;
 mod scroll;
 mod status;
@@ -49,6 +50,7 @@ mod turn_summary;
 pub use agent_panel::AgentVisibility;
 pub use agent_tree::{AgentTreeView, NodeStatus, SpawnRoleOrModel, TreeNode};
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
+pub use mentions::MentionScanRequest;
 pub use modal::{
     AddProviderContextWindowState, AddProviderCredentialState, AskFate, AskModal,
     DenyFeedbackState, Mode, SkillProposalFate, SkillProposalModal, TrustDecision,
@@ -1713,6 +1715,86 @@ pub struct AppState {
     /// `input.rs`'s own tests) that would all need updating for one new
     /// required field; this keeps the change additive instead.
     pub(crate) tool_diffs: HashMap<String, String>,
+    /// Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the base directory
+    /// [`crate::tui::mentions::scan_paths`] walks for `@`-mention/plain-
+    /// `Tab` path completion -- the operator's `--root` confinement
+    /// directory when one is set (so the candidate list can never name a
+    /// path outside it), else this session's own `cwd`. `AppState::new`
+    /// defaults this to the process's real cwd (so a test/fixture
+    /// `AppState` still behaves sanely with no further setup);
+    /// `App::new` (`app/startup.rs`) overwrites it with the resolved
+    /// `--root`-or-`--cwd` value immediately after construction, mirroring
+    /// `cwd_display`'s own "constructed here as a default, overwritten
+    /// once at startup" shape.
+    pub mention_scan_root: std::path::PathBuf,
+    /// The char index of the `@` the currently-open mention completion
+    /// list is anchored to, or `None` when no mention is open. Set by
+    /// [`Self::sync_mention`] whenever the cursor enters a NEW `@`-token
+    /// (`crate::tui::mentions::active_mention`'s own `start`); cleared the
+    /// same way once the cursor leaves it (`Self::close_mention`).
+    mention_anchor: Option<usize>,
+    /// Which candidate universe the anchored mention addresses -- see
+    /// [`crate::tui::mentions::MentionMode`]. `None` exactly when
+    /// `mention_anchor` is `None`.
+    mention_mode: Option<crate::tui::mentions::MentionMode>,
+    /// The candidate universe for the anchored mention: file paths for a
+    /// [`crate::tui::mentions::MentionMode::Path`] mention, agent
+    /// names/ids for [`crate::tui::mentions::MentionMode::Agent`] --
+    /// computed ONCE when the mention opens ([`Self::sync_mention`]), never
+    /// re-walked on every keystroke; [`Self::mention_matches`] filters this
+    /// cached universe live instead, which is what keeps live filtering
+    /// cheap even though the walk behind it is not.
+    mention_candidates: Vec<String>,
+    /// Whether [`Self::mention_candidates`]'s own walk hit
+    /// [`crate::tui::mentions::DEFAULT_SCAN_CAP`] -- surfaced in the
+    /// overlay's own title so a capped listing never silently looks
+    /// complete.
+    mention_capped: bool,
+    /// The arrow-navigated row in the mention completion list, mirroring
+    /// [`Self::palette_selected`]'s own shape exactly.
+    pub mention_selected: Option<usize>,
+    /// Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the `@`-token (by its own
+    /// anchor char index) `Esc` most recently DISMISSED, if the cursor is
+    /// still sitting inside that exact token. [`Self::sync_mention`] checks
+    /// this FIRST: without it, typing one more character after dismissing
+    /// the list with `Esc` would immediately re-open it (a fresh
+    /// `mention_anchor != Some(q.start)` transition, since dismissal clears
+    /// `mention_anchor`) -- the opposite of what `Esc` is for. Reset the
+    /// moment the cursor leaves the token (a `None` mention query) or
+    /// enters a genuinely different one, so a FRESH `@` always gets a fresh
+    /// chance.
+    mention_dismissed_for: Option<usize>,
+    /// Review finding (CRITICAL, round 1): the shared cache both the
+    /// `@`-mention overlay AND plain-`Tab` completion read
+    /// (`state/mentions.rs::MentionScanCacheEntry`'s own doc) -- replaced
+    /// the item's original per-feature, walk-on-this-call-stack design,
+    /// which blocked `handle_key` (and so the whole TUI) for as long as the
+    /// walk took. `None` until the first completed background walk lands
+    /// (`Self::apply_mention_scan_result`); refreshed wholesale by each
+    /// later one, never merged.
+    mention_scan_cache: Option<crate::tui::state::mentions::MentionScanCacheEntry>,
+    /// A background walk [`Self::sync_mention`]/[`Self::
+    /// request_path_scan_warm_up`] determined is needed but cannot run on
+    /// this struct's own call stack -- drained by `App::run`'s loop via
+    /// [`Self::take_pending_mention_scan_request`] after every key/paste it
+    /// dispatches, which is what actually spawns it off-loop
+    /// (`app/mention_scan.rs`). See `state/mentions.rs`'s own module doc for
+    /// the full "why" of this split.
+    pending_mention_scan_request: Option<crate::tui::state::mentions::MentionScanRequest>,
+    /// The anchor (char index of the `@`) a background walk is currently
+    /// running FOR, if any -- distinct from `pending_mention_scan_request`
+    /// (that field's own window closes the instant `App::run` takes it;
+    /// this one stays set for the walk's whole in-flight duration). Read by
+    /// [`Self::mention_scan_pending`] (the overlay's own "scanning..."
+    /// signal) and used by [`Self::apply_mention_scan_result`] to decide
+    /// whether a reply is still the one thing the live overlay is waiting
+    /// on.
+    mention_scan_in_flight: Option<usize>,
+    /// Review finding (minor, round 1): whether the CURRENTLY open
+    /// `@`-mention was opened by a bracketed paste rather than ordinary
+    /// typing -- see [`Self::mention_blocks_enter_accept`]'s own doc for
+    /// why that distinction gates whether `Enter` may accept a candidate.
+    mention_via_paste: bool,
 }
 
 /// Board item `01M2N2HDV9YAFQP5S1ZJKPWE5V` (acceptance 5's own remainder):
@@ -1880,6 +1962,24 @@ impl AppState {
             diff_track: HashMap::new(),
             diff_baseline: HashMap::new(),
             tool_diffs: HashMap::new(),
+            // Overwritten by `App::new` with the resolved `--root`-or-
+            // `--cwd` value -- see the field's own doc. The fallback here
+            // (rather than, say, `PathBuf::new()`) keeps a bare test/
+            // fixture `AppState` (no `App::new` involved) pointed at a real
+            // directory, so `mentions::scan_paths` has something sane to
+            // walk even when a test never sets this field itself.
+            mention_scan_root: std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            mention_anchor: None,
+            mention_mode: None,
+            mention_candidates: Vec::new(),
+            mention_capped: false,
+            mention_selected: None,
+            mention_dismissed_for: None,
+            mention_scan_cache: None,
+            pending_mention_scan_request: None,
+            mention_scan_in_flight: None,
+            mention_via_paste: false,
         }
     }
 

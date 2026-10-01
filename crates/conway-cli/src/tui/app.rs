@@ -49,6 +49,7 @@ mod defaults;
 mod editor;
 mod focus;
 mod marketplace;
+mod mention_scan;
 mod plugin_cmd;
 mod plugin_status;
 mod plugin_toggle;
@@ -129,6 +130,15 @@ pub struct App {
     /// than awaited inline.
     provider_status_tx: mpsc::UnboundedSender<provider_status::ProviderStatusDone>,
     provider_status_rx: Option<mpsc::UnboundedReceiver<provider_status::ProviderStatusDone>>,
+    /// Board item `01M1YVF4X864GKSGZM4PSCTMEH`, round-1 review fix
+    /// (CRITICAL): mirrors `plugin_cmd_tx`/`plugin_cmd_rx` exactly, same
+    /// reasoning -- `@`-mention/plain-`Tab` path completion's own background
+    /// walk (`AppState::take_pending_mention_scan_request`) is spawned off
+    /// this loop (`app/mention_scan.rs::App::spawn_mention_scan`) rather
+    /// than run on `input::handle_key`'s own call stack, which is what
+    /// keeps a slow/contended filesystem from ever freezing the whole TUI.
+    mention_scan_tx: mpsc::UnboundedSender<mention_scan::MentionScanDone>,
+    mention_scan_rx: Option<mpsc::UnboundedReceiver<mention_scan::MentionScanDone>>,
     /// T8: where [`Self::submit`] persists `state.history` to after every push
     /// -- `~/.conway/history` (or `$CONWAY_CONFIG_DIR/history` when set),
     /// resolved once at `App::new` via
@@ -545,6 +555,17 @@ impl App {
         // a bare `/spawn`/`/fork` auto-focused it) actually reach THAT
         // session instead of silently talking to the root underneath it.
         //
+        // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: a plain message's
+        // `@`-mentioned paths get a clearly-delimited provenance hint
+        // appended before this text actually goes to the model -- see
+        // `mentions::append_mention_hint`'s own doc for why a text suffix,
+        // not a `system_note` (no such primitive exists on `conway`'s
+        // public facade today). A no-op for `/fork`/`/spawn`'s own
+        // `@<agent>` addressing, and for a message with no `@`-mention at
+        // all. Deliberately AFTER `push_history`, above -- history
+        // records exactly what the operator typed, not what was actually
+        // sent.
+        let text = crate::tui::mentions::append_mention_hint(text);
         // Fix 1 (SIGNIFICANT, review): `prompt_agent` is fallible
         // (transient store I/O, etc.) -- `?`-propagating it here used to
         // unwind straight out of `submit` -> `App::run` -> `tui::mod.rs`'s
@@ -803,6 +824,52 @@ mod tests {
         assert_eq!(
             app.state.pending_focus_notice, None,
             "a real submit ends the staged notice's life"
+        );
+    }
+
+    /// Board item `01M1YVF4X864GKSGZM4PSCTMEH`, acceptance 1's own second
+    /// half: a submitted prompt containing an `@`-mention carries the
+    /// provenance hint -- asserted on the REAL session record
+    /// (`LogRecord::UserTurn`), i.e. what `prompt_agent` actually persisted
+    /// and what the backend actually received, not an intermediate like
+    /// `AppState::input` or the parsed command.
+    #[tokio::test]
+    async fn a_file_mention_in_the_submitted_prompt_carries_the_hint_in_the_session_record() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        app.submit("please check @src/main.rs for bugs".to_string())
+            .await
+            .expect("submit should not error");
+
+        let records = app
+            .handle
+            .transcript(app.handle.root())
+            .await
+            .expect("transcript should read back");
+        let user_turn_text = records
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                conway::LogRecord::UserTurn { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("a UserTurn record must exist");
+
+        assert!(
+            user_turn_text.starts_with("please check @src/main.rs for bugs"),
+            "the original text must be sent unchanged, not replaced: {user_turn_text:?}"
+        );
+        assert!(
+            user_turn_text.contains("src/main.rs"),
+            "the hint must name the mentioned path: {user_turn_text:?}"
+        );
+        assert_ne!(
+            user_turn_text, "please check @src/main.rs for bugs",
+            "a hint suffix must actually have been appended"
         );
     }
 

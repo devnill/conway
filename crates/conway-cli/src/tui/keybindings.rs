@@ -105,6 +105,11 @@ pub enum Context {
     Palette,
     /// The `/settings` menu.
     Settings,
+    /// The `@`-mention completion list (board item
+    /// `01M1YVF4X864GKSGZM4PSCTMEH`): file-path candidates under `cwd`, or
+    /// (while composing `/fork`/`/spawn`) live agent names/ids -- see
+    /// `crate::tui::mentions`'s own doc.
+    Mentions,
 }
 
 impl Context {
@@ -119,12 +124,13 @@ impl Context {
             Context::AgentsPanel => "agents_panel",
             Context::Palette => "palette",
             Context::Settings => "settings",
+            Context::Mentions => "mentions",
         }
     }
 
     /// Every context, in the order [`ACTIONS`]/`/help`/the docs table list
     /// them.
-    pub fn all() -> [Context; 6] {
+    pub fn all() -> [Context; 7] {
         [
             Context::Prompt,
             Context::Transcript,
@@ -132,6 +138,7 @@ impl Context {
             Context::AgentsPanel,
             Context::Palette,
             Context::Settings,
+            Context::Mentions,
         ]
     }
 
@@ -211,6 +218,18 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "history_next",
         description: "recall the next input-history entry",
         defaults: &["Ctrl-N"],
+    },
+    // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: plain-`Tab` path completion
+    // (point 3) -- completes the path-shaped word ending at the cursor,
+    // when NO `@`-mention overlay is open (`mentions.accept`, below, owns
+    // `Tab` while one IS open; the two never both apply at once, the same
+    // "same key, different context" shape `toggle_tool_output`/`line_end`
+    // already use for `Ctrl-O`/`Ctrl-E`).
+    ActionSpec {
+        context: Context::Prompt,
+        name: "complete_path",
+        description: "complete the path-shaped word under the cursor",
+        defaults: &["Tab"],
     },
     ActionSpec {
         context: Context::Transcript,
@@ -353,6 +372,38 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: Context::Settings,
         name: "close",
         description: "close the settings menu",
+        defaults: &["Esc"],
+    },
+    // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the `@`-mention completion
+    // list. `accept` deliberately carries TWO default chords -- `Tab` and
+    // `Enter` both insert the highlighted candidate, matching the item
+    // spec ("Tab or Enter inserts the selected path"). `Enter` here wins
+    // over the prompt's own hardcoded submit arm only while a mention is
+    // actually open (`input.rs::resolve_keymap_action` checks this context
+    // FIRST, before anything else, exactly like `Settings::activate`
+    // already reuses `Enter` inside its own, mutually-exclusive surface).
+    ActionSpec {
+        context: Context::Mentions,
+        name: "navigate_up",
+        description: "move the mention-completion selection up",
+        defaults: &["Up"],
+    },
+    ActionSpec {
+        context: Context::Mentions,
+        name: "navigate_down",
+        description: "move the mention-completion selection down",
+        defaults: &["Down"],
+    },
+    ActionSpec {
+        context: Context::Mentions,
+        name: "accept",
+        description: "insert the highlighted mention candidate",
+        defaults: &["Tab", "Enter"],
+    },
+    ActionSpec {
+        context: Context::Mentions,
+        name: "close",
+        description: "close the mention-completion list without inserting anything",
         defaults: &["Esc"],
     },
 ];

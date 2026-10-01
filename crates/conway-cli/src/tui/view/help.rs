@@ -219,6 +219,9 @@ fn context_title(context: Context) -> &'static str {
         Context::AgentsPanel => "agent panel (rebindable -- only while the panel is open)",
         Context::Palette => "command palette (rebindable -- only while `/` is showing matches)",
         Context::Settings => "settings menu (rebindable -- only while /settings is open)",
+        Context::Mentions => {
+            "mention completion (rebindable -- only while an @-mention list is open)"
+        }
     }
 }
 

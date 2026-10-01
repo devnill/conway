@@ -47,6 +47,10 @@ mod input_box;
 // so `help.rs` (a sibling) and a future V4 settings module can both reach
 // them the same way `agents.rs`'s recipe-label helpers are already shared.
 pub(crate) mod menu;
+// Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the `@`-mention completion
+// overlay -- `pub` (not `pub(crate)`) matching `palette`'s own visibility,
+// since both are reached from `input.rs`/`app.rs`.
+pub mod mentions;
 pub(crate) mod modal;
 pub mod palette;
 // V4: the `/settings` menu, the first real caller of `menu`/`modal` beyond
@@ -133,7 +137,15 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     input_box::draw(frame, areas.input, state, theme);
     status::draw(frame, areas.status, state, theme);
 
-    if state.palette_source().starts_with('/') {
+    // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the `@`-mention list and the
+    // slash palette are mutually exclusive on screen -- the mention list
+    // wins when both COULD apply (e.g. `/fork @` still starts with `/`),
+    // mirroring `input.rs::resolve_keymap_action`'s own priority order
+    // exactly, so the overlay on screen always matches which surface is
+    // actually driving the keyboard.
+    if state.mention_open() {
+        mentions::draw_overlay(frame, areas.input, state);
+    } else if state.palette_source().starts_with('/') {
         palette::draw_overlay(
             frame,
             areas.input,

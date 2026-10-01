@@ -669,6 +669,15 @@ impl App {
             .cwd
             .clone()
             .unwrap_or_else(|| conway.config().cwd.clone());
+        // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: the base directory
+        // `@`-mention/plain-`Tab` path completion walks -- `--root`'s own
+        // confinement directory when one is set (so the candidate list can
+        // never name a path outside it, docs/permissions.md's own
+        // recommendation is to set `--root` and `--cwd` to the SAME
+        // directory, which is exactly what makes the inserted `@relative/
+        // path` text resolve the way the operator expects), else this
+        // session's own `cwd` just resolved above.
+        state.mention_scan_root = cli.root.clone().unwrap_or_else(|| cwd.clone());
         // Board item 01M1ZJ796E0YP6Y8QWS8HB0AVB (context-window-provenance,
         // status-line half): the known `"backend/model"` key set still
         // comes from `Conway::model_metadata` (unchanged -- that map is
@@ -900,6 +909,7 @@ impl App {
         let (provider_status_tx, provider_status_rx) = mpsc::unbounded_channel();
         let (await_tx, await_rx) = mpsc::unbounded_channel();
         let (skill_propose_tx, skill_propose_rx) = mpsc::unbounded_channel();
+        let (mention_scan_tx, mention_scan_rx) = mpsc::unbounded_channel();
         Ok(Self {
             handle,
             state,
@@ -916,6 +926,8 @@ impl App {
             skill_propose_rx: Some(skill_propose_rx),
             provider_status_tx,
             provider_status_rx: Some(provider_status_rx),
+            mention_scan_tx,
+            mention_scan_rx: Some(mention_scan_rx),
             history_path,
             env: env_vars,
             cwd,

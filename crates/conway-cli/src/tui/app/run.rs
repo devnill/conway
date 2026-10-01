@@ -126,6 +126,13 @@ impl App {
             .provider_status_rx
             .take()
             .expect("provider_status_rx is set in App::new and taken exactly once, here");
+        // Board item `01M1YVF4X864GKSGZM4PSCTMEH`, round-1 review fix
+        // (CRITICAL): mirrors `provider_status_rx` exactly, same reasoning
+        // -- see `app/mention_scan.rs`'s own module doc.
+        let mut mention_scan_rx = self
+            .mention_scan_rx
+            .take()
+            .expect("mention_scan_rx is set in App::new and taken exactly once, here");
         // `/await` (INTENT.md §7a): mirrors `plugin_cmd_rx`/
         // `provider_status_rx` exactly, same reasoning -- see
         // `app/await_cmd.rs`'s own module doc for why the completion notice
@@ -359,6 +366,18 @@ impl App {
                 maybe_provider_status = provider_status_rx.recv() => {
                     if let Some(done) = maybe_provider_status {
                         self.apply_provider_status_done(done);
+                        dirty = true;
+                    }
+                }
+                // Board item `01M1YVF4X864GKSGZM4PSCTMEH`, round-1 review
+                // fix (CRITICAL): the reply side of `App::
+                // spawn_mention_scan`'s own spawned task -- mirrors
+                // `provider_status_rx.recv()` immediately above in every
+                // structural respect, which is what keeps a slow/contended
+                // `git`/filesystem walk from ever freezing this loop.
+                maybe_mention_scan = mention_scan_rx.recv() => {
+                    if let Some(done) = maybe_mention_scan {
+                        self.apply_mention_scan_done(done);
                         dirty = true;
                     }
                 }
@@ -1670,6 +1689,14 @@ impl App {
                                     }
                                 }
                             }
+                            // Board item `01M1YVF4X864GKSGZM4PSCTMEH`,
+                            // round-1 review fix (CRITICAL): unconditional,
+                            // after EVERY key this loop just dispatched --
+                            // see `App::kick_off_pending_mention_scan`'s own
+                            // doc for why this is the one call site both
+                            // this `CEvent::Key` arm and `CEvent::Paste`
+                            // below funnel through.
+                            self.kick_off_pending_mention_scan();
                         }
                         // T8: bracketed paste (enabled in `tui/mod.rs`'s
                         // terminal setup) -- the whole pasted block arrives
@@ -1683,6 +1710,7 @@ impl App {
                         CEvent::Paste(text) => {
                             dirty = true;
                             input::handle_paste(&mut self.state, &text);
+                            self.kick_off_pending_mention_scan();
                         }
                         CEvent::Resize(_, _) => dirty = true,
                         _ => {}

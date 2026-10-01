@@ -116,6 +116,8 @@ while you're composing:
 | `PageUp` / `PageDown` | Scroll the transcript a page at a time. |
 | `Ctrl-C` | Interrupt the current turn (or, pressed with nothing running, does nothing destructive on its own). Also abandons an in-flight `/ask`, if one is running — see below. |
 | `Ctrl-D` | Quit, when the input box is empty. |
+| `@` + a few letters | Open a file-mention completion list — see "Mentioning files," below. |
+| `Tab` | Inside an open mention list, insert the highlighted candidate; otherwise, complete the path-shaped word under the cursor. |
 
 Your input history persists across sessions (`~/.conway/history`, or under
 `$CONWAY_CONFIG_DIR/conway` if set) — it follows you across every project,
@@ -130,6 +132,63 @@ which keys stay fixed.
 A Ctrl or Alt chord that is not bound to anything is ignored rather than
 typed as its bare letter — pressing an unbound `Ctrl-X`, for instance,
 does nothing, instead of inserting an `x`.
+
+### Mentioning files
+
+Typing `@` at a word boundary (input start, or right after whitespace —
+typing it mid-word, as in an email address, never triggers this) opens a
+completion list of paths under your current working directory (or, with
+`--root` set, confined to that directory — the list never names a path
+outside it). Keep typing to filter it (a fuzzy, not-necessarily-contiguous
+match against the relative path, best match first); `Up`/`Down` move the
+highlight; `Tab` or `Enter` inserts the highlighted path (with a trailing
+space, so you can keep typing — a path containing a space is quoted,
+`@"release notes.md"`, and read back whole when you submit); `Esc` closes
+the list without inserting anything, and typing further inside the SAME
+`@`-token will not immediately reopen it.
+
+The walk never blocks the keyboard: it runs in the background and reports
+back when it finishes, so typing and scrolling keep working while it does
+(a `git`-backed walk that somehow gets stuck — a contended `.git/index.lock`,
+say — is itself wall-clock bounded and killed rather than left to hang).
+The list shows "scanning..." for the moment that takes, then fills in once
+the answer lands; if nothing has happened yet, `Tab`/`Enter`/arrows simply
+have nothing to act on until it does. The walk is cached for about 15
+seconds per directory, so typing several `@`-mentions in one message does
+not re-walk the tree for each one. In a git repository it shells out to
+`git ls-files --cached --others --exclude-standard` (the same listing `git
+status` is built on, so `.gitignore` is honored for free); outside one, a
+plain bounded directory walk skips `.git`, `target`, and `node_modules`.
+Either way the walk is capped by candidate count (and, for the non-git
+walk, by wall-clock time too) so a huge tree cannot make it take long; a
+capped listing says so in its own title rather than silently looking
+complete.
+
+While composing `/fork`/`/spawn`, the identical `@` trigger instead
+completes against this session's own LIVE agent ids (and names, if you've
+set any with `conway.names`) — `/fork`/`/spawn @<agent>`'s existing
+addressing convention, reusing the same list widget rather than a second
+one (agent lookups are in-memory, so they never go through the background
+walk above).
+
+**A pasted `@`-shaped block does not let a bare `Enter` accept.** Pasting
+text that happens to start with `@` at a word boundary (`@property` copied
+from a stylesheet, say) still opens the completion list — but a bare
+`Enter` right after submits your pasted text, rather than silently
+replacing it with whatever candidate happened to fuzzy-match. Once you
+arrow-navigate the list or keep typing into it, `Enter` accepts normally
+again; `Tab` always accepts, paste or not, since a paste never delivers a
+literal `Tab` keypress on its own.
+
+**What the model actually receives.** An `@`-mention is sent as plain text,
+exactly as typed — the model reads the file with its own tools, the same as
+any other path you type by hand. Alongside it, conway appends a clearly
+delimited line naming every `@`-mentioned path, so the model reads the
+mention as a reference rather than ordinary prose. (There is no facade
+primitive today for attaching that hint as separate turn metadata rather
+than inline text, so it shows up at the end of your own message, visibly,
+rather than hidden.) `@`-mentions never cause conway itself to read or send
+file contents — only what the model's own tool calls fetch, same as always.
 
 ### Why `Up`/`Down` scroll, not recall history
 
@@ -1049,6 +1108,10 @@ the same list with your OWN effective bindings, not these defaults.
   input-history entry.
 - `prompt.history_next` — default `Ctrl-N` — recall the next input-history
   entry.
+- `prompt.complete_path` — default `Tab` — complete the path-shaped word
+  under the cursor (see "Mentioning files," below). Only reached while no
+  `@`-mention list is open — `mentions.accept` (below) owns `Tab` while one
+  is.
 
 On a multi-line draft (`Alt-Enter`/`Shift-Enter`), all four of
 `line_start`/`line_end`/`kill_to_start`/`kill_to_end` act on the cursor's
@@ -1099,6 +1162,17 @@ nothing, rather than joining the next line onto this one.
   command up.
 - `permission_prompt.scroll_down` — default `PageDown` — scroll the shown
   command down.
+
+#### `mentions`
+
+- `mentions.navigate_up` — default `Up` — move the mention-completion
+  selection up.
+- `mentions.navigate_down` — default `Down` — move the mention-completion
+  selection down.
+- `mentions.accept` — default `Tab`, `Enter` — insert the highlighted
+  mention candidate.
+- `mentions.close` — default `Esc` — close the mention-completion list
+  without inserting anything.
 
 #### `settings`
 
