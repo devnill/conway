@@ -163,7 +163,16 @@ fn find_grant(conway: &Conway, wire: &str) -> (PatternRule, PatternOrigin) {
 #[tokio::test]
 async fn revoking_one_pattern_leaves_the_other_in_force() {
     let cwd = TempDir::new().expect("tempdir");
-    let read_path = cwd.path().join("read_me.txt");
+    // Board item `01M3TD844GXJFEVF69M0HH1X5Q`: the READ fixture lives
+    // OUTSIDE `cwd` on purpose. `cwd` is also conway's own
+    // in-project-read default-allow boundary (Prompt mode's own built-in
+    // default for an in-project, read-only call), so a read fixture placed
+    // inside it would be auto-allowed by THAT default alone once the
+    // `read:*` grant is revoked, proving nothing about the revoke. The
+    // WRITE fixture is unaffected (`write` is `ToolCategory::Edit`, which
+    // the default never covers) and stays inside `cwd`.
+    let read_dir = TempDir::new().expect("tempdir");
+    let read_path = read_dir.path().join("read_me.txt");
     std::fs::write(&read_path, "fixture content").expect("write read fixture");
     let read_path = read_path.display().to_string();
     let write_path = cwd.path().join("write_me.txt").display().to_string();
@@ -233,7 +242,13 @@ async fn revoking_one_pattern_leaves_the_other_in_force() {
 #[tokio::test]
 async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
     let project = project_dir_with_permissions(r#"{"allow": ["read:*", "write:*"]}"#);
-    let read_path = project.path().join("read_me.txt");
+    // See `revoking_one_pattern_leaves_the_other_in_force`'s own note
+    // (board item `01M3TD844GXJFEVF69M0HH1X5Q`): the READ fixture lives
+    // OUTSIDE `project` (the session's own cwd) so conway's own
+    // in-project-read default never authorizes it on its own, leaving only
+    // the (revoked/surviving) `read:*` rule in play.
+    let read_dir = TempDir::new().expect("tempdir");
+    let read_path = read_dir.path().join("read_me.txt");
     std::fs::write(&read_path, "fixture content").expect("write read fixture");
     let read_path = read_path.display().to_string();
     let write_path = project.path().join("write_me.txt").display().to_string();

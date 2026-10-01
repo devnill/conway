@@ -194,6 +194,17 @@ own, at `~/.conway/` (or `$CONWAY_CONFIG_DIR`), is exempt by design
 (`docs/permissions.md`'s Trust section: "asking you to trust your own
 file is theater").
 
+**This rule is now redundant for the common case, since the RULING
+(2026-09-30) documented in `docs/permissions.md`'s "The default: in-project
+reads don't ask."** In `Prompt` mode, a plain `read` call whose path
+already resolves inside your project needs no `allow` rule at all — if
+`/Users/dan/code/ideate2` is (or sits under) the project you launched
+conway from, this rule authorizes nothing an ordinary read there didn't
+already get for free. It still earns its keep for a directory the default
+does NOT reach on its own — one outside the current project's own git
+root — and it is completely unaffected in `Plan`/`AutoAllow`, which this
+item never touches.
+
 **Net result: 1 of the operator's real 7 `permissions.allow` rules
 translates. 6 do not** — 4 because they were never a real policy (loop
 fragments), 1 because `bash` allow grants are categorically inert in

@@ -15,9 +15,101 @@ Prompt, or the `Shift+Tab` binding.
 
 | Mode | Effect |
 | --- | --- |
-| `Prompt` (default) | Every distinct tool call pauses for your decision — see "The prompt" below. Nothing runs without you seeing it first. |
+| `Prompt` (default) | Every distinct tool call pauses for your decision — see "The prompt" below — **except an in-project read, which is allowed with no prompt at all; see "The default: in-project reads don't ask," directly below.** |
 | `Plan` | Allows the non-mutating categories (`Read`, `Search`, `Think`) without asking; denies everything else outright, including a `bash` call that merely reads a file — the category is what `bash` *declares itself as* (`Execute`), not what a given command happens to do, so plan mode never has to parse or guess at shell syntax. For exploring a codebase with a guarantee that nothing changes. |
 | `AutoAllow` | Allows every call without asking. |
+
+### The default: in-project reads don't ask
+
+RULING (2026-09-30): in `Prompt` mode, a `read`/`grep`/`glob` call (a
+built-in tool declaring the `Read` or `Search` category — the two
+non-mutating, path-bearing categories, confirmed against the tree) whose
+declared path argument resolves **inside the project** is allowed with no
+prompt at all. This is the one exception to "every distinct tool call
+pauses for your decision" in the table above, and it exists because the
+alternative trains you to stop reading prompts: a session that has to ask
+permission before reading a file in your own project, every single time,
+on the very first call, is the DOGFOODING finding this default closes.
+
+**What counts as "the project."** With `--root <DIR>` set, the project
+*is* that confinement root — nothing new to compute. Without `--root`,
+conway still needs a boundary: it uses the git root enclosing your
+session's launch directory (the SAME "what counts as one project" rule
+`conway` already uses to key session storage — `conway sessions list`
+groups by this identical boundary — so a session launched from a
+repository subdirectory defaults to the same read boundary its own
+history already shares), falling back to the launch directory itself
+outside any repository — **unless that computed boundary would be your
+home directory, the filesystem root, or anything above your home
+directory (including a dotfiles repository rooted at `$HOME`), in which
+case the default does not apply at all and every read prompts as it
+always did** — launch conway from inside your actual project, or pass
+`--root`, rather than from `$HOME` or `/` directly. An EXPLICIT `--root`
+is never second-guessed this way, even `--root ~`: you said so on
+purpose.
+
+**How "inside" is decided — the same machinery a `paths_under` rule
+already uses, never the sanitized display text.** The call's *declared*
+path argument (`read`'s `path`, `grep`/`glob`'s `path`) is resolved
+exactly the way the tool itself resolves it — relative to your agent's
+current working directory, an absolute path passed through unchanged, a
+leading `~`/`~/` expanded — and checked against the real filesystem
+boundary above. A `..` component, or a symlink, that resolves to a real
+location outside the boundary is **outside**, regardless of what the
+argument's literal text looks like, and still prompts, exactly as it
+always did. An absolute path naming something outside the boundary
+prompts too.
+
+**What does NOT get this default:**
+
+- **A read-category call with no declared path argument at all still
+  prompts.** `conway.web`'s `web_fetch` is `Read`-categorized but fetches
+  a URL, not a filesystem path — there is no boundary for this default to
+  check, so it is never silently admitted on that basis.
+- **Every edit, delete, move, execute, and fetch call is unaffected** —
+  this default covers exactly the two read-only, path-bearing categories
+  named above, nothing else. A `bash` call is `Execute` and is never
+  confinable to a path argument at all (see Confinement, below), so it is
+  never in scope either.
+- **`Plan` and `AutoAllow` are unaffected.** `Plan` already allows `Read`/
+  `Search` through its own category gate (and still denies everything
+  else outright); `AutoAllow` already allows every call. This default is
+  specific to `Prompt` mode, the one mode that otherwise asks about
+  everything.
+
+**Every operator rule still outranks this default — it is the LAST allow
+path consulted, after the cache, every pattern grant, and the shell-prefix
+grants.** A `deny` rule matching the call refuses it outright, exactly as
+it would an ordinary read; a `prompt` rule matching it forces the ordinary
+ask, every time — see "Tightening it," immediately below, for a worked
+example of narrowing this default back down. This was verified directly
+against the real broker, not assumed from its ordering: `crates/conway-
+runtime/tests/permission_broker.rs`'s
+`an_in_project_read_matched_by_a_deny_rule_is_still_denied` and
+`an_in_project_read_matched_by_a_prompt_rule_still_prompts`.
+
+#### Tightening it
+
+If you keep a secrets directory inside your project and want even an
+in-project read of it to prompt (or refuse outright), write a structured
+`deny`/`prompt` rule scoped to it — this default is a starting posture,
+not a ceiling on what you can still require:
+
+```json
+// .conway/permissions.json
+{
+  "rules": [
+    { "select": { "categories": ["Read"] }, "when": { "paths_under": "<project>/secrets" }, "then": "deny" }
+  ]
+}
+```
+
+`paths_under` can also name a single FILE, not only a directory — `{
+"paths_under": "<project>/.env" }` installs and matches exactly that one
+file (`Path::canonicalize`, what this boundary is built from, resolves a
+file path the same as a directory path); nothing else is "beneath" a file
+in any sense this check recognizes, so it never accidentally widens to
+cover a sibling like `.env.example`.
 
 ### Setting the starting mode: `permissions.default_mode`
 
@@ -227,8 +319,8 @@ Each record carries:
 | --- | --- |
 | `call_id` | The tool call this decision resolved. |
 | `tool` | The tool name. |
-| `decision` | What was decided: `allow`, `allow_always`, `pattern`, `shell_prefix_grant` (the session-scoped shell-prefix mechanism above — deliberately distinct from `pattern`, which names the durable mechanism this one is not), `deny`, `deny_with_feedback`, `auto`, `plan_denied`, `hook_denied`, or `rule` (naming the specific `deny` rule that matched). |
-| `source` | How it was resolved: `operator` (you were shown a prompt, just now), `rule` (a pattern grant, a cached "always allow" from earlier in the session, a session-scoped shell-prefix grant, or this agent's confinement root), `hook`, or `mode` (`AutoAllow` authorizing, or `Plan` refusing a category it doesn't permit). |
+| `decision` | What was decided: `allow`, `allow_always`, `pattern`, `shell_prefix_grant` (the session-scoped shell-prefix mechanism above — deliberately distinct from `pattern`, which names the durable mechanism this one is not), `default_in_project_read` ("The default: in-project reads don't ask," above — deliberately distinct from `pattern`/`auto`: no operator-authored rule or cached grant was consulted), `deny`, `deny_with_feedback`, `auto`, `plan_denied`, `hook_denied`, or `rule` (naming the specific `deny` rule that matched). |
+| `source` | How it was resolved: `operator` (you were shown a prompt, just now), `rule` (a pattern grant, a cached "always allow" from earlier in the session, a session-scoped shell-prefix grant, or this agent's confinement root), `hook`, `mode` (`AutoAllow` authorizing, or `Plan` refusing a category it doesn't permit), or `default` (`Prompt` mode's own in-project-read default, above — paired only with `decision: default_in_project_read`). |
 | `waited_ms` | How long the prompt sat in front of you, in milliseconds — present only when `source` is `operator`; absent (never a fabricated `0`) for every other source, since nothing was ever waiting. |
 | `feedback` | The human-readable reason, for any denial — your own typed message from `Esc`, or the rendered explanation any other deny path already gives the model. Absent for an allow. |
 

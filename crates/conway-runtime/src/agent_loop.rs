@@ -1351,6 +1351,51 @@ impl AgentLoop {
         // filesystem `canonicalize` call this performs happens once per
         // agent's whole run, never once per batch or per tool call.
         let root = crate::permission::AgentRoot::reconstruct(&self.root);
+        // Board item `01M3TD844GXJFEVF69M0HH1X5Q` (RULING 2026-09-30): the
+        // project-root boundary `PermissionMode::Prompt`'s own default-allow
+        // step checks a read-only call against -- reconstructed exactly
+        // ONCE here too, alongside `root` immediately above, for the
+        // identical "cheap to clone, expensive to recompute per call"
+        // reason. See `PermissionCtx::default_read_root`'s own doc
+        // (`crate::permission`) for the full contract this implements: when
+        // this agent IS confined (`--root` set), this is simply `root`'s
+        // own value again -- the confinement root already IS the project
+        // boundary, nothing else to compute. When it is NOT (`root ==
+        // AgentRoot::Unconfined`), this agent still gets a default-allow
+        // boundary: the git root enclosing its own spawn-time `self.cwd`
+        // (or `self.cwd` itself, outside any repository) -- the SAME
+        // "what counts as one project" rule `conway::config::discovery::
+        // session_root` already keys session storage on (see
+        // `crate::permission::enclosing_project_root`'s own doc for why
+        // this crate carries its own copy of that walk rather than sharing
+        // it) -- UNLESS that computed boundary is the filesystem root, the
+        // caller's own home directory, or an ancestor of it, in which case
+        // it stays `Unconfined` instead (board item
+        // `01M3TD844GXJFEVF69M0HH1X5Q`, a post-review CRITICAL fix -- see
+        // `crate::permission::default_read_root_too_broad`'s own doc for
+        // why: a `.git`-free launch from `/` or `$HOME`, or a dotfiles repo
+        // rooted AT `$HOME`, must never make `~/.ssh`/`~/.aws`/
+        // `~/.conway/settings.json` "inside the project" by this default's
+        // own plain prefix rule). `conway_core::containment::home_dir` is
+        // this crate's ONE call to the real environment for this purpose --
+        // see that function's own doc for why this crate reuses it rather
+        // than re-deriving its own, second, independently-resolved answer.
+        // `AgentRoot::reconstruct` on a computed, non-too-broad path fails
+        // closed (`Broken`, never a silent `Unconfined`) in the vanishingly
+        // unlikely case it stops canonicalizing between process start and
+        // this call.
+        let default_read_root = match &root {
+            crate::permission::AgentRoot::Confined(canonical) => {
+                crate::permission::AgentRoot::Confined(canonical.clone())
+            }
+            crate::permission::AgentRoot::Broken => crate::permission::AgentRoot::Broken,
+            crate::permission::AgentRoot::Unconfined => {
+                crate::permission::default_read_root_for_unconfined_agent(
+                    &self.cwd,
+                    conway_core::containment::home_dir().as_deref(),
+                )
+            }
+        };
         // the write-location
         // capability a registered `ContextHook` sees on `ContextHookCtx::
         // artifacts`. An embedder override (`ConwayBuilder::
@@ -2071,6 +2116,7 @@ impl AgentLoop {
                 plugin_config: self.plugin_config.clone(),
                 max_parallel_tools: self.spec.max_parallel_tools.max(1),
                 root: root.clone(),
+                default_read_root: default_read_root.clone(),
                 // Board item `01M1FSHJ3FG522MHA9CMBJTVW1`. Unconditionally
                 // `None` (unlimited) -- `AgentSpec` has no field to source
                 // this from yet, mirroring `max_parallel_tools`'s own
