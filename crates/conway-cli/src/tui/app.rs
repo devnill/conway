@@ -56,6 +56,7 @@ mod plugin_toggle;
 mod provider_manage;
 mod provider_status;
 mod run;
+mod shell_cmd;
 mod shutdown;
 mod skill_propose;
 mod startup;
@@ -66,6 +67,7 @@ pub(super) mod fixtures;
 
 use ask::AskUpdate;
 use plugin_cmd::PluginCommandDone;
+use shell_cmd::Bang;
 use skill_propose::SkillProposeDone;
 
 pub struct App {
@@ -139,6 +141,41 @@ pub struct App {
     /// keeps a slow/contended filesystem from ever freezing the whole TUI.
     mention_scan_tx: mpsc::UnboundedSender<mention_scan::MentionScanDone>,
     mention_scan_rx: Option<mpsc::UnboundedReceiver<mention_scan::MentionScanDone>>,
+    /// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` ("Run a shell command
+    /// yourself"): mirrors `mention_scan_tx`/`mention_scan_rx` exactly,
+    /// same reasoning -- a `!`/`!>` command's own process run is spawned
+    /// off this loop (`app/shell_cmd.rs::App::spawn_shell_command`) rather
+    /// than run on `submit`'s own call stack, which is what keeps a
+    /// slow-running shell command from ever freezing the whole TUI.
+    shell_tx: mpsc::UnboundedSender<shell_cmd::ShellDone>,
+    shell_rx: Option<mpsc::UnboundedReceiver<shell_cmd::ShellDone>>,
+    /// The in-flight `!` command's own cancellation signal, taken by
+    /// `Self::handle_ctrl_c` and sent exactly once -- see
+    /// `app/shell_cmd.rs`'s own module doc for why this lives on `App`
+    /// itself (plain plumbing a `Ctrl-C` keypress reaches directly)
+    /// rather than on `AppState` (which `shell_in_flight` -- the sibling
+    /// flag that tells the REST of this crate whether a command is
+    /// running at all -- already does belong on, being read by the status
+    /// line and by `submit`'s own "a command is already running" guard).
+    /// `None` whenever no `!` command is running; set immediately before
+    /// `spawn_shell_command`'s `tokio::spawn` call, taken (never merely
+    /// read) by both the one `Ctrl-C` consumer and `apply_shell_done`'s own
+    /// unconditional clear, so a stale sender can never be sent to twice.
+    /// Also taken by `Self::kill_shell_command_for_quit` (review round 1,
+    /// finding 1) -- every quit path's own cancellation, identical in
+    /// shape to `Ctrl-C`'s.
+    shell_cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Review round 1 (SIGNIFICANT finding 1, "orphaned child on quit"):
+    /// the `!` command's own spawned task, kept so `Self::
+    /// kill_shell_command_for_quit` can bound-wait for its REAL
+    /// process-group kill to finish before the app loop returns its exit
+    /// code -- see that method's own doc (`app/shell_cmd.rs`) for why a
+    /// bare cancel signal, unawaited, is not enough. `None` whenever no `!`
+    /// command is running; set alongside `shell_cancel_tx`, taken by
+    /// whichever of `apply_shell_done`/`kill_shell_command_for_quit`
+    /// resolves first (a task already reaped by the ordinary completion
+    /// path leaves nothing here for quit-time code to redundantly await).
+    shell_task: Option<tokio::task::JoinHandle<()>>,
     /// T8: where [`Self::submit`] persists `state.history` to after every push
     /// -- `~/.conway/history` (or `$CONWAY_CONFIG_DIR/history` when set),
     /// resolved once at `App::new` via
@@ -285,6 +322,46 @@ impl App {
             let _ = tokio::task::spawn_blocking(move || crate::tui::history::save(&path, &history))
                 .await;
         }
+        // Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` ("Run a shell command
+        // yourself"): a `!`-prefixed line is handled here, BEFORE the `/`
+        // dispatch below and -- critically -- BEFORE `mentions::
+        // append_mention_hint` further down, which must never see a `!`
+        // line at all (a shell command is not a prompt the facade ever
+        // sees directly; the ONLY text that can reach `prompt_agent` from
+        // this method is the `!> command` form's own formatted block,
+        // built fresh in `shell_cmd::App::apply_shell_done`, which the
+        // mention hint has no reason to touch). See `tui::app::shell_cmd`'s
+        // own module doc for the four shapes (`!`, `!>`, `!!`,
+        // `!command`/`!> command`) and everything this dispatches into.
+        // Review round 1 (SIGNIFICANT finding 2, "prose starting with `!`
+        // is executed silently"): a leading `\!` is the escape -- strip
+        // the ONE backslash and send the rest as an ordinary prompt,
+        // `\!important` -> the literal prompt text `!important`, NEVER
+        // dispatched as a `!` command regardless of what follows the `!`.
+        // Checked on the ORIGINAL `text` (the one already recorded into
+        // history above, backslash and all -- history keeps exactly what
+        // was typed, same as every other submitted line), so the bang
+        // dispatch just below never even sees an escaped line: `escaped`
+        // (once stripped) starts with `!`, which would otherwise re-enter
+        // that branch, so this is an `if`/`else if`, not two independent
+        // checks that could both fire.
+        let text = if let Some(escaped) = text.strip_prefix('\\').filter(|r| r.starts_with('!')) {
+            escaped.to_string()
+        } else if text.starts_with('!') {
+            match shell_cmd::parse_bang(&text) {
+                Bang::Empty => {}
+                Bang::Rerun => match self.state.last_shell_command.clone() {
+                    Some((command, to_model)) => self.spawn_shell_command(command, to_model),
+                    None => self.state.transcript.push(Entry::Notice {
+                        text: "no previous `!` command to repeat".to_string(),
+                    }),
+                },
+                Bang::Run { command, to_model } => self.spawn_shell_command(command, to_model),
+            }
+            return Ok(SubmitOutcome::Continue);
+        } else {
+            text
+        };
         // V4: `/thinking` and `/timestamps` -- the state-only toggles that
         // used to be intercepted HERE (mirroring `/agents`'s old pattern) --
         // are REMOVED, not aliased. Both are now a single `/settings` menu
@@ -870,6 +947,59 @@ mod tests {
         assert_ne!(
             user_turn_text, "please check @src/main.rs for bugs",
             "a hint suffix must actually have been appended"
+        );
+    }
+
+    /// Review round 1, SIGNIFICANT finding 2 ("prose starting with `!` is
+    /// executed silently"): a leading `\!` is the escape -- `\!important`
+    /// is submitted as the ordinary prompt text `!important` (the ONE
+    /// backslash stripped, nothing more), reaching the model through the
+    /// SAME `UserTurn` path `a_file_mention...` above already pins, and
+    /// nothing is ever executed (`AppState::shell_in_flight` never flips,
+    /// and no `Entry::Shell` ever lands in the transcript).
+    #[tokio::test]
+    async fn an_escaped_bang_is_submitted_as_literal_prompt_text_and_nothing_runs() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let outcome = app
+            .submit("\\!important".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        assert!(
+            !app.state.shell_in_flight,
+            "an escaped `!` must never be dispatched as a shell command"
+        );
+        assert!(
+            !app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Shell { .. })),
+            "an escaped `!` must never produce a shell transcript entry: {:?}",
+            app.state.transcript
+        );
+
+        let records = app
+            .handle
+            .transcript(app.handle.root())
+            .await
+            .expect("transcript should read back");
+        let user_turn_text = records
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                conway::LogRecord::UserTurn { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("a UserTurn record must exist");
+        assert!(
+            user_turn_text.starts_with("!important"),
+            "the backslash must be stripped and the rest sent as a literal prompt: \
+             {user_turn_text:?}"
         );
     }
 

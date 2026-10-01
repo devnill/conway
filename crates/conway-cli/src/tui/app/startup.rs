@@ -910,6 +910,7 @@ impl App {
         let (await_tx, await_rx) = mpsc::unbounded_channel();
         let (skill_propose_tx, skill_propose_rx) = mpsc::unbounded_channel();
         let (mention_scan_tx, mention_scan_rx) = mpsc::unbounded_channel();
+        let (shell_tx, shell_rx) = mpsc::unbounded_channel();
         Ok(Self {
             handle,
             state,
@@ -928,6 +929,10 @@ impl App {
             provider_status_rx: Some(provider_status_rx),
             mention_scan_tx,
             mention_scan_rx: Some(mention_scan_rx),
+            shell_tx,
+            shell_rx: Some(shell_rx),
+            shell_cancel_tx: None,
+            shell_task: None,
             history_path,
             env: env_vars,
             cwd,

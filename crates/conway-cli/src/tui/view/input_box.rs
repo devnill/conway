@@ -23,6 +23,7 @@
 //!   row you are actively editing needs to track the cursor.
 
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
@@ -32,16 +33,53 @@ use crate::tui::state::{AppState, Mode};
 
 const PLACEHOLDER: &str = "Type a message, or / for commands";
 
+/// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT`, review round 1 (SIGNIFICANT
+/// finding 2, "prose starting with `!` is executed silently"): the box's
+/// own title/border change the INSTANT the draft starts with `!`, before
+/// `Enter` is ever pressed -- visible proof the operator is about to run a
+/// command, not send a message, mirroring Claude Code's own bash-mode
+/// indicator (the ruling the review cites). `!>` (the to-model form,
+/// `tui::app::shell_cmd::Bang::Run { to_model: true, .. }`'s own parse)
+/// gets its own distinct title so the two forms are never confused with
+/// each other either.
+///
+/// Checked on the RAW `state.input` text, byte-for-byte the same prefix
+/// `tui::app::shell_cmd::parse_bang` itself checks at submit time -- this
+/// is a preview of that exact parse, not a second, independently-tuned
+/// one, so the indicator can never show "shell" for a draft that would
+/// actually submit as an ordinary prompt (a leading `\!`, the escape the
+/// same finding adds -- see `App::submit`'s own escape check, `tui/app.rs`,
+/// for where that backslash is stripped -- is NOT a `!` prefix by this
+/// check either, since `"\\!...".starts_with('!')` is false: the indicator
+/// and the escape agree by construction, not by two call sites kept in
+/// step by hand).
+///
+/// `disabled` (a modal/form surface covering the input) wins outright --
+/// mirrors the pre-existing "input (paused)" precedence over anything else
+/// this box could show.
+fn input_box_chrome(state: &AppState, disabled: bool, theme: &Theme) -> (&'static str, Style) {
+    if disabled {
+        return ("input (paused)", theme.border_normal);
+    }
+    if state.input.starts_with("!>") {
+        ("shell → model", theme.border_accent)
+    } else if state.input.starts_with('!') {
+        ("shell", theme.border_accent)
+    } else {
+        ("input", theme.border_normal)
+    }
+}
+
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     let disabled = !matches!(state.mode, Mode::Normal);
-    let title = if disabled { "input (paused)" } else { "input" };
+    let (title, border_style) = input_box_chrome(state, disabled, theme);
 
     if state.input.is_empty() && !disabled {
         let paragraph = Paragraph::new(PLACEHOLDER).style(theme.dim).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(theme.border_normal),
+                .border_style(border_style),
         );
         frame.render_widget(paragraph, area);
         return;
@@ -55,7 +93,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
         Block::default()
             .borders(Borders::ALL)
             .title(title)
-            .border_style(theme.border_normal),
+            .border_style(border_style),
     );
     frame.render_widget(paragraph, area);
 
@@ -264,5 +302,81 @@ mod tests {
             !text.contains("one"),
             "the scroll must have moved past the earliest lines: {text:?}"
         );
+    }
+
+    /// Review round 1, SIGNIFICANT finding 2: the title becomes `shell`
+    /// the instant the draft starts with `!`, before `Enter` is ever
+    /// pressed.
+    #[test]
+    fn a_leading_bang_shows_the_shell_mode_title() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "!git status".to_string();
+        state.cursor = state.input.chars().count();
+
+        let backend = TestBackend::new(60, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("shell"), "{text:?}");
+        assert!(!text.contains("shell → model"), "{text:?}");
+    }
+
+    /// Sibling of the test above: `!>` (the to-model form) gets its own
+    /// distinct title, `shell → model`, never confused with the bare `!`
+    /// form's plain `shell`.
+    #[test]
+    fn a_leading_bang_arrow_shows_the_shell_to_model_title() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "!> echo hi".to_string();
+        state.cursor = state.input.chars().count();
+
+        let backend = TestBackend::new(60, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("shell → model"), "{text:?}");
+    }
+
+    /// A leading `\!` is the escape (finding 2's own other half) -- it must
+    /// NOT trigger the shell-mode title, since it never dispatches as a
+    /// `!` command (`App::submit`'s own escape check, `tui/app.rs`).
+    #[test]
+    fn an_escaped_bang_does_not_show_the_shell_mode_title() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "\\!important".to_string();
+        state.cursor = state.input.chars().count();
+
+        let backend = TestBackend::new(60, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!text.contains("shell"), "{text:?}");
     }
 }

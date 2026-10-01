@@ -40,6 +40,25 @@ impl App {
         &mut self,
         last_ctrl_c: &mut Option<Instant>,
     ) -> conway::Result<Option<ExitCode>> {
+        // Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` ("Run a shell command
+        // yourself"): a `!` command in flight is this press's ONLY target
+        // -- it is not an agent turn, so neither the double-press-to-exit
+        // window below nor an in-flight `/ask`'s own abandon logic applies
+        // to it. `take()`, never a bare read: the sender is one-shot, and
+        // taking it here is what makes a SECOND `Ctrl-C` (while
+        // `shell_in_flight` is still `true` because the kill is not yet
+        // confirmed) fall through to the ordinary agent-cancel path below
+        // instead of sending on an already-consumed channel. The actual
+        // process-group kill happens inside the spawned task
+        // (`tui::app::shell_cmd::execute`'s own `cancel_rx` arm); this
+        // send only asks for it -- `App::apply_shell_done` (reached once
+        // that task replies) is what actually clears `shell_in_flight` and
+        // renders the outcome, exactly like a `!` command finishing on its
+        // own.
+        if let Some(tx) = self.shell_cancel_tx.take() {
+            let _ = tx.send(());
+            return Ok(None);
+        }
         let now = Instant::now();
         if let Some(prev) = *last_ctrl_c {
             if now.duration_since(prev) <= DOUBLE_CTRL_C_WINDOW {
@@ -66,9 +85,12 @@ impl App {
         Ok(None)
     }
 
-    /// B5's "no fourth way out": every quit path (`Action::Quit`, the
-    /// double-`Ctrl-C` exit) funnels through here before leaving the app
-    /// loop. If the `/ask` modal is open -- OR parked behind a permission
+    /// B5's "no fourth way out": every quit path (`/quit`, `Ctrl-D`
+    /// (`Action::Quit`), the double-`Ctrl-C` exit, and every other
+    /// `Effect::Quit` arm in `app/run.rs` -- review round 1 widened this
+    /// from the original two to ALL of them, see finding 1's own note just
+    /// below) funnels through here before leaving the app loop. If the
+    /// `/ask` modal is open -- OR parked behind a permission
     /// prompt in `pending_ask_modal` (the two compete for the one modal
     /// slot, so at most one is present) -- its child is purged via
     /// `Conway::purge`. Quitting IS the discard fate (purge
@@ -188,5 +210,17 @@ impl App {
         // unbounded hang" posture the mechanical trigger's own lossy-
         // delivery decision already accepts elsewhere in this feature.
         let _ = self.state.take_pending_skill_proposal();
+        // Review round 1 (SIGNIFICANT finding 1, "orphaned child on
+        // quit"): an in-flight `!` command's own process group, killed and
+        // bound-awaited -- see `Self::kill_shell_command_for_quit`'s own
+        // doc (`app/shell_cmd.rs`) for why a bare cancel signal alone
+        // (this method's EVERY other step above is a bare best-effort
+        // signal/drop, never awaited to completion) is not enough here:
+        // unlike an ask/trust/intent/form/skill-proposal residue (each
+        // bounded by its own eventual timeout or reaped by the next
+        // startup's crash sweep), an unawaited `!` command is a live OS
+        // process that would otherwise be orphaned the instant this
+        // process exits, with nothing left to ever clean it up.
+        self.kill_shell_command_for_quit().await;
     }
 }

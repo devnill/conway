@@ -630,6 +630,49 @@ pub enum LogRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         feedback: Option<String>,
     },
+    /// A `!`-prefixed operator-typed shell command (`docs/interactive.md`,
+    /// "Running a command yourself"), recorded durably for the SAME reason
+    /// [`Self::PermissionDecisionRecord`] already states for its own, much
+    /// older case: "it happened" deserves a durable trace even when it must
+    /// never reach the model.
+    ///
+    /// **Deliberately does not participate in context assembly, exactly
+    /// like [`Self::PermissionDecisionRecord`] above (`conway_runtime::
+    /// context::builder::ContextBuilder` does not read this variant
+    /// either).** This is the WHOLE reason this variant exists rather than
+    /// reusing [`Self::SystemNote`]/[`Self::UserTurn`]: both of those ARE
+    /// read by `ContextBuilder`, so writing one would hand the model the
+    /// token cost the `!` form is explicit about never spending (see
+    /// `docs/interactive.md`'s own "Zero token cost" section). The OTHER
+    /// form, `!> command`, spends that cost on purpose and needs no new
+    /// variant at all: its output is wrapped into an ordinary
+    /// [`Self::UserTurn`] (`conway_cli`'s own `tui::app::shell_cmd` module),
+    /// which is already read by `ContextBuilder` -- exactly the behavior
+    /// that form wants, with no second mechanism.
+    ///
+    /// `command` is the shell command exactly as typed (after the leading
+    /// `!`, with any `!!` re-run already resolved to the command it
+    /// repeats); `output` is the captured, already-bounded stdout+stderr
+    /// text (see `tui::app::shell_cmd`'s own doc for the byte cap and the
+    /// `truncated` flag's meaning); `exit_code` is `None` exactly when the
+    /// command was killed (`Ctrl-C`) or timed out rather than exiting
+    /// normally -- `truncated` and `exit_code` are independent facts, never
+    /// conflated the way `conway_tools::shell::BashTool`'s own `finish`
+    /// keeps `exit_code`/`timed_out_after_ms` mutually exclusive (this
+    /// variant's `output` text itself states the "killed"/"timed out"
+    /// outcome in words; `exit_code: None` is the structured twin of that
+    /// same fact, not a second place it could drift from it).
+    #[serde(rename = "operator_shell")]
+    OperatorShellRecord {
+        seq: LogSeq,
+        ts: DateTime<Utc>,
+        command: String,
+        output: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        #[serde(default)]
+        truncated: bool,
+    },
 }
 
 impl LogRecord {
@@ -649,7 +692,8 @@ impl LogRecord {
             | LogRecord::ContextMask { seq, .. }
             | LogRecord::ContextPathSet { seq, .. }
             | LogRecord::ContextPathNamed { seq, .. }
-            | LogRecord::PermissionDecisionRecord { seq, .. } => Some(*seq),
+            | LogRecord::PermissionDecisionRecord { seq, .. }
+            | LogRecord::OperatorShellRecord { seq, .. } => Some(*seq),
         }
     }
 
@@ -670,6 +714,7 @@ impl LogRecord {
             LogRecord::ContextPathSet { .. } => "context_path_set",
             LogRecord::ContextPathNamed { .. } => "context_path_named",
             LogRecord::PermissionDecisionRecord { .. } => "permission_decision",
+            LogRecord::OperatorShellRecord { .. } => "operator_shell",
         }
     }
 }
@@ -856,6 +901,17 @@ mod tests {
                     feedback: Some("`bash` is denied by a `deny` rule".into()),
                 },
                 "permission_decision",
+            ),
+            (
+                LogRecord::OperatorShellRecord {
+                    seq: LogSeq(14),
+                    ts: ts(),
+                    command: "git status".into(),
+                    output: "stdout:\nnothing to commit\n\nstderr:\n(empty)\n\nexit code: 0".into(),
+                    exit_code: Some(0),
+                    truncated: false,
+                },
+                "operator_shell",
             ),
         ];
         for (record, expected) in &records {

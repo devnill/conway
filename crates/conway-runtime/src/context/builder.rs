@@ -2714,6 +2714,99 @@ mod own_segment_provenance_tests {
         assert_eq!(prov, Provenance::UserPrompt);
     }
 
+    /// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` (operator-typed `!` shell
+    /// commands, zero-token-cost default): `LogRecord::OperatorShellRecord`
+    /// must map to `None` in BOTH `own_segment` and `record_role_and_content`
+    /// -- the "a `!` command never grows `/context`" acceptance criterion
+    /// made concrete at the one seam that decides it, mirroring
+    /// `LogRecord::PermissionDecisionRecord`'s own identical exclusion
+    /// (this module's `_ => None` wildcard, documented just above both
+    /// match blocks: "an unrecognized future kind is dropped rather than
+    /// fed into context"). No code change was needed to make this true --
+    /// this test exists to PROVE it, and to catch a future edit that adds
+    /// an explicit arm and gets it wrong.
+    #[test]
+    fn operator_shell_record_is_excluded_from_both_own_and_inherited_mapping() {
+        let record = LogRecord::OperatorShellRecord {
+            seq: LogSeq(0),
+            ts: Utc::now(),
+            command: "rm -rf /tmp/scratch".into(),
+            output: "stdout:\n(empty)\n\nstderr:\n(empty)\n\nexit code: 0".into(),
+            exit_code: Some(0),
+            truncated: false,
+        };
+        let mut not_admitted = Vec::new();
+        assert!(
+            own_segment(&record, 0, 0, &mut not_admitted).is_none(),
+            "an operator-shell record must never become an own-segment"
+        );
+        assert!(
+            record_role_and_content(&record, 0, 0, &mut not_admitted).is_none(),
+            "an operator-shell record must never become an inherited segment"
+        );
+    }
+
+    /// The same property end-to-end through `ContextBuilder::build`: an
+    /// operator-shell record sitting in the path alongside a real turn
+    /// contributes NO segment at all, and -- the sharpest possible
+    /// assertion -- the assembled output never contains the command/output
+    /// text that record carries, however that text is searched for.
+    #[test]
+    fn build_never_admits_an_operator_shell_records_command_or_output() {
+        const MARKER_COMMAND: &str = "echo OPERATOR_SHELL_COMMAND_MARKER";
+        const MARKER_OUTPUT: &str = "OPERATOR_SHELL_OUTPUT_MARKER";
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
+            system_prompt: None,
+            instructions: vec![],
+            skills: vec![],
+            tools: vec![],
+            path: path_from_legacy(
+                None,
+                &[
+                    LogRecord::UserTurn {
+                        seq: LogSeq(0),
+                        ts: Utc::now(),
+                        text: "hi".into(),
+                        prov: Provenance::UserPrompt,
+                    },
+                    LogRecord::OperatorShellRecord {
+                        seq: LogSeq(1),
+                        ts: Utc::now(),
+                        command: MARKER_COMMAND.into(),
+                        output: MARKER_OUTPUT.into(),
+                        exit_code: Some(0),
+                        truncated: false,
+                    },
+                ],
+                SessionId::new(),
+            )
+            .unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
+            tool_result_bound_tokens: 0,
+        };
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+        for segment in &segments {
+            for block in &segment.content {
+                if let ContentBlock::Text { text } = block {
+                    assert!(
+                        !text.contains(MARKER_COMMAND),
+                        "the operator-shell command leaked into an assembled segment: {text:?}"
+                    );
+                    assert!(
+                        !text.contains(MARKER_OUTPUT),
+                        "the operator-shell output leaked into an assembled segment: {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The same property end-to-end through `ContextBuilder::build`: a
     /// merged turn in `own` produces a segment (and a context-report entry)
     /// whose provenance is `MergedAsk`, not `UserPrompt`.

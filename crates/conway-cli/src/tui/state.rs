@@ -811,6 +811,25 @@ pub struct AppState {
     /// arrives -- this set exists only to refuse a duplicate `/await`, never
     /// to gate whether/where the notice is shown.
     pub awaiting_agents: HashSet<AgentId>,
+    /// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` ("Run a shell command
+    /// yourself"): whether a `!`-prefixed operator-typed shell command is
+    /// currently running. Mirrors `ask_in_flight`'s own shape: set at
+    /// submit time (`App::submit`, before the spawn), cleared when
+    /// `tui::app::shell_cmd::ShellDone` arrives -- while set, a second `!`
+    /// is refused with a `Notice` rather than racing two child processes
+    /// for the one `Ctrl-C`-kill target `App::handle_ctrl_c` reads
+    /// (`App::shell_cancel_tx`, a plain field, not `AppState`'s -- see that
+    /// field's own doc for why it lives on `App`, not here).
+    pub shell_in_flight: bool,
+    /// The most recently RUN `!`/`!>` command (text with no leading `!`,
+    /// and whether it was the `!>` to-model form), for a bare `!!` to
+    /// repeat. `None` until the first `!` command runs; never set by `!!`
+    /// itself (repeating does not change what "last" means) or by `!`/`!>`
+    /// alone (both "run nothing" -- see `tui::app::shell_cmd`'s own parser
+    /// doc). Set even when the command was refused by a `deny` rule: the
+    /// operator typed it, and `!!` repeating the SAME refused command is
+    /// more honest than silently repeating something else or nothing.
+    pub last_shell_command: Option<(String, bool)>,
     /// Board item A5.6: every agent (root or child) this session has
     /// observed cross 80% of one of its OWN budget dimensions
     /// (`Event::BudgetWarning`), so the `/agents` panel can mark the row --
@@ -1892,6 +1911,8 @@ impl AppState {
             ask_started_at: None,
             ask_abandoned: false,
             awaiting_agents: HashSet::new(),
+            shell_in_flight: false,
+            last_shell_command: None,
             budget_warned_agents: HashSet::new(),
             switch_lineage: HashMap::new(),
             pending_focus_notice: None,

@@ -173,6 +173,48 @@ pub enum Entry {
         call_id: String,
         text: String,
     },
+    /// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` ("Run a shell command
+    /// yourself"): one `!`/`!>` operator-typed shell command's own
+    /// lifecycle, pushed exactly once by `tui::app::shell_cmd::
+    /// apply_shell_done` when it completes (there is no streaming phase --
+    /// see that module's own doc for why this is simpler than
+    /// [`Entry::Tool`]'s proposed/running/finished states: a `!` command
+    /// has no model-visible "proposed" step and no operator-visible
+    /// "running" step either, only "ran" or "still running" -- and this
+    /// entry is never pushed until it is one of those two, "still running"
+    /// handled by `AppState::shell_in_flight`/the status line, not by a
+    /// transcript entry).
+    ///
+    /// Deliberately its OWN variant, not `Entry::Tool` with a fabricated
+    /// `call_id` or `Entry::Notice` with pre-formatted text: this is
+    /// neither a model-proposed tool call (no permission step, no
+    /// `ToolStatus`) nor routine harness prose -- it is the operator's own
+    /// typed command and its own output, which `view/transcript.rs::
+    /// entry_lines` renders with a `!`/`!> ` prefix plus exit-status
+    /// coloring distinct from both.
+    Shell {
+        /// The command exactly as run (no leading `!`/`!>`, and with any
+        /// `!!` already resolved to the command it repeats).
+        command: String,
+        /// Captured stdout+stderr, already bounded -- see
+        /// `tui::app::shell_cmd::SHELL_OUTPUT_CAP`'s own doc for the cap
+        /// and what `truncated` means.
+        output: String,
+        /// `None` exactly when the command was killed (`Ctrl-C`) or timed
+        /// out rather than exiting on its own -- `output` itself already
+        /// states which, in words; this is the structured twin of that
+        /// same fact.
+        exit_code: Option<i32>,
+        truncated: bool,
+        /// Whether this was the `!> command` form (output sent to the
+        /// model as a user-provenance turn) rather than the bare `!command`
+        /// form (zero token cost, never admitted to context) -- purely a
+        /// rendering distinction here; which form it was has ALREADY taken
+        /// effect by the time this entry is pushed (`apply_shell_done`'s
+        /// own doc).
+        to_model: bool,
+        ts: Option<DateTime<Utc>>,
+    },
 }
 
 /// A tool call's lifecycle, as reflected in one [`Entry::Tool`].

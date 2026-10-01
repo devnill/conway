@@ -343,6 +343,17 @@ pub(super) fn entry_row_starts(state: &AppState, width: u16, scroll_row: u16) ->
 ///   single dim line, no prefix, right where `AppState::apply` pushed it
 ///   (chronologically beneath the tool call it belongs to -- see that
 ///   variant's own doc).
+/// - `Entry::Shell` (board item `01M1YVFRPH0DCE8N0DR5BS5BRT`) renders a
+///   `! ` (or `!> ` for the to-model form) prefix on the command line,
+///   styled `theme.emphasized` -- chrome, not a model/operator-text color,
+///   since neither `theme.user` (the operator's own PROMPT text, not a
+///   command) nor `theme.assistant` fits. The output body renders
+///   `theme.dim`, the SAME slot a tool's own `progress`/`args:` lines
+///   already use (secondary content, never the headline). The final exit
+///   line reuses the established green-success/red-failure vocabulary
+///   (`theme.tool_done`/`theme.tool_failed`) rather than a new color, so a
+///   `!` command's own pass/fail reads exactly like every other
+///   success/failure in this theme.
 ///
 /// `toggle_keys` (board item `01M3TEJPHQF4KHWBA6Y29Z33CY`): the CURRENT
 /// effective key(s) for `transcript.toggle_tool_output`, from
@@ -456,7 +467,68 @@ pub fn entry_lines(
         Entry::PermissionDecision { text, .. } => {
             vec![Line::from(Span::styled(text.clone(), theme.dim))]
         }
+        Entry::Shell {
+            command,
+            output,
+            exit_code,
+            truncated,
+            to_model,
+            ts,
+        } => {
+            let mut lines = shell_lines(command, output, *exit_code, *truncated, *to_model, theme);
+            stamp_first(&mut lines, ts.as_ref(), show_timestamps, theme);
+            lines
+        }
     }
+}
+
+/// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT`: [`Entry::Shell`]'s own
+/// rendering -- see that variant's own doc for the color choices. Plain
+/// ASCII prefix (`!`/`!>`), no box-drawing (the clean-copy invariant).
+fn shell_lines(
+    command: &str,
+    output: &str,
+    exit_code: Option<i32>,
+    truncated: bool,
+    to_model: bool,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    // Review round 1 (SIGNIFICANT finding 3, "unsanitized output"):
+    // `tui::app::shell_cmd` already sanitizes both `command` and `output`
+    // once, at capture time (`append_capped`/`App::spawn_shell_command`'s
+    // own `display_command`) -- this is the SAME `conway_core::text::
+    // sanitize_control_chars` call, applied again here as the render
+    // boundary's own defense-in-depth, matching this module's established
+    // "clean-copy enforced AT entry_lines, regardless of what upstream
+    // already guarantees" convention (the box-drawing-glyph invariant
+    // every other `Entry` variant is already held to). A raw ANSI/OSC
+    // escape sequence a command's own output carries (`curl`, `cat` of a
+    // downloaded file, ...) can therefore never reach a rendered `Span`
+    // even if some future caller ever constructs an `Entry::Shell` by a
+    // path that skips `apply_shell_done`.
+    let command = conway::sanitize_control_chars(command);
+    let output = conway::sanitize_control_chars(output);
+    let prefix = if to_model { "!> " } else { "! " };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(prefix.to_string(), theme.emphasized),
+        Span::styled(command, theme.emphasized),
+    ])];
+    for line in output.split('\n') {
+        lines.push(Line::from(Span::styled(line.to_string(), theme.dim)));
+    }
+    if truncated {
+        lines.push(Line::from(Span::styled(
+            "(output truncated)".to_string(),
+            theme.dim,
+        )));
+    }
+    let (status_text, status_style) = match exit_code {
+        Some(0) => ("exit 0".to_string(), theme.tool_done),
+        Some(code) => (format!("exit {code}"), theme.tool_failed),
+        None => ("killed".to_string(), theme.tool_failed),
+    };
+    lines.push(Line::from(Span::styled(status_text, status_style)));
+    lines
 }
 
 /// T4: assistant body lines with the `[modelname]> ` speaker marker on the
@@ -936,6 +1008,14 @@ mod tests {
                 call_id: "c1".to_string(),
                 text: "allowed once · waited 4m 12s".to_string(),
             },
+            Entry::Shell {
+                command: "git status".to_string(),
+                output: "stdout:\nnothing to commit\n\nstderr:\n(empty)".to_string(),
+                exit_code: Some(0),
+                truncated: false,
+                to_model: false,
+                ts: None,
+            },
         ];
 
         for entry in &entries {
@@ -947,6 +1027,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Review round 1, SIGNIFICANT finding 3 ("unsanitized output"): a raw
+    /// OSC/CSI escape sequence in an `Entry::Shell`'s `command`/`output`
+    /// must never reach a rendered `Span` -- the exact injection shape the
+    /// finding names (`curl`/`cat` of a downloaded file could put either
+    /// in real captured output), checked directly against `shell_lines`
+    /// (via `entry_lines`), not merely against the upstream sanitizer
+    /// `tui::app::shell_cmd` already applies (this is the render
+    /// boundary's OWN guarantee, independent of what produced the entry).
+    #[test]
+    fn entry_shell_neutralizes_raw_ansi_and_osc_escapes_in_command_and_output() {
+        const OSC_TITLE_INJECTION: &str = "\x1b]0;evil\x07";
+        const CSI_CLEAR_SCREEN: &str = "\x1b[2J";
+        let entry = Entry::Shell {
+            command: format!("echo hi{OSC_TITLE_INJECTION}"),
+            output: format!("before{CSI_CLEAR_SCREEN}after"),
+            exit_code: Some(0),
+            truncated: false,
+            to_model: false,
+            ts: None,
+        };
+
+        let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
+        let text: String = lines.iter().map(plain_text).collect::<Vec<_>>().join("\n");
+
+        assert!(
+            !text.contains('\x1b'),
+            "a raw ESC byte must never reach a rendered Span: {text:?}"
+        );
+        assert!(
+            !text.contains(OSC_TITLE_INJECTION),
+            "the raw OSC sequence must not survive verbatim: {text:?}"
+        );
+        assert!(
+            !text.contains(CSI_CLEAR_SCREEN),
+            "the raw CSI sequence must not survive verbatim: {text:?}"
+        );
+        // The surrounding, harmless text must still be there -- this is a
+        // REPLACE, not a silent drop (`conway::sanitize_control_chars`'s
+        // own contract).
+        assert!(text.contains("echo hi"), "{text:?}");
+        assert!(text.contains("before"), "{text:?}");
+        assert!(text.contains("after"), "{text:?}");
     }
 
     #[test]

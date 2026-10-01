@@ -752,6 +752,29 @@ including which OS this guarantee is actually verified on. Because
 (`Tool::confined_by_tool`), the root+unconfinable-shell-tool warning above
 does not fire for it the way it fires for plain `bash`.
 
+**`--root` does not confine a `!` command either, for the identical
+reason.** A `!`-prefixed line you type yourself in the TUI
+(`docs/interactive.md`'s "Running a command yourself") runs through the
+same free-form shell `bash` does, and the same reasoning applies byte for
+byte: no root check can statically confine a shell command string. A `!`
+command runs unconfined regardless of `--root`, and -- unlike `bash` --
+there is no startup warning for it today, since `!` is operator-typed, not
+a tool the model was handed.
+
+**Which rules apply to a `!` command, and why not all of them.** `deny`
+rules targeting `bash` refuse a `!` command exactly as they would refuse
+the model's own `bash` call, naming the rule that refused it — deny is
+unconditional, regardless of who is asking, which is the whole point of a
+shared project `permissions.json`. `prompt` rules, the current
+[permission mode](#permission-modes), and `pre_tool_use` hooks do **not**
+apply to `!`: each of those three exists to insert a human check before
+the MODEL runs something unsupervised, and typing `!` already IS that
+human — prompting you to confirm your own keystroke would be friction with
+no one upstream of you left to protect. If `conway.confine`'s confined
+shell is installed and you have opted into it for the model's own `bash`
+tool, `!` does not yet route through it (a disclosed follow-up, not
+built) — it always runs through the plain, unconfined shell.
+
 **When you set `--root`, also pass `--cwd` as an absolute path.** conway
 must be able to verify the agent's own working directory sits inside the
 root before it will start; a relative `--cwd` (or no `--cwd` at all, which

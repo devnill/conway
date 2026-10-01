@@ -190,6 +190,94 @@ than inline text, so it shows up at the end of your own message, visibly,
 rather than hidden.) `@`-mentions never cause conway itself to read or send
 file contents — only what the model's own tool calls fetch, same as always.
 
+### Running a command yourself
+
+Half the time you want to run `git status` or `ls`, you do not want to
+spend tokens asking the model to do it for you — you want to type it and
+see it. A line beginning with `!` runs the rest as a shell command,
+without ever going through the model:
+
+```
+!git status
+```
+
+This runs `git status` with your own shell (`$SHELL -c`, falling back to
+`/bin/bash -c` if `$SHELL` is unset or empty — so your aliases and profile
+behave the way they would in an ordinary terminal) in the session's cwd,
+and shows its combined output and exit code right in the transcript, in
+its own styling (a `!` prefix on the command line, a dim output body, and
+a green/red exit line) — distinct from both your own messages and the
+model's. `Ctrl-C` while it runs kills the whole command (and anything it
+spawned) without touching conway itself; the command and its output are
+always capped to a bounded size, with a note if anything was cut, and any
+raw terminal control sequence a command's own output carries (from `curl`,
+or `cat` of a downloaded file, say) is neutralized before it is ever
+rendered, so it cannot repaint your terminal or rewrite its title. Quitting
+(`/quit`, `Ctrl-D`, or the double-`Ctrl-C` exit) while a `!` command is
+still running kills it too, the same way — nothing is left behind as an
+orphaned background process.
+
+**You see it coming before you press Enter.** The moment your draft starts
+with `!`, the input box's own title changes to `shell` (or `shell → model`
+for the `!>` form below) so you always know you are about to run a
+command, not send a message — never a silent switch sprung on you at
+submit time. If you genuinely want to send the model a message that
+happens to start with `!` (`!important`, say), prefix it with a backslash:
+`\!important` sends the literal text `!important` — the one backslash is
+stripped, nothing is executed, and the input box shows its ordinary
+`input` title the whole time (the backslash form is never mistaken for a
+command).
+
+**Zero token cost, by default.** The command and its output are recorded
+in this session's history (durably — it happened), but they are **never**
+sent to the model, and never count toward `/context`. If you want the
+model to see what you just ran — "run the tests and fix what fails" in one
+line — use `!>` instead of `!`:
+
+```
+!> cargo test -p conway-core
+```
+
+This runs the command exactly the same way, but then sends its output to
+the model as an ordinary message, as if you had typed `cargo test -p
+conway-core`'s output yourself. (It does cost tokens, same as any other
+message — that is the whole point of the `>`.)
+
+A bare `!` (or `!>`) with nothing after it runs nothing. `!!` repeats the
+most recently run `!`/`!>` command, in whichever form it ran.
+
+**A `!` command runs in the session's cwd at the time it STARTED** — not a
+live, `cd`-tracked one. If the model has since moved its own working
+directory with its `cd` tool mid-session, that move is not reflected here
+yet; `!` runs where the status line's `cwd` field says the session is.
+
+**The same `deny` rules a model-issued `bash` call would hit still refuse
+a `!` command, and name the rule that refused it.** A `permissions.json`
+`deny` entry targeting `bash` (`"bash:rm -rf"`, say) blocks `!rm -rf x`
+exactly as it would block the model trying the same thing — deny rules are
+unconditional, regardless of who is asking. `prompt` rules, the current
+permission mode, and `pre_tool_use` hooks do **not** apply to `!`: all
+three exist to put a human in the loop before the MODEL runs something —
+and typing `!` already IS that human, so there is nothing left for them to
+insert. `--root` does not confine a `!` command's string either, for the
+identical reason it does not confine a model-issued `bash` call's string
+(see [the permission prompt](#the-permission-prompt) and
+[`permissions.md`](permissions.md)): a shell command can reach any path it
+likes via redirection, `cd`, or a subprocess, so there is no finite scan
+that could confine it.
+
+`!` always runs unconfined today, even when `conway.confine`'s confined
+shell is installed and you have opted into it for the model's own `bash`
+tool — routing `!` through that same confinement is a disclosed
+follow-up, not yet built.
+
+There is no persistent shell session: each `!`/`!>` is one fresh process,
+so `cd`ing inside one `!` command has no effect on the next. A command
+that needs a real interactive terminal (a full-screen editor, a pager
+without `--no-pager`, anything that reads from a tty) will hang or behave
+oddly — this is not detected or refused, just not supported; redirect or
+pass a non-interactive flag instead.
+
 ### Why `Up`/`Down` scroll, not recall history
 
 **This is deliberate, checked against the convergence test, and kept as a
