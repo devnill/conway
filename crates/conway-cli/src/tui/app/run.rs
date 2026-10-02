@@ -1129,7 +1129,7 @@ impl App {
                                     // narrowing the operator asked for.
                                     if scope == conway::PermissionScope::Session {
                                         persist_permission_rule(
-                                            self.state.permission_paths.first(),
+                                            self.state.grants_path.as_ref(),
                                             &rule,
                                         );
                                     }
@@ -1172,7 +1172,7 @@ impl App {
                                     // format, only this write path.
                                     if scope == conway::PermissionScope::Session {
                                         persist_permission_structured_rule(
-                                            self.state.permission_paths.first(),
+                                            self.state.grants_path.as_ref(),
                                             &rule,
                                         );
                                     }
@@ -1844,6 +1844,10 @@ impl App {
 }
 
 /// V2b: appends `rule` to the permission file at `path`, best-effort.
+/// `path` is `AppState::grants_path` -- the operator's own user-scope,
+/// project-keyed grants file (board item `01M3TJQGJHFFPWE2YYN60WN1XB`),
+/// never the project's own `.conway/permissions.json`. See that field's own
+/// doc for why.
 ///
 /// Every failure path is a silent no-op. A rule that cannot be written
 /// still applies to the running session — losing durability is a far
@@ -1893,7 +1897,9 @@ fn persist_permission_rule(path: Option<&std::path::PathBuf>, rule: &conway::Pat
 /// `rule` (a [`conway::Rule`] built by the `[p]` field editor -- an
 /// `ArgsMatch` allow rule today, but this takes any `Rule`) to the
 /// permission file at `path`'s structured `rules` array, best-effort,
-/// tmp-then-rename.
+/// tmp-then-rename. `path` is `AppState::grants_path` here too (board item
+/// `01M3TJQGJHFFPWE2YYN60WN1XB`) -- see [`persist_permission_rule`]'s own
+/// doc.
 ///
 /// This needs no new wire format: `permissions.json`'s `rules` array (F12)
 /// already carries an arbitrary [`conway::Rule`] via `serde`'s ordinary

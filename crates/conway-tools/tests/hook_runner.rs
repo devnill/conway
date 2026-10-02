@@ -245,6 +245,40 @@ impl TestHookRunner {
     }
 }
 
+/// The `timeout_ms` budget for a test that proves the runner returns the
+/// right ANSWER (or fails closed in the right shape), never one that proves
+/// the timeout mechanism itself -- `hang_trapping_sigterm_is_killed_and_
+/// reported_as_timed_out` and `backgrounded_grandchild_does_not_survive_the_
+/// timeout_path` stay on their own tight, deterministic `2_000` precisely
+/// because they ARE about the deadline firing.
+///
+/// Every correctness test below used to pass `5_000` here directly --
+/// already past `warm`'s own pre-paid first-exec tax, so it looked
+/// generous. Under REAL concurrent load (a release build of this same
+/// workspace running in a sibling `CARGO_TARGET_DIR`, saturating every
+/// core) all five failed with `TimedOut { after_ms: 5_000 }` in the same
+/// run, including the two that never even reach a child process
+/// (`nonzero_exit_fails_closed`, `unparseable_stdout_fails_closed_even_on_a_
+/// clean_exit`) -- proof the cause is scheduler contention delaying an
+/// already-warm spawn/write/read/exit cycle, not a first-exec tax `warm`
+/// failed to pay (board item `01M3VW7APA2PCGAQM1R1J93VNE`). None of these
+/// tests is about how fast the hook runs; raising the budget they hand the
+/// runner costs nothing they're actually checking.
+///
+/// `CONWAY_TEST_TIMEOUT_SCALE` (a positive integer multiplier, default `1`)
+/// lets a CI runner or a developer's own slower machine widen this further
+/// without a code change; unset or unparseable falls back to the default
+/// rather than panicking, since a malformed value should make the suite
+/// more forgiving, not fail the harness outright.
+fn correctness_timeout_ms() -> u64 {
+    let scale: u64 = std::env::var("CONWAY_TEST_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(1);
+    30_000 * scale
+}
+
 fn invocation(command: Vec<String>, timeout_ms: u64, payload: serde_json::Value) -> HookInvocation {
     HookInvocation::new(command, timeout_ms, HookEvent::new("pre_tool_use", payload))
 }
@@ -312,7 +346,7 @@ esac
     let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
-        5_000,
+        correctness_timeout_ms(),
         serde_json::json!({"marker": "marker-8f2c1a"}),
     );
 
@@ -340,7 +374,7 @@ async fn empty_stdout_on_success_is_the_default_answer() {
     let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
-        5_000,
+        correctness_timeout_ms(),
         serde_json::json!(null),
     );
 
@@ -403,18 +437,30 @@ esac
     let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
-        5_000,
+        correctness_timeout_ms(),
         serde_json::json!({"marker": "marker-mt-9d3b"}),
     );
 
     // Bounded per this item's own hard rule: a test that could reproduce a
-    // hang must report it as a failure, never wedge the harness.
-    let answer = tokio::time::timeout(Duration::from_secs(15), runner.run(&invocation))
+    // hang must report it as a failure, never wedge the harness. The
+    // backstop must exceed `correctness_timeout_ms()` itself (the budget
+    // just handed to `invocation` above) by a real margin -- otherwise this
+    // outer wrapper would fire FIRST under load and report "did not return
+    // within Ns" for what is actually the runner's own, still-pending
+    // `TimedOut`, the wrong-reason failure this margin exists to avoid
+    // (board item `01M3VW7APA2PCGAQM1R1J93VNE`: this outer bound used to be
+    // a bare `15s` against a `5_000`ms inner budget, which stayed a
+    // generous 3x margin only as long as nobody read the two numbers
+    // together after `correctness_timeout_ms()` replaced the inner one).
+    let outer_budget = Duration::from_millis(correctness_timeout_ms() + 10_000);
+    let answer = tokio::time::timeout(outer_budget, runner.run(&invocation))
         .await
-        .expect(
-            "ProcessHookRunner did not return within 15s under a multi-thread runtime \
-             (01M03FNRGWNMMRKXBJKCEE14QJ)",
-        )
+        .unwrap_or_else(|_| {
+            panic!(
+                "ProcessHookRunner did not return within {outer_budget:?} under a \
+                 multi-thread runtime (01M03FNRGWNMMRKXBJKCEE14QJ)"
+            )
+        })
         .expect("hook should succeed");
     assert_eq!(
         answer,
@@ -435,7 +481,7 @@ async fn nonexistent_command_fails_closed_not_a_panic() {
     let runner = TestHookRunner::new();
     let invocation = invocation(
         vec!["/definitely/does/not/exist/conway-hook-fixture".to_string()],
-        5_000,
+        correctness_timeout_ms(),
         serde_json::json!(null),
     );
 
@@ -458,7 +504,7 @@ async fn nonzero_exit_fails_closed() {
     let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
-        5_000,
+        correctness_timeout_ms(),
         serde_json::json!(null),
     );
 
@@ -482,7 +528,7 @@ async fn unparseable_stdout_fails_closed_even_on_a_clean_exit() {
     let runner = TestHookRunner::new();
     let invocation = invocation(
         vec![script.to_str().unwrap().to_string()],
-        5_000,
+        correctness_timeout_ms(),
         serde_json::json!(null),
     );
 

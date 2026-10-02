@@ -78,12 +78,43 @@ pub enum AskFate {
 /// attempt FAILED (`commands::apply_trust_decision`'s error path) -- the
 /// card stays open with the error shown, since a failed trust attempt must
 /// never silently vanish the way falling through to "cancelled" would.
+///
+/// `settings` is board item `01M3TJQGJHFFPWE2YYN60WN1XB`'s "one trust act
+/// covers both files" -- a SECOND, independent section shown in the SAME
+/// card, `Some` only when this project also has a `settings.json`.
+/// **Security-load-bearing: consent is to the bytes actually SHOWN, never
+/// to a fresh re-read.** `commands::apply_trust_decision`'s confirm arm
+/// records trust for exactly `settings.contents` -- the bytes this card
+/// rendered -- not whatever happens to be on disk at confirm time, so an
+/// edit landing between preview and confirm is never silently swept into
+/// the decision (the identical TOCTOU `conway::config::trust::TrustStore::
+/// trust_settings_bytes`'s own doc already closes for the CLI's `conway
+/// trust project`, now closed here too). Before this field existed, the
+/// confirm arm trusted a FRESH read of `settings.json` the operator was
+/// NEVER shown at all -- consent to unseen bytes, the defect this field
+/// closes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrustPreviewCard {
     pub path: std::path::PathBuf,
     pub contents: String,
     pub status: conway::TrustStatus,
     pub error: Option<String>,
+    pub settings: Option<SettingsPreviewSection>,
+}
+
+/// The second, independent section [`TrustPreviewCard::settings`] carries
+/// -- a project's `settings.json`, previewed and about to be trusted
+/// alongside `permissions.json` in the same confirm. Same three fields
+/// [`TrustPreviewCard`]'s own `path`/`contents`/`status` carry for the
+/// permissions half, kept as a distinct type (not a second set of bare
+/// fields on `TrustPreviewCard` itself) so a reader can see at a glance
+/// that this is optional and self-contained, not three more fields that
+/// happen to travel together by convention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsPreviewSection {
+    pub path: std::path::PathBuf,
+    pub contents: String,
+    pub status: conway::TrustStatus,
 }
 
 /// The trust-preview card's two ways out -- there is no third: quitting
@@ -1832,6 +1863,7 @@ mod tests {
             contents: "{}".to_string(),
             status: conway::TrustStatus::New,
             error: None,
+            settings: None,
         }
     }
 

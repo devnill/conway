@@ -195,6 +195,14 @@ impl CheckpointStore {
         }
     }
 
+    /// Where this store's own on-disk layout (this module's own doc,
+    /// "Layout") actually lives -- read by [`crate::CheckpointPlugin::
+    /// description`] so the operator-facing `costs` string names the REAL
+    /// directory, regardless of which constructor resolved it.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Resolves a possibly-relative path argument against `cwd` -- an
     /// absolute argument passes through unchanged. The SAME function every
     /// path this crate ever stores or looks up goes through, so a relative
@@ -592,6 +600,35 @@ impl CheckpointStore {
         Ok((entry, notices))
     }
 
+    /// Whether an UNFORCED `rollback` targeting `path` in `session` would
+    /// refuse it as a conflict: this store's own LATEST recorded write for
+    /// `path` (the "tool result") differs from whatever bytes are actually
+    /// on disk right now (the "current"), or either side cannot be
+    /// read/verified at all. This is the exact three-way check
+    /// [`Self::rollback`] itself enforces, pulled out so a READ-ONLY caller
+    /// (`conway.checkpoint.diff`, so its preview names the same paths a
+    /// plain `rollback <seq>` would actually refuse) can ask the identical
+    /// question `rollback` answers, rather than keeping a second, separately
+    /// maintained copy of the rule that could silently drift from it.
+    pub fn hand_edit_conflict(&self, session: &str, path: &Path) -> io::Result<bool> {
+        let last_known = match self.latest_for_path(session, path)? {
+            Some(latest) => match self.resolve_ref(&latest.new)? {
+                ResolvedRef::Bytes(bytes) => Some(bytes),
+                ResolvedRef::Absent => Some(Vec::new()),
+                ResolvedRef::Missing(_) => None,
+            },
+            None => None,
+        };
+        let current_bytes = fs::read(path).ok();
+        Ok(match (&last_known, &current_bytes) {
+            (Some(known), Some(current)) => known != current,
+            // Either side unknown/unreadable: this store cannot verify
+            // "nothing changed since conway last wrote it", so it never
+            // assumes that on the operator's behalf.
+            _ => true,
+        })
+    }
+
     /// Restores every path touched at or after `target_seq` (narrowed to
     /// `path_filter` when given) to the state it had immediately before
     /// that -- the pre-image [`Self::earliest_at_or_after`] resolves for
@@ -639,22 +676,8 @@ impl CheckpointStore {
                 }
             };
 
-            let last_known = match self.latest_for_path(session, &path)? {
-                Some(latest) => match self.resolve_ref(&latest.new)? {
-                    ResolvedRef::Bytes(bytes) => Some(bytes),
-                    ResolvedRef::Absent => Some(Vec::new()),
-                    ResolvedRef::Missing(_) => None,
-                },
-                None => None,
-            };
+            let conflict = self.hand_edit_conflict(session, &path)?;
             let current_bytes = fs::read(&path).ok();
-            let conflict = match (&last_known, &current_bytes) {
-                (Some(known), Some(current)) => known != current,
-                // Either side unknown/unreadable: this store cannot verify
-                // "nothing changed since conway last wrote it", so it never
-                // assumes that on the operator's behalf.
-                _ => true,
-            };
             if conflict && !force_all {
                 report.conflicts.push(ConflictedPath {
                     path: entry.path.clone(),
@@ -1011,6 +1034,39 @@ mod tests {
             fs::read_to_string(&path).unwrap(),
             "hand-edited",
             "the hand edit must survive an unforced rollback"
+        );
+    }
+
+    /// Item `01M3SJBNF2KZRWA5P5SSF9B868`: `hand_edit_conflict` is the exact
+    /// same verdict `rollback` itself reaches, asked directly and read-only
+    /// -- what `conway.checkpoint.diff` now calls to tell a conflicted path
+    /// apart from one a plain rollback would actually restore.
+    #[test]
+    fn hand_edit_conflict_matches_what_rollback_itself_would_do() {
+        let dir = TempDir::new().unwrap();
+        let store = store(&dir);
+        let path = dir.path().join("f.txt");
+        fs::write(&path, "v1").unwrap();
+        store
+            .record_observed(
+                SESSION,
+                1,
+                &path,
+                ToolKind::Write,
+                None,
+                DEFAULT_MAX_SNAPSHOT_BYTES,
+                DEFAULT_MAX_PROJECT_BYTES,
+            )
+            .unwrap();
+        assert!(
+            !store.hand_edit_conflict(SESSION, &path).unwrap(),
+            "nothing has touched the file since conway's own last write -- no conflict yet"
+        );
+
+        fs::write(&path, "hand-edited").unwrap();
+        assert!(
+            store.hand_edit_conflict(SESSION, &path).unwrap(),
+            "a hand edit since conway's last recorded write IS a conflict"
         );
     }
 

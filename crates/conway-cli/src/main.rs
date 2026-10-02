@@ -69,22 +69,22 @@ async fn main() -> std::process::ExitCode {
     // it, the exact hazard this item exists to close).
     let env: HashMap<String, String> = std::env::vars().collect();
 
-    // Board item `01M2TTWSQ53CDWB9VRGSX05XNQ`: `conway trust` is dispatched
-    // HERE, ahead of the single `build_conway` call below, and it is the
-    // only subcommand that is. Every other target needs a built `Conway`;
-    // this one must run WITHOUT one, because `ConwayBuilder::discover`
-    // (inside `build_conway`) is precisely where
-    // `conway::config::trust::guard_untrusted_project_settings` refuses an
-    // untrusted project `settings.json`. Routing this through the ordinary
-    // `dispatch` choke point would mean the command that grants consent is
-    // itself blocked by the missing consent -- the exact unreachable-remedy
-    // defect this item closes. Nothing here needs a `Conway`: the trust
-    // store is a standalone, path-keyed file resolved from the cwd and
-    // `env` alone (`commands::trust`'s own module doc).
+    // Board item `01M2TTWSQ53CDWB9VRGSX05XNQ` (posture updated by board item
+    // `01M3TJQGJHFFPWE2YYN60WN1XB` -- an untrusted project `settings.json`
+    // no longer makes `ConwayBuilder::discover` fail at all, see that
+    // method's own doc): `conway trust` is still dispatched HERE, ahead of
+    // the single `build_conway` call below, and it is still the only
+    // subcommand that is. A project `settings.json`/`permissions.json` can
+    // still fail `build_conway` for a reason trust has nothing to do with
+    // (malformed JSON, an unrecognized key) -- `conway trust` must stay
+    // reachable in that case too, so it still runs without a built `Conway`
+    // at all. Nothing here needs one: the trust store is a standalone,
+    // path-keyed file resolved from the cwd and `env` alone
+    // (`commands::trust`'s own module doc).
     //
     // Placed after the `--cwd` `set_current_dir` above, so the walk this
     // performs starts from the same directory `conway::config::LoadOptions::
-    // default` would have used for the blocked run.
+    // default` would use.
     if let Some(Command::Trust(args)) = &cli.command {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         return to_process_code(commands::trust::run(args, &cwd, &env));

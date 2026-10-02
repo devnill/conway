@@ -449,7 +449,12 @@ failure mode the brief warns against.
   unchanged: no seam here (or anywhere in-process) observes a `bash`-driven
   change, because an unconstrained shell subprocess's own file I/O is not
   something a tool-call observer can see — that limit is load-bearing and
-  disclosed (`docs/plugins/checkpoint.md`), not routed around.
+  disclosed (`docs/plugins/checkpoint.md`), not routed around. **A follow-up
+  ruling (2026-09-30) repositioned the capability itself as a quick,
+  transient undo rather than a version-control substitute** (no merge or
+  partial restore on top of it), and the next day's fix made the plugin
+  honest about that framing — see `docs/plugins/checkpoint.md` for the full
+  contract.
 - **A dedicated "thinking budget" dial as a harness concept.** This is
   provider-shaped, not harness-shaped — each backend already declares what
   it supports, and a role's routing config is where this belongs

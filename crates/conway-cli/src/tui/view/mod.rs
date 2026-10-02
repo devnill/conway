@@ -1069,6 +1069,15 @@ const TRUST_PREVIEW_FOOTER_ROWS: u16 = 2;
 /// The footer shows the two decision keys -- `[y] trust  [n] cancel` --
 /// and, after a FAILED confirm, the error that kept the card open (red),
 /// mirroring [`draw_ask_modal`]'s footer shape exactly.
+///
+/// **Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: a second, `ALSO`-prefixed
+/// section when `card.settings` is `Some`** -- this project's
+/// `settings.json`, appended below the permissions content in the SAME
+/// scrollable body, never a second modal. Security-load-bearing: consent
+/// to trust that file (`commands::apply_trust_decision`'s confirm arm) is
+/// to EXACTLY these rendered bytes, so this function rendering them is
+/// what makes that consent real rather than theater -- see
+/// `TrustPreviewCard::settings`'s own doc.
 fn draw_trust_preview(
     frame: &mut Frame,
     transcript_area: Rect,
@@ -1100,6 +1109,39 @@ fn draw_trust_preview(
             .split('\n')
             .map(|line| Line::from(line.to_string())),
     );
+    // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: "one trust act covers both
+    // files" means ONE REVIEW too -- a second, clearly labelled section for
+    // this project's `settings.json`, when the card carries one
+    // (`TrustPreviewCard::settings`'s own doc on why consent must be to
+    // bytes actually shown). Appended to the SAME scrollable body rather
+    // than a second modal: one confirm, one card, both files visible in it.
+    if let Some(settings) = &card.settings {
+        let settings_header = match settings.status {
+            conway::TrustStatus::New => format!(
+                "ALSO trusting for the first time: {}",
+                settings.path.display()
+            ),
+            conway::TrustStatus::Unchanged => format!(
+                "ALSO already trusted, unchanged: {} -- re-confirming for this session",
+                settings.path.display()
+            ),
+            conway::TrustStatus::Changed => format!(
+                "ALSO: this file changed since you last trusted it: {} -- the \
+                 previous version is not retained, so it cannot be shown or \
+                 diffed; below is the CURRENT content only",
+                settings.path.display()
+            ),
+        };
+        body_lines.push(Line::from(""));
+        body_lines.push(Line::from(Span::styled(settings_header, theme.emphasized)));
+        body_lines.push(Line::from(""));
+        body_lines.extend(
+            settings
+                .contents
+                .split('\n')
+                .map(|line| Line::from(line.to_string())),
+        );
+    }
     let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
     let content_rows = body
         .line_count(modal::body_width(transcript_area))
@@ -3335,6 +3377,7 @@ mod tests {
             contents: "{}".to_string(),
             status: conway::TrustStatus::New,
             error: None,
+            settings: None,
         });
 
         let mut ui_form_state = AppState::new(AgentId::new());

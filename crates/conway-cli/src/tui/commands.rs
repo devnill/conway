@@ -85,7 +85,8 @@ use super::model_picker;
 use super::session_picker;
 use super::state::{
     backfill_entries, AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode,
-    PluginCommandEntry, SpawnRoleOrModel, ToolStatus, TrustDecision, TrustPreviewCard,
+    PluginCommandEntry, SettingsPreviewSection, SpawnRoleOrModel, ToolStatus, TrustDecision,
+    TrustPreviewCard,
 };
 
 /// One parsed slash command. Agent/session identifiers are still raw
@@ -1325,14 +1326,39 @@ pub struct PluginCommandInvocation {
 #[async_trait::async_trait]
 pub trait Host {
     fn root(&self) -> AgentId;
-    /// The CALLING session's own id:
-    /// what [`SlashCommand::Plugin`]'s dispatch arm below stamps into
-    /// [`conway::plugin::CommandCtx::session_id`] -- the one identity a
-    /// `CommandOutcome::ForkSession` reply is ever resolved against (see
-    /// that variant's own doc). `LiveHost::session_id` is a thin passthrough
-    /// to `SessionHandle::id`, exactly like [`Self::root`]'s own passthrough
-    /// to `SessionHandle::root`.
+    /// This TUI's own root session id -- the session [`Self::root`]'s agent
+    /// was opened on, fixed for the whole interactive run (a `/model`/
+    /// `/role` switch moves `AppState::focused_agent` to a forked child, a
+    /// DIFFERENT session -- `SessionId`'s own doc: "one agent's append-only
+    /// log" -- but never changes this one). `LiveHost::session_id` is a
+    /// thin passthrough to `SessionHandle::id`, exactly like [`Self::
+    /// root`]'s own passthrough to `SessionHandle::root`.
+    ///
+    /// **Not what [`SlashCommand::Plugin`]'s dispatch arm stamps into
+    /// [`conway::plugin::CommandCtx::session_id`] any more** -- that now
+    /// comes from [`Self::session_for`], resolved against `AppState::
+    /// focused_agent`, so a plugin command issued after a switch (e.g.
+    /// `/conway.checkpoint.list`) answers for the agent the operator is
+    /// actually looking at, not the session the TUI happened to start on.
+    /// Kept as its own method because it is still a meaningful, narrower
+    /// fact a caller may want on its own (e.g. "what session did this run
+    /// begin as").
     fn session_id(&self) -> SessionId;
+    /// Resolves `agent` to the `SessionId` of the session whose own
+    /// append-only log is `agent`'s own (`SessionId`'s own doc) -- a thin
+    /// passthrough to `SessionHandle::resolve_agent_session`. This is the
+    /// identity [`SlashCommand::Plugin`]'s dispatch arm stamps into
+    /// [`conway::plugin::CommandCtx::session_id`], called with `AppState::
+    /// focused_agent`: the one session a `CommandOutcome::ForkSession`/
+    /// `MaskRecord`/`SubmitPrompt` reply is ever resolved against (see each
+    /// variant's own doc), and the session a store-backed command (e.g.
+    /// `conway.checkpoint`, `conway.history`) reads and writes. Every
+    /// plugin command reaches this through the SAME one call site, so a
+    /// `/model`/`/role` switch that moves focus to a forked child moves
+    /// every implicit-session command's answer with it, uniformly -- never
+    /// one plugin agreeing with the status line and another still
+    /// answering for the session the TUI opened on.
+    async fn session_for(&self, agent: AgentId) -> conway::Result<SessionId>;
     /// A thin passthrough to `SessionHandle::context_report_current` --
     /// NOT the plain `SessionHandle::context_report`: the
     /// `_current` variant closes that method's documented resumed-session
@@ -1494,6 +1520,43 @@ pub trait Host {
     /// facade-level error to fold in.
     async fn preview_trust_target(&self, path: &std::path::Path) -> std::io::Result<TrustPreview>;
 
+    /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: "one trust act covers
+    /// both files" -- the TUI half, READ side. `SlashCommand::Trust`'s own
+    /// arm calls this ALONGSIDE [`Self::preview_trust_target`] so the
+    /// trust-preview card can show a project's `settings.json` too, if one
+    /// is reachable from the session's cwd -- `Ok(None)` when no project
+    /// `settings.json` exists at all (not an error: most projects never
+    /// have one, and `/trust permissions` must stay just as useful for
+    /// them as it always was).
+    ///
+    /// **Security-load-bearing: a pure read, same as `preview_trust_target`,
+    /// never a side effect.** Nothing here records a trust decision --
+    /// see [`Self::trust_project_settings_bytes`] for the write half, which
+    /// takes the bytes THIS call returned (as shown to the operator in the
+    /// card), never a fresh read.
+    async fn preview_project_settings(
+        &self,
+    ) -> std::io::Result<Option<(std::path::PathBuf, TrustPreview)>>;
+
+    /// [`Self::preview_project_settings`]'s write half: records consent for
+    /// EXACTLY `contents` at `path` -- the bytes the trust-preview card
+    /// actually showed the operator (`TrustPreviewCard::settings`), via
+    /// `conway::config::trust::TrustStore::trust_settings_bytes`'s own
+    /// bytes-shown-is-bytes-trusted contract. **Never re-reads `path`**:
+    /// doing so would trust whatever is on disk at CONFIRM time rather than
+    /// what was on disk (and displayed) at PREVIEW time, re-opening the
+    /// exact "consent to unseen bytes" defect board item
+    /// `01M3TJQGJHFFPWE2YYN60WN1XB`'s own security review found in an
+    /// earlier version of this trait (a `settings.json`
+    /// edited between preview and confirm -- by a concurrent `git pull`, or
+    /// by the file itself -- must NOT be silently swept into a decision the
+    /// operator never saw).
+    async fn trust_project_settings_bytes(
+        &self,
+        path: &std::path::Path,
+        contents: &str,
+    ) -> std::io::Result<()>;
+
     /// Resolves a plugin command's full name (e.g. `"acme.greet"`, the same
     /// string [`SlashCommand::Plugin::full_name`] carries) against the
     /// installed [`CommandRegistry`], or `None` if nothing is registered
@@ -1539,6 +1602,10 @@ impl Host for LiveHost<'_> {
 
     fn session_id(&self) -> SessionId {
         self.handle.id()
+    }
+
+    async fn session_for(&self, agent: AgentId) -> conway::Result<SessionId> {
+        self.handle.resolve_agent_session(agent).await
     }
 
     async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport> {
@@ -1702,6 +1769,31 @@ impl Host for LiveHost<'_> {
         // reads `env` for user config resolution.
         let env_vars: HashMap<String, String> = std::env::vars().collect();
         self.conway.preview_trust_target(&env_vars, path)
+    }
+
+    async fn preview_project_settings(
+        &self,
+    ) -> std::io::Result<Option<(std::path::PathBuf, TrustPreview)>> {
+        // Collected fresh per call, same reasoning as `trust_permission_file`/
+        // `preview_trust_target` just above.
+        let env_vars: HashMap<String, String> = std::env::vars().collect();
+        let cwd = self.conway.config().cwd.clone();
+        let Some(path) = conway::config::trust::project_settings_path(&cwd, &env_vars) else {
+            return Ok(None);
+        };
+        let contents = std::fs::read_to_string(&path)?;
+        let store = conway::config::trust::TrustStore::load(&env_vars);
+        let status = store.settings_status(&path, &contents);
+        Ok(Some((path, TrustPreview { contents, status })))
+    }
+
+    async fn trust_project_settings_bytes(
+        &self,
+        path: &std::path::Path,
+        contents: &str,
+    ) -> std::io::Result<()> {
+        let env_vars: HashMap<String, String> = std::env::vars().collect();
+        conway::config::trust::TrustStore::trust_settings_bytes(&env_vars, path, contents)
     }
 
     fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
@@ -3150,11 +3242,42 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 }
                 Some(path) => match host.preview_trust_target(&path).await {
                     Ok(preview) => {
+                        // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: ALSO
+                        // preview this project's `settings.json`, if it has
+                        // one, so the card can show BOTH files before
+                        // either is trusted -- "one trust act covers both
+                        // files" must mean "one act of CONSENT", which
+                        // requires showing both, not trusting one unseen.
+                        // A read failure here degrades to "no settings
+                        // section" rather than failing the whole card: the
+                        // operator asked to trust `permissions.json`
+                        // specifically, and a glitch reading a SEPARATE
+                        // file must not block that.
+                        let settings = match host.preview_project_settings().await {
+                            Ok(Some((settings_path, settings_preview))) => {
+                                Some(SettingsPreviewSection {
+                                    path: settings_path,
+                                    contents: settings_preview.contents,
+                                    status: settings_preview.status,
+                                })
+                            }
+                            Ok(None) => None,
+                            Err(e) => {
+                                state.transcript.push(Entry::Error {
+                                    text: format!(
+                                        "could not also preview this project's settings.json: {e}"
+                                    ),
+                                    fatal: false,
+                                });
+                                None
+                            }
+                        };
                         state.offer_trust_preview(TrustPreviewCard {
                             path,
                             contents: preview.contents,
                             status: preview.status,
                             error: None,
+                            settings,
                         });
                     }
                     Err(e) => {
@@ -3205,16 +3328,43 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         }
         SlashCommand::Quit => Effect::Quit,
         SlashCommand::Plugin { full_name, args } => match host.resolve_command(&full_name) {
-            Some(command) => Effect::RunPluginCommand(PluginCommandInvocation {
-                full_name,
-                command,
-                ctx: CommandCtx {
-                    focused_agent: state.focused_agent,
-                    root_agent: host.root(),
-                    session_id: host.session_id(),
-                    args,
-                },
-            }),
+            Some(command) => {
+                // Resolved against `state.focused_agent` -- the agent the
+                // operator is actually talking to right now -- never
+                // `host.session_id()` (the TUI's own root session, fixed
+                // for the whole run). A `/model`/`/role` switch moves
+                // `focused_agent` to a forked child with its own session
+                // (`SessionId`'s own doc: "one agent's append-only log");
+                // without this, every implicit-session command (`conway.
+                // checkpoint.list`, `conway.history.*`) would keep
+                // answering for the session the TUI opened on, even though
+                // the operator -- and every write the focused agent has
+                // made since the switch -- has moved on. See `Host::
+                // session_for`'s own doc.
+                let session_id = match host.session_for(state.focused_agent).await {
+                    Ok(session_id) => session_id,
+                    Err(e) => {
+                        notice(
+                            state,
+                            format!(
+                                "could not resolve the focused agent's session for \
+                                 `/{full_name}`: {e}"
+                            ),
+                        );
+                        return Effect::None;
+                    }
+                };
+                Effect::RunPluginCommand(PluginCommandInvocation {
+                    full_name,
+                    command,
+                    ctx: CommandCtx {
+                        focused_agent: state.focused_agent,
+                        root_agent: host.root(),
+                        session_id,
+                        args,
+                    },
+                })
+            }
             None => {
                 notice(
                     state,
@@ -3309,8 +3459,8 @@ pub async fn apply_trust_decision<H: Host>(
     state: &mut AppState,
     host: &H,
 ) {
-    let path = match &state.mode {
-        Mode::TrustPreview(card) => card.path.clone(),
+    let (path, settings) = match &state.mode {
+        Mode::TrustPreview(card) => (card.path.clone(), card.settings.clone()),
         _ => return,
     };
     match decision {
@@ -3356,6 +3506,44 @@ pub async fn apply_trust_decision<H: Host>(
                             report.installed
                         ),
                     );
+                    // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: "one trust
+                    // act covers both files" -- trusting permissions.json
+                    // through this card also trusts this project's
+                    // settings.json, if the card showed one.
+                    // **Security-load-bearing**: `settings.contents` is the
+                    // EXACT bytes the card rendered to the operator at
+                    // preview time (`TrustPreviewCard::settings`'s own
+                    // doc) -- never re-read here, so a file edited between
+                    // preview and this confirm is never swept into a
+                    // decision the operator was never shown. Best-effort
+                    // otherwise: a failure here must not read as though the
+                    // permissions.json trust above (which already
+                    // succeeded and is already reflected in the
+                    // transcript) somehow failed too.
+                    if let Some(settings) = settings {
+                        match host
+                            .trust_project_settings_bytes(&settings.path, &settings.contents)
+                            .await
+                        {
+                            Ok(()) => notice(
+                                state,
+                                format!(
+                                    "also trusted {} -- it will apply on the next launch",
+                                    settings.path.display()
+                                ),
+                            ),
+                            Err(e) => {
+                                state.transcript.push(Entry::Error {
+                                    text: format!(
+                                        "trusted {} but could not also trust this project's \
+                                         settings.json: {e}",
+                                        path.display()
+                                    ),
+                                    fatal: false,
+                                });
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     // The card STAYS OPEN with the error shown -- mirroring
@@ -5209,11 +5397,22 @@ mod tests {
     struct FakeHost {
         calls: Mutex<Vec<&'static str>>,
         root: AgentId,
-        /// The fixed session id this
-        /// fake `Host` reports -- lets a test assert `execute`'s
-        /// `SlashCommand::Plugin` arm stamps THIS value (never a fresh one,
-        /// never the focused/root agent) into `CommandCtx::session_id`.
+        /// `Host::session_id`'s own scripted response -- the TUI's own
+        /// root session id, fixed for the run. Also [`Self::session_for`]'s
+        /// DEFAULT answer for any agent not given its own entry in
+        /// `session_by_agent` below, so the overwhelming majority of this
+        /// module's tests (which never switch focus) see `execute`'s
+        /// `SlashCommand::Plugin` arm stamp this SAME value into
+        /// `CommandCtx::session_id` exactly as it always has.
         session: SessionId,
+        /// `Host::session_for`'s per-agent overrides -- `Self::
+        /// with_session_for` populates this; an agent with no entry here
+        /// resolves to `session` above, mirroring `SessionHandle::
+        /// resolve_agent_session`'s own "the root agent resolves to this
+        /// handle's own session" shortcut. Lets a test script "the focused
+        /// agent is a forked child with its OWN session" without a live
+        /// `Conway`/`SessionHandle` at all.
+        session_by_agent: HashMap<AgentId, SessionId>,
         context: Option<ContextReport>,
         /// `Host::transcript`'s own scripted response -- `Ok(...)` by
         /// default (empty), never the `context` field's `ContextReport`
@@ -5277,6 +5476,21 @@ mod tests {
         /// the three `TrustStatus` cases) and the read-failure path
         /// (`Entry::Error`, no card opened).
         preview_result: Option<TrustPreview>,
+        /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: `Host::
+        /// preview_project_settings`'s scripted response. `None` by default
+        /// -- "no project settings.json to preview," the common case, so
+        /// existing `/trust permissions` tests that do not care about this
+        /// see no settings section at all. `Some((path, preview))` scripts
+        /// the "this project also has a settings.json" path -- see
+        /// [`Self::with_project_settings_preview`].
+        project_settings_preview: Option<(std::path::PathBuf, TrustPreview)>,
+        /// Records every `(path, contents)` pair `Host::
+        /// trust_project_settings_bytes` was actually called with --
+        /// **the one assertion that proves consent was to the bytes
+        /// SHOWN, not a fresh re-read** (board item
+        /// `01M3TJQGJHFFPWE2YYN60WN1XB`'s own security finding). See
+        /// [`Self::trusted_settings_bytes`].
+        trusted_settings_bytes: Mutex<Vec<(std::path::PathBuf, String)>>,
         /// `Host::tool_specs`'s scripted response -- empty by default (no
         /// `/context` test exercising the per-plugin breakdown needs a
         /// fixture; every OTHER `/context` test's `context` field carries
@@ -5312,6 +5526,7 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
                 root,
                 session: SessionId::new(),
+                session_by_agent: HashMap::new(),
                 context: None,
                 transcript: Vec::new(),
                 last_context_agent: Mutex::new(None),
@@ -5325,6 +5540,8 @@ mod tests {
                 plugin_commands: HashMap::new(),
                 trust_result: None,
                 preview_result: None,
+                project_settings_preview: None,
+                trusted_settings_bytes: Mutex::new(Vec::new()),
                 tool_specs: Vec::new(),
                 tool_plugin_ids: HashMap::new(),
                 resumable_sessions_result: None,
@@ -5356,6 +5573,15 @@ mod tests {
             self
         }
 
+        /// Scripts `Host::session_for(agent)` to answer `session` -- lets a
+        /// test give a focused (forked-child) agent its OWN session,
+        /// distinct from `self.session`, without a live `Conway`/
+        /// `SessionHandle`. See `session_by_agent`'s own doc.
+        fn with_session_for(mut self, agent: AgentId, session: SessionId) -> Self {
+            self.session_by_agent.insert(agent, session);
+            self
+        }
+
         /// Scripts `trust_permission_file` to succeed with `report` -- see
         /// that field's own doc.
         fn with_trust_result(mut self, report: TrustPermissionReport) -> Self {
@@ -5368,6 +5594,32 @@ mod tests {
         fn with_preview_result(mut self, preview: TrustPreview) -> Self {
             self.preview_result = Some(preview);
             self
+        }
+
+        /// Scripts `preview_project_settings` to succeed with
+        /// `Some((path, preview))` -- see that field's own doc.
+        fn with_project_settings_preview(
+            mut self,
+            path: std::path::PathBuf,
+            contents: impl Into<String>,
+            status: conway::TrustStatus,
+        ) -> Self {
+            self.project_settings_preview = Some((
+                path,
+                TrustPreview {
+                    contents: contents.into(),
+                    status,
+                },
+            ));
+            self
+        }
+
+        /// Every `(path, contents)` pair `trust_project_settings_bytes` was
+        /// actually called with -- see that field's own doc. The ONE
+        /// assertion a test needs to prove consent was to shown bytes, not
+        /// a fresh re-read.
+        fn trusted_settings_bytes(&self) -> Vec<(std::path::PathBuf, String)> {
+            self.trusted_settings_bytes.lock().unwrap().clone()
         }
 
         /// Scripts `resumable_sessions` to succeed with `rows` -- see that
@@ -5415,6 +5667,14 @@ mod tests {
 
         fn session_id(&self) -> SessionId {
             self.session
+        }
+
+        async fn session_for(&self, agent: AgentId) -> conway::Result<SessionId> {
+            Ok(self
+                .session_by_agent
+                .get(&agent)
+                .copied()
+                .unwrap_or(self.session))
         }
 
         async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport> {
@@ -5584,6 +5844,29 @@ mod tests {
             })
         }
 
+        async fn preview_project_settings(
+            &self,
+        ) -> std::io::Result<Option<(std::path::PathBuf, TrustPreview)>> {
+            self.calls.lock().unwrap().push("preview_project_settings");
+            Ok(self.project_settings_preview.clone())
+        }
+
+        async fn trust_project_settings_bytes(
+            &self,
+            path: &std::path::Path,
+            contents: &str,
+        ) -> std::io::Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push("trust_project_settings_bytes");
+            self.trusted_settings_bytes
+                .lock()
+                .unwrap()
+                .push((path.to_path_buf(), contents.to_string()));
+            Ok(())
+        }
+
         fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
             self.calls.lock().unwrap().push("resolve_command");
             self.plugin_commands.get(full_name).cloned()
@@ -5676,6 +5959,52 @@ mod tests {
         assert_eq!(
             outcome,
             CommandOutcome::Output(vec!["hello, world!".to_string()])
+        );
+    }
+
+    /// **Break-the-guard anchor for a `/model`/`/role` switch.** The
+    /// dispatch above proves `CommandCtx::session_id` equals `host.
+    /// session_id()` in the common, never-switched case -- true before
+    /// AND after the fix, since `FakeHost::session_for` falls back to
+    /// `session_id()` for any agent with no scripted override (`session_
+    /// by_agent`'s own doc). This test is the one that actually
+    /// distinguishes them: `state.focused_agent` is a DIFFERENT agent,
+    /// scripted to its OWN session via `with_session_for`, and the
+    /// dispatched `CommandCtx::session_id` must be THAT session, not
+    /// `host.session_id()`. Stubbing `execute` back to `host.session_id()`
+    /// (the pre-fix shape) turns this red while leaving the test above
+    /// green -- the pre-fix shape could never fail that one.
+    #[tokio::test]
+    async fn plugin_command_dispatch_resolves_the_session_of_the_focused_agent_not_the_hosts_own() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let switched_child = AgentId::new();
+        let switched_session = SessionId::new();
+        state.focus_agent(switched_child);
+        let host = FakeHost::new(root)
+            .with_plugin_command("acme.greet", Arc::new(GreetCommand))
+            .with_session_for(switched_child, switched_session);
+
+        let effect = execute(
+            SlashCommand::Plugin {
+                full_name: "acme.greet".to_string(),
+                args: "world".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let Effect::RunPluginCommand(invocation) = effect else {
+            panic!("expected Effect::RunPluginCommand");
+        };
+        assert_eq!(invocation.ctx.focused_agent, switched_child);
+        assert_eq!(invocation.ctx.session_id, switched_session);
+        assert_ne!(
+            invocation.ctx.session_id,
+            host.session_id(),
+            "precondition: the scripted focused-agent session must differ from the host's own, \
+             or this test cannot distinguish the fix from the bug it replaces"
         );
     }
 
@@ -7629,8 +7958,9 @@ mod tests {
         assert!(matches!(effect, Effect::None));
         assert_eq!(
             host.calls(),
-            vec!["preview_trust_target"],
-            "must read and show the content, and must NOT trust anything yet"
+            vec!["preview_trust_target", "preview_project_settings"],
+            "must read and show the content of BOTH files (board item \
+             01M3TJQGJHFFPWE2YYN60WN1XB), and must NOT trust anything yet"
         );
         match &state.mode {
             Mode::TrustPreview(card) => {
@@ -7638,6 +7968,52 @@ mod tests {
                 assert_eq!(card.contents, r#"{"allow":["bash:cargo test"]}"#);
                 assert_eq!(card.status, conway::TrustStatus::New);
                 assert!(card.error.is_none());
+                assert!(
+                    card.settings.is_none(),
+                    "no project settings.json was scripted, so the card must \
+                     carry no settings section: {:?}",
+                    card.settings
+                );
+            }
+            other => panic!("expected Mode::TrustPreview, got {other:?}"),
+        }
+    }
+
+    /// **The security finding this fixes, read side**: when a project
+    /// settings.json IS reachable, `/trust permissions` shows it in the
+    /// SAME card, not just permissions.json -- "one trust act" must mean
+    /// one act of REVIEW too, not a silent extra trust alongside a review
+    /// of only one file. **Fails against a version that never calls
+    /// `preview_project_settings` at all.**
+    #[tokio::test]
+    async fn trust_preview_also_shows_the_project_settings_file_when_one_exists() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        state.permission_paths = vec![path.clone()];
+        let settings_path = std::path::PathBuf::from("/tmp/.conway/settings.json");
+        let host = FakeHost::new(root)
+            .with_preview_result(TrustPreview {
+                contents: "{}".to_string(),
+                status: conway::TrustStatus::New,
+            })
+            .with_project_settings_preview(
+                settings_path.clone(),
+                r#"{"limits":{"max_steps":7}}"#,
+                conway::TrustStatus::New,
+            );
+
+        execute(SlashCommand::Trust, &mut state, &host).await;
+
+        match &state.mode {
+            Mode::TrustPreview(card) => {
+                let settings = card
+                    .settings
+                    .as_ref()
+                    .expect("the card must carry a settings section");
+                assert_eq!(settings.path, settings_path);
+                assert_eq!(settings.contents, r#"{"limits":{"max_steps":7}}"#);
+                assert_eq!(settings.status, conway::TrustStatus::New);
             }
             other => panic!("expected Mode::TrustPreview, got {other:?}"),
         }
@@ -7657,6 +8033,7 @@ mod tests {
             contents: "{}".to_string(),
             status: conway::TrustStatus::New,
             error: None,
+            settings: None,
         });
         let host = FakeHost::new(root).with_trust_result(TrustPermissionReport {
             installed: 3,
@@ -7666,7 +8043,12 @@ mod tests {
 
         apply_trust_decision(TrustDecision::Confirm, &mut state, &host).await;
 
-        assert_eq!(host.calls(), vec!["trust_permission_file"]);
+        assert_eq!(
+            host.calls(),
+            vec!["trust_permission_file"],
+            "no settings section was in the card (board item \
+             01M3TJQGJHFFPWE2YYN60WN1XB), so nothing else must be trusted"
+        );
         assert!(
             matches!(state.mode, Mode::Normal),
             "a successful confirm must close the card"
@@ -7677,6 +8059,75 @@ mod tests {
                 Entry::Notice { text } if text.contains("trusted") && text.contains("3 allow rule")
             )),
             "the installed count must be surfaced: {:?}",
+            state.transcript
+        );
+    }
+
+    /// **The security finding this fixes, pinned directly**: confirming
+    /// trusts settings.json for EXACTLY the bytes the card showed
+    /// (`TrustPreviewCard::settings`), never a fresh re-read. A security
+    /// review of an earlier version of this code found it called a
+    /// `trust_project_settings()` that re-read and trusted
+    /// `settings.json` UNCONDITIONALLY and UNSEEN -- an operator who
+    /// reviewed only `permissions.json` in the card got a cloned repo's
+    /// `settings.json` (capable of redirecting a backend's `base_url`/
+    /// `api_key`) trusted with the same keypress, never having been shown
+    /// it. **Fails against that version**: it would call
+    /// `trust_project_settings` (not `_bytes`) with no content parameter
+    /// at all, and `host.trusted_settings_bytes()` would not exist to
+    /// assert on.
+    #[tokio::test]
+    async fn confirming_trusts_settings_json_for_exactly_the_bytes_the_card_showed() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        let settings_path = std::path::PathBuf::from("/tmp/.conway/settings.json");
+        let shown_contents = r#"{"limits":{"max_steps":7}}"#;
+        state.offer_trust_preview(TrustPreviewCard {
+            path: path.clone(),
+            contents: "{}".to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+            settings: Some(SettingsPreviewSection {
+                path: settings_path.clone(),
+                contents: shown_contents.to_string(),
+                status: conway::TrustStatus::New,
+            }),
+        });
+        let host = FakeHost::new(root)
+            .with_trust_result(TrustPermissionReport {
+                installed: 0,
+                registration_errors: Vec::new(),
+                notices: Vec::new(),
+            })
+            // Simulates the file having been EDITED since the card was
+            // shown (a concurrent `git pull`, a hand edit) -- what a fresh
+            // re-read at confirm time would see, scripted here specifically
+            // so a version that re-reads instead of using the card's own
+            // bytes would be caught DIVERGING from `shown_contents` below,
+            // not merely falling back to it by coincidence.
+            .with_project_settings_preview(
+                settings_path.clone(),
+                r#"{"limits":{"max_steps":9999}}"#,
+                conway::TrustStatus::Changed,
+            );
+
+        apply_trust_decision(TrustDecision::Confirm, &mut state, &host).await;
+
+        assert_eq!(
+            host.trusted_settings_bytes(),
+            vec![(settings_path.clone(), shown_contents.to_string())],
+            "consent must be recorded for EXACTLY the bytes the card showed \
+             at preview time, never a fresh re-read of whatever is on disk \
+             now -- the file may have changed since"
+        );
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("also trusted")
+                    && text.contains(&settings_path.display().to_string())
+            )),
+            "{:?}",
             state.transcript
         );
     }
@@ -7693,6 +8144,7 @@ mod tests {
             contents: "{}".to_string(),
             status: conway::TrustStatus::New,
             error: None,
+            settings: None,
         });
         let host = FakeHost::new(root);
 
@@ -7785,6 +8237,7 @@ mod tests {
             contents: "{}".to_string(),
             status: conway::TrustStatus::New,
             error: None,
+            settings: None,
         });
         let host = FakeHost::new(root); // trust_result: None -> fake io::Error
 

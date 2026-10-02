@@ -493,3 +493,77 @@ async fn giving_both_session_spellings_at_once_is_a_usage_error() {
          between: {stderr}"
     );
 }
+
+// -----------------------------------------------------------------------
+// `--session <agent-id>` -- the id-paste remedy
+// -----------------------------------------------------------------------
+
+/// `fixture`'s session `sid`'s own header line (`conway-session`'s own
+/// codec doc: "Header (line 0 of every session file): `LogRecord::Header
+/// (SessionMeta)`", with `session`/`agent` for `SessionMeta`'s own
+/// `id`/`agent_id`), decoded just far enough to read the root agent id this
+/// session belongs to -- a DIFFERENT ULID from `sid` itself
+/// (`Conway::new_session` mints the two separately, even for an unforked
+/// root session).
+fn header_agent_id(fixture: &Fixture, sid: &str) -> String {
+    let path = common::session_dir(fixture).join(format!("{sid}.jsonl"));
+    let contents = std::fs::read_to_string(&path).expect("read session file");
+    let header_line = contents
+        .lines()
+        .next()
+        .expect("a session file has a header line");
+    let header: serde_json::Value =
+        serde_json::from_str(header_line).expect("the header line is valid JSON");
+    header["agent"]
+        .as_str()
+        .expect("the header line names its own agent id")
+        .to_string()
+}
+
+/// **The id-paste remedy.** The one place an operator is actually invited
+/// to copy an id FROM -- the TUI's `/model`/`/role` switch notice, and the
+/// empty-store hint this very flag's `conway.checkpoint.list` consumer
+/// prints -- names an AGENT id, never a session id (`commands/plugin.rs`'s
+/// own `resume_target` doc states the choice and why: widening the TUI's
+/// vocabulary to print session ids too would have to spread across every
+/// surface that already prints an agent id, for the sake of one escape
+/// hatch). An operator who pastes that agent id here must not be told
+/// "unknown session": `--session` now also accepts an agent id, resolved to
+/// the session it owns, and must answer IDENTICALLY to the session id
+/// itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn checkpoint_list_accepts_the_agent_id_the_switch_notice_actually_prints() {
+    let mock = MockBackend::start(write_script()).await;
+    let fixture = common::write_fixture(&mock, 10);
+    let sid = a_worker_that_wrote_a_file(&fixture, &["conway.checkpoint"]);
+    let agent = header_agent_id(&fixture, &sid);
+    assert_ne!(
+        agent, sid,
+        "precondition: a session id and its own root agent id must be different ULIDs, or this \
+         test cannot distinguish the fix from the bug it replaces"
+    );
+
+    let by_session = run_conway(&["conway.checkpoint.list", "--session", &sid], &fixture);
+    assert!(
+        by_session.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&by_session.stderr)
+    );
+    let by_session_stdout = String::from_utf8_lossy(&by_session.stdout).to_string();
+
+    let by_agent = run_conway(&["conway.checkpoint.list", "--session", &agent], &fixture);
+    assert!(
+        by_agent.status.success(),
+        "an agent id must resolve exactly like the session id it owns -- stderr: {}",
+        String::from_utf8_lossy(&by_agent.stderr)
+    );
+    let by_agent_stdout = String::from_utf8_lossy(&by_agent.stdout);
+    assert!(
+        by_agent_stdout.contains(WRITTEN_PATH),
+        "the agent-id-targeted listing must name the path that session wrote: {by_agent_stdout}"
+    );
+    assert_eq!(
+        by_agent_stdout, by_session_stdout,
+        "resolving by agent id must answer identically to resolving by the session id it owns"
+    );
+}

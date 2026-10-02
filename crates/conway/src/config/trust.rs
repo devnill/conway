@@ -125,24 +125,27 @@
 //! records (`trust_does_not_leak_across_kinds_for_the_same_path`, below,
 //! pins this explicitly).
 //!
-//! **Why `settings.json` gets a STRICTER posture than `permissions.json`
-//! ever has** (the ruling's own reasoning, restated here because it
-//! changes this module's behavior, not just its data shape): a
-//! `permissions.json`'s `allow` half is authority over what an agent may
-//! DO; an untrusted one degrades silently (this module's own "No startup
-//! prompt" section above) because the floor -- `deny` rules always apply,
-//! trusted or not -- never actually widens by staying silent. A
-//! `settings.json` can set `backends.<id>.base_url`/`api_key`: installing
-//! one with no consent does not merely widen what an agent may call, it
-//! can REDIRECT the operator's own traffic and credentials to an endpoint
-//! chosen by whoever controls the directory. There is no floor under that
-//! the way `deny` is a floor under permissions -- so this module's public
-//! entry point for the settings kind, [`guard_untrusted_project_settings`],
-//! does not silently degrade the way permission-file loading does. It
-//! REFUSES (a named error, see that function's own doc), and it is the
-//! caller's job to either already hold a trust record (an interactive
-//! session that already prompted and the operator accepted) or accept
-//! that refusal -- never a silent apply, never a silent skip.
+//! **UPDATED (2026-09-30, board item `01M3TJQGJHFFPWE2YYN60WN1XB`): no
+//! longer a REFUSAL.** This module used to argue here that `settings.json`
+//! deserved a STRICTER posture than `permissions.json` -- refuse to start
+//! outright, rather than degrade silently -- because its
+//! `backends.<id>.base_url`/`api_key` keys can redirect the operator's own
+//! traffic and credentials, a harm with no floor under it the way `deny`
+//! rules are a floor under permissions. That reasoning about the HARM is
+//! still correct, but the operator's own ruling on this item concluded the
+//! REMEDY was wrong: a hard refusal to start is friction severe enough that
+//! operators route around it (deleting the file, or avoiding the directory
+//! entirely) rather than engaging with it, and it reappears on every `git
+//! pull` that touches the file. The posture is now the SAME SHAPE
+//! `permissions.json` already uses -- ignore the untrusted content, start
+//! anyway, and make the ignoring IMPOSSIBLE to miss -- rather than a second,
+//! stricter shape: [`guard_untrusted_project_settings`] reports a named
+//! notice (`Some(UntrustedProjectSettings)`) instead of returning an error,
+//! and `config::merge::load_impl` skips merging that one layer and pushes a
+//! `ConfigWarning` that every caller (CLI stderr, TUI transcript, TUI status
+//! line) is required to surface -- never a silent apply, never a silent
+//! skip, just no longer a hard stop either. See
+//! [`UntrustedProjectSettings`]'s own doc for the ruling's exact wording.
 //!
 //! **Scope: the PROJECT walk only, never the operator's own user layer.**
 //! [`guard_untrusted_project_settings`] calls [`super::discovery::discover`]
@@ -380,18 +383,33 @@ impl TrustStore {
     /// the operator just made did not persist and the next launch will
     /// re-degrade with no explanation if this is swallowed.
     pub fn trust(env: &HashMap<String, String>, abs_path: &Path) -> std::io::Result<()> {
+        let contents = std::fs::read_to_string(abs_path)?;
+        Self::trust_bytes(env, abs_path, &contents)
+    }
+
+    /// [`Self::trust`] with the bytes supplied by the caller rather than
+    /// re-read here -- [`Self::trust_settings_bytes`]'s exact counterpart
+    /// for the `permission_file` kind (board item `01M3TJQGJHFFPWE2YYN60WN1XB`:
+    /// `conway trust project` reviews BOTH a project's files in one output
+    /// and must record consent for the bytes it showed for each, not
+    /// whatever lands on disk a moment later -- the same TOCTOU this
+    /// module's own doc already closed for the settings kind).
+    pub fn trust_bytes(
+        env: &HashMap<String, String>,
+        abs_path: &Path,
+        contents: &str,
+    ) -> std::io::Result<()> {
         let path = Self::path(env).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "no resolvable global config directory to write trust.json into",
             )
         })?;
-        let contents = std::fs::read_to_string(abs_path)?;
         let mut store = Self::load_from_path(&path);
         store.file.permission_files.insert(
             path_key(abs_path),
             TrustedRecord {
-                content_digest: content_digest(&contents),
+                content_digest: content_digest(contents),
                 trusted_at: chrono::Utc::now().to_rfc3339(),
             },
         );
@@ -403,9 +421,9 @@ impl TrustStore {
     /// bytes at `abs_path` into `TrustFile::settings_files`, same digest/
     /// durability/permission-tightening contract as `trust`, over the
     /// independent map. This is the ONE path that makes
-    /// [`guard_untrusted_project_settings`] stop refusing a given
-    /// `settings.json`: an operator action taken on purpose, never a side
-    /// effect of loading config.
+    /// [`guard_untrusted_project_settings`] stop reporting a given
+    /// `settings.json` as ignored: an operator action taken on purpose,
+    /// never a side effect of loading config.
     pub fn trust_settings(env: &HashMap<String, String>, abs_path: &Path) -> std::io::Result<()> {
         let contents = std::fs::read_to_string(abs_path)?;
         Self::trust_settings_bytes(env, abs_path, &contents)
@@ -717,119 +735,131 @@ pub fn resolve_settings_trust_target(
     Ok(resolve(&absolute))
 }
 
-/// The named refusal [`guard_untrusted_project_settings`] returns: a
+/// The named notice [`guard_untrusted_project_settings`] returns: a
 /// walk-discovered project `settings.json` exists at `path` and is not
-/// (yet) trusted. `Display` is the message an operator sees verbatim --
-/// names the exact file and, since board item
-/// `01M2TTWSQ53CDWB9VRGSX05XNQ`, at least one remedy reachable from the
-/// shell where conway just refused to start.
+/// (yet) trusted, so it is being IGNORED -- never applied, never silently
+/// skipped with no trace. `Display` is the message an operator sees
+/// verbatim, naming the exact file and the one act that applies it.
 ///
-/// **The wording is load-bearing, and its first version was wrong.** It
-/// named the TUI's `/trust settings` command and the
-/// `TrustStore::trust_settings` Rust API. The TUI is what had just refused
-/// to start, so that command could not be reached; the Rust API is not an
-/// operator remedy; and `/trust settings` did not exist in the first place
-/// (`conway_cli::tui::commands` parses `/trust permissions`, and nothing
-/// else). Every remedy named below is now something an operator can type
-/// at the shell prompt they are already standing at: `conway trust
-/// settings` (the headless consent path, `conway_cli::commands::trust`)
-/// and removing the file. Changing
-/// this text is a behavior change, not a copy edit -- a
-/// `crates/conway-cli/tests/trust_cli.rs` case asserts the real binary
-/// prints a reachable remedy.
+/// **Ruling (2026-09-30, board item `01M3TJQGJHFFPWE2YYN60WN1XB`),
+/// superseding the earlier "refuse outright" stance (board item
+/// `01M2M5EM73GA15NMQ1H87TTEDP`):** an untrusted project `.conway/` no
+/// longer stops conway from starting. Its files are ignored, and this type
+/// is the visible, persistent notice that names them and the command to
+/// trust them -- ignoring must never be silent. The wording below still
+/// carries board item `01M2TTWSQ53CDWB9VRGSX05XNQ`'s own fix (every remedy
+/// named is something an operator can actually type -- `conway trust
+/// project`/`conway trust settings`, the headless consent path, never a
+/// TUI command or a Rust API), it just no longer describes a blocked shell,
+/// because there is not one any more.
 ///
 /// A distinct type, not a bare `String`, so a caller CAN pattern-match on
-/// it (`FacadeError::UntrustedProjectSettings`'s own doc: an interactive
-/// caller catches exactly this to decide whether to prompt-then-retry,
-/// rather than string-matching an error message) -- the "named error"
-/// this board item's own spec asks for.
+/// it rather than string-matching a message -- `conway_cli`'s own callers
+/// (`main.rs`'s non-interactive stderr line, `tui::app::startup`'s
+/// transcript notice and persistent status-line marker) both construct
+/// their own surface from the SAME `path`/`changed` fields this type
+/// carries, rather than parsing `Display`'s prose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UntrustedProjectSettings {
     pub path: PathBuf,
+    /// `true` when a PRIOR trust decision exists for `path` but no longer
+    /// matches its current bytes (`TrustStatus::Changed`) -- an edit since
+    /// the operator last trusted it. `false` when there is no record at all
+    /// (`TrustStatus::New`). `Display` says "this file changed since you
+    /// trusted it" in the first case and "trusting this for the first time"
+    /// framing in the second -- the same distinction
+    /// [`TrustStatus`]'s own doc argues a human-facing surface needs.
+    pub changed: bool,
 }
 
 impl std::fmt::Display for UntrustedProjectSettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let p = self.path.display();
-        writeln!(
-            f,
-            "untrusted project settings.json at {p} -- a project-scoped settings.json \
-             can redirect a backend's base_url/api_key, so it is never applied without \
-             explicit consent, and conway will not start until you give one."
-        )?;
+        if self.changed {
+            writeln!(
+                f,
+                "project config ignored: {p} was trusted before and has been EDITED \
+                 since -- a project-scoped settings.json can redirect a backend's \
+                 base_url/api_key, so an edit re-arms the consent requirement. Its \
+                 contents are NOT applied; conway started anyway, without them."
+            )?;
+        } else {
+            writeln!(
+                f,
+                "project config ignored: {p} is not trusted -- a project-scoped \
+                 settings.json can redirect a backend's base_url/api_key, so it is \
+                 never applied without explicit consent. Its contents are NOT applied; \
+                 conway started anyway, without them."
+            )?;
+        }
         writeln!(f, "  To review it and consent to exactly these bytes:")?;
-        writeln!(f, "      conway trust settings --path {p}")?;
-        writeln!(
-            f,
-            "  To start without the project config instead, remove the file:"
-        )?;
-        writeln!(f, "      rm {p}")?;
+        writeln!(f, "      conway trust project --path {p}")?;
         write!(
             f,
             "  `conway trust list` shows every decision already recorded; \
-             `conway trust revoke {p}` withdraws this one. Editing the file after \
-             trusting it re-arms this refusal, on purpose."
+             `conway trust revoke {p}` withdraws this one. Editing the file again \
+             re-arms this notice, on purpose."
         )
     }
 }
 
-/// The consent gate itself (board item `01M2M5EM73GA15NMQ1H87TTEDP`): walks
-/// from `cwd` (exactly [`super::discovery::discover`], with the SAME
-/// `project_discovery_exclusions` every other
-/// project-layer consumer in this crate applies -- the operator's own user
-/// layer is never a candidate, see this module's own "A second kind" doc)
-/// looking for a project `settings.json`. Three outcomes:
+/// The consent check (board item `01M2M5EM73GA15NMQ1H87TTEDP`, its posture
+/// updated by board item `01M3TJQGJHFFPWE2YYN60WN1XB` -- see
+/// [`UntrustedProjectSettings`]'s own doc for the ruling): walks from `cwd`
+/// (exactly [`super::discovery::discover`], with the SAME
+/// `project_discovery_exclusions` every other project-layer consumer in
+/// this crate applies -- the operator's own user layer is never a
+/// candidate, see this module's own "A second kind" doc) looking for a
+/// project `settings.json`. Three outcomes:
 ///
-/// - No project `settings.json` reachable at all -> `Ok(())` (nothing to
-///   gate).
+/// - No project `settings.json` reachable at all -> `None` (nothing to
+///   report).
 /// - One is reachable and [`TrustStore::is_settings_trusted`] confirms its
-///   CURRENT bytes match a recorded decision -> `Ok(())` (trusted, proceed
-///   to merge it).
+///   CURRENT bytes match a recorded decision -> `None` (trusted, the caller
+///   merges it).
 /// - One is reachable and is untrusted (no record, or the recorded digest
 ///   no longer matches -- an edit since the operator last trusted it) ->
-///   `Err(UntrustedProjectSettings)`, naming the exact path.
+///   `Some(UntrustedProjectSettings)`, naming the exact path and whether it
+///   was previously trusted and has since changed.
 ///
-/// **Never silently skips.** A caller that receives `Err` here must not
-/// proceed to merge the file's contents anyway (that would be the silent-
-/// apply this item's own ruling forbids) NOR proceed as if no project
-/// layer existed at all (silent-skip, forbidden identically) -- the only
-/// correct responses are: refuse outright (the non-interactive case), or
-/// prompt the operator and, on acceptance, call
-/// [`TrustStore::trust_settings`] and call this function again (now `Ok`)
-/// before proceeding. This function itself has no interactivity of its own -- it
-/// is a synchronous, pure-of-I/O-side-effects (reads only) check, so
-/// EVERY caller gets the exact same "refuse" behavior unless it has
-/// already arranged consent; see [`crate::builder::ConwayBuilder::discover`]
-/// for the one production caller and its own disclosure of where the
-/// interactive half would need to live.
+/// **No longer a gate that can fail a caller** -- the type that used to be
+/// this function's `Err` arm is now its `Some` arm, and every production
+/// caller (`config::merge::load_impl`, via `merged_document_with_warnings`)
+/// treats it as "skip this one layer, record why" rather than "stop
+/// entirely." This function itself is still synchronous and
+/// pure-of-I/O-side-effects (reads only, no interactivity), so every caller
+/// gets the identical answer for the identical inputs.
 ///
 /// A project `settings.json` this function cannot even READ (permission
 /// error, TOCTOU-vanished between the walk and this read) is treated as
-/// `Ok(())` here -- not this function's failure to diagnose;
+/// `None` here -- not this function's failure to diagnose;
 /// `config::merge::load`'s own subsequent read of the same path (`load_impl`'s
 /// project-layer step) will raise the real, specific I/O error for that
-/// case, and this function raising a DIFFERENT, misleading "untrusted"
-/// error for a file it could not even inspect would be worse than letting
+/// case, and this function reporting a DIFFERENT, misleading "untrusted"
+/// notice for a file it could not even inspect would be worse than letting
 /// the real error surface downstream.
 pub fn guard_untrusted_project_settings(
     cwd: &Path,
     env: &HashMap<String, String>,
-) -> Result<(), UntrustedProjectSettings> {
+) -> Option<UntrustedProjectSettings> {
     // [`project_settings_path`], not a second inline walk: that function is
     // what an operator surface outside this crate calls to name the file it
     // is about to record consent for, and if the two ever disagreed the
-    // consent would be recorded under a key this gate never looks up --
-    // silently, with no error anywhere. One walk, one answer.
-    let Some(path) = project_settings_path(cwd, env) else {
-        return Ok(());
-    };
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return Ok(());
-    };
+    // consent would be recorded under a key this check never looks up --
+    // silently, with no notice anywhere. One walk, one answer.
+    let path = project_settings_path(cwd, env)?;
+    let contents = std::fs::read_to_string(&path).ok()?;
     let store = TrustStore::load(env);
     match store.settings_status(&path, &contents) {
-        TrustStatus::Unchanged => Ok(()),
-        TrustStatus::New | TrustStatus::Changed => Err(UntrustedProjectSettings { path }),
+        TrustStatus::Unchanged => None,
+        TrustStatus::New => Some(UntrustedProjectSettings {
+            path,
+            changed: false,
+        }),
+        TrustStatus::Changed => Some(UntrustedProjectSettings {
+            path,
+            changed: true,
+        }),
     }
 }
 
@@ -1177,18 +1207,23 @@ mod tests {
     // own user layer still applies with no prompt at all.
     // ---------------------------------------------------------------
 
-    /// **P-15's own load-bearing property, halves 1 and 2**: a `cwd`
+    /// **The item's own load-bearing property, both halves**: a `cwd`
     /// beneath an ancestor carrying an untrusted project `settings.json`
-    /// is refused by the gate AND (proven through the real merge pipeline,
-    /// `crate::config::load`, not merely this module's own `TrustStore`)
-    /// is not what a config load would actually reflect; once the operator
-    /// consents (`TrustStore::trust_settings`), the SAME gate call
-    /// succeeds, and a real `crate::config::load` against the identical
-    /// `cwd`/`env` now DOES carry the project file's own value through.
-    /// **Fails against HEAD** (no gate existed before this item -- every
-    /// project `settings.json` applied unconditionally).
+    /// is reported by the check (`Some`) AND -- proven through the real
+    /// merge pipeline, `crate::config::load`, not merely this module's own
+    /// `TrustStore` -- that file's own value is NOT what a real config
+    /// load reflects: `load` SKIPS the whole layer rather than refusing
+    /// outright (board item `01M3TJQGJHFFPWE2YYN60WN1XB`, superseding the
+    /// earlier "refuse" ruling) or applying it unconditionally. Once the
+    /// operator consents (`TrustStore::trust_settings`), the SAME check
+    /// returns `None`, and the SAME real `crate::config::load` against the
+    /// identical `cwd`/`env` now DOES carry the project file's own value
+    /// through. **Break-the-guard**: a stub that applied the untrusted
+    /// layer anyway would still see the check report `Some`, but the
+    /// `max_steps` assertion below would fail -- this is the one line a
+    /// silent-apply regression actually trips.
     #[test]
-    fn guard_untrusted_project_settings_refuses_until_consent_then_the_real_load_applies_it() {
+    fn untrusted_project_settings_is_ignored_until_consent_then_the_real_load_applies_it() {
         let config_dir = tempfile_dir();
         let mut env = HashMap::new();
         env.insert(
@@ -1202,46 +1237,63 @@ mod tests {
         let settings_path = conf_dir.join("settings.json");
         fs::write(&settings_path, r#"{"limits":{"max_steps":77}}"#).unwrap();
 
-        // Before consent: the gate refuses, naming the exact file.
-        let err = super::guard_untrusted_project_settings(&project_root, &env)
-            .expect_err("an untrusted project settings.json must refuse");
-        assert_eq!(err.path, settings_path);
+        // Before consent: the check reports the exact file, untrusted.
+        let notice = super::guard_untrusted_project_settings(&project_root, &env)
+            .expect("an untrusted project settings.json must be reported");
+        assert_eq!(notice.path, settings_path);
+        assert!(!notice.changed, "never trusted before, not an edit");
 
-        // And the real merge pipeline, run independently of the gate
-        // (`crate::config::load` never consults this module today outside
-        // `ConwayBuilder::discover`), still reads a config -- but this
-        // proves the FIXTURE is well-formed, not that the gate does
-        // anything to `load` itself; the gate is enforced at
-        // `ConwayBuilder::discover`'s own call site, see that method's own
-        // doc.
-        let outcome = crate::config::load(crate::config::LoadOptions {
+        // And the real, TRUST-GATED merge pipeline (`config::merge::
+        // load_trust_gated`, `ConwayBuilder::discover`'s own entry point --
+        // plain `crate::config::load` is deliberately UNCHANGED, see
+        // `ProjectLayerTrust`'s own doc) must NOT carry the untrusted
+        // file's value through -- this is the behavioral assertion a stub
+        // that merely reports the notice but still applies the file would
+        // fail.
+        let before = crate::config::merge::load_trust_gated(crate::config::LoadOptions {
             cwd: project_root.clone(),
             explicit_path: None,
             env: env.clone(),
             cli_overrides: crate::config::CliOverrides::default(),
             model_metadata_refresh: false,
         })
-        .expect("the fixture itself must be well-formed JSON");
-        assert_eq!(
-            outcome.config.limits.max_steps, 77,
-            "sanity: the project settings.json fixture actually carries the \
-             value this test asserts on after consent"
+        .expect("conway must still start with an untrusted project settings.json");
+        assert_ne!(
+            before.config.limits.max_steps, 77,
+            "an untrusted project settings.json must NOT be applied"
+        );
+        assert!(
+            before.warnings.iter().any(|w| w.code
+                == crate::config::WarningCode::UntrustedProjectConfigIgnored
+                && w.message.contains(&settings_path.display().to_string())),
+            "ignoring an untrusted project settings.json must be announced, not silent: {:?}",
+            before.warnings
         );
 
-        // After consent: the SAME gate call now succeeds.
+        // After consent: the SAME check now returns `None`, and the value
+        // DOES apply.
         TrustStore::trust_settings(&env, &settings_path).expect("trust_settings succeeds");
-        super::guard_untrusted_project_settings(&project_root, &env)
-            .expect("a trusted project settings.json must not refuse");
+        assert!(super::guard_untrusted_project_settings(&project_root, &env).is_none());
+        let after = crate::config::merge::load_trust_gated(crate::config::LoadOptions {
+            cwd: project_root,
+            explicit_path: None,
+            env,
+            cli_overrides: crate::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        })
+        .expect("load succeeds once trusted");
+        assert_eq!(
+            after.config.limits.max_steps, 77,
+            "a trusted project settings.json must be applied"
+        );
     }
 
-    /// Half 2 of P-15's own pairing, isolated: the refusal is a NAMED
-    /// error (`UntrustedProjectSettings`, carrying the exact offending
-    /// `path`), not a generic message a caller would have to string-match
-    /// -- this is what lets a non-interactive caller (this function has no
-    /// interactivity of its own; see its own doc) print something specific
-    /// and exit, and what would let an interactive caller pattern-match on
-    /// it to decide whether to prompt. **Fails against HEAD** (no such
-    /// error variant/gate existed).
+    /// The notice is a NAMED type (`UntrustedProjectSettings`, carrying the
+    /// exact offending `path`), not a generic message a caller would have
+    /// to string-match -- this is what lets every caller
+    /// (`conway-cli`'s non-interactive stderr line, the TUI's transcript
+    /// notice and status-line marker) build its own surface from the same
+    /// fields rather than parsing `Display`'s prose.
     #[test]
     fn guard_untrusted_project_settings_names_the_offending_file() {
         let config_dir = tempfile_dir();
@@ -1256,11 +1308,11 @@ mod tests {
         let settings_path = conf_dir.join("settings.json");
         fs::write(&settings_path, r#"{}"#).unwrap();
 
-        let err = super::guard_untrusted_project_settings(&project_root, &env).unwrap_err();
-        let message = err.to_string();
+        let notice = super::guard_untrusted_project_settings(&project_root, &env).unwrap();
+        let message = notice.to_string();
         assert!(
             message.contains(&settings_path.display().to_string()),
-            "the refusal must name the exact file, got: {message}"
+            "the notice must name the exact file, got: {message}"
         );
     }
 
@@ -1292,8 +1344,10 @@ mod tests {
         // the PROJECT walk to reach at all.
         let cwd = tempfile_dir();
 
-        super::guard_untrusted_project_settings(&cwd, &env)
-            .expect("no project layer exists here; the gate must not fire");
+        assert!(
+            super::guard_untrusted_project_settings(&cwd, &env).is_none(),
+            "no project layer exists here; the check must not fire"
+        );
 
         let outcome = crate::config::load(crate::config::LoadOptions {
             cwd,
@@ -1311,41 +1365,65 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Board item `01M2TTWSQ53CDWB9VRGSX05XNQ` -- the headless consent path
-    // and the reachable refusal. See `conway_cli::commands::trust` for the
-    // operator surface these back, and `crates/conway-cli/tests/trust_cli.rs`
-    // for the end-to-end, real-binary half.
+    // Board item `01M2TTWSQ53CDWB9VRGSX05XNQ` -- the headless consent path.
+    // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` updated its remedy's wording
+    // from a "blocked shell" (there is no longer a blocked shell at all) to
+    // a "project config ignored" notice, while keeping the reachable-remedy
+    // property: the command named is something an operator can actually
+    // type, never a TUI command or a Rust API. See `conway_cli::commands::
+    // trust` for the operator surface this backs, and
+    // `crates/conway-cli/tests/trust_cli.rs` for the end-to-end,
+    // real-binary half.
     // -----------------------------------------------------------------
 
-    /// **Fails against HEAD.** The refusal named `/trust settings` (a TUI
-    /// command that does not exist -- `conway_cli::tui::commands` parses
-    /// `/trust permissions` and nothing else) and a Rust API. Neither is
-    /// reachable from a shell where conway has just refused to start, so
-    /// this asserts on what a blocked operator can actually type.
+    /// The notice names a remedy an operator can actually run, and nothing
+    /// that was never reachable (a TUI command that does not exist, a Rust
+    /// API). **Break-the-guard**: the two forbidden substrings below would
+    /// have matched the PRE-item wording this type used to carry.
     #[test]
-    fn the_refusal_names_a_remedy_reachable_from_a_blocked_shell() {
-        let refusal = UntrustedProjectSettings {
+    fn the_notice_names_a_remedy_an_operator_can_actually_run() {
+        let notice = UntrustedProjectSettings {
             path: PathBuf::from("/repo/.conway/settings.json"),
+            changed: false,
         };
-        let message = refusal.to_string();
+        let message = notice.to_string();
 
         assert!(
-            message.contains("conway trust settings --path /repo/.conway/settings.json"),
-            "the refusal must name the headless consent command, got: {message}"
+            message.contains("project config ignored"),
+            "the notice must say plainly that the file was ignored, got: {message}"
         );
         assert!(
-            message.contains("rm /repo/.conway/settings.json"),
-            "the refusal must say the file can be removed to proceed, got: {message}"
+            message.contains("conway trust project --path /repo/.conway/settings.json"),
+            "the notice must name the headless consent command, got: {message}"
         );
-        // BREAK-THE-GUARD: the two remedies that could not be reached are
-        // gone, not merely joined by a third.
         assert!(
             !message.contains("TrustStore::trust_settings"),
             "a Rust API is not an operator remedy, got: {message}"
         );
         assert!(
             !message.contains("the TUI's"),
-            "the TUI is what just refused to start, got: {message}"
+            "no command here is TUI-only any more, got: {message}"
+        );
+        assert!(
+            !message.contains("will not start"),
+            "conway no longer refuses to start over this, got: {message}"
+        );
+    }
+
+    /// The `changed: true` half of the same type: the wording must
+    /// distinguish "never trusted" from "trusted, then edited" -- the same
+    /// distinction [`TrustStatus`]'s own doc argues a human-facing surface
+    /// needs.
+    #[test]
+    fn the_notice_discloses_an_edit_since_trusted_differently() {
+        let notice = UntrustedProjectSettings {
+            path: PathBuf::from("/repo/.conway/settings.json"),
+            changed: true,
+        };
+        let message = notice.to_string();
+        assert!(
+            message.contains("EDITED"),
+            "an edit-since-trusted notice must say so, got: {message}"
         );
     }
 
@@ -1396,17 +1474,19 @@ mod tests {
 
         let target = super::resolve_settings_trust_target(&project_root, &env, None)
             .expect("a reachable project settings.json must resolve");
-        let refused = super::guard_untrusted_project_settings(&project_root, &env).unwrap_err();
+        let notice = super::guard_untrusted_project_settings(&project_root, &env).unwrap();
         assert_eq!(
-            target, refused.path,
-            "the file trusted and the file refused must be the same key"
+            target, notice.path,
+            "the file trusted and the file reported untrusted must be the same key"
         );
 
-        // And consenting to it really does clear the gate.
+        // And consenting to it really does clear the check.
         let contents = fs::read_to_string(&target).unwrap();
         TrustStore::trust_settings_bytes(&env, &target, &contents).unwrap();
-        super::guard_untrusted_project_settings(&project_root, &env)
-            .expect("the gate must stop refusing once consent is recorded");
+        assert!(
+            super::guard_untrusted_project_settings(&project_root, &env).is_none(),
+            "the check must stop firing once consent is recorded"
+        );
     }
 
     /// An explicitly named path that happens to BE the discovered file
@@ -1542,8 +1622,10 @@ mod tests {
         fs::write(&settings_path, r#"{"limits":{"max_steps":3}}"#).unwrap();
 
         TrustStore::trust_settings(&env, &settings_path).unwrap();
-        super::guard_untrusted_project_settings(&project_root, &env)
-            .expect("consent recorded: the gate must pass");
+        assert!(
+            super::guard_untrusted_project_settings(&project_root, &env).is_none(),
+            "consent recorded: the check must not fire"
+        );
 
         let revoked = TrustStore::revoke(&env, &settings_path).unwrap();
         assert!(revoked.settings_file, "the settings record was removed");
@@ -1553,8 +1635,10 @@ mod tests {
         );
         assert_eq!(revoked.kinds(), vec![TrustKind::SettingsFile]);
 
-        super::guard_untrusted_project_settings(&project_root, &env)
-            .expect_err("after revocation the gate must refuse again");
+        assert!(
+            super::guard_untrusted_project_settings(&project_root, &env).is_some(),
+            "after revocation the check must fire again"
+        );
         assert!(
             TrustStore::load(&env).entries().is_empty(),
             "the revoked row must be gone from the listing too"

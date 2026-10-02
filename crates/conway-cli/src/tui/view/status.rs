@@ -306,6 +306,10 @@ enum StatusLineField {
     Hint,
     Git,
     Cwd,
+    /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: `AppState::
+    /// project_config_ignored`'s persistent marker -- see [`resolve_fields`]
+    /// for the force-in rule and [`drop_priority`] for why it never drops.
+    Trust,
 }
 
 impl StatusLineField {
@@ -324,6 +328,7 @@ impl StatusLineField {
             "hint" => Some(Self::Hint),
             "git" => Some(Self::Git),
             "cwd" => Some(Self::Cwd),
+            "trust" => Some(Self::Trust),
             _ => None,
         }
     }
@@ -379,6 +384,7 @@ fn resolve_fields(
     config: &StatusLineConfig,
     permission_mode: PermissionMode,
     has_contributions: bool,
+    project_config_ignored: bool,
 ) -> Vec<StatusLineField> {
     let mut parsed: Vec<StatusLineField> = config
         .fields
@@ -394,6 +400,7 @@ fn resolve_fields(
             &StatusLineConfig::default(),
             permission_mode,
             has_contributions,
+            project_config_ignored,
         );
     }
     if permission_mode != PermissionMode::Prompt && !parsed.contains(&StatusLineField::Mode) {
@@ -404,6 +411,15 @@ fn resolve_fields(
             Some(i) => parsed.insert(i + 1, StatusLineField::Contributions),
             None => parsed.push(StatusLineField::Contributions),
         }
+    }
+    // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: forced in exactly like
+    // `mode`/`plugins` above, same reasoning -- this depends only on
+    // `AppState::project_config_ignored`, not on anything a `fields` list
+    // can configure away, because "a project config file is being ignored"
+    // must never be silenceable by a `settings.json` a cloned repository
+    // controls (the very file this marker is warning about).
+    if project_config_ignored && !parsed.contains(&StatusLineField::Trust) {
+        parsed.push(StatusLineField::Trust);
     }
     parsed
 }
@@ -430,6 +446,7 @@ pub fn status_line_spans(state: &AppState, theme: &Theme, width: u16) -> Line<'s
         &state.status_line_config,
         state.permission_mode,
         !state.plugin_status_contributions.is_empty(),
+        state.project_config_ignored,
     );
     // This item: `hint`'s own `focused: <id>` note is suppressed whenever
     // `lineage` is part of the resolved field list, so the two never say the
@@ -648,6 +665,14 @@ fn drop_priority(field: StatusLineField) -> u8 {
         StatusLineField::Hint => 8,
         StatusLineField::Contributions => 9,
         StatusLineField::Mode => 10,
+        // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: ranked ABOVE `mode` --
+        // "a project config file is being silently ignored" is strictly
+        // more load-bearing than the active permission mode (an operator
+        // who missed `mode` still has `/settings`; an operator who misses
+        // this has no other standing signal that their checkout's own
+        // settings never took effect). Its own ladder, like `mode`'s,
+        // never drops to nothing.
+        StatusLineField::Trust => 11,
     }
 }
 
@@ -686,6 +711,7 @@ fn field_ladder(
         StatusLineField::Lineage => lineage_ladder(state),
         StatusLineField::Mode => mode_ladder(state, theme),
         StatusLineField::Contributions => contributions_ladder(state, theme),
+        StatusLineField::Trust => trust_ladder(state, theme),
         StatusLineField::Model => match state.focused_model.as_deref() {
             Some(name) => vec![vec![Span::raw(name.to_string())], vec![]],
             None => vec![vec![]],
@@ -845,6 +871,51 @@ fn mode_label(mode: &Mode, activity: &Activity) -> String {
 /// longer-lived scope, cross-session persistence), this call is worth
 /// re-litigating -- the reasoning above is keyed on the CURRENT narrowness
 /// of the grant, not a blanket "grants never belong on the status line".
+/// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: the persistent `project config
+/// ignored` marker's ladder -- styled `theme.error` (plain red: this is
+/// real, standing information the operator can act on, but `theme.
+/// fatal_error`'s accent stays reserved for `AUTO-ALLOW` alone, per this
+/// module's own `contribution_style` doc). Checks `AppState::
+/// project_config_ignored` itself, rather than trusting its caller to
+/// have gated the call the way `resolve_fields`'s own force-in already
+/// does for the RESOLVED FIELD LIST: an operator's own `fields`
+/// configuration can still name `trust` explicitly even when nothing was
+/// ignored (`resolve_fields` only ever ADDS the field, never refuses one
+/// already there), and this is the one place that would otherwise render
+/// a false "ignored" marker on an ordinary, fully-trusted project.
+fn trust_ladder(state: &AppState, _theme: &Theme) -> Vec<Vec<Span<'static>>> {
+    if !state.project_config_ignored {
+        // Nothing was ignored: this field renders nothing at all, even if
+        // an operator's own `fields` list names `trust` explicitly --
+        // `resolve_fields` only FORCES the field IN when something was
+        // actually ignored; an operator opting it into their own `fields`
+        // list ahead of time must not make a false "ignored" marker
+        // appear on an ordinary, fully-trusted project.
+        return vec![vec![]];
+    }
+    // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review):
+    // deliberately `_theme: &Theme` above, UNUSED -- this marker must never
+    // read `theme.error` (or any other themed slot). An untrusted project
+    // `settings.json` could otherwise set `{"theme":{"error":{"modifiers":
+    // ["hidden"]}}}` and make the very marker naming it disappear (closed
+    // independently by `tui::config::load_from_options` trust-gating
+    // `[tui]` itself; this is the floor under that gate, not a substitute
+    // for it -- mirrors `Entry::SecurityNotice`'s own doc in
+    // `tui::state::transcript`). `Theme::security_notice_style` returns a
+    // style no `[tui.theme]` override can ever reach, regardless of its
+    // content -- not an inline literal here, on purpose, so this module
+    // keeps its own T1 convention (`theme.rs` alone constructs styles; see
+    // that function's own doc).
+    let fixed_style = Theme::security_notice_style();
+    vec![
+        vec![Span::styled(
+            "project config ignored".to_string(),
+            fixed_style,
+        )],
+        vec![Span::styled("cfg ignored".to_string(), fixed_style)],
+    ]
+}
+
 fn mode_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
     let ui = mode_label(&state.mode, &state.activity);
     match state.permission_mode {
@@ -3214,6 +3285,89 @@ mod tests {
             narrow.contains("plan"),
             "the non-default permission-mode label must survive at 15 \
              columns even with a custom field order: {narrow:?}"
+        );
+    }
+
+    // ---- Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: the persistent
+    // `project config ignored` status-line marker. ----
+
+    /// The headline property: the marker appears when
+    /// `AppState::project_config_ignored` is set, even against a `fields`
+    /// list that never names `trust` at all -- the identical force-in
+    /// shape `auto_allow_survives_a_fields_list_that_omits_mode_entirely`
+    /// already pins for `mode`, applied to this new field. **Fails against
+    /// a version that only renders the field when `fields` explicitly
+    /// names it.**
+    #[test]
+    fn project_config_ignored_marker_survives_a_fields_list_that_omits_trust_entirely() {
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["session", "hint"]);
+        state.project_config_ignored = true;
+        let line = status_line(&state);
+        assert!(
+            line.contains("project config ignored"),
+            "a `fields` list that omits `trust` must not silently disable \
+             the ignored-project-config marker: {line}"
+        );
+    }
+
+    /// The absence half of the same property: with nothing ignored, the
+    /// marker never appears at all, even when `fields` explicitly names
+    /// `trust` -- it is forced OUT, not merely optional, the same way
+    /// `plugins` stays absent with nothing to report.
+    #[test]
+    fn project_config_ignored_marker_is_absent_when_nothing_was_ignored() {
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["session", "trust", "hint"]);
+        state.project_config_ignored = false;
+        let line = status_line(&state);
+        assert!(
+            !line.contains("project config ignored") && !line.contains("cfg ignored"),
+            "nothing was ignored, so the marker must not render: {line}"
+        );
+    }
+
+    /// **Security review finding, closed**: the marker's style is NEVER
+    /// read from `Theme` at all -- not even `theme.error`, the slot an
+    /// untrusted project `settings.json` could otherwise reach via
+    /// `[tui.theme.error]` to hide its own ignore-notice
+    /// (`{"modifiers":["hidden"]}`). Builds a `Theme` whose `error` field
+    /// carries exactly that hidden modifier and confirms the rendered
+    /// marker span carries NEITHER that modifier NOR that theme's color --
+    /// it must still be bold red, from a literal `Style`, regardless of
+    /// what `theme.error` says. **Fails against a version that renders
+    /// this marker via `theme.error`.**
+    #[test]
+    fn project_config_ignored_marker_style_never_comes_from_theme() {
+        use ratatui::style::{Color, Modifier};
+
+        let mut state = AppState::new(AgentId::new());
+        state.project_config_ignored = true;
+        let hostile_theme = Theme {
+            error: Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::HIDDEN),
+            ..Theme::default()
+        };
+
+        let line = status_line_spans(&state, &hostile_theme, WIDE);
+        let marker_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("project config ignored"))
+            .expect("the marker must render, even against a hostile theme");
+
+        assert!(
+            !marker_span.style.add_modifier.contains(Modifier::HIDDEN),
+            "the marker must never inherit theme.error's HIDDEN modifier: {:?}",
+            marker_span.style
+        );
+        assert_eq!(
+            marker_span.style.fg,
+            Some(Color::Red),
+            "the marker must render in its own fixed red, not theme.error's \
+             configured color: {:?}",
+            marker_span.style
         );
     }
 

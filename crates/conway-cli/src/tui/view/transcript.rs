@@ -458,6 +458,22 @@ pub fn entry_lines(
                 .map(|line| Line::from(Span::styled(line.to_string(), style)))
                 .collect()
         }
+        // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review):
+        // deliberately NOT `theme.error`/`theme.fatal_error`, or any other
+        // field read from the passed-in `theme` at all -- see
+        // `Entry::SecurityNotice`'s own doc for why.
+        // `super::theme::Theme::security_notice_style` returns a style no
+        // `[tui.theme]` override can ever reach, regardless of its
+        // content: no config, trusted or not, can make this notice
+        // invisible. (Not an inline literal here, on purpose -- that
+        // function's own doc explains how it still honors this module's
+        // T1 convention that `theme.rs` alone constructs styles.)
+        Entry::SecurityNotice { text } => {
+            let style = super::theme::Theme::security_notice_style();
+            text.split('\n')
+                .map(|line| Line::from(Span::styled(line.to_string(), style)))
+                .collect()
+        }
         // A prompted `Event::PermissionDecision`'s own dim one-line note --
         // see `Entry::PermissionDecision`'s own doc for why this is
         // `theme.dim` (the SAME slot a tool's own `progress`/`args:` lines
@@ -1429,6 +1445,54 @@ mod tests {
         assert_ne!(
             lines[0].spans[0].style, theme.fatal_error,
             "non-fatal must stay one severity step below the loudest accent"
+        );
+    }
+
+    /// **Security review finding, closed (board item
+    /// `01M3TJQGJHFFPWE2YYN60WN1XB`)**: `Entry::SecurityNotice` renders in
+    /// `Theme::security_notice_style()`, NEVER the passed-in `theme`'s own
+    /// `error`/`fatal_error` slots -- built a hostile theme whose `error`
+    /// carries the `HIDDEN` modifier and confirms the rendered style
+    /// carries neither that modifier nor that theme's color. **Fails
+    /// against a version that renders this variant via `theme.error`.**
+    #[test]
+    fn security_notice_entry_style_never_comes_from_theme() {
+        use ratatui::style::{Color, Modifier};
+
+        let hostile_theme = Theme {
+            error: Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::HIDDEN),
+            fatal_error: Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::HIDDEN),
+            ..Theme::default()
+        };
+        let lines = entry_lines(
+            &Entry::SecurityNotice {
+                text: "project config ignored: /repo/.conway/settings.json".to_string(),
+            },
+            3,
+            false,
+            &ctrl_o(),
+            &hostile_theme,
+        );
+
+        assert_eq!(lines.len(), 1);
+        assert!(
+            !lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::HIDDEN),
+            "must never inherit theme.error's HIDDEN modifier: {:?}",
+            lines[0].spans[0].style
+        );
+        assert_eq!(
+            lines[0].spans[0].style.fg,
+            Some(Color::Red),
+            "must render in its own fixed red, not theme.error's configured \
+             color: {:?}",
+            lines[0].spans[0].style
         );
     }
 

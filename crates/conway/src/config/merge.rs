@@ -141,7 +141,49 @@ pub struct CliOverrides {
 
 /// The full five-source load: default < user < project < env < CLI.
 pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
-    load_impl(options, IncludeUserLayer::Yes)
+    load_impl(
+        options,
+        IncludeUserLayer::Yes,
+        ProjectLayerTrust::Unconditional,
+    )
+}
+
+/// [`load`], except the walk-discovered project `settings.json` layer is
+/// trust-gated: an untrusted (or trusted-then-edited) one is SKIPPED rather
+/// than merged, and the returned [`LoadOutcome::warnings`] carries a
+/// [`crate::config::WarningCode::UntrustedProjectConfigIgnored`] entry
+/// naming it (board item `01M3TJQGJHFFPWE2YYN60WN1XB`).
+///
+/// **`pub`, not `pub(crate)`** (corrected by this item's own security
+/// review): `crate::builder::ConwayBuilder::discover` is the one caller that
+/// decides whether a SESSION starts on an untrusted project layer, but it is
+/// not the only caller that needs to agree with that decision. A `conway-cli`
+/// caller computing "what would the effective config be right now" (the
+/// `[tui]` presentation-config read, or a plugin-install/toggle dry run) that
+/// instead called plain `load`/`merged_document` would merge the SAME
+/// untrusted layer `discover` just finished skipping -- a diagnostic that
+/// disagrees with what actually loaded is its own defect, not a lesser one
+/// than the original hard-refusal this item replaced. See `conway_cli::tui::
+/// config::load`'s own doc and [`merged_document_trust_gated`] (this
+/// function's `Value`-only sibling, for a caller that does not want a full
+/// `ConwayConfig` validation pass) for the production callers that reuse
+/// this gate for exactly that reason.
+///
+/// Every OTHER caller of this module (`load`, `load_ignoring_user_config`,
+/// `merged_document`, and every test fixture across this workspace that
+/// calls one of those three directly with no trust setup of its own) is
+/// UNCHANGED -- see `ProjectLayerTrust`'s own doc for why trust-gating is
+/// an opt-in concern, not the merge mechanism's default.
+pub fn load_trust_gated(options: LoadOptions) -> Result<LoadOutcome> {
+    load_impl(options, IncludeUserLayer::Yes, ProjectLayerTrust::Gated)
+}
+
+/// [`merged_document`], trust-gated exactly like [`load_trust_gated`] --
+/// this function's own doc explains why a caller that wants the RAW merged
+/// `Value` (rather than a validated `ConwayConfig`) still needs the same
+/// gate, not the unconditional one `merged_document` itself keeps.
+pub fn merged_document_trust_gated(options: &LoadOptions) -> Result<Value> {
+    Ok(merged_document_impl(options, IncludeUserLayer::Yes, ProjectLayerTrust::Gated)?.0)
 }
 
 /// Identical to [`load`], except the user layer
@@ -183,7 +225,11 @@ pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
 /// same mechanism every hermetic test in this workspace already uses (see
 /// `crates/conway/tests/support/mod.rs::isolated_env`).
 pub fn load_ignoring_user_config(options: LoadOptions) -> Result<LoadOutcome> {
-    load_impl(options, IncludeUserLayer::No)
+    load_impl(
+        options,
+        IncludeUserLayer::No,
+        ProjectLayerTrust::Unconditional,
+    )
 }
 
 /// Whether [`load_impl`] reads the user layer — a private, two-variant
@@ -221,14 +267,54 @@ enum IncludeUserLayer {
 /// validation entirely, so a typo anywhere in the document is not caught
 /// here.
 pub fn merged_document(options: &LoadOptions) -> Result<Value> {
-    merged_document_impl(options, IncludeUserLayer::Yes)
+    Ok(merged_document_impl(
+        options,
+        IncludeUserLayer::Yes,
+        ProjectLayerTrust::Unconditional,
+    )?
+    .0)
+}
+
+/// Whether [`merged_document_impl`] trust-gates the project-scope
+/// `settings.json` layer -- a private, two-variant enum for the same reason
+/// [`IncludeUserLayer`] is one, placed beside it rather than added as a new
+/// `LoadOptions` field (see [`load_ignoring_user_config`]'s own doc for why
+/// this crate prefers a sibling function/parameter over growing that
+/// struct).
+///
+/// **Deliberately NOT the default for [`load`]/[`load_ignoring_user_config`]/
+/// [`merged_document`].** Those three are this crate's general-purpose,
+/// embedder-facing merge entry points -- used directly, with no trust setup
+/// of their own, by dozens of fixtures across this workspace
+/// (`tests/config_precedence.rs`, `tests/config_headroom.rs`, this module's
+/// own unit tests, `conway-cli`'s marketplace/plugin-toggle "what would the
+/// effective config be" re-reads) that have never needed a `trust.json` and
+/// have no reason to start needing one now. Trust-gating is a concern of
+/// ONE call site -- "is this the operator's own `conway` process,
+/// discovering ITS OWN `cwd`'s ambient project" -- not of the merge
+/// mechanism itself; [`load_trust_gated`] is that one call site's own
+/// entry point, used only by [`crate::builder::ConwayBuilder::discover`].
+#[derive(Clone, Copy)]
+enum ProjectLayerTrust {
+    /// The project layer merges regardless of any trust record -- `load`/
+    /// `load_ignoring_user_config`/`merged_document`'s own unchanged
+    /// contract.
+    Unconditional,
+    /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: an untrusted (or
+    /// trusted-then-edited) walk-discovered project `settings.json` is
+    /// SKIPPED rather than merged, and a `ConfigWarning` records why. Never
+    /// applies to `options.explicit_path` -- see
+    /// [`merged_document_impl`]'s own doc for that carve-out.
+    Gated,
 }
 
 fn merged_document_impl(
     options: &LoadOptions,
     include_user_config: IncludeUserLayer,
-) -> Result<Value> {
+    project_layer_trust: ProjectLayerTrust,
+) -> Result<(Value, Vec<ConfigWarning>)> {
     let mut merged = default_document();
+    let mut warnings = Vec::new();
 
     if matches!(include_user_config, IncludeUserLayer::Yes) {
         if let Some(path) = discovery::user_config_path(&options.env) {
@@ -245,15 +331,47 @@ fn merged_document_impl(
     // when `CONWAY_CONFIG_DIR` (above) has relocated the *user* layer
     // elsewhere -- silently defeating the isolation that variable
     // advertises (board item `01M0VV6CVSZM4XH8J4G6EBV5E3`).
-    let project_path = options.explicit_path.clone().or_else(|| {
-        discovery::discover(
-            &options.cwd,
-            &discovery::project_discovery_exclusions(&options.env),
-        )
-    });
+    //
+    // **`ProjectLayerTrust::Gated` applies ONLY to the walk-discovered
+    // path, never to `options.explicit_path`** -- an operator who names a
+    // file directly with `--config <path>` asked for exactly that file,
+    // every time (the same carve-out `config::trust::
+    // guard_untrusted_project_settings`'s own doc already drew, now
+    // enforced here instead of at `ConwayBuilder::discover`'s former
+    // hard-refusal call site).
+    let discovered_path = discovery::discover(
+        &options.cwd,
+        &discovery::project_discovery_exclusions(&options.env),
+    );
+    let project_path = options
+        .explicit_path
+        .clone()
+        .or_else(|| discovered_path.clone());
     if let Some(path) = project_path {
-        if let Some(layer) = read_json_layer(&path)? {
-            merge_values(&mut merged, layer);
+        let gate = matches!(project_layer_trust, ProjectLayerTrust::Gated)
+            && options.explicit_path.is_none();
+        let notice = if gate {
+            crate::config::trust::guard_untrusted_project_settings(&options.cwd, &options.env)
+        } else {
+            None
+        };
+        match notice {
+            Some(notice) => {
+                // Ignored, loudly: the file is NOT merged, and a
+                // `ConfigWarning` is always pushed so no caller of
+                // `load_trust_gated` can silently proceed as though this
+                // layer never existed. Never silent, never applied -- see
+                // this item's own ruling.
+                warnings.push(ConfigWarning {
+                    code: WarningCode::UntrustedProjectConfigIgnored,
+                    message: notice.to_string(),
+                });
+            }
+            None => {
+                if let Some(layer) = read_json_layer(&path)? {
+                    merge_values(&mut merged, layer);
+                }
+            }
         }
     }
 
@@ -263,11 +381,16 @@ fn merged_document_impl(
     let cli_layer = cli_overrides_to_value(&options.cli_overrides);
     merge_values(&mut merged, cli_layer);
 
-    Ok(merged)
+    Ok((merged, warnings))
 }
 
-fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Result<LoadOutcome> {
-    let mut merged = merged_document_impl(&options, include_user_config)?;
+fn load_impl(
+    options: LoadOptions,
+    include_user_config: IncludeUserLayer,
+    project_layer_trust: ProjectLayerTrust,
+) -> Result<LoadOutcome> {
+    let (mut merged, project_settings_warnings) =
+        merged_document_impl(&options, include_user_config, project_layer_trust)?;
 
     // `[tui]` (or a `CONWAY_TUI__*` env var) is a presentation-only
     // section this facade deliberately does not define a type for any
@@ -346,6 +469,7 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
     // specific chain entry rather than a role-wide aggregate.
 
     let mut warnings = validate(&config, &metadata, &options.env)?;
+    warnings.extend(project_settings_warnings);
     if had_tui {
         warnings.push(ConfigWarning {
             code: WarningCode::PresentationConfigIgnored,

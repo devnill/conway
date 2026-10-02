@@ -495,6 +495,62 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
     );
 }
 
+/// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: a REMEMBERED permission grant
+/// (the TUI's `a`/`p` prompt answers) now lands in the operator's own
+/// user-scope, project-keyed grants file
+/// (`conway::config::discovery::user_scope_project_permissions_path`),
+/// never the project's own `permissions.json` -- and that file installs
+/// with NO trust decision at all, mirroring the global file's own footing
+/// exactly (`a_global_permissions_file_installs_with_no_trust_decision`,
+/// immediately above). **Fails against a version that only ever treats
+/// the ONE literal global path as trusted-by-authorship**: this file is
+/// neither the project candidate nor that literal global path, so a
+/// narrower trust check would leave it stuck behind an untrusted-project
+/// notice -- exactly the friction this item's own grants-to-user-scope
+/// change exists to avoid.
+#[tokio::test]
+async fn the_user_scope_project_keyed_grants_file_installs_with_no_trust_decision() {
+    let cwd = TempDir::new().expect("tempdir with no project permissions file");
+    let (config_dir, env) = isolated_env();
+    let grants_path =
+        conway::config::discovery::user_scope_project_permissions_path(cwd.path(), &env)
+            .expect("a config dir is resolvable");
+    assert!(
+        grants_path.starts_with(config_dir.path()),
+        "the grants file must live under the operator's own config directory: {}",
+        grants_path.display()
+    );
+    std::fs::create_dir_all(grants_path.parent().unwrap()).expect("mkdir grants dir");
+    std::fs::write(&grants_path, r#"{"allow": ["read:*"]}"#).expect("write grants file");
+    let fixture_path = write_fixture_file(cwd.path());
+
+    let gate = RecordingGate::new();
+    let conway = build_conway_with_builtins(
+        base_config_at(cwd.path()),
+        scripted_backend(vec![
+            ScriptedTurn::Respond(read_call_response(&fixture_path)),
+            ScriptedTurn::Respond(text_response("done")),
+        ]),
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    let report =
+        conway.load_permission_files(cwd.path(), &env, PermissionScope::Session, AgentId::new());
+    assert!(
+        report.notices.is_empty(),
+        "the operator's own user-scope grants file must never be flagged as untrusted: {:?}",
+        report.notices
+    );
+
+    run_one_scripted_call(&conway).await;
+
+    assert!(
+        gate.requests().is_empty(),
+        "the grants file's allow rule must grant without any trust ceremony: {:?}",
+        gate.requests()
+    );
+}
+
 /// The identical unrecognized-key refusal, driven through
 /// `Conway::trust_permission_file` itself -- the `/trust permissions`
 /// production entry point, not just `load_permission_files` (which the

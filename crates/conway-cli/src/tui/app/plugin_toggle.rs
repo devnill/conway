@@ -415,7 +415,15 @@ impl App {
                 // the same question the next start will ask, instead of
                 // enumerating layers here and drifting from `merge.rs`'s
                 // own precedence the first time that changes.
-                let effective = conway::config::load(conway::config::LoadOptions {
+                //
+                // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security
+                // review): `load_trust_gated`, not plain `load` -- "the
+                // same question the next start will ask" is only honest if
+                // it is gated the same way `ConwayBuilder::discover` (what
+                // the next start actually calls) is; an ungated re-merge
+                // here would disagree with the real session the moment a
+                // project layer is untrusted.
+                let effective = conway::config::load_trust_gated(conway::config::LoadOptions {
                     env: env.clone(),
                     // Explicit, like `env`: the project layer is found by
                     // walking up from the working directory, so a default
@@ -940,14 +948,23 @@ mod tests {
         // NOT name the plugin being toggled on.
         let project = tempfile::tempdir().expect("project tempdir");
         std::fs::create_dir_all(project.path().join(".conway")).expect("mkdir .conway");
-        std::fs::write(
-            project.path().join(".conway/settings.json"),
-            r#"{"plugins": {"install": []}}"#,
-        )
-        .expect("write project settings");
+        let project_settings = project.path().join(".conway/settings.json");
+        std::fs::write(&project_settings, r#"{"plugins": {"install": []}}"#)
+            .expect("write project settings");
 
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
+        // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: the "what would actually
+        // load" check this test exercises now goes through
+        // `load_trust_gated`, exactly like the real session does -- so this
+        // fixture's project layer must be TRUSTED to still exercise the
+        // "defeated by a higher-precedence layer" scenario at all. An
+        // untrusted one would simply be ignored (a DIFFERENT, already-
+        // covered scenario -- see `tui::config::tests::
+        // an_untrusted_project_tui_section_is_ignored_until_trusted` and
+        // `trust_cli.rs`'s own real-binary suite).
+        conway::config::trust::TrustStore::trust_settings(&env, &project_settings)
+            .expect("trust_settings succeeds");
         app.apply_plugin_toggle_against(
             conway_plugin_memory::PLUGIN_ID.to_string(),
             true,

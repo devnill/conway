@@ -256,6 +256,34 @@ pub fn run_conway(args: &[&str], fixture: &Fixture) -> Output {
     command(args, fixture).output().expect("run conway binary")
 }
 
+/// Asserts `output.status.success()`, printing the exit status plus the
+/// FULL stdout/stderr when it is not -- for the setup step most tests in
+/// this directory run before the behaviour under test (typically `-p "hi"`
+/// against a [`mock_backend::MockHandle`] to create the one session a later
+/// `conway sessions ...` call inspects).
+///
+/// A bare `assert!(created.status.success())` at that setup step used to
+/// print nothing but the boolean itself (board item
+/// `01M3VW7APA2PCGAQM1R1J93VNE`): under real load (a concurrent build in a
+/// sibling worktree) this setup run failed intermittently with no clue
+/// whether the real binary crashed, the mock server never answered, or
+/// something else entirely -- indistinguishable from a developer typo
+/// without re-running under `--nocapture` and hoping it reproduced. Every
+/// other assertion on an `Output` in this directory already names `stderr`
+/// (sometimes `stdout` too) on failure; this gives the setup step the same
+/// treatment via one funnel rather than restating the format string at each
+/// call site.
+#[allow(dead_code)]
+pub fn assert_ran_ok(output: &Output, what: &str) {
+    assert!(
+        output.status.success(),
+        "{what}: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 /// The directory the real binary actually writes `fixture`'s sessions
 /// into, now that `[session].root`'s unconfigured default is the central,
 /// project-keyed root (board item `01M0QK9GRM8HSNWRAR414TCX42`) rather than

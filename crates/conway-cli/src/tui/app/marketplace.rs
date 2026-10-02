@@ -319,7 +319,14 @@ impl App {
         // defines `plugins.claude_compat` at all -- arrays replace
         // wholesale, they do not union, across `merge.rs`'s five-source
         // precedence.
-        let effective = conway::config::load(conway::config::LoadOptions {
+        //
+        // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review):
+        // `load_trust_gated`, not plain `load` -- a "what would actually
+        // load" check that itself merges an untrusted project layer
+        // `ConwayBuilder::discover` already skipped would disagree with
+        // the real session, which is the exact "diagnostic that lies"
+        // defect this gate exists to prevent everywhere it is consulted.
+        let effective = conway::config::load_trust_gated(conway::config::LoadOptions {
             env: env.clone(),
             cwd: cwd.to_path_buf(),
             ..Default::default()
@@ -456,8 +463,10 @@ impl App {
 
         // Same honesty check as install: report if a higher-precedence
         // layer means this write does not change what the next start
-        // actually sees.
-        let effective = conway::config::load(conway::config::LoadOptions {
+        // actually sees. Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security
+        // review): `load_trust_gated`, not plain `load` -- see the install
+        // path's own comment, immediately above the identical call, for why.
+        let effective = conway::config::load_trust_gated(conway::config::LoadOptions {
             env: env.clone(),
             cwd: cwd.to_path_buf(),
             ..Default::default()
@@ -795,14 +804,20 @@ mod tests {
 
         let project = tempfile::tempdir().expect("project tempdir");
         std::fs::create_dir_all(project.path().join(".conway")).expect("mkdir .conway");
-        std::fs::write(
-            project.path().join(".conway/settings.json"),
-            r#"{"plugins": {"claude_compat": []}}"#,
-        )
-        .expect("write project settings");
+        let project_settings = project.path().join(".conway/settings.json");
+        std::fs::write(&project_settings, r#"{"plugins": {"claude_compat": []}}"#)
+            .expect("write project settings");
 
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
+        // Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: see
+        // `plugin_toggle::tests::a_project_layer_override_is_reported_not_
+        // claimed_as_success`'s own comment -- the "what would actually
+        // load" check now goes through `load_trust_gated`, so this
+        // fixture's project layer must be TRUSTED to still exercise the
+        // "defeated by a higher-precedence layer" scenario.
+        conway::config::trust::TrustStore::trust_settings(&env, &project_settings)
+            .expect("trust_settings succeeds");
 
         app.apply_marketplace_install(
             format!("{}/marketplace.json", server.uri()),

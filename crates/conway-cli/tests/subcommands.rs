@@ -14,7 +14,7 @@
 mod common;
 
 use common::mock_backend::{Chunk, MockBackend, Script};
-use common::{command, run_conway, write_fixture, write_fixture_with, Fixture};
+use common::{assert_ran_ok, command, run_conway, write_fixture, write_fixture_with, Fixture};
 use conway_cli::first_run::GUIDED_SETUP_MARKER;
 use serde_json::Value;
 
@@ -174,7 +174,7 @@ async fn sessions_list_json_has_id_created_no_status() {
         MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = fixture_with_mock(&mock);
     let created = run_conway(&["-p", "hi"], &fixture);
-    assert!(created.status.success());
+    assert_ran_ok(&created, "setup: conway -p hi");
 
     let out = run_conway(&["sessions", "list", "--json"], &fixture);
     assert!(
@@ -204,7 +204,7 @@ async fn sessions_list_text_spawned_child_shows_spawn_not_fork() {
         MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = fixture_with_mock(&mock);
     let created = run_conway(&["-p", "hi"], &fixture);
-    assert!(created.status.success());
+    assert_ran_ok(&created, "setup: conway -p hi");
     let parent = only_session_id(&fixture);
     let _child = write_spawned_child(&fixture, &parent, 1);
 
@@ -242,7 +242,7 @@ async fn sessions_list_json_spawned_child_origin_mode_is_spawn() {
         MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = fixture_with_mock(&mock);
     let created = run_conway(&["-p", "hi"], &fixture);
-    assert!(created.status.success());
+    assert_ran_ok(&created, "setup: conway -p hi");
     let parent = only_session_id(&fixture);
     let child = write_spawned_child(&fixture, &parent, 1);
 
@@ -278,7 +278,7 @@ async fn sessions_show_json_each_line_parses() {
     .await;
     let fixture = fixture_with_mock(&mock);
     let created = run_conway(&["-p", "hi"], &fixture);
-    assert!(created.status.success());
+    assert_ran_ok(&created, "setup: conway -p hi");
     let id = only_session_id(&fixture);
 
     let out = run_conway(&["sessions", "show", &id, "--json"], &fixture);
@@ -323,7 +323,7 @@ async fn sessions_tree_shows_two_forked_children_indented_under_parent() {
         MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = fixture_with_mock(&mock);
     let created = run_conway(&["-p", "hi"], &fixture);
-    assert!(created.status.success());
+    assert_ran_ok(&created, "setup: conway -p hi");
     let parent = only_session_id(&fixture);
 
     let child_a = write_forked_child(&fixture, &parent, 1);
@@ -378,7 +378,7 @@ async fn sessions_tree_label_has_no_status_segment() {
         MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = fixture_with_mock(&mock);
     let created = run_conway(&["-p", "hi"], &fixture);
-    assert!(created.status.success());
+    assert_ran_ok(&created, "setup: conway -p hi");
     let parent = only_session_id(&fixture);
     let _child = write_forked_child(&fixture, &parent, 1);
 
@@ -409,7 +409,7 @@ async fn sessions_tree_resolves_ephemeral_target_by_direct_id() {
         MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = fixture_with_mock(&mock);
     let created = run_conway(&["-p", "hi"], &fixture);
-    assert!(created.status.success());
+    assert_ran_ok(&created, "setup: conway -p hi");
     let parent = only_session_id(&fixture);
 
     let ephemeral_child = write_ephemeral_child(&fixture, &parent, 1);
@@ -437,7 +437,7 @@ async fn sessions_tree_resolves_ephemeral_target_by_direct_id() {
     // test share a leading timestamp prefix, so a substring check on the
     // short id would be a false-negative-prone test).
     let parent_out = run_conway(&["sessions", "tree", &parent], &fixture);
-    assert!(parent_out.status.success());
+    assert_ran_ok(&parent_out, "conway sessions tree <parent>");
     let parent_text = String::from_utf8(parent_out.stdout).expect("utf8 stdout");
     assert_eq!(
         parent_text.lines().count(),
@@ -456,13 +456,13 @@ async fn sessions_export_is_deterministic_jsonl() {
         MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = fixture_with_mock(&mock);
     let created = run_conway(&["-p", "hi"], &fixture);
-    assert!(created.status.success());
+    assert_ran_ok(&created, "setup: conway -p hi");
     let id = only_session_id(&fixture);
 
     let first = run_conway(&["sessions", "export", &id], &fixture);
     let second = run_conway(&["sessions", "export", &id], &fixture);
-    assert!(first.status.success());
-    assert!(second.status.success());
+    assert_ran_ok(&first, "conway sessions export <id> (first)");
+    assert_ran_ok(&second, "conway sessions export <id> (second)");
     assert_no_esc_byte(&first.stdout);
     assert_eq!(
         first.stdout, second.stdout,
@@ -480,7 +480,7 @@ async fn sessions_export_writes_to_out_file() {
         MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = fixture_with_mock(&mock);
     let created = run_conway(&["-p", "hi"], &fixture);
-    assert!(created.status.success());
+    assert_ran_ok(&created, "setup: conway -p hi");
     let id = only_session_id(&fixture);
 
     let out_path = fixture.dir.path().join("export.jsonl");
@@ -597,7 +597,7 @@ fn routes_explain_with_routing_plugin_shows_declared_token_fidelity() {
     );
 
     let out = run_conway(&["routes", "explain", "default", "--json"], &fixture);
-    assert!(out.status.success());
+    assert_ran_ok(&out, "conway routes explain default --json");
     let value: Value = serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
     let chain = value["chain"].as_array().expect("chain is an array");
     assert_eq!(chain[0]["token_fidelity"], "heuristic");

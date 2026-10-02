@@ -1492,12 +1492,18 @@ pub struct CommandCtx {
     pub focused_agent: AgentId,
     /// This session's root agent (`SessionHandle::root`).
     pub root_agent: AgentId,
-    /// The CALLING session's own id --.
-    /// Read-only identity, the same tier as [`Self::focused_agent`]/
-    /// [`Self::root_agent`]: a command cannot use this to reach another
-    /// session (there is no live handle on this type at all, for any
-    /// session -- see [`Command`]'s own doc), but it is what the HOST
-    /// captures, at invocation time, as the one session
+    /// The CALLING session's own id -- the session of the agent the
+    /// operator is actually driving right now (`Self::focused_agent`'s own
+    /// session, **not necessarily the host's original/root session**: a
+    /// `/model`/`/role` switch moves focus to a forked child with its own
+    /// session, and every implicit-session command -- `conway.checkpoint`,
+    /// `conway.history`, any other store-backed command that reads/writes
+    /// "this session" without the operator naming one -- answers for
+    /// whichever session THIS field names). Read-only identity, the same
+    /// tier as [`Self::focused_agent`]/[`Self::root_agent`]: a command
+    /// cannot use this to reach another session (there is no live handle on
+    /// this type at all, for any session -- see [`Command`]'s own doc), but
+    /// it is what the HOST captures, at invocation time, as the one session
     /// [`CommandOutcome::ForkSession`] is ever resolved against, regardless
     /// of which session the host happens to be driving by the time this
     /// command's async `invoke` actually completes (e.g. a `/resume` racing

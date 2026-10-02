@@ -509,6 +509,23 @@ fn reconcile_session_flags(
 /// full ULID used directly, anything else looked up in the names sidecar),
 /// then reattaches to it.
 ///
+/// **Also accepts an AGENT id, resolved to the session it owns.** A ULID
+/// this store has no SESSION for is not necessarily a bad paste: conway
+/// writes one session file per agent (module doc), and the one place an
+/// operator is actually invited to copy an id FROM -- the TUI's `/model`/
+/// `/role` switch notice ("switched model to ...: `<agent>` -> `<agent>`"),
+/// and the empty-store hint this very flag's `conway.checkpoint.list`
+/// consumer prints -- both name an AGENT id, never a session id (the two
+/// are different ULIDs even though `session_names::resolve`'s own grammar
+/// cannot tell them apart syntactically). Rather than widen the TUI's own
+/// vocabulary to print session ids too (which would need to spread across
+/// every surface that already prints an agent id -- the status line, the
+/// `/agents` panel, every other switch/fork notice -- for the sake of one
+/// escape hatch), this one lookup closes the gap at the single site that
+/// actually needs a `SessionId`: an agent id this store does not know as a
+/// session is tried again as an agent, via [`session_owning_agent`], before
+/// this function gives up.
+///
 /// **Never creates.** A `FacadeError` from `Conway::resume` -- "no such
 /// session" above all -- is a usage error (exit 2) naming the value that
 /// did not resolve, matching `sessions show <unknown-id>`'s own contract.
@@ -525,13 +542,57 @@ async fn resume_target(conway: &Conway, raw: &str) -> Result<conway::SessionHand
         diag::error(e.to_string());
         ExitCode::Usage
     })?;
-    conway.resume(sid).await.map_err(|e| {
-        diag::error(format!(
-            "unknown session {raw}: {e} -- `conway sessions list` prints every session this \
-             project knows about, one row per agent"
-        ));
-        ExitCode::Usage
-    })
+    match conway.resume(sid).await {
+        Ok(handle) => Ok(handle),
+        Err(session_err) => {
+            // `raw` parsed as a syntactically valid `SessionId` ULID (any
+            // ULID does -- `session_names::resolve` never checks
+            // existence) but names no session this store knows about.
+            // Before giving up, try it as an AGENT id instead -- see this
+            // function's own doc for why that is the likely reading of a
+            // pasted value that fails here.
+            if let Ok(agent) = raw.parse::<conway::AgentId>() {
+                if let Some(owning) = session_owning_agent(conway, agent).await {
+                    return conway.resume(owning).await.map_err(|e| {
+                        diag::error(format!("agent {agent}'s own session {owning}: {e}"));
+                        ExitCode::Usage
+                    });
+                }
+            }
+            diag::error(format!(
+                "unknown session {raw}: {session_err} -- `conway sessions list` prints every \
+                 session this project knows about, one row per agent (a session id or the \
+                 agent id that owns it both resolve here)"
+            ));
+            Err(ExitCode::Usage)
+        }
+    }
+}
+
+/// `raw`, re-tried as an `AgentId`: the session whose own append-only log
+/// is `agent`'s (`SessionId`'s own doc, "one agent's append-only log"), or
+/// `None` if no session this store knows about belongs to it -- a
+/// best-effort read (a store I/O failure degrades to `None`, same as "not
+/// found", since [`resume_target`]'s own caller has an unknown-session
+/// error to report either way). `include_ephemeral: true` for the same
+/// reason `SessionHandle::resolve_agent_session` sets it: this is an
+/// identity lookup ("does `agent` own some session?"), not a catalog
+/// browse, so an `/ask` scratchpad's own agent id must resolve here too.
+async fn session_owning_agent(
+    conway: &Conway,
+    agent: conway::AgentId,
+) -> Option<conway::SessionId> {
+    let sessions = conway
+        .sessions(conway::SessionFilter {
+            include_ephemeral: true,
+            ..conway::SessionFilter::default()
+        })
+        .await
+        .ok()?;
+    sessions
+        .into_iter()
+        .find(|meta| meta.agent_id == agent)
+        .map(|meta| meta.id)
 }
 
 // ---------------------------------------------------------------------

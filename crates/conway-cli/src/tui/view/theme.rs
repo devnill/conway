@@ -355,6 +355,30 @@ impl Theme {
         theme.diff_del = overlay(theme.diff_del, config.diff_del.as_ref());
         theme
     }
+
+    /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review): the one
+    /// style NO `[tui.theme]` override can ever reach -- deliberately a
+    /// plain function, NOT a [`Theme`] field. Every field on `Theme` is, by
+    /// construction, something [`Theme::from_config`] overlays a
+    /// `ThemeStyleConfig` onto; a field here would just be `theme.error`
+    /// under a different name, reachable by the identical
+    /// `{"error":{"modifiers":["hidden"]}}` an untrusted project
+    /// `settings.json` could otherwise use to hide its own ignore-notice.
+    /// Bypassing `Theme` entirely is what makes that unreachable: nothing
+    /// in `from_config`/`overlay` ever touches this function's return
+    /// value, from ANY config source, trusted or not. Used by `tui::state::
+    /// transcript::Entry::SecurityNotice`'s own render arm and
+    /// `tui::view::status`'s persistent `project config ignored` marker --
+    /// see each one's own doc for why.
+    ///
+    /// Still satisfies this module's own T1 convention (`no_inline_style_
+    /// default_fg_color_remains_in_view_files`, below): the inline
+    /// `Style::default().fg(Color::…)` construction lives HERE, in
+    /// `theme.rs`, the one file that owns style construction -- callers
+    /// elsewhere get a `Style` back, they never build one themselves.
+    pub fn security_notice_style() -> Style {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    }
 }
 
 /// Applies one slot's `Option<ThemeStyleConfig>` override on top of its

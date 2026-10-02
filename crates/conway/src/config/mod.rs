@@ -18,8 +18,9 @@ pub mod writer;
 pub use discovery::discover;
 pub use locality::role_is_local;
 pub use merge::{
-    apply_cli, is_baked_in_role_floor, load, load_ignoring_user_config, merged_document,
-    metadata_path_for, resolve_metadata_path, validate, CliOverrides, LoadOptions,
+    apply_cli, is_baked_in_role_floor, load, load_ignoring_user_config, load_trust_gated,
+    merged_document, merged_document_trust_gated, metadata_path_for, resolve_metadata_path,
+    validate, CliOverrides, LoadOptions,
 };
 pub use model_metadata::{set_context_window, ModelMetadata};
 pub use schema::ConwayConfig;
@@ -191,6 +192,20 @@ pub enum WarningCode {
     /// before `ConwayBuilder::build`, via `ConwayBuilder::with_warning`"
     /// footing [`Self::McpServerFailed`] already documents.
     NoFirstPartyPluginsInstalled,
+    /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB`: a project-scoped
+    /// `settings.json`, reached by the ancestor walk (never `--config
+    /// <path>`), is not -- or is no longer, since an edit de-trusts -- a
+    /// recorded trust decision. `message` names the exact file and the
+    /// `conway trust` command that clears it. This load SKIPPED merging
+    /// that one layer entirely rather than refusing outright (the earlier
+    /// ruling, board item `01M2M5EM73GA15NMQ1H87TTEDP`, that this item
+    /// supersedes) or silently applying it: `ConwayConfig` carries none of
+    /// that file's values, and this warning is how a caller is told so,
+    /// loudly, rather than left to wonder why a setting it saw in the
+    /// repository never took effect. See `config::trust::
+    /// guard_untrusted_project_settings` for the trust computation and
+    /// `config::merge::load_impl`'s own doc for the skip.
+    UntrustedProjectConfigIgnored,
 }
 
 #[cfg(test)]

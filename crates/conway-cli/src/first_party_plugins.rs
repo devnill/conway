@@ -161,20 +161,14 @@ pub const DEFAULT_OPINION_SET: [&str; 7] = [
 /// `presets::builtin_plugins()` uses for the built-in bundle -- no second
 /// registry idiom introduced for a one-plugin list.
 ///
-/// `cwd` is the same `ConwayConfig::cwd` the facade's own `build()` resolves
-/// `.conway/skills` against, passed in so `conway.skills` can load its own
-/// copy of the on-disk skill table via the SAME public
-/// `conway::skills::load_skill_defs` the builder uses (no privileged
-/// channel -- see `conway_plugin_skills`'s own module doc). A missing
-/// skills directory yields an empty-skills plugin (narrows nothing, serves
-/// "no such skill" for every call); a MALFORMED skill file falls back to
-/// the same empty shape HERE rather than failing the bundle construction,
-/// because `ConwayBuilder::build` independently loads the same directory
-/// and fails LOUDLY on a malformed `SKILL.md` -- so a genuinely broken
-/// skill never reaches a turn with a silently-empty plugin, it fails the
-/// build first. The fallback only ever triggers for a directory this
-/// binary can read but the timing of `bundle()` happens to race with --
-/// never observed in practice, and safe by construction if it did.
+/// **Takes no `cwd` of its own.** Every candidate that needs one --
+/// `conway.skills`, `conway.idiom`, `conway.checkpoint` -- is resolved by
+/// the CALLER (against `ConwayConfig::cwd`, the same directory the facade's
+/// own `build()` resolves `.conway/skills` against) and handed in
+/// pre-constructed; see each parameter's own doc below (`skills_plugin`,
+/// `idiom_plugin`, `checkpoint_plugin`) for exactly how and why. This
+/// function stays pure assembly: given the same already-resolved
+/// candidates, it always produces the same list.
 ///
 /// `memory_store` backs the `conway.memory` entry below -- ALREADY
 /// resolved (durable vs in-memory, board item `01M09V3S2AQYB2VK6MANFRH1JM`)
@@ -259,13 +253,13 @@ fn resolve_skills_plugin_typed(cwd: &std::path::Path) -> Arc<conway_plugin_skill
 }
 
 fn bundle(
-    cwd: &std::path::Path,
     memory_store: Arc<dyn MemoryStore>,
     agent_names: Arc<dyn AgentNames>,
     idiom_plugin: Arc<dyn Plugin>,
     confine_plugin: Arc<dyn Plugin>,
     form_surface: Option<Arc<dyn conway_plugin_ui::FormSurface>>,
     skills_plugin: Arc<dyn Plugin>,
+    checkpoint_plugin: Arc<dyn Plugin>,
 ) -> Vec<Arc<dyn Plugin>> {
     vec![
         Arc::new(conway_plugin_skeleton::SkeletonPlugin),
@@ -448,17 +442,19 @@ fn bundle(
         // `"conway.confine"` in `[plugins].install` is the whole of the
         // wiring. See `docs/plugins/confine.md`.
         confine_plugin,
-        // `conway.checkpoint` -- rolls back the model's own file changes:
+        // `conway.checkpoint` -- a quick, transient undo for when the
+        // model edits the wrong file (or takes a right one too far):
         // snapshots a file's bytes around every `write`/`edit` tool call
-        // into a shadow store under `.conway/checkpoints`, and
-        // `/conway.checkpoint.list`/`.diff`/`.rollback` to preview and
-        // undo them, preserving an operator's
+        // into its own shadow store (resolved by [`checkpoint_plugin`],
+        // this function's own caller -- NOT inside the project, see that
+        // function's own doc), and `/conway.checkpoint.list`/`.diff`/
+        // `.rollback` to preview and undo them, preserving an operator's
         // own hand edit by default. In `DEFAULT_OPINION_SET` above (a
         // fresh operator gets it unprompted) -- see
         // `docs/plugins/checkpoint.md` and this plugin's own module doc
         // for the full "bash is not captured" disclosure and the
         // three-way conflict contract.
-        Arc::new(conway_plugin_checkpoint::CheckpointPlugin::new(cwd)),
+        checkpoint_plugin,
         // `conway.web` (board item `01M1YVDYEBJENX4NFC6NCSD9B9`) -- a
         // `web_fetch` tool (GET an http(s) URL, reduced to readable text,
         // bounded and SSRF-guarded), plus an optional `web_search` tool that
@@ -618,13 +614,13 @@ pub fn all_bundle_plugins(
     // `None`: a browsing-only re-derivation never needs a live `FormSurface`
     // -- see `bundle`'s own doc, "`form_surface`".
     bundle(
-        cwd,
         memory_store,
         browse_names,
         idiom_plugin,
         confine_plugin,
         None,
         default_skills_plugin(cwd),
+        checkpoint_plugin(cwd, env),
     )
 }
 
@@ -800,6 +796,27 @@ fn resolve_idiom_plugin(
 /// all: it returns every linked candidate UNFILTERED (its own doc), so
 /// there is no `install_ids` membership to test in the first place, and it
 /// constructs `ConfinePlugin::unchecked` directly instead.
+/// Resolves this process's real `conway.checkpoint` candidate, at the
+/// location board item `01M3SJBNF2KZRWA5P5SSF9B868` moved its shadow store
+/// to: `conway::config::discovery::checkpoint_store_root(cwd, env)` --
+/// outside the project, keyed by the enclosing git root, beside where
+/// [`conway::config::discovery::session_root`] already keeps `conway`'s own
+/// session log for the same project. `CheckpointPlugin::with_root` (not
+/// `CheckpointPlugin::new`, which still resolves the OLD, pre-item
+/// in-project default -- see that constructor's own doc) is what performs
+/// the one-time migration off an existing in-project store and writes the
+/// self-ignoring `.gitignore` backstop; both only happen on `with_root`'s
+/// own call, so this function -- not `bundle` itself -- is the one real
+/// site that must call it, mirroring [`resolve_idiom_plugin`]'s identical
+/// "resolve against real `cwd`/`env`, once, here" shape for its own
+/// candidate.
+fn checkpoint_plugin(cwd: &std::path::Path, env: &HashMap<String, String>) -> Arc<dyn Plugin> {
+    let root = conway::config::discovery::checkpoint_store_root(cwd, env);
+    Arc::new(conway_plugin_checkpoint::CheckpointPlugin::with_root(
+        root, cwd,
+    ))
+}
+
 fn resolve_confine_plugin(install_ids: &[String]) -> conway::Result<Arc<dyn Plugin>> {
     if !install_ids
         .iter()
@@ -1139,13 +1156,13 @@ pub async fn install(
     let skills_plugin_handle = skills_plugin.clone();
 
     let mut plugins = bundle(
-        &cwd,
         memory_store.clone(),
         agent_names.clone(),
         idiom_plugin,
         confine_plugin,
         form_surface,
         skills_plugin,
+        checkpoint_plugin(&cwd, env),
     );
     // `conway.skills`'s own config was already applied, directly, above --
     // excluded here so `apply_plugin_config`'s `Arc::get_mut` never sees the
@@ -1297,13 +1314,13 @@ pub fn installed_plugins(
     // only, never a live turn's actual dispatch -- see `bundle`'s own doc,
     // "`form_surface`".
     let mut plugins = bundle(
-        &cwd,
         memory_store,
         agent_names,
         idiom_plugin,
         confine_plugin,
         None,
         default_skills_plugin(&cwd),
+        checkpoint_plugin(&cwd, env),
     );
     // Configured BEFORE the `install` filter below, not after: this is the
     // same "validate every candidate this table names, whether or not it
@@ -1401,26 +1418,41 @@ mod tests {
         ))
     }
 
+    /// The `conway.checkpoint` candidate every wiring-only check here passes
+    /// to `bundle` -- `CheckpointPlugin::new` (the OLD, in-project default;
+    /// that constructor's own doc), on the identical "satisfies `bundle`'s
+    /// signature, performs no env-aware resolution" footing
+    /// [`test_idiom_plugin`]/[`test_confine_plugin`] already establish.
+    /// None of this module's own tests exercise `checkpoint_store_root`
+    /// resolution itself -- that is `conway::config::discovery`'s own
+    /// coverage, and [`checkpoint_plugin`]'s own doc for the real site that
+    /// calls it.
+    fn test_checkpoint_plugin(cwd: &std::path::Path) -> Arc<dyn Plugin> {
+        Arc::new(conway_plugin_checkpoint::CheckpointPlugin::new(cwd))
+    }
+
     /// The bundle is what `install_selected` resolves against, so an empty
     /// or mis-keyed bundle would turn every `[plugins].install` entry into
     /// an unknown-id error. This checks the wiring only; it makes no claim
     /// about `install_selected`'s own behaviour.
     #[test]
     fn bundle_carries_the_skeleton_plugin_under_its_published_id() {
-        // `bundle` takes `cwd` only to load `conway.skills`'s on-disk table;
-        // a nonexistent dir yields an empty-skills plugin (the module doc's
-        // safe fallback), so a temp dir with no `.conway/skills` is fine for
-        // this wiring-only check.
+        // `bundle` itself takes no `cwd` -- every candidate that needs one
+        // (`conway.skills`, `conway.idiom`, `conway.checkpoint`) is built
+        // from it by the CALLER and handed in pre-constructed. A nonexistent
+        // dir yields an empty-skills plugin (that module doc's safe
+        // fallback), so a temp dir with no `.conway/skills` is fine for this
+        // wiring-only check.
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let found = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_skeleton::PLUGIN_ID);
@@ -1440,13 +1472,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let found = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_memory::PLUGIN_ID);
@@ -1501,13 +1533,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let found = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_confine::PLUGIN_ID);
@@ -1529,13 +1561,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let found = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID);
@@ -1558,13 +1590,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let found = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_web::PLUGIN_ID);
@@ -1606,13 +1638,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let found = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_toolindex::PLUGIN_ID);
@@ -1654,13 +1686,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let mut plugins = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         );
         let config: std::collections::BTreeMap<String, serde_json::Value> = [(
             conway_plugin_trim::PLUGIN_ID.to_string(),
@@ -1752,13 +1784,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let mut plugins = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         );
         let config: std::collections::BTreeMap<String, serde_json::Value> = [(
             conway_plugin_trim::PLUGIN_ID.to_string(),
@@ -1787,13 +1819,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let found = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_ui::PLUGIN_ID);
@@ -1831,13 +1863,13 @@ mod tests {
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let surface: Arc<dyn conway_plugin_ui::FormSurface> = Arc::new(FixedAnswerSurface);
         let plugins = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             Some(surface),
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         );
         let ui_plugin = plugins
             .iter()
@@ -1889,13 +1921,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let ids: Vec<String> = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .map(|p| p.manifest().id)
@@ -1918,13 +1950,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let found = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_idiom::PLUGIN_ID);
@@ -2089,13 +2121,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let found = bundle(
-            &cwd,
             memory_store,
             test_agent_names(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         )
         .iter()
         .any(|p| p.manifest().id == conway_plugin_names::PLUGIN_ID);
@@ -2140,13 +2172,13 @@ mod tests {
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let agent_names = test_agent_names();
         let plugins = bundle(
-            &cwd,
             memory_store,
             agent_names.clone(),
             test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
             default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
         );
         let names_plugin = plugins
             .iter()
