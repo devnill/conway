@@ -37,7 +37,6 @@ mod common;
 
 use common::mock_backend::{Chunk, MockBackend, Script};
 use common::{run_conway, write_fixture};
-use conway_test_fixtures::script_command;
 
 /// The full-featured fixture, duplicated (not shared via `common`) from
 /// `crates/conway-plugin-subprocess/tests/common/mod.rs`'s own
@@ -112,16 +111,35 @@ fn write_greet_script(fixture: &common::Fixture) -> std::path::PathBuf {
 /// measurement). [`GREET_PLUGIN_PY`] reads stdin then answers unconditionally
 /// -- it never hangs on empty input, so warming it is safe.
 ///
-/// [`GREET_PLUGIN_PY`]'s own shebang is `#!/usr/bin/env python3`, so this is
-/// launched via `conway_test_fixtures::script_command("python3", path)`, not
-/// `Command::new(path)`'s direct `execve` of the file `write_greet_script`
-/// just wrote -- see that crate's own doc for the ETXTBSY ("Text file
-/// busy") race this avoids and the measurements behind it (board item
-/// `01M3CMQZZCSRF7YB9GEMA92M0C`). `Command::new("python3")` resolves through
-/// `PATH` exactly as the shebang's own `env python3` does -- this preserves
-/// which interpreter runs rather than pinning it to an absolute path.
+/// **Deliberately `Command::new(path)`'s direct `execve` of the file
+/// `write_greet_script` just wrote, NOT `conway_test_fixtures::
+/// script_command("python3", path)` -- reverted from the latter (board item,
+/// the 2026-10-02 deterministic-timeout incident this function's own fix
+/// answers).** Routing this warm-up through an explicit interpreter avoids
+/// the actual `execve` of `path` the host's own subprocess plugin host
+/// performs (`SubprocessPluginSpec::command` names the SCRIPT itself, not an
+/// interpreter -- the kernel's own shebang handling resolves `python3` from
+/// there), so the macOS-only first-direct-exec scan
+/// (Gatekeeper/XProtect/Spotlight contention on a brand-new executable --
+/// board item `01M09MPZ9C188AHNBKWEJ3CEQA`) this warm-up exists to pre-pay
+/// never actually lands here: confirmed by direct reproduction on this
+/// exact binary (several runs, alone, under load) with `conway`'s own
+/// reported `plugin 'acme-greet' timed out after 5000ms` -- the plugin
+/// answers in 0.02s by hand once warm. `conway-plugin-subprocess`'s own
+/// `tests/common/mod.rs::warm` already uses this exact `Command::new(path)`
+/// shape for the identical reason, and was never converted away from it by
+/// `01M3CMQZZCSRF7YB9GEMA92M0C` (that item's own module doc: direct exec was
+/// kept, not reverted, for every warm-up whose entire job is pre-paying
+/// this specific tax; it only converted warm-ups with no such job). The
+/// `ETXTBSY` ("Text file busy") race `script_command` exists to dodge is a
+/// non-issue here regardless: this helper's own spawn failure is discarded
+/// (`if let Ok(..) = ..` below), so a lost race costs nothing but one unpaid
+/// warm-up, never a panic -- unlike a production spawn with no retry of its
+/// own. [`write_greet_script`]'s `std::fs::write` closes its handle before
+/// returning, so this spawn, happening immediately afterward in the SAME
+/// thread with no fork in between, does not race it either way.
 async fn warm(path: &std::path::Path) {
-    let child = script_command("python3", path)
+    let child = tokio::process::Command::new(path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

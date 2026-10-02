@@ -77,19 +77,37 @@ async fn discover_fails_closed_on_timeout() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut spec = common::spec_for(dir.path(), "sleepy.py", common::SLEEPY_PLUGIN);
     spec.timeout_ms = 500;
+    // `first_call_timeout_ms` too, as a no-op elevation: `discover`'s own
+    // `tool.spec/1` spawn is ALWAYS treated as this plugin's first (board
+    // item, the first-run-allowance feature), so leaving this at its
+    // 20_000ms default would let the sleepy fixture answer well inside that
+    // elevated budget instead of hitting the SHORT bound this test means to
+    // exercise.
+    spec.first_call_timeout_ms = 500;
 
     let start = std::time::Instant::now();
     let err = SubprocessPlugin::discover(spec)
         .await
         .expect_err("a subprocess that never answers must time out, never hang the caller");
+    // `1_500`, not the bare `500` handed to `spec.timeout_ms`/
+    // `spec.first_call_timeout_ms` above: a genuinely unresponsive spawn
+    // still gets ONE bounded grace extension before this host gives up on
+    // it (`500 * GRACE_CEILING_FACTOR`) -- the fail-closed OUTCOME is
+    // unchanged, only the STATED bound grew to match the real total wait.
     assert!(
-        matches!(err, SubprocessPluginError::TimedOut { after_ms: 500, .. }),
-        "expected TimedOut{{after_ms: 500}}, got {err:?}"
+        matches!(
+            err,
+            SubprocessPluginError::TimedOut {
+                after_ms: 1_500,
+                ..
+            }
+        ),
+        "expected TimedOut{{after_ms: 1_500}}, got {err:?}"
     );
     assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "discover must return promptly once the configured timeout elapses, not hang until the \
-         fixture's own 10s sleep finishes: took {:?}",
+        start.elapsed() < Duration::from_secs(8),
+        "discover must return promptly once the configured timeout (plus its bounded grace) \
+         elapses, not hang until the fixture's own 10s sleep finishes: took {:?}",
         start.elapsed()
     );
 }
@@ -484,6 +502,11 @@ else:
         vec![path.display().to_string()],
     );
     spec.timeout_ms = 1_500;
+    // Also the no-op elevation, matching `discover_fails_closed_on_timeout`'s
+    // own fix: the `tool/1` call below is this plugin's first ordinary
+    // one-shot call, which would otherwise get the 20_000ms default instead
+    // of the short bound this test means to exercise.
+    spec.first_call_timeout_ms = 1_500;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery must succeed promptly; only the tool/1 call hangs");
@@ -499,9 +522,14 @@ else:
         "expected ToolError::Io (timeout is reported through the Io variant, carrying the \
          underlying SubprocessPluginError::TimedOut in its detail), got {err:?}"
     );
+    // `8s`, not `5s`: `timeout_ms`'s bounded grace extension (`1_500 *
+    // GRACE_CEILING_FACTOR` = `4_500`ms total) needs headroom over the
+    // fixture's own python startup under concurrent test load, while
+    // staying well short of the fixture's 10s sleep this assertion exists
+    // to rule out.
     assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "invoke must return promptly once timeout_ms elapses: took {:?}",
+        start.elapsed() < Duration::from_secs(8),
+        "invoke must return promptly once timeout_ms (plus its bounded grace) elapses: took {:?}",
         start.elapsed()
     );
 }

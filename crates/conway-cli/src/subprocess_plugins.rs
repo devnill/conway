@@ -74,6 +74,7 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
             config_id: entry.id.clone(),
             command: entry.command,
             timeout_ms: entry.timeout_ms,
+            first_call_timeout_ms: entry.first_call_timeout_ms,
             transport,
         };
         let plugin = SubprocessPlugin::discover(spec)

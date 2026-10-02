@@ -11,6 +11,37 @@
 //! process-group-kill machinery `crate::shell::bash`'s `unix::run` uses --
 //! so a hook that backgrounds a grandchild before exiting does not outlive
 //! its own timeout -- one implementation, never restated.
+//!
+//! **A generous first-run allowance, plus bounded grace on every call (board
+//! item, the "a busy machine kills a hook that answers in milliseconds"
+//! incident).** A hook script is one-shot-exec'd fresh per invocation, so
+//! the SAME OS-level cost `conway_tools::process::child_session::
+//! ChildSession`'s own module doc argues for a freshly-spawned child's first
+//! real request (a one-time warm-up: on macOS specifically, a brand-new
+//! executable's first `execve` can wait on Gatekeeper/XProtect/Spotlight
+//! contention, seconds at near-zero CPU, regardless of host load) applies
+//! here too, keyed on the exact `command` rather than on a session (there is
+//! no long-lived session to key it on): [`ProcessHookRunner`] remembers,
+//! per process lifetime, which exact command argv it has already run once,
+//! and hands the FIRST invocation of a never-before-seen command
+//! `HookInvocation::first_call_timeout_ms` instead of `timeout_ms` --
+//! `conway::config::schema::HookEntry::first_call_timeout_ms`'s own doc
+//! states why keying on the command (not the configured rule id) matches the
+//! real-world cost: the OS scan is a property of the FILE being exec'd, not
+//! of which `[hooks].rules[]` entry named it. **Every invocation, first or
+//! not, additionally gets ONE bounded grace extension on elapse** -- the
+//! identical `GRACE_CEILING_FACTOR` mechanism [`ChildSession::
+//! await_response`]'s own doc argues for scheduler contention during an
+//! ORDINARY call (`crates/conway-tools/tests/hook_runner.rs` timing out at
+//! 5000ms under a concurrent build is exactly this risk, for a hook that was
+//! never slow to begin with) -- never a resend, never a hang: a genuinely
+//! unresponsive hook is still killed and reported, naming the bound it was
+//! actually given.
+//!
+//! [`ChildSession::await_response`]: crate::process::child_session::ChildSession::await_response
+
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 
@@ -26,23 +57,41 @@ use conway_core::ports::HookRunner;
 /// (or a future permission point over it) is the control point, not this
 /// type.
 #[derive(Debug, Default)]
-pub struct ProcessHookRunner;
+pub struct ProcessHookRunner {
+    /// Every exact `command` argv this runner has already spawned at least
+    /// once, for this runner's own lifetime -- see the module doc's "a
+    /// generous first-run allowance" section. `HashSet::insert` doubles as
+    /// the "is this genuinely the first time" test: it returns `true` (this
+    /// invocation gets the elevated budget) exactly when the command was not
+    /// already present.
+    seen_commands: Mutex<HashSet<Vec<String>>>,
+}
 
 impl ProcessHookRunner {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// `true` exactly once per distinct `command` this runner ever sees --
+    /// the caller's cue to use `first_call_timeout_ms` instead of
+    /// `timeout_ms` for THIS invocation.
+    fn take_first_call(&self, command: &[String]) -> bool {
+        let mut seen = self.seen_commands.lock().expect("seen_commands poisoned");
+        seen.insert(command.to_vec())
     }
 }
 
 #[async_trait]
 impl HookRunner for ProcessHookRunner {
     async fn run(&self, invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+        let is_first_call = self.take_first_call(&invocation.command);
+
         #[cfg(unix)]
-        return unix::run(invocation).await;
+        return unix::run(invocation, is_first_call).await;
 
         #[cfg(not(unix))]
         {
-            let _ = invocation;
+            let _ = (invocation, is_first_call);
             Err(HookFailure::Spawn {
                 detail: "hook runner requires a unix host".into(),
             })
@@ -56,14 +105,35 @@ mod unix {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::process::{Child, Command};
-    use tokio::time::{Duration, Instant};
+    use tokio::time::{timeout, Duration};
 
     use conway_core::error::HookFailure;
     use conway_core::hook::{HookAnswer, HookInvocation};
 
     use crate::process::unix::kill_group;
 
-    pub(super) async fn run(invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+    /// The multiple of the chosen base deadline (`timeout_ms` for an
+    /// ordinary invocation, `first_call_timeout_ms` for a never-before-seen
+    /// command) this runner waits, IN TOTAL, before concluding a
+    /// late-but-still-running hook is genuinely unresponsive and killing it
+    /// -- the SAME factor, for the SAME reason,
+    /// `conway_tools::process::child_session`'s own `GRACE_CEILING_FACTOR`
+    /// argues at length (board item `01M1YQ3MJQSCQTMVAZ3GCSTB8P`): one bounded
+    /// extension, not a retry, for the SAME still-running process, so a
+    /// scheduler burst does not cost a hook its whole run on the first
+    /// millisecond of overrun, while a genuinely hung hook is still bounded
+    /// and reported. See that module's own doc for the full argument and the
+    /// incident behind the number; kept as a private, independent constant
+    /// here (not imported) because `ChildSession`'s own grace operates on an
+    /// already-registered pending request inside a long-lived session, a
+    /// shape this one-shot-per-call runner does not share -- only the NUMBER
+    /// is the same settled knowledge, not the mechanism.
+    const GRACE_CEILING_FACTOR: u64 = 3;
+
+    pub(super) async fn run(
+        invocation: &HookInvocation,
+        is_first_call: bool,
+    ) -> Result<HookAnswer, HookFailure> {
         let (program, args) =
             invocation
                 .command
@@ -95,9 +165,52 @@ mod unix {
             detail: "spawned hook child exited before its pid could be read".into(),
         })? as i32;
 
-        let deadline = Instant::now() + Duration::from_millis(invocation.timeout_ms);
+        // The base deadline: the elevated warm-up budget for a command this
+        // runner has never spawned before, the ordinary one otherwise --
+        // module doc's "a generous first-run allowance" section. A caller
+        // with no first-run concept of its own (today, none -- every
+        // `HookEntry`-backed invocation sets `first_call_timeout_ms` from the
+        // SAME config authority `timeout_ms` draws from) would simply pass
+        // the same value for both, making this a no-op.
+        let base_timeout_ms = if is_first_call {
+            invocation.first_call_timeout_ms
+        } else {
+            invocation.timeout_ms
+        };
 
-        match tokio::time::timeout_at(deadline, drive(&mut child, &payload)).await {
+        // Scoped so `drive_fut` -- and the mutable borrow of `child` it
+        // holds -- is dropped before a timed-out branch needs `&mut child`
+        // again for `kill_group`.
+        let outcome = {
+            let drive_fut = drive(&mut child, &payload);
+            tokio::pin!(drive_fut);
+
+            // First wait: the base deadline just chosen. The `Err` (timeout
+            // elapsed) arm is the grace cue below, never a resend -- the
+            // SAME future is awaited again, picking up exactly where it left
+            // off.
+            match timeout(Duration::from_millis(base_timeout_ms), drive_fut.as_mut()).await {
+                Ok(result) => Ok(result),
+                Err(_elapsed) => {
+                    let grace_ms = base_timeout_ms.saturating_mul(GRACE_CEILING_FACTOR - 1);
+                    tracing::warn!(
+                        command = ?invocation.command,
+                        base_timeout_ms,
+                        grace_ms,
+                        "a hook invocation exceeded its deadline; waiting up to {grace_ms}ms \
+                         longer for the SAME still-running process before concluding it is \
+                         unresponsive (never re-run -- a hook may have side effects a second \
+                         execution could double)"
+                    );
+                    match timeout(Duration::from_millis(grace_ms), drive_fut.as_mut()).await {
+                        Ok(result) => Ok(result),
+                        Err(_elapsed) => Err(base_timeout_ms.saturating_add(grace_ms)),
+                    }
+                }
+            }
+        };
+
+        match outcome {
             Ok(Ok((status, stdout))) => {
                 if !status.success() {
                     return Err(HookFailure::NonzeroExit {
@@ -107,11 +220,9 @@ mod unix {
                 parse_answer(&stdout)
             }
             Ok(Err(detail)) => Err(HookFailure::Spawn { detail }),
-            Err(_elapsed) => {
+            Err(after_ms) => {
                 kill_group(&mut child, pgid).await;
-                Err(HookFailure::TimedOut {
-                    after_ms: invocation.timeout_ms,
-                })
+                Err(HookFailure::TimedOut { after_ms })
             }
         }
     }

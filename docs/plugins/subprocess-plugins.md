@@ -331,6 +331,48 @@ continues** — the same guarantee `PHILOSOPHY.md` §1 states for a parent
 awaiting a subagent ("a parent awaiting a child cannot hang"), applied here
 to a subprocess instead of a subagent.
 
+### Timeouts: a generous first-run allowance, plus bounded grace on every call
+
+`timeout_ms` (default 5000) is the ordinary per-call deadline: how long
+*tool.spec/1* discovery, or one `tool/1`/`capability/1` call, is allowed to
+run before this host kills the process group and fails closed. A freshly
+installed plugin's FIRST run can pay a real, one-time OS-side cost that has
+nothing to do with the plugin itself being slow — on macOS specifically,
+Gatekeeper/XProtect/Spotlight scanning a brand-new executable the first time
+anything exec's it, seconds at near-zero CPU regardless of host load. A
+plugin that fails on its first run after install is a bad first impression,
+so a second field, `first_call_timeout_ms` (default 20000, four times
+`timeout_ms`'s own default), applies instead of `timeout_ms` to whichever
+spawn this host judges genuinely first:
+
+- *tool.spec/1* discovery ALWAYS qualifies — it is, by construction, this
+  plugin's very first spawn, under either transport.
+- Under the one-shot transport, the first `tool/1`/`capability/1` call
+  ALSO qualifies (tracked once per configured plugin, shared across every
+  tool/capability it declares).
+- Under the persistent transport, this elevates whichever framed round trip
+  is genuinely first over the long-lived child's own stdin/stdout — in
+  practice its opening handshake, since that is sent immediately after
+  spawn, before any `tool/1` call can run.
+
+**Every spawn — first or not — additionally gets ONE bounded grace extension
+if it runs past its deadline**, mirroring the identical mechanism MCP
+plugins already have for exactly the same reason: the host waits the base
+deadline (`timeout_ms` or `first_call_timeout_ms`, whichever applied), and if
+that elapses with the process still running, waits up to twice that again
+(three times the base deadline, in total) for the SAME process before
+concluding it is genuinely unresponsive and killing it — never a resend, so
+a call with side effects is never doubled. A plugin that is merely a little
+late, whether from scheduler contention on a busy host or the first-run OS
+tax above, is not killed on the first millisecond of overrun; a plugin that
+is genuinely hung is still killed and reported, naming the full bound it was
+actually given.
+
+An operator who wants tighter or looser behavior sets either field directly
+on a `[plugins].subprocess[]` entry; setting `first_call_timeout_ms` equal to
+`timeout_ms` disables the elevation (every invocation sees the same
+deadline) while still keeping the grace extension.
+
 A discovery failure fails the **whole build**, naming the offending entry's
 `id` — an operator who names a plugin in `settings.json` and gets nothing
 for it, silently, is exactly the outcome this set's declaration rule exists
@@ -441,10 +483,11 @@ exposure entry in that page's inventory.
 shell string, matching `[hooks].rules[].command`'s own shape and reasoning
 (no shell-quoting ambiguity between what you wrote and what actually gets
 spawned). `timeout_ms` defaults to 5000, the same default and reasoning
-`[hooks].rules[].timeout_ms` uses. `transport` defaults to `"one_shot"`
-(the behavior above); set it to `"persistent"` for the long-lived NDJSON
-JSON-RPC channel — see "The persistent transport" above for what that
-changes and the trust statement that goes with it.
+`[hooks].rules[].timeout_ms` uses; `first_call_timeout_ms` defaults to 20000
+— see "Timeouts" above for exactly which spawn it governs and why. `transport`
+defaults to `"one_shot"` (the behavior above); set it to `"persistent"` for
+the long-lived NDJSON JSON-RPC channel — see "The persistent transport" above
+for what that changes and the trust statement that goes with it.
 
 **Empty by default.** No subprocess plugin is ever spawned unless named
 here — the same "nothing in this tier runs unasked" rule

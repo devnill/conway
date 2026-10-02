@@ -1654,6 +1654,32 @@ pub struct SubprocessPluginEntry {
     /// framed read, not a session-wide idle kill.
     #[serde(default = "default_hook_timeout_ms")]
     pub timeout_ms: u64,
+    /// Milliseconds the plugin host should allow INSTEAD of `timeout_ms`,
+    /// on whichever spawn it judges genuinely first for this entry's
+    /// `command` -- `tool.spec/1` discovery always qualifies (it is, by
+    /// construction, this plugin's very first spawn), and so does the first
+    /// `tool/1`/`capability/1` call under the one-shot transport (board
+    /// item, the "a busy machine kills a plugin that answers in
+    /// milliseconds" incident: a freshly-written plugin's first `execve` can
+    /// pay a real, one-time OS-side cost -- on macOS specifically,
+    /// Gatekeeper/XProtect/Spotlight contention on a brand-new executable --
+    /// that has nothing to do with the plugin itself being slow; a plugin
+    /// that fails on its first run after install is a bad first
+    /// impression). Same default as [`HookEntry::first_call_timeout_ms`] and
+    /// [`McpPluginEntry::first_call_timeout_ms`] -- all three draw from
+    /// `default_mcp_first_call_timeout_ms`, so they cannot drift apart
+    /// silently. For the persistent transport this ALSO elevates whichever
+    /// framed round trip is genuinely first over the long-lived child's own
+    /// stdin/stdout (see `conway_tools::process::child_session::
+    /// ChildSession::spawn`'s own `first_call_timeout_ms` parameter) -- in
+    /// practice its own `initialize/1` handshake, since that round trip is
+    /// sent immediately after spawn, before any `tool/1` call can run.
+    /// `timeout_ms` stays the ordinary per-call deadline it always was; an
+    /// operator who tuned it alone sees no change in what it governs. Every
+    /// spawn, first or not, separately gets one bounded grace extension on
+    /// elapse before this host gives up on it.
+    #[serde(default = "default_mcp_first_call_timeout_ms")]
+    pub first_call_timeout_ms: u64,
     /// Which transport `tool/1` calls use. Defaults to
     /// [`SubprocessTransport::OneShot`] (existing behavior unchanged); set
     /// to [`SubprocessTransport::Persistent`] for a long-lived NDJSON
@@ -1673,6 +1699,7 @@ impl Default for SubprocessPluginEntry {
             id: String::new(),
             command: Vec::new(),
             timeout_ms: default_hook_timeout_ms(),
+            first_call_timeout_ms: default_mcp_first_call_timeout_ms(),
             transport: SubprocessTransport::default(),
         }
     }
@@ -2088,6 +2115,34 @@ pub struct HookEntry {
     /// deliberately allowed to diverge.
     #[serde(default = "default_hook_timeout_ms")]
     pub timeout_ms: u64,
+    /// Milliseconds an injected [`crate::plugin::HookRunner`] should allow
+    /// this command INSTEAD of `timeout_ms`, on whichever invocation the
+    /// runner judges genuinely first for this rule's `command` (board item,
+    /// the "a busy machine kills a hook that answers in milliseconds"
+    /// incident: a freshly-exec'd script's first run can pay a real,
+    /// one-time OS-side cost -- on macOS specifically, Gatekeeper/XProtect/
+    /// Spotlight contention on a brand-new executable -- that has nothing to
+    /// do with the script itself being slow). Same enforcement boundary as
+    /// `timeout_ms` immediately above: real, for a `pre_tool_use` rule, via
+    /// `conway_runtime::permission::PreToolUseHookSpec::
+    /// first_call_timeout_ms`; read-only for every other `event`. Defaults
+    /// to [`crate::plugin::DEFAULT_FIRST_CALL_TIMEOUT_MS`] (20000ms) -- the
+    /// identical first-call tier [`McpPluginEntry::first_call_timeout_ms`]
+    /// already uses, reused here rather than inventing a hooks-specific
+    /// number: a hook callout and an MCP round trip share the identical
+    /// underlying risk (a freshly-spawned local process's first real
+    /// request paying a one-time warm-up cost an ordinary already-warm call
+    /// never pays again). `conway_tools::hook_runner::ProcessHookRunner`
+    /// decides WHICH invocation counts as "first" (per exact `command`, not
+    /// per rule `id` -- the OS-side cost above is a property of the FILE
+    /// being exec'd, not of which `[hooks].rules[]` entry named it); this
+    /// field only states the budget to use once that decision is made.
+    /// Every invocation, first or not, separately gets one bounded grace
+    /// extension on elapse before this host gives up on it -- see
+    /// `ProcessHookRunner`'s own module doc for that mechanism, which
+    /// `timeout_ms` governs the BASE of exactly as it always has.
+    #[serde(default = "default_mcp_first_call_timeout_ms")]
+    pub first_call_timeout_ms: u64,
     /// Whether this rule is active. Defaults to `true`.
     ///
     /// **Why default-`true` does not repeat `probe_enabled`'s mistake:**
@@ -2143,6 +2198,7 @@ impl Default for HookEntry {
             match_tool: None,
             command: Vec::new(),
             timeout_ms: default_hook_timeout_ms(),
+            first_call_timeout_ms: default_mcp_first_call_timeout_ms(),
             enabled: default_hook_enabled(),
             on_failure: HookOnFailure::default(),
         }
@@ -2172,10 +2228,15 @@ fn default_hook_timeout_ms() -> u64 {
 }
 
 /// Backs [`McpPluginEntry::first_call_timeout_ms`]/
-/// [`ClaudeCompatPluginEntry::first_call_timeout_ms`] -- the identical
+/// [`ClaudeCompatPluginEntry::first_call_timeout_ms`]/
+/// [`HookEntry::first_call_timeout_ms`]/
+/// [`SubprocessPluginEntry::first_call_timeout_ms`] -- the identical
 /// "one authority, not a second literal" reasoning
 /// [`default_hook_timeout_ms`]'s own doc gives for `timeout_ms`, applied to
-/// the warm-up deadline (board item `01M1YQ3MJQSCQTMVAZ3GCSTB8P`).
+/// the warm-up deadline (board item `01M1YQ3MJQSCQTMVAZ3GCSTB8P`, extended to
+/// a `[hooks].rules[]` callout and a `[plugins].subprocess[]` call by the
+/// "a busy machine kills a hook/plugin that answers in milliseconds"
+/// incident).
 fn default_mcp_first_call_timeout_ms() -> u64 {
     crate::plugin::DEFAULT_FIRST_CALL_TIMEOUT_MS
 }

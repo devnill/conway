@@ -184,6 +184,14 @@ fn to_plugin_hook_rule(registration: HookRegistration) -> PluginHookRule {
         match_tool: registration.match_tool,
         command: registration.command,
         timeout_ms: registration.timeout_ms,
+        // Claude Code's own `hooks.json` has no first-run-allowance concept
+        // to translate (`HookRegistration` carries none) -- this translation
+        // falls back to the SAME default authority an operator-authored
+        // `[hooks].rules[]` entry draws from when it does not override
+        // `first_call_timeout_ms` either (`conway::config::schema::
+        // default_hook_timeout_ms`'s own sibling default), rather than
+        // inventing a second, narrower default just for this layer.
+        first_call_timeout_ms: conway::plugin::DEFAULT_FIRST_CALL_TIMEOUT_MS,
         enabled: registration.enabled,
         on_failure: Default::default(),
         // Carried straight through -- `HookRegistration::spawn_only`'s own

@@ -159,6 +159,18 @@ pub use wire::{WireManifest, WireTool, WireToolError, WireToolErrorKind, WireToo
 /// `conway_plugin_subprocess::DEFAULT_TIMEOUT_MS` path still resolves.
 pub use conway::plugin::DEFAULT_TIMEOUT_MS;
 
+/// Applied when a [`SubprocessPluginSpec`] does not name its own
+/// `first_call_timeout_ms` -- the identical first-call tier
+/// `conway_plugin_mcp::DEFAULT_FIRST_CALL_TIMEOUT_MS` already re-exports
+/// from the SAME authority, for the SAME reason (board item
+/// `01M1YQ3MJQSCQTMVAZ3GCSTB8P`, extended here to a subprocess plugin's own
+/// first spawn by the "a busy machine kills a plugin that answers in
+/// milliseconds" incident: a freshly-written plugin's first `execve` can pay
+/// a real, one-time OS-side cost that has nothing to do with the plugin
+/// itself being slow). See [`SubprocessPluginSpec::first_call_timeout_ms`]'s
+/// own doc for exactly which spawn this governs.
+pub use conway::plugin::DEFAULT_FIRST_CALL_TIMEOUT_MS;
+
 /// The transport a [`SubprocessPluginSpec`] uses for `tool/1` calls --
 /// one-shot exec (the original slice, every call spawns fresh) or a
 /// persistent NDJSON JSON-RPC channel (one long-lived child, board item
@@ -219,6 +231,31 @@ pub struct SubprocessPluginSpec {
     /// read, NOT a session-wide idle kill (a session that sits idle
     /// between calls is left alone).
     pub timeout_ms: u64,
+    /// Milliseconds this host should allow INSTEAD of `timeout_ms`, on
+    /// whichever spawn it judges genuinely first for this entry's `command`.
+    /// [`SubprocessPlugin::discover`]'s own `tool.spec/1` spawn ALWAYS
+    /// qualifies -- it is, by construction, this plugin's very first spawn,
+    /// under either transport. Under the one-shot transport, the first
+    /// `tool/1`/`capability/1` call ALSO qualifies (tracked per plugin
+    /// instance, shared across every tool/capability it declares -- see
+    /// `FirstCallGate`'s own doc). Under the persistent transport, this is
+    /// handed straight through as `ChildSession::spawn`'s own
+    /// `first_call_timeout_ms` parameter, which elevates whichever framed
+    /// round trip is genuinely first over the long-lived child's own
+    /// stdin/stdout -- in practice `PersistentSession::initialize`'s own
+    /// `initialize/1` handshake, since `discover` sends that immediately
+    /// after spawn and before any `tool/1` call can run (verified, not
+    /// assumed: `permission.policy/1`/`observe/1`/`status.declare/1`, and the
+    /// first real `tool/1` call, all reach `ChildSession` AFTER `initialize/1`
+    /// already consumed the one warm-up slot, so each sees the ordinary
+    /// `timeout_ms`). This still lands the budget on the round trip closest
+    /// to the actual spawn-time cost this field exists to absorb. Defaults
+    /// to [`DEFAULT_FIRST_CALL_TIMEOUT_MS`] when constructed via
+    /// [`SubprocessPluginSpec::new`]. Every spawn, first or not, separately
+    /// gets one bounded grace extension on elapse before this host gives up
+    /// on it -- `timeout_ms`/this field each govern only the BASE of that
+    /// wait, unchanged.
+    pub first_call_timeout_ms: u64,
     /// Which transport `tool/1` calls use. Defaults to
     /// [`SubprocessTransport::OneShot`] (existing behavior unchanged); set
     /// to [`SubprocessTransport::Persistent`] for a long-lived NDJSON
@@ -227,14 +264,15 @@ pub struct SubprocessPluginSpec {
 }
 
 impl SubprocessPluginSpec {
-    /// A spec with [`DEFAULT_TIMEOUT_MS`] and the one-shot transport
-    /// (existing behavior). Use the struct literal directly to override
-    /// `timeout_ms` or `transport`.
+    /// A spec with [`DEFAULT_TIMEOUT_MS`], [`DEFAULT_FIRST_CALL_TIMEOUT_MS`],
+    /// and the one-shot transport (existing behavior). Use the struct
+    /// literal directly to override any field.
     pub fn new(config_id: impl Into<String>, command: Vec<String>) -> Self {
         Self {
             config_id: config_id.into(),
             command,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            first_call_timeout_ms: DEFAULT_FIRST_CALL_TIMEOUT_MS,
             transport: SubprocessTransport::default(),
         }
     }
@@ -431,22 +469,54 @@ impl SubprocessPluginError {
 // `conway_tools::process`'s own doc for the five-way diff). `session.rs`
 // imports the SAME re-export, not a second module here.
 
+/// Shared by every one-shot-transport [`SubprocessTool`]/
+/// [`SubprocessCapabilityProvider`] on ONE [`SubprocessPlugin`]: lets the
+/// first ordinary `tool/1`/`capability/1` spawn -- across every tool and
+/// capability this plugin declares, whichever happens first -- use
+/// [`SubprocessPluginSpec::first_call_timeout_ms`] instead of `timeout_ms`,
+/// the identical "at most one caller ever sees the warm-up budget" discipline
+/// `conway_tools::process::child_session::ChildSession`'s own
+/// `first_call_taken` enforces for a persistent session's first round trip,
+/// applied here because the one-shot transport has no long-lived session
+/// object to hold that flag on instead. [`SubprocessPlugin::discover`]'s own
+/// `tool.spec/1` spawn does NOT consume this gate -- it is handed
+/// `first_call_timeout_ms` directly and unconditionally, since it is, by
+/// construction, always this plugin's genuinely first spawn regardless of
+/// transport.
+#[derive(Debug, Default)]
+struct FirstCallGate(std::sync::atomic::AtomicBool);
+
+impl FirstCallGate {
+    /// `true` exactly once per gate -- the caller's cue to use
+    /// `first_call_timeout_ms` instead of `timeout_ms` for THIS spawn.
+    fn take_first(&self) -> bool {
+        !self.0.swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
 /// Spawns `spec.command` fresh, writes `payload` to its stdin (closing it
 /// afterward so a well-behaved subprocess sees EOF), reads stdout/stderr to
 /// completion concurrently with waiting for exit -- the identical shape
 /// `conway_tools::hook_runner::ProcessHookRunner`'s own `unix::drive` uses,
 /// so a subprocess that never reads stdin or fills an OS pipe buffer before
 /// being read cannot deadlock against its own exit -- all bounded by
-/// `spec.timeout_ms`. Stderr is drained but discarded, for the identical
-/// reason `ProcessHookRunner` discards it: this item wires no log/event
-/// sink for a subprocess plugin's own diagnostic output.
+/// `timeout_ms` (the caller's choice of `spec.timeout_ms` or
+/// `spec.first_call_timeout_ms`, per [`FirstCallGate`]'s own doc), plus ONE
+/// bounded grace extension on elapse (`GRACE_CEILING_FACTOR`, the identical
+/// factor and reasoning `conway_tools::process::child_session`'s own
+/// constant of the same name argues at length, board item
+/// `01M1YQ3MJQSCQTMVAZ3GCSTB8P`) before this host concludes the process is
+/// genuinely unresponsive and kills it. Stderr is drained but discarded, for
+/// the identical reason `ProcessHookRunner` discards it: this item wires no
+/// log/event sink for a subprocess plugin's own diagnostic output.
 async fn spawn_one_shot(
     spec: &SubprocessPluginSpec,
     payload: &[u8],
+    timeout_ms: u64,
 ) -> Result<Vec<u8>, SubprocessPluginError> {
     #[cfg(not(unix))]
     {
-        let _ = payload;
+        let _ = (payload, timeout_ms);
         return Err(SubprocessPluginError::spawn(
             &spec.config_id,
             "the subprocess plugin host requires a unix host".into(),
@@ -457,7 +527,16 @@ async fn spawn_one_shot(
     {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::process::Command;
-        use tokio::time::{Duration, Instant};
+        use tokio::time::{timeout, Duration};
+
+        /// See `conway_tools::process::child_session`'s own constant of the
+        /// same name for the full argument behind the number; kept as a
+        /// private, independent constant here (not imported) because that
+        /// module's own grace operates on an already-registered pending
+        /// request inside a long-lived session, a shape this one-shot
+        /// spawn-per-call function does not share -- only the NUMBER is the
+        /// same settled knowledge, not the mechanism.
+        const GRACE_CEILING_FACTOR: u64 = 3;
 
         let (program, args) = spec.command.split_first().ok_or_else(|| {
             SubprocessPluginError::spawn(&spec.config_id, "plugin command is empty".into())
@@ -484,8 +563,6 @@ async fn spawn_one_shot(
                 "spawned plugin process exited before its pid could be read".into(),
             )
         })? as i32;
-
-        let deadline = Instant::now() + Duration::from_millis(spec.timeout_ms);
 
         let drive = async {
             let mut stdin = child.stdin.take().expect("piped stdin");
@@ -530,7 +607,37 @@ async fn spawn_one_shot(
             status.map(|status| (status, stdout_buf))
         };
 
-        match tokio::time::timeout_at(deadline, drive).await {
+        // Scoped so `drive` -- and the mutable borrow of `child` it holds --
+        // is dropped before a timed-out branch needs `&mut child` again for
+        // `kill_group`.
+        let outcome = {
+            tokio::pin!(drive);
+
+            // First wait: `timeout_ms`. The `Err` (elapsed) arm is the grace
+            // cue below, never a resend -- the SAME future is awaited again,
+            // picking up exactly where it left off.
+            match timeout(Duration::from_millis(timeout_ms), drive.as_mut()).await {
+                Ok(result) => Ok(result),
+                Err(_elapsed) => {
+                    let grace_ms = timeout_ms.saturating_mul(GRACE_CEILING_FACTOR - 1);
+                    tracing::warn!(
+                        config_id = %spec.config_id,
+                        timeout_ms,
+                        grace_ms,
+                        "a one-shot spawn exceeded its deadline; waiting up to {grace_ms}ms \
+                         longer for the SAME still-running process before concluding it is \
+                         unresponsive (never re-run -- a plugin call may have side effects a \
+                         second execution could double)"
+                    );
+                    match timeout(Duration::from_millis(grace_ms), drive.as_mut()).await {
+                        Ok(result) => Ok(result),
+                        Err(_elapsed) => Err(timeout_ms.saturating_add(grace_ms)),
+                    }
+                }
+            }
+        };
+
+        match outcome {
             Ok(Ok((status, stdout))) => {
                 if !status.success() {
                     return Err(SubprocessPluginError::NonzeroExit {
@@ -544,12 +651,9 @@ async fn spawn_one_shot(
                 &spec.config_id,
                 format!("failed to wait for plugin process: {err}"),
             )),
-            Err(_elapsed) => {
+            Err(after_ms) => {
                 kill_group(&mut child, pgid).await;
-                Err(SubprocessPluginError::timed_out(
-                    &spec.config_id,
-                    spec.timeout_ms,
-                ))
+                Err(SubprocessPluginError::timed_out(&spec.config_id, after_ms))
             }
         }
     }
@@ -590,6 +694,12 @@ pub struct SubprocessPlugin {
     /// tool object to borrow it from -- a capability call is answered
     /// independently of any declared tool.
     process_spec: Arc<SubprocessPluginSpec>,
+    /// `Some` only under the one-shot transport ([`FirstCallGate`]'s own
+    /// doc); kept here (in addition to each `SubprocessTool`'s own clone) for
+    /// the identical reason `process_spec` is: [`Plugin::capabilities`] needs
+    /// one to build a [`SubprocessCapabilityProvider`] without a tool object
+    /// to borrow it from.
+    first_call_gate: Option<Arc<FirstCallGate>>,
 }
 
 impl std::fmt::Debug for SubprocessPlugin {
@@ -637,7 +747,10 @@ impl SubprocessPlugin {
     pub async fn discover(spec: SubprocessPluginSpec) -> Result<Self, SubprocessPluginError> {
         let request = wire::Request::ToolSpecV1;
         let payload = serde_json::to_vec(&request).expect("Request::ToolSpecV1 always serializes");
-        let stdout = spawn_one_shot(&spec, &payload).await?;
+        // `first_call_timeout_ms`, unconditionally -- this spawn is, by
+        // construction, always this plugin's genuinely first (`FirstCallGate`'s
+        // own doc), regardless of transport.
+        let stdout = spawn_one_shot(&spec, &payload, spec.first_call_timeout_ms).await?;
 
         let manifest: WireManifest =
             serde_json::from_slice(stdout.trim_ascii()).map_err(|err| {
@@ -810,6 +923,14 @@ impl SubprocessPlugin {
                 Some(Arc::new(session))
             }
         };
+        // One gate per plugin, shared across every tool/capability it
+        // declares -- `None` under the persistent transport, which has no
+        // use for it (`ChildSession` already elevates its own first ordinary
+        // round trip). See `FirstCallGate`'s own doc.
+        let first_call_gate: Option<Arc<FirstCallGate>> = match spec.transport {
+            SubprocessTransport::OneShot => Some(Arc::new(FirstCallGate::default())),
+            SubprocessTransport::Persistent => None,
+        };
         let tools: Vec<Arc<dyn Tool>> = specs
             .into_iter()
             .map(|tool_spec| {
@@ -817,6 +938,7 @@ impl SubprocessPlugin {
                     spec: tool_spec,
                     process_spec: spec.clone(),
                     session: session.clone(),
+                    first_call_gate: first_call_gate.clone(),
                 }) as Arc<dyn Tool>
             })
             .collect();
@@ -827,6 +949,7 @@ impl SubprocessPlugin {
             session,
             provides: manifest.provides,
             process_spec: spec,
+            first_call_gate,
         })
     }
 
@@ -966,6 +1089,7 @@ impl SubprocessPlugin {
                         capability: cap.as_wire_str().to_string(),
                         process_spec: self.process_spec.clone(),
                         session: self.session.clone(),
+                        first_call_gate: self.first_call_gate.clone(),
                     }) as Arc<dyn CapabilityProvider>,
                 )
             })
@@ -1036,6 +1160,10 @@ struct SubprocessTool {
     /// process -- the load-bearing property acceptance criterion 1
     /// asserts).
     session: Option<Arc<PersistentSession>>,
+    /// `Some` only under the one-shot transport; every tool (and capability
+    /// provider) on this plugin shares the SAME `Arc<FirstCallGate>` -- see
+    /// that type's own doc.
+    first_call_gate: Option<Arc<FirstCallGate>>,
 }
 
 #[async_trait]
@@ -1097,7 +1225,14 @@ impl Tool for SubprocessTool {
                 detail: format!("failed to serialize tool/1 request: {err}"),
             })?;
 
-            let stdout = spawn_one_shot(&self.process_spec, &payload)
+            // The FIRST ordinary one-shot call on this plugin (across every
+            // tool/capability it declares) gets `first_call_timeout_ms`
+            // instead of `timeout_ms` -- see `FirstCallGate`'s own doc.
+            let timeout_ms = match self.first_call_gate.as_deref() {
+                Some(gate) if gate.take_first() => self.process_spec.first_call_timeout_ms,
+                _ => self.process_spec.timeout_ms,
+            };
+            let stdout = spawn_one_shot(&self.process_spec, &payload, timeout_ms)
                 .await
                 .map_err(|err| ToolError::Io {
                     detail: err.to_string(),
@@ -1177,6 +1312,10 @@ struct SubprocessCapabilityProvider {
     capability: String,
     process_spec: Arc<SubprocessPluginSpec>,
     session: Option<Arc<PersistentSession>>,
+    /// `Some` only under the one-shot transport; shares the SAME
+    /// `Arc<FirstCallGate>` as every tool on this plugin -- see that type's
+    /// own doc.
+    first_call_gate: Option<Arc<FirstCallGate>>,
 }
 
 #[async_trait]
@@ -1231,7 +1370,14 @@ impl CapabilityProvider for SubprocessCapabilityProvider {
             CapabilityError::new(format!("failed to serialize capability/1 request: {err}"))
         })?;
 
-        let stdout = spawn_one_shot(&self.process_spec, &bytes)
+        // The FIRST ordinary one-shot call on this plugin (across every
+        // tool/capability it declares) gets `first_call_timeout_ms` instead
+        // of `timeout_ms` -- see `FirstCallGate`'s own doc.
+        let timeout_ms = match self.first_call_gate.as_deref() {
+            Some(gate) if gate.take_first() => self.process_spec.first_call_timeout_ms,
+            _ => self.process_spec.timeout_ms,
+        };
+        let stdout = spawn_one_shot(&self.process_spec, &bytes, timeout_ms)
             .await
             .map_err(SubprocessPluginError::into_capability_error)?;
 
