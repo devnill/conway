@@ -14,13 +14,23 @@ thing precisely, this page links to it rather than restating it —
 
 ---
 
-## The first thing that will confuse you
+## Finding your way around, and getting out
 
-**`/help` does not list the slash commands.** It shows keybindings, and says so
-in its own title. To see the commands, type `/` on an empty input line — the
-palette that opens is the list, and it filters as you type.
+**`/help` lists everything: keybindings AND commands**, in two sections of
+the same scrollable overlay. Typing `/` on an empty input line opens the
+live command palette instead — the same command list, filtered as you type.
+The palette matches more than a plain prefix: `/rew` finds
+`/conway.history.rewind` even though you never typed the plugin's own
+namespace, because the filter also checks the tail of a namespaced command's
+name and, failing that, a fuzzy subsequence match against the command name
+itself.
 
-That is worth knowing on minute one, because the obvious move fails.
+**Typing `exit`, `quit`, `q`, `:q` or `:wq` as a plain message does not send
+it to the model.** Those are other tools' quit commands, muscle-memory
+mistakes rather than real prompts — conway shows a one-line hint pointing at
+`/quit` (or `Ctrl-D` on an empty line) instead of sending it. Press Enter
+again with the identical word to send it anyway, if you really meant it as a
+prompt.
 
 ---
 

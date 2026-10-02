@@ -282,7 +282,18 @@ pub enum SlashCommand {
     Ask {
         question: String,
     },
-    Quit,
+    /// `/quit` or its retired alias `/exit` (board item
+    /// `01M1YVH1X49WYSQ9C2Z4D6B4XM`, "B3d"). `via_exit_alias` is `true` only
+    /// when the operator typed `/exit`: [`execute`]'s own `Quit` arm reads
+    /// it to print a one-release "use `/quit`" notice BEFORE quitting --
+    /// still quits either way, so muscle memory from another tool is never
+    /// punished, but the notice nudges the operator toward the one spelling
+    /// this crate means to keep. [`describe`] ignores the field (both
+    /// spellings describe identically, as `/quit`); only [`parse`] sets it
+    /// and only [`execute`] reads it.
+    Quit {
+        via_exit_alias: bool,
+    },
     /// A plugin-declared command:
     /// `full_name` is the command word with its leading `/` AND leading
     /// whitespace stripped (e.g. `"acme.greet"` for `/acme.greet`), still
@@ -534,7 +545,7 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             usage: "/help",
             description: "show this help",
         },
-        SlashCommand::Quit => CommandSpec {
+        SlashCommand::Quit { .. } => CommandSpec {
             name: "/quit",
             usage: "/quit",
             description: "exit",
@@ -619,7 +630,9 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
         SlashCommand::Model { model: None },
         SlashCommand::Role { role: None },
         SlashCommand::Help,
-        SlashCommand::Quit,
+        SlashCommand::Quit {
+            via_exit_alias: false,
+        },
         SlashCommand::SkillsPropose,
     ]
 }
@@ -827,9 +840,22 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             let question = parse_one_arg(rest, "/ask <text>")?;
             Ok(SlashCommand::Ask { question })
         }
-        "/quit" | "/exit" => {
+        "/quit" => {
             parse_no_arg(rest, word)?;
-            Ok(SlashCommand::Quit)
+            Ok(SlashCommand::Quit {
+                via_exit_alias: false,
+            })
+        }
+        // Board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`: `/exit` is retired as a
+        // plain alias -- it still quits (muscle memory from another tool
+        // must not be punished), but `via_exit_alias: true` lets
+        // `execute`'s `Quit` arm print a one-release "use `/quit`" nudge
+        // first.
+        "/exit" => {
+            parse_no_arg(rest, word)?;
+            Ok(SlashCommand::Quit {
+                via_exit_alias: true,
+            })
         }
         // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): recognized as
         // its OWN literal word, matched BEFORE the generic plugin-command
@@ -3326,7 +3352,15 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 Effect::RunModalAsk { question }
             }
         }
-        SlashCommand::Quit => Effect::Quit,
+        SlashCommand::Quit { via_exit_alias } => {
+            if via_exit_alias {
+                // One-release nudge (board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`):
+                // `/exit` still quits -- see `SlashCommand::Quit`'s own
+                // doc for why -- this only steers the next keystroke.
+                notice(state, "use `/quit`");
+            }
+            Effect::Quit
+        }
         SlashCommand::Plugin { full_name, args } => match host.resolve_command(&full_name) {
             Some(command) => {
                 // Resolved against `state.focused_agent` -- the agent the
@@ -5125,7 +5159,12 @@ mod tests {
 
     #[test]
     fn quit_parses() {
-        assert_eq!(parse("/quit"), Ok(SlashCommand::Quit));
+        assert_eq!(
+            parse("/quit"),
+            Ok(SlashCommand::Quit {
+                via_exit_alias: false
+            })
+        );
     }
 
     #[test]
@@ -5136,7 +5175,12 @@ mod tests {
 
     #[test]
     fn exit_parses_as_an_alias_for_quit() {
-        assert_eq!(parse("/exit"), Ok(SlashCommand::Quit));
+        assert_eq!(
+            parse("/exit"),
+            Ok(SlashCommand::Quit {
+                via_exit_alias: true
+            })
+        );
     }
 
     #[test]
@@ -5263,9 +5307,14 @@ mod tests {
             if row.name == "/exit" {
                 // The one row NOT derived from a `SlashCommand` variant --
                 // see `builtin_commands`'s own doc. Proven separately,
-                // below, that it round-trips to the same variant as
-                // `/quit`.
-                assert_eq!(cmd, SlashCommand::Quit);
+                // below, that it round-trips to the same `Quit` variant as
+                // `/quit`, distinguished only by `via_exit_alias`.
+                assert_eq!(
+                    cmd,
+                    SlashCommand::Quit {
+                        via_exit_alias: true
+                    }
+                );
                 continue;
             }
             assert_eq!(
@@ -5279,13 +5328,20 @@ mod tests {
 
     /// The one row [`builtin_commands`] carries that is NOT a distinct
     /// `SlashCommand` variant: `/exit` is a second accepted spelling of
-    /// `/quit`. Proves the two spellings really do parse to the identical
-    /// command, so the hand-written `/exit` row cannot silently drift from
-    /// `parse`'s own `"/quit" | "/exit"` alias.
+    /// `/quit`, both landing in the same `Quit` variant -- `describe`
+    /// names both `/quit`, and `execute` quits for both (`via_exit_alias`
+    /// only decides whether a nudge is printed first, proven below in
+    /// `exit_quits_and_prints_a_notice_quit_does_not`). Board item
+    /// `01M1YVH1X49WYSQ9C2Z4D6B4XM` retired the old "both parse identically"
+    /// guarantee on purpose: `/exit` must be distinguishable from `/quit` at
+    /// `execute` time for the nudge to exist at all.
     #[test]
-    fn exit_and_quit_both_parse_to_the_same_described_variant() {
-        assert_eq!(parse("/quit"), parse("/exit"));
-        assert_eq!(describe(&parse("/quit").unwrap()).name, "/quit");
+    fn exit_and_quit_both_describe_as_quit_but_remember_which_spelling_was_typed() {
+        let quit = parse("/quit").unwrap();
+        let exit = parse("/exit").unwrap();
+        assert_ne!(quit, exit, "the two spellings must stay distinguishable");
+        assert_eq!(describe(&quit).name, "/quit");
+        assert_eq!(describe(&exit).name, "/quit");
     }
 
     /// No two rows share a name -- a duplicate would mean the same command
@@ -7839,6 +7895,63 @@ mod tests {
         assert!(
             host.calls().is_empty(),
             "no facade call at all -- a pure state flip"
+        );
+    }
+
+    /// `/quit` quits with no nudge at all.
+    #[tokio::test]
+    async fn quit_quits_with_no_notice() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Quit {
+                via_exit_alias: false,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::Quit));
+        assert!(
+            state.transcript.is_empty(),
+            "/quit must push no notice: {:?}",
+            state.transcript
+        );
+    }
+
+    /// Board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`: `/exit` still quits (muscle
+    /// memory from another tool is never punished) but prints a one-release
+    /// "use `/quit`" notice first.
+    #[tokio::test]
+    async fn exit_quits_and_prints_a_notice_quit_does_not() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Quit {
+                via_exit_alias: true,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::Quit), "/exit must still quit");
+        let notices: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            notices.iter().any(|t| t.contains("/quit")),
+            "/exit must notice the operator toward /quit: {notices:?}"
         );
     }
 

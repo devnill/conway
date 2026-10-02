@@ -1,0 +1,6 @@
+### Changed
+
+- **`/help` now lists every command, not just keybindings** — board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`. The overlay has a second, scrollable COMMANDS section (built-ins plus every installed plugin's own commands, each with its one-line description) that reads the identical list the `/` command palette does, so the two can never drift apart.
+- **The `/` command palette now ranks matches instead of filtering by plain prefix.** An exact prefix on the full command name ranks first, then a prefix on just a namespaced plugin command's final segment (`/rewind` now finds `/conway.history.rewind` without typing the plugin's own namespace first), then a fuzzy subsequence match against the command's name — reusing the same scorer `@`-mention completion already uses.
+- **A bare `exit`, `quit`, `q`, `:q` or `:wq`, submitted as an ordinary prompt, is no longer silently sent to the model.** The operator's own real sessions showed this gets a cheerful, useless reply — conway now shows a one-line hint pointing at `/quit` (or `Ctrl-D` on an empty line) instead. Submitting the exact same word again sends it through as an ordinary prompt; nothing else is intercepted.
+- **`/exit` is retired as a plain alias for `/quit`.** It still exits — muscle memory from another tool is not punished — but prints a one-line "use `/quit`" notice first.

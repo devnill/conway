@@ -1,36 +1,53 @@
-//! The `/help` keybinding overlay: a read-only cheat-sheet of every key
-//! binding the TUI actually has.
+//! The `/help` overlay: a read-only cheat-sheet of every key binding the
+//! TUI has, PLUS (board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`, "B3d") the full
+//! command list.
 //!
 //! `/help` used to dump a static command list
 //! (`commands.rs::HELP_LINES`, now removed) into the transcript as a pile of
 //! `Entry::Notice` lines -- spamming the conversation with content that
 //! already lived in the `/` command palette (`view/palette.rs::COMMANDS`),
-//! and there was no keybinding reference anywhere. `/help` now opens this
-//! overlay instead and pushes zero transcript entries.
+//! and there was no keybinding reference anywhere. `/help` opened this
+//! keybindings-only overlay instead, and pushed zero transcript entries.
 //!
-//! **Keybindings only.** Every genuine slash *command* (`/steer`, `/fork`,
-//! `/spawn`, `/ask`, `/agents`, `/settings`, `/resume`, `/quit`, ...) stays
-//! exclusively in the `/` palette -- this overlay never lists one, so the
-//! two surfaces never drift into duplicating each other. V4 removed the one
-//! prior exception (`/thinking`/`/timestamps`, syntactically commands but
-//! functionally keyboard-driven view toggles): both are now consolidated
-//! into `/settings` (`view/settings.rs`), a genuine command like any other,
-//! so the "keybindings only" rule now holds with no carve-out. What DOES
-//! stay documented here is the settings menu's OWN key handling (`Up`/
-//! `Down`/`Enter`/`Left`/`Right`/`Esc`, live only while it's open) -- those
-//! are real keybindings, not a command signature, the same distinction that
-//! already earns the `/ask` modal / intent-confirm card / permission
-//! prompt's own keys a "modal keys" group below.
+//! **"`/help` does not list the slash commands" was GUIDE.md's own first
+//! warning to a new operator -- board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`
+//! closes it.** A pure keybinding reference that cannot tell an operator
+//! which commands exist at all forces a second lookup (GUIDE.md, or trial
+//! and error at the `/` palette) for the single most basic question
+//! ("what can I even type?"). [`COMMANDS_SECTION_TITLE`] now heads a second
+//! section, built from [`command_rows`] -- **the identical source the `/`
+//! palette itself reads** (`view::palette::matches` with the catch-all
+//! `"/"` prefix, which the palette's own three-tier ranking collapses back
+//! to declaration order for an empty fragment -- see that function's own
+//! doc). There is no second, hand-kept command table anywhere in this
+//! module: `tests::help_command_list_matches_the_palette_list` is the
+//! direct proof the two can never drift, the same guarantee
+//! `view/palette.rs`'s own module doc already describes for ITS built-in
+//! half (`commands::builtin_commands()`). A plugin command (`AppState::
+//! plugin_commands`) is covered with zero extra code here, for the
+//! identical reason: it is already IN the source this section reads.
 //!
-//! ** (plugin-declared TUI commands)
-//! does not change this.** A plugin-declared command is a genuine slash
-//! *command*, exactly like `/steer` or `/fork` -- it belongs in
-//! `view/palette.rs` (which now merges the static built-in table with
-//! `AppState::plugin_commands`, the installed plugin command list) alongside
-//! every other command, never duplicated into this keybindings-only overlay.
-//! This overlay's own footer text ("`/help` does not list slash commands;
-//! see `/` for those") already covers a plugin command with zero changes
-//! needed here.
+//! **Keybindings are still the FIRST section, unchanged in shape.** Every
+//! genuine slash *command* used to live exclusively in the `/` palette, on
+//! the theory that listing it here too would be the exact duplication this
+//! module's own history (the T7 removal, immediately below) already paid
+//! down once. That theory held right up until a brand-new operator's first
+//! minute proved it wrong: GUIDE.md had to carry its own disclaimer, and an
+//! operator who had not yet read GUIDE.md had no way to discover `/` at
+//! all except by already knowing to type it. The keybinding section itself
+//! needs no change for this -- V4's prior history (immediately below)
+//! still holds for IT.
+//!
+//! V4 removed the one prior "commands here too" exception
+//! (`/thinking`/`/timestamps`, syntactically commands but functionally
+//! keyboard-driven view toggles): both are now consolidated into
+//! `/settings` (`view/settings.rs`), a genuine command like any other. What
+//! DOES stay documented in the KEYBINDINGS section is the settings menu's
+//! OWN key handling (`Up`/`Down`/`Enter`/`Left`/`Right`/`Esc`, live only
+//! while it's open) -- those are real keybindings, not a command
+//! signature, the same distinction that already earns the `/ask` modal /
+//! intent-confirm card / permission prompt's own keys a "modal keys" group
+//! below.
 //!
 //! **No hotkey opens this overlay.** Conway is always in input-typing mode,
 //! so a bare printable key (`?`, `F1`, ...) can never be a binding --
@@ -79,6 +96,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::modal;
+use super::palette;
 use super::theme::Theme;
 use crate::tui::keybindings::{self, Context, ACTIONS};
 use crate::tui::state::AppState;
@@ -316,6 +334,36 @@ const FOOTER_ROWS: u16 = 1;
 /// cap reachable, just via an explicit key instead of auto-follow-selection.
 const CAP_DENOMINATOR: u16 = 2;
 
+/// The heading over the KEYBINDINGS section -- [`build_body`]'s first
+/// section, unchanged in content from before board item
+/// `01M1YVH1X49WYSQ9C2Z4D6B4XM`, now explicitly titled since a second
+/// section exists to tell it apart from.
+const KEYBINDINGS_SECTION_TITLE: &str = "KEYBINDINGS";
+
+/// The heading over the COMMANDS section (board item
+/// `01M1YVH1X49WYSQ9C2Z4D6B4XM`, "B3d") -- see this module's own top-of-file
+/// doc for why this section exists and why it can never drift from the `/`
+/// palette.
+const COMMANDS_SECTION_TITLE: &str =
+    "COMMANDS (see also the / palette, which filters this same list live)";
+
+/// The full command list `/help`'s COMMANDS section renders -- built-in
+/// commands THEN every installed plugin command, in the SAME order the `/`
+/// palette itself would show them for a bare `/` (no filter at all).
+///
+/// **The one and only reason this exists as its own function, rather than
+/// inlining the call in [`build_body`]:** `tests::
+/// help_command_list_matches_the_palette_list` needs to call the identical
+/// thing [`build_body`] does, to prove the two can never drift -- see this
+/// module's own top-of-file doc.
+pub(crate) fn command_rows(state: &AppState) -> Vec<palette::PaletteRow<'_>> {
+    // The catch-all `"/"` fragment: `palette::matches`'s own three-tier
+    // ranking collapses to plain declaration order for an empty fragment
+    // (tier 1, `starts_with("")`, always matches -- see that function's own
+    // doc), so this is exactly "every command, unfiltered."
+    palette::matches("/", &state.plugin_commands)
+}
+
 /// The overlay's own body content -- one `Paragraph`, built ONCE here so
 /// [`modal_rect`] (which needs its wrapped height BEFORE anything renders)
 /// and [`draw`] (which renders it) can never compute two different bodies
@@ -329,6 +377,11 @@ fn build_body(state: &AppState, theme: &Theme) -> Paragraph<'static> {
     // resolves every keystroke against.
     let groups = build_groups(&state.keybindings);
     let mut body_lines: Vec<Line> = Vec::new();
+    body_lines.push(Line::from(Span::styled(
+        KEYBINDINGS_SECTION_TITLE,
+        theme.emphasized,
+    )));
+    body_lines.push(Line::from(""));
     for group in &groups {
         body_lines.push(Line::from(Span::styled(group.title, theme.emphasized)));
         for binding in &group.bindings {
@@ -341,6 +394,19 @@ fn build_body(state: &AppState, theme: &Theme) -> Paragraph<'static> {
         }
         body_lines.push(Line::from(""));
     }
+    body_lines.push(Line::from(Span::styled(
+        COMMANDS_SECTION_TITLE,
+        theme.emphasized,
+    )));
+    body_lines.push(Line::from(""));
+    for row in command_rows(state) {
+        body_lines.push(Line::from(vec![
+            Span::styled(row.usage.to_string(), theme.help_key),
+            Span::raw("  -- "),
+            Span::raw(row.description.to_string()),
+        ]));
+    }
+    body_lines.push(Line::from(""));
     body_lines.push(Line::from(Span::styled(MOUSE_NOTE, theme.dim)));
     Paragraph::new(body_lines).wrap(Wrap { trim: false })
 }
@@ -401,7 +467,7 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &
         frame,
         area,
         FOOTER_ROWS,
-        " HELP -- keybindings (/help does not list slash commands; see / for those) ",
+        " HELP -- keybindings and commands ",
         theme.help_border,
     );
 
@@ -523,6 +589,113 @@ mod tests {
         assert_ne!(
             toggle_row.keys, "Ctrl-O",
             "must NOT show the compiled-in default once rebound"
+        );
+    }
+
+    // ---- board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`: the COMMANDS section ----
+
+    use crate::tui::commands;
+    use crate::tui::state::PluginCommandEntry;
+    use crate::tui::test_support::render_text;
+    use conway::AgentId;
+
+    /// Renders every PAGE of the `/help` overlay (`PageDown`-equivalent
+    /// scroll steps), concatenating them -- mirrors `view::mod::tests::
+    /// render_help_all_pages` (private to that module, so this is a local
+    /// copy rather than a cross-module reuse) for the identical reason that
+    /// one exists: the overlay's own `CAP_DENOMINATOR` means it legitimately
+    /// scrolls at ordinary sizes, so a single `render_text` call is not a
+    /// faithful proof that a given string appears SOMEWHERE in the overlay.
+    fn render_help_all_pages(state: &mut AppState, width: u16, height: u16) -> String {
+        let mut combined = String::new();
+        let mut previous: Option<String> = None;
+        for _ in 0..200 {
+            let page = render_text(state, width, height);
+            combined.push_str(&page);
+            combined.push('\n');
+            if previous.as_deref() == Some(page.as_str()) {
+                break;
+            }
+            previous = Some(page);
+            state.modal_scroll = state.modal_scroll.saturating_add(5);
+        }
+        combined
+    }
+
+    /// `/help`'s command list is LITERALLY the `/` palette's own list for a
+    /// bare `/`, not a second hand-kept copy that could silently drift from
+    /// it.
+    #[test]
+    fn help_command_list_matches_the_palette_list() {
+        let mut state = AppState::new(AgentId::new());
+        state.plugin_commands = std::sync::Arc::new(vec![PluginCommandEntry {
+            name: "/acme.greet".to_string(),
+            description: "greets the operator".to_string(),
+        }]);
+
+        let help_rows = command_rows(&state);
+        let palette_rows = palette::matches("/", &state.plugin_commands);
+        assert_eq!(
+            help_rows, palette_rows,
+            "/help's command list must be exactly the palette's own list"
+        );
+    }
+
+    /// Acceptance (1): `/help` lists every command, including a plugin's
+    /// own, when that plugin is installed -- `/conway.memory.list` stands
+    /// in for any installed plugin command (the real plugin is not
+    /// installed in this unit test's fixture; the mechanism is identical
+    /// for any name).
+    #[test]
+    fn help_overlay_lists_a_plugin_command_when_installed() {
+        let mut state = AppState::new(AgentId::new());
+        state.plugin_commands = std::sync::Arc::new(vec![PluginCommandEntry {
+            name: "/conway.memory.list".to_string(),
+            description: "list everything conway.memory remembers".to_string(),
+        }]);
+        state.open_help();
+
+        let text = render_help_all_pages(&mut state, 100, 80);
+        assert!(
+            text.contains("/conway.memory.list"),
+            "the installed plugin command must appear in /help: {text}"
+        );
+        assert!(
+            text.contains("list everything conway.memory remembers"),
+            "its description must appear too: {text}"
+        );
+    }
+
+    /// Every built-in command's name shows up in the rendered overlay --
+    /// the direct, render-level companion to
+    /// `help_command_list_matches_the_palette_list`.
+    #[test]
+    fn help_overlay_lists_every_builtin_command() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+
+        let text = render_help_all_pages(&mut state, 100, 80);
+        for spec in commands::builtin_commands() {
+            assert!(
+                text.contains(spec.name),
+                "{} must appear in /help's command list: {text}",
+                spec.name
+            );
+        }
+    }
+
+    /// The COMMANDS section heading itself must be present, and the stale
+    /// "`/help` does not list slash commands" footer text must be gone.
+    #[test]
+    fn help_overlay_shows_the_commands_heading_not_the_old_disclaimer() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+
+        let text = render_help_all_pages(&mut state, 100, 80);
+        assert!(text.contains("COMMANDS"), "{text}");
+        assert!(
+            !text.contains("does not list"),
+            "the retired disclaimer must not still be rendered: {text}"
         );
     }
 }

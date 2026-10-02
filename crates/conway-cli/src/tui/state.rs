@@ -923,6 +923,21 @@ pub struct AppState {
     /// REPLAYS its history, so a replayed `UserTurn` would drop a notice
     /// staged by the very switch that just focused it.
     pub pending_focus_notice: Option<String>,
+    /// Board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`: the trimmed, lowercased
+    /// word (`"exit"`, `"quit"`, `"q"`, `":q"`, `":wq"`) from the operator's
+    /// MOST RECENTLY INTERCEPTED bare submission -- an operator reaching
+    /// for another tool's quit command, which would otherwise be sent to
+    /// the model as an ordinary prompt and get a cheerful, useless reply
+    /// (the operator's own real sessions were the trigger: they typed
+    /// `exit` as a prompt twice).
+    /// `tui::app::exit_guard::check` reads this to tell "first time" (show
+    /// a one-line hint, refuse to send, set this) from "the operator typed
+    /// the SAME word again right away" (send it as a normal prompt this
+    /// time -- a deliberate repeat is the override). `App::submit` clears
+    /// it on EVERY submission that is not itself one of the intercepted
+    /// words, so only a genuinely consecutive repeat sends -- an unrelated
+    /// line in between resets the hint for next time.
+    pub pending_exit_word: Option<String>,
     /// What an operator's own command NAMED for a child -- a `--role`/
     /// `--model` flag on `/spawn`/`/fork`, or the whole point of a
     /// `/model <backend/model>`/`/role <alias>` switch -- keyed by the
@@ -1956,6 +1971,7 @@ impl AppState {
             budget_warned_agents: HashSet::new(),
             switch_lineage: HashMap::new(),
             pending_focus_notice: None,
+            pending_exit_word: None,
             spawn_role_or_model: HashMap::new(),
             modal_scroll: 0,
             pending_intent_confirm: None,
@@ -2085,6 +2101,11 @@ impl AppState {
         }
         self.scroll = 0;
         self.follow_tail = true;
+        // The bare-`exit` hint belongs to the agent it was shown for: a
+        // focus switch that never went through `App::submit` (Enter on an
+        // agent-panel row) must not let a first `exit` on the new agent
+        // count as the confirming second press.
+        self.pending_exit_word = None;
         // The activity/usage indicators are about whichever agent is
         // CURRENTLY focused -- a
         // freshly focused agent starts with no activity signal until its
@@ -3775,5 +3796,21 @@ mod approved_call_rung {
 
         assert_eq!(state.activity, Activity::Thinking);
         assert!(state.running_tool_since.is_none());
+    }
+}
+
+#[cfg(test)]
+mod exit_hint_focus_scope {
+    use super::*;
+
+    #[test]
+    fn a_focus_switch_clears_the_pending_exit_hint() {
+        let mut state = AppState::new(AgentId::new());
+        state.pending_exit_word = Some("exit".to_string());
+        state.focus_agent(AgentId::new());
+        assert_eq!(
+            state.pending_exit_word, None,
+            "a first `exit` on a newly focused agent must show the hint, not send"
+        );
     }
 }

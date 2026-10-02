@@ -599,7 +599,12 @@ entry (default: plain green/red).
 
 Type `/` to open the command palette; it narrows live as you keep typing,
 and `Up`/`Down` arrow through matches (autofilling the input, without
-shrinking the candidate list).
+shrinking the candidate list). Matching is ranked, not a plain prefix: an
+exact prefix on the full command name ranks first, then a prefix on just
+the final, namespaced segment of a plugin command's name (so `/rewind`
+finds `/conway.history.rewind` without you typing `conway.history.`
+first), then a fuzzy subsequence match against the command's name for
+anything else.
 
 | Command | Usage | Effect |
 | --- | --- | --- |
@@ -620,8 +625,9 @@ shrinking the candidate list).
 | `/trust permissions` | `/trust permissions` | Opens a preview card showing the project's `.conway/permissions.json` at its current content; `[y]`/`Enter` confirms (trusting it and installing its `allow` rules for this session), `[n]`/`Esc` cancels having written nothing. See [`permissions.md`](permissions.md). |
 | `/tree` | `/tree` | Print the same agent tree the `/agents` panel shows, as plain transcript lines you can scroll back to or copy — with each agent's **full** id rather than the panel's short one, since a printed line may be pasted elsewhere long after the row set on screen has changed. |
 | `/diff` | `/diff` | Print the cumulative diff of every file this session's agents have edited or written so far, one `## <path>` section per file, against the bytes each file had the first time this session touched it. See "The permission prompt" above and "Diffs, not raw JSON" below. |
-| `/help` | `/help` | Open a read-only keybinding reference overlay. |
-| `/quit` or `/exit` | `/quit` | Exit conway. |
+| `/help` | `/help` | Open a read-only reference overlay: keybindings AND the full command list (built-ins plus every installed plugin's commands), in one scrollable view — the command section reads the identical list the `/` palette does, so the two can never disagree. |
+| `/quit` | `/quit` | Exit conway. |
+| `/exit` | `/exit` | A retired alias for `/quit` — still exits (so muscle memory from another tool is not punished), but prints a one-line "use `/quit`" notice first. |
 
 A message that doesn't start with `/` is sent to the model as an ordinary
 prompt. An unrecognized `/command` is reported as an error rather than
@@ -1299,8 +1305,21 @@ vim mode; this is scoped to single-key rebinding only.
 
 ## Ending a session
 
-`/quit` or `/exit` end the session cleanly. `Ctrl-D` does the same when
-the input box is empty. Two consecutive `Ctrl-C` presses force an
+`/quit` ends the session cleanly (`/exit` does too, as a retired alias —
+see the slash command table above). `Ctrl-D` does the same when
+the input box is empty.
+
+A bare, unprefixed `exit`, `quit`, `q`, `:q` or `:wq` — typed as an
+ordinary message, no leading `/` — is intercepted too, with a one-line
+hint ("to leave, use `/quit` (or `Ctrl-D` on an empty line) — press Enter
+again to send the word to the model") rather than being sent to the model
+as a prompt. These are another tool's quit commands, not conway's, and
+without this a cheerful, useless reply is all that word would ever get.
+Pressing Enter again with the exact same word sends it through as an
+ordinary prompt — nothing else gets caught by this: "please exit" or
+"quit my job" are ordinary prompts and reach the model unchanged.
+
+Two consecutive `Ctrl-C` presses force an
 immediate exit even if a turn is stuck. Quitting with an `/ask` modal open
 discards that ephemeral fork first; quitting with an `/ask` still in
 flight (no answer yet) abandons it the same way `Ctrl-C` does — the

@@ -707,12 +707,12 @@ the one place with a `CommandRegistry` to resolve against.
 **Discovery.** A declared command appears in the `/` palette
 (`conway_cli::tui::view::palette::matches`/`draw_overlay`, merged with the
 built-in table at call time from `AppState::plugin_commands`) — the SAME
-surface an operator already uses to find every built-in command. `/help`
-(`conway_cli::tui::view::help`) stays keybindings-only by long-standing
-convention (T7/V4: "`/help` does not list slash commands; see `/` for
-those") — a plugin command is discoverable exactly the way a built-in one
-is, through the one surface that already lists commands, not duplicated into
-a second listing that could drift from it.
+surface an operator already uses to find every built-in command — and also
+in `/help`'s own commands section (`conway_cli::tui::view::help`), which
+reads that identical palette listing rather than keeping a second one: a
+plugin command is discoverable exactly the way a built-in one is, through
+the one place commands are enumerated, never duplicated into a listing that
+could drift from it.
 
 ### 16. Plugin-declared custom event — `Plugin::events()` / `PluginEventHandle::emit`
 
