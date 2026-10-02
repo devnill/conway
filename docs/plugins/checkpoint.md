@@ -117,8 +117,8 @@ conway mints an empty one for the duration of the command; the listing is
 then a truthful report about a session that was born two milliseconds ago.
 
 Name the session instead. `--session <id-or-name>` comes **first**,
-immediately after the subcommand word, and accepts a session id or a
-`conway sessions name` name:
+immediately after the subcommand word, and accepts a session id, a `conway
+sessions name` name, **or an agent id**:
 
 ```
 conway sessions list
@@ -134,9 +134,14 @@ one is what made the un-targeted listing misleading in the first place.
 **This is also how you address one agent.** conway writes one session per
 agent, so a delegated worker's snapshots are already filed separately, under
 the worker's own session id — `conway sessions list` shows it with an
-`ORIGIN` of `spawn@<seq> <parent>`. There is no separate per-agent flag
-because there is no per-agent store to point one at: the session id *is*
-the agent.
+`ORIGIN` of `spawn@<seq> <parent>`. A session id and the agent id that owns
+it are two different ids — every agent gets its own session the moment it
+is created, even the root agent of a session nobody forked — and the TUI's
+own `/model`/`/role` switch notice (the one place an operator is actually
+invited to copy an id from) prints the agent id, not the session id. Paste
+either one here: `--session` tries the value as a session id first and,
+if nothing answers to that, tries it again as an agent id and resolves to
+the session that agent owns.
 
 Position is enforced rather than guessed: a plugin command's arguments are
 free text, handed through verbatim, so conway can only tell its own flag

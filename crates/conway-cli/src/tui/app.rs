@@ -45,6 +45,7 @@ use crate::tui::view::Theme;
 
 mod ask;
 mod await_cmd;
+mod checkpoint_focus;
 mod defaults;
 mod editor;
 mod focus;

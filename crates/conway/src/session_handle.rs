@@ -744,7 +744,18 @@ impl SessionHandle {
         self.effective_transcript(session).await
     }
 
-    async fn resolve_agent_session(&self, agent: AgentId) -> Result<SessionId> {
+    /// `pub` (not `pub(crate)`/private, since the plugin-command dispatch
+    /// fix below): the one place outside this struct's own methods that
+    /// needs "which `SessionId` does `agent`'s own append-run-only log live
+    /// under" is `conway_cli::tui::commands::Host::session_for`, which
+    /// stamps the result into `conway::plugin::CommandCtx::session_id` for
+    /// whichever agent the operator is actually driving -- the TUI's
+    /// `self.handle` stays fixed at this session's own root for the whole
+    /// interactive run (focus switches move `AppState::focused_agent`, never
+    /// this field), so a plugin command issued after a `/model`/`/role`
+    /// switch needs exactly this lookup to find the switch's own child
+    /// session, not the root one this handle was opened on.
+    pub async fn resolve_agent_session(&self, agent: AgentId) -> Result<SessionId> {
         if agent == self.root {
             return Ok(self.session);
         }

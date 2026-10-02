@@ -1326,14 +1326,39 @@ pub struct PluginCommandInvocation {
 #[async_trait::async_trait]
 pub trait Host {
     fn root(&self) -> AgentId;
-    /// The CALLING session's own id:
-    /// what [`SlashCommand::Plugin`]'s dispatch arm below stamps into
-    /// [`conway::plugin::CommandCtx::session_id`] -- the one identity a
-    /// `CommandOutcome::ForkSession` reply is ever resolved against (see
-    /// that variant's own doc). `LiveHost::session_id` is a thin passthrough
-    /// to `SessionHandle::id`, exactly like [`Self::root`]'s own passthrough
-    /// to `SessionHandle::root`.
+    /// This TUI's own root session id -- the session [`Self::root`]'s agent
+    /// was opened on, fixed for the whole interactive run (a `/model`/
+    /// `/role` switch moves `AppState::focused_agent` to a forked child, a
+    /// DIFFERENT session -- `SessionId`'s own doc: "one agent's append-only
+    /// log" -- but never changes this one). `LiveHost::session_id` is a
+    /// thin passthrough to `SessionHandle::id`, exactly like [`Self::
+    /// root`]'s own passthrough to `SessionHandle::root`.
+    ///
+    /// **Not what [`SlashCommand::Plugin`]'s dispatch arm stamps into
+    /// [`conway::plugin::CommandCtx::session_id`] any more** -- that now
+    /// comes from [`Self::session_for`], resolved against `AppState::
+    /// focused_agent`, so a plugin command issued after a switch (e.g.
+    /// `/conway.checkpoint.list`) answers for the agent the operator is
+    /// actually looking at, not the session the TUI happened to start on.
+    /// Kept as its own method because it is still a meaningful, narrower
+    /// fact a caller may want on its own (e.g. "what session did this run
+    /// begin as").
     fn session_id(&self) -> SessionId;
+    /// Resolves `agent` to the `SessionId` of the session whose own
+    /// append-only log is `agent`'s own (`SessionId`'s own doc) -- a thin
+    /// passthrough to `SessionHandle::resolve_agent_session`. This is the
+    /// identity [`SlashCommand::Plugin`]'s dispatch arm stamps into
+    /// [`conway::plugin::CommandCtx::session_id`], called with `AppState::
+    /// focused_agent`: the one session a `CommandOutcome::ForkSession`/
+    /// `MaskRecord`/`SubmitPrompt` reply is ever resolved against (see each
+    /// variant's own doc), and the session a store-backed command (e.g.
+    /// `conway.checkpoint`, `conway.history`) reads and writes. Every
+    /// plugin command reaches this through the SAME one call site, so a
+    /// `/model`/`/role` switch that moves focus to a forked child moves
+    /// every implicit-session command's answer with it, uniformly -- never
+    /// one plugin agreeing with the status line and another still
+    /// answering for the session the TUI opened on.
+    async fn session_for(&self, agent: AgentId) -> conway::Result<SessionId>;
     /// A thin passthrough to `SessionHandle::context_report_current` --
     /// NOT the plain `SessionHandle::context_report`: the
     /// `_current` variant closes that method's documented resumed-session
@@ -1577,6 +1602,10 @@ impl Host for LiveHost<'_> {
 
     fn session_id(&self) -> SessionId {
         self.handle.id()
+    }
+
+    async fn session_for(&self, agent: AgentId) -> conway::Result<SessionId> {
+        self.handle.resolve_agent_session(agent).await
     }
 
     async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport> {
@@ -3299,16 +3328,43 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         }
         SlashCommand::Quit => Effect::Quit,
         SlashCommand::Plugin { full_name, args } => match host.resolve_command(&full_name) {
-            Some(command) => Effect::RunPluginCommand(PluginCommandInvocation {
-                full_name,
-                command,
-                ctx: CommandCtx {
-                    focused_agent: state.focused_agent,
-                    root_agent: host.root(),
-                    session_id: host.session_id(),
-                    args,
-                },
-            }),
+            Some(command) => {
+                // Resolved against `state.focused_agent` -- the agent the
+                // operator is actually talking to right now -- never
+                // `host.session_id()` (the TUI's own root session, fixed
+                // for the whole run). A `/model`/`/role` switch moves
+                // `focused_agent` to a forked child with its own session
+                // (`SessionId`'s own doc: "one agent's append-only log");
+                // without this, every implicit-session command (`conway.
+                // checkpoint.list`, `conway.history.*`) would keep
+                // answering for the session the TUI opened on, even though
+                // the operator -- and every write the focused agent has
+                // made since the switch -- has moved on. See `Host::
+                // session_for`'s own doc.
+                let session_id = match host.session_for(state.focused_agent).await {
+                    Ok(session_id) => session_id,
+                    Err(e) => {
+                        notice(
+                            state,
+                            format!(
+                                "could not resolve the focused agent's session for \
+                                 `/{full_name}`: {e}"
+                            ),
+                        );
+                        return Effect::None;
+                    }
+                };
+                Effect::RunPluginCommand(PluginCommandInvocation {
+                    full_name,
+                    command,
+                    ctx: CommandCtx {
+                        focused_agent: state.focused_agent,
+                        root_agent: host.root(),
+                        session_id,
+                        args,
+                    },
+                })
+            }
             None => {
                 notice(
                     state,
@@ -5341,11 +5397,22 @@ mod tests {
     struct FakeHost {
         calls: Mutex<Vec<&'static str>>,
         root: AgentId,
-        /// The fixed session id this
-        /// fake `Host` reports -- lets a test assert `execute`'s
-        /// `SlashCommand::Plugin` arm stamps THIS value (never a fresh one,
-        /// never the focused/root agent) into `CommandCtx::session_id`.
+        /// `Host::session_id`'s own scripted response -- the TUI's own
+        /// root session id, fixed for the run. Also [`Self::session_for`]'s
+        /// DEFAULT answer for any agent not given its own entry in
+        /// `session_by_agent` below, so the overwhelming majority of this
+        /// module's tests (which never switch focus) see `execute`'s
+        /// `SlashCommand::Plugin` arm stamp this SAME value into
+        /// `CommandCtx::session_id` exactly as it always has.
         session: SessionId,
+        /// `Host::session_for`'s per-agent overrides -- `Self::
+        /// with_session_for` populates this; an agent with no entry here
+        /// resolves to `session` above, mirroring `SessionHandle::
+        /// resolve_agent_session`'s own "the root agent resolves to this
+        /// handle's own session" shortcut. Lets a test script "the focused
+        /// agent is a forked child with its OWN session" without a live
+        /// `Conway`/`SessionHandle` at all.
+        session_by_agent: HashMap<AgentId, SessionId>,
         context: Option<ContextReport>,
         /// `Host::transcript`'s own scripted response -- `Ok(...)` by
         /// default (empty), never the `context` field's `ContextReport`
@@ -5459,6 +5526,7 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
                 root,
                 session: SessionId::new(),
+                session_by_agent: HashMap::new(),
                 context: None,
                 transcript: Vec::new(),
                 last_context_agent: Mutex::new(None),
@@ -5502,6 +5570,15 @@ mod tests {
         /// `SlashCommand::Plugin` dispatch.
         fn with_plugin_command(mut self, full_name: &str, command: Arc<dyn Command>) -> Self {
             self.plugin_commands.insert(full_name.to_string(), command);
+            self
+        }
+
+        /// Scripts `Host::session_for(agent)` to answer `session` -- lets a
+        /// test give a focused (forked-child) agent its OWN session,
+        /// distinct from `self.session`, without a live `Conway`/
+        /// `SessionHandle`. See `session_by_agent`'s own doc.
+        fn with_session_for(mut self, agent: AgentId, session: SessionId) -> Self {
+            self.session_by_agent.insert(agent, session);
             self
         }
 
@@ -5590,6 +5667,14 @@ mod tests {
 
         fn session_id(&self) -> SessionId {
             self.session
+        }
+
+        async fn session_for(&self, agent: AgentId) -> conway::Result<SessionId> {
+            Ok(self
+                .session_by_agent
+                .get(&agent)
+                .copied()
+                .unwrap_or(self.session))
         }
 
         async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport> {
@@ -5874,6 +5959,52 @@ mod tests {
         assert_eq!(
             outcome,
             CommandOutcome::Output(vec!["hello, world!".to_string()])
+        );
+    }
+
+    /// **Break-the-guard anchor for a `/model`/`/role` switch.** The
+    /// dispatch above proves `CommandCtx::session_id` equals `host.
+    /// session_id()` in the common, never-switched case -- true before
+    /// AND after the fix, since `FakeHost::session_for` falls back to
+    /// `session_id()` for any agent with no scripted override (`session_
+    /// by_agent`'s own doc). This test is the one that actually
+    /// distinguishes them: `state.focused_agent` is a DIFFERENT agent,
+    /// scripted to its OWN session via `with_session_for`, and the
+    /// dispatched `CommandCtx::session_id` must be THAT session, not
+    /// `host.session_id()`. Stubbing `execute` back to `host.session_id()`
+    /// (the pre-fix shape) turns this red while leaving the test above
+    /// green -- the pre-fix shape could never fail that one.
+    #[tokio::test]
+    async fn plugin_command_dispatch_resolves_the_session_of_the_focused_agent_not_the_hosts_own() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let switched_child = AgentId::new();
+        let switched_session = SessionId::new();
+        state.focus_agent(switched_child);
+        let host = FakeHost::new(root)
+            .with_plugin_command("acme.greet", Arc::new(GreetCommand))
+            .with_session_for(switched_child, switched_session);
+
+        let effect = execute(
+            SlashCommand::Plugin {
+                full_name: "acme.greet".to_string(),
+                args: "world".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let Effect::RunPluginCommand(invocation) = effect else {
+            panic!("expected Effect::RunPluginCommand");
+        };
+        assert_eq!(invocation.ctx.focused_agent, switched_child);
+        assert_eq!(invocation.ctx.session_id, switched_session);
+        assert_ne!(
+            invocation.ctx.session_id,
+            host.session_id(),
+            "precondition: the scripted focused-agent session must differ from the host's own, \
+             or this test cannot distinguish the fix from the bug it replaces"
         );
     }
 
