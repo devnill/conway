@@ -117,6 +117,75 @@ pub struct TuiSection {
     /// `CONWAY_TUI__HISTORY_SIZE=1000` overrides via env.
     #[serde(default)]
     pub history_size: Option<u32>,
+    /// `[tui.busy_input]` (board item `01M1YVHKTQVXJRDSRYT3TCRXFX`,
+    /// "Typing while the agent works"): what submitting a message while the
+    /// focused agent's turn is still running does. `Queue` (the default)
+    /// withholds the message until the turn boundary; `Steer` delivers it
+    /// at the running turn's own next tool-loop step via the existing
+    /// steer primitive. See [`crate::tui::state::BusyInputMode`]'s own doc
+    /// for the full semantics and `docs/interactive.md`'s "Typing while the
+    /// agent works" section for the operator-facing description.
+    ///
+    /// This is the one display-preference setting (of the `/settings`
+    /// menu's "display" group) with a real backing config key -- loaded
+    /// here as the session's STARTING value; `/settings` changes it for
+    /// the rest of the session only (same "session-only" posture
+    /// `view/settings.rs`'s own module doc states for `show_reasoning`/
+    /// `show_timestamps`, and the same shape `tool_preview_lines` already
+    /// established: config-seeded, session-adjustable, never written
+    /// back).
+    #[serde(default)]
+    pub busy_input: BusyInputMode,
+    /// Set by `load_from_options`, never by config itself
+    /// (`#[serde(skip)]` -- deserializing `[tui]` never populates this).
+    /// `Some` exactly when the raw config named a removed `busy_input`
+    /// value (today, only `"interrupt"` -- see [`BusyInputMode`]'s own
+    /// doc) and the loader silently fell back to the default rather than
+    /// failing the whole `[tui]` parse over it. `app/startup.rs` surfaces
+    /// this as a startup `Notice` so the fallback is never silent to the
+    /// operator even though it is silent to the loader.
+    #[serde(skip)]
+    pub busy_input_warning: Option<String>,
+}
+
+/// `[tui.busy_input]`'s two modes -- see [`TuiSection::busy_input`]'s own
+/// doc for what each does and [`crate::tui::state::BusyInputMode`] for the
+/// re-exported session-side type this deserializes into
+/// (`AppState::busy_input`). Kept here, alongside every other presentation
+/// config type this module owns (module doc: "this crate is the one reader
+/// that actually consumes `[tui]`"), with `state::busy_input` re-exporting
+/// it rather than defining a second, independent copy.
+///
+/// **A third value, `Interrupt`, existed here through review round 2 of
+/// board item `01M1YVHKTQVXJRDSRYT3TCRXFX` and was removed by orchestrator
+/// ruling.** That round's own fix (a new `awaiting_prompt` runtime signal)
+/// surfaced, by testing it rather than assuming it, that this runtime's
+/// cancellation (`CancelMode::Immediate`, the same primitive `Ctrl-C`
+/// uses) is UNCONDITIONALLY TERMINAL for a kept-alive agent in every state
+/// -- there is no "cancel this reply, keep the session" outcome for
+/// `interrupt` to have delivered the new message into. The orchestrator's
+/// ruling: conway must never ship a `busy_input` mode (or a dedicated key,
+/// see the now-removed `prompt.send_now`/`F2`) whose only real effect is
+/// to end the operator's session. `docs/interactive.md` carries one
+/// sentence on what a genuine "interrupt this reply, keep talking" would
+/// need (a non-terminal turn cancel, which this runtime does not have
+/// today) and that it is tracked as its own, separate piece of work.
+///
+/// **Config compatibility, not a hard failure:** `load_from_options`
+/// normalizes a `settings.json` that still says `"interrupt"` (written
+/// against an earlier build of this board item, before this ruling, which
+/// shipped it) to `"queue"` before this enum's own strict,
+/// `deny_unknown_fields`-style
+/// parse ever sees it, and records [`TuiSection::busy_input_warning`] so
+/// the fallback is surfaced to the operator rather than silently
+/// swallowed. An operator's session starting in a mode they did not ask
+/// for would be its own, quieter defect.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BusyInputMode {
+    #[default]
+    Queue,
+    Steer,
 }
 
 /// `[tui.status_line]`: declarative status-line field order + visibility.
@@ -245,7 +314,9 @@ pub struct ThemeStyleConfig {
 /// block present but malformed against THIS schema (an unknown key, a
 /// wrong-shaped value) is a surfaced, named parse error -- the CLI keeps
 /// `#[serde(deny_unknown_fields)]`'s typo protection for its own
-/// presentation config even though the facade no longer can.
+/// presentation config even though the facade no longer can. **One named
+/// exception:** `busy_input: "interrupt"` -- see `load_from_options`'s
+/// own doc for why a removed enum VALUE gets a forgiving fallback instead.
 pub fn load(cli: &Cli) -> conway::Result<TuiSection> {
     let options = conway::config::LoadOptions {
         explicit_path: cli.config.clone(),
@@ -254,16 +325,57 @@ pub fn load(cli: &Cli) -> conway::Result<TuiSection> {
     load_from_options(options)
 }
 
+/// The `[tui.busy_input]` value this crate shipped (through review round 2
+/// of board item `01M1YVHKTQVXJRDSRYT3TCRXFX`) and then removed by
+/// orchestrator ruling -- see [`BusyInputMode`]'s own doc for why. Named
+/// here, once, rather than repeating the literal string at every call
+/// site.
+const REMOVED_BUSY_INPUT_INTERRUPT: &str = "interrupt";
+
 fn load_from_options(options: conway::config::LoadOptions) -> conway::Result<TuiSection> {
     let mut merged = conway::config::merged_document(&options)?;
     let tui_value = merged.as_object_mut().and_then(|obj| obj.remove("tui"));
-    match tui_value {
-        Some(value) => serde_json::from_value(value).map_err(|e| FacadeError::Config {
+    let mut tui_value = match tui_value {
+        Some(value) => value,
+        None => return Ok(TuiSection::default()),
+    };
+    // A removed enum VALUE for a key that still exists is a materially
+    // different case from every other malformed `[tui]` shape this
+    // function otherwise refuses outright (this function's own doc): an
+    // unknown key or a wrong-shaped value is almost certainly an
+    // operator's typo, worth failing loudly over; `busy_input: "interrupt"`
+    // is a `settings.json` written against a conway version that genuinely
+    // supported it. Normalized to the default HERE, before this type's own
+    // `deny_unknown_fields`-style strict parse below ever sees it, so the
+    // rest of `[tui]` still loads exactly as before -- refusing to start
+    // the whole TUI over one stale, previously-valid value would be a far
+    // worse operator experience than silently-but-visibly falling back.
+    let busy_input_warning = match tui_value
+        .as_object_mut()
+        .and_then(|obj| obj.get("busy_input"))
+    {
+        Some(serde_json::Value::String(s)) if s == REMOVED_BUSY_INPUT_INTERRUPT => {
+            if let Some(obj) = tui_value.as_object_mut() {
+                obj.insert(
+                    "busy_input".to_string(),
+                    serde_json::Value::String("queue".to_string()),
+                );
+            }
+            Some(format!(
+                "tui.busy_input = \"{REMOVED_BUSY_INPUT_INTERRUPT}\" is no longer supported \
+                 (it could only ever end the session, never pause and resume it) -- falling \
+                 back to \"queue\"."
+            ))
+        }
+        _ => None,
+    };
+    let mut section: TuiSection =
+        serde_json::from_value(tui_value).map_err(|e| FacadeError::Config {
             path: None,
             message: format!("failed to parse [tui]: {e}"),
-        }),
-        None => Ok(TuiSection::default()),
-    }
+        })?;
+    section.busy_input_warning = busy_input_warning;
+    Ok(section)
 }
 
 #[cfg(test)]
@@ -402,6 +514,92 @@ mod tests {
             err.to_string().contains("usre"),
             "error must name the unrecognized field: {err}"
         );
+    }
+
+    /// Orchestrator ruling (after review round 2 of board item
+    /// `01M1YVHKTQVXJRDSRYT3TCRXFX`): `tui.busy_input = "interrupt"` --
+    /// valid in a `settings.json` written against that item's round 1/2 --
+    /// must load with a warning and fall back to `queue`, NOT fail the
+    /// whole `[tui]` parse the way `a_typo_inside_tui_theme_is_a_surfaced_
+    /// parse_error` (just above) proves an ordinary malformed value does.
+    #[test]
+    fn a_removed_busy_input_interrupt_value_falls_back_to_queue_with_a_warning() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}},
+                "tui": {"busy_input": "interrupt"}
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("a removed value must not fail the load");
+
+        assert_eq!(
+            tui.busy_input,
+            BusyInputMode::Queue,
+            "must fall back to the default, not stay unset or panic"
+        );
+        let warning = tui
+            .busy_input_warning
+            .as_deref()
+            .expect("a warning must be recorded for the operator");
+        assert!(
+            warning.contains("interrupt") && warning.contains("queue"),
+            "the warning must name both the removed value and the fallback: {warning}"
+        );
+    }
+
+    /// An ordinary, still-supported `busy_input` value loads with no
+    /// warning at all -- the fallback above must not fire for every value,
+    /// only the one specific removed one.
+    #[test]
+    fn an_ordinary_busy_input_value_loads_with_no_warning() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}},
+                "tui": {"busy_input": "steer"}
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("load must succeed");
+
+        assert_eq!(tui.busy_input, BusyInputMode::Steer);
+        assert_eq!(tui.busy_input_warning, None);
     }
 
     /// The `CONWAY_TUI__STATUS_LINE__FIELDS` env override reaches this

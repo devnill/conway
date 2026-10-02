@@ -39,6 +39,7 @@ use super::gate::PendingPrompt;
 
 mod agent_panel;
 mod agent_tree;
+mod busy_input;
 mod input_line;
 mod mentions;
 mod modal;
@@ -49,6 +50,7 @@ mod turn_summary;
 
 pub use agent_panel::AgentVisibility;
 pub use agent_tree::{AgentTreeView, NodeStatus, SpawnRoleOrModel, TreeNode};
+pub use busy_input::BusyInputMode;
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use mentions::MentionScanRequest;
 pub use modal::{
@@ -1270,6 +1272,45 @@ pub struct AppState {
     /// envelope's `ts` at apply time) so toggling back on restores the
     /// stamps without replay.
     pub show_timestamps: bool,
+    /// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: what submitting a message
+    /// while the focused agent's turn is running does -- `queue` (default),
+    /// `steer`, or `interrupt`. Seeded at `App::new` from
+    /// `[tui.busy_input]`; the `/settings` menu's "display" group cycles it
+    /// for the rest of THIS session only, the same session-only posture
+    /// `show_reasoning`/`show_timestamps` already have (`view/settings.rs`'s
+    /// own module doc). See `state::busy_input`'s own module doc for the
+    /// full mechanism.
+    pub busy_input: BusyInputMode,
+    /// `busy_input = queue`'s own withheld-message FIFO, tagged with the
+    /// `AgentId` each entry was queued FOR -- review round 1's CRITICAL
+    /// fix: a bare `String` queue implicitly assumed delivery would always
+    /// target whichever agent happened to be focused, which is wrong the
+    /// instant focus moves between queuing and delivery. `Up` acts on the
+    /// BACK of the FOCUSED agent's own entries only (never another
+    /// agent's); `App::flush_ready_queues` (`app/busy_input.rs`) reads by
+    /// `AgentId`, never by `focused_agent`. See `AppState::
+    /// recall_last_queued`/`take_held_prompts_for`'s own docs, and
+    /// `state::busy_input`'s own module doc for the full design. Mirrored,
+    /// one-for-one, by an `Entry::QueuedUser` transcript row per entry
+    /// still belonging to the CURRENTLY focused agent -- see `AppState::
+    /// queue_prompt`.
+    ///
+    /// **Not `queued_prompts`** (a name already taken by the PERMISSION
+    /// gate's own `VecDeque<PendingPrompt>`, `gate.rs`'s unrelated queue of
+    /// pending tool-call authorizations) -- this is a different queue
+    /// entirely, so it gets a different name rather than shadowing that
+    /// one.
+    pub held_prompts: std::collections::VecDeque<(AgentId, String)>,
+    /// `busy_input = steer`'s own pending-VISIBILITY FIFO, tagged with the
+    /// `AgentId` each steer was sent TO -- the same per-agent tagging
+    /// `held_prompts` carries, for the same reason. A steer is already
+    /// sent (through the existing mailbox) the instant it is queued here,
+    /// so this exists only to drive the queued strip/transcript until
+    /// `App::flush_ready_queues` observes that agent is no longer
+    /// mid-generation and calls `AppState::clear_pending_steers_for`,
+    /// never to support recall (there is nothing left to withdraw -- see
+    /// `state::busy_input`'s own module doc).
+    pub pending_steers: std::collections::VecDeque<(AgentId, String)>,
     /// T8: the persisted input-history FIFO, oldest entry at the front.
     /// Loaded once at `App::new` from the history file (best-effort -- see
     /// `history::load`'s own doc -- the file is untrusted input) and appended to by
@@ -1944,6 +1985,9 @@ impl AppState {
             model_cache_reporting: HashMap::new(),
             show_reasoning: true,
             show_timestamps: false,
+            busy_input: BusyInputMode::default(),
+            held_prompts: VecDeque::new(),
+            pending_steers: VecDeque::new(),
             history: VecDeque::new(),
             history_cap: DEFAULT_HISTORY_SIZE,
             history_index: None,
@@ -2407,6 +2451,15 @@ impl AppState {
                     // can only attach to a block THIS turn produced (see
                     // `turn_transcript_start`).
                     self.turn_transcript_start = self.transcript.len();
+                    // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: review round 1
+                    // removed this arm's own `clear_one_pending_steer` call --
+                    // it could only ever fire for the FOCUSED agent's own
+                    // live stream, the identical structural gap the review's
+                    // delivery-scoping finding named. `App::
+                    // flush_ready_queues` (`app/busy_input.rs`) now clears a
+                    // pending steer's visibility by polling `SessionHandle::
+                    // turn_in_progress`, focus-independent, the same
+                    // mechanism that delivers `held_prompts`.
                 }
             }
             // This item: the SINGLE path that renders a prompt bubble now --

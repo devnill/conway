@@ -69,6 +69,28 @@ impl App {
             }
         }
         *last_ctrl_c = Some(now);
+        // Review round 2 (board item `01M1YVHKTQVXJRDSRYT3TCRXFX`,
+        // SIGNIFICANT finding 2): the double-`Ctrl-C` exit path above
+        // deliberately has no extra confirmation gate for a non-empty
+        // queue -- round 1's choice to leave it alone was re-confirmed
+        // "fine" on re-review, since it mirrors every other
+        // double-`Ctrl-C` semantic in this method. But that makes THIS,
+        // the single most common escape gesture, the one place a queued
+        // message could be lost with no visibility at all. This is pure
+        // visibility, not another gate: it fires once, on the first
+        // press, and never blocks the second press from exiting. Counts
+        // across every agent, the same sum `Self::
+        // confirm_quit_with_nonempty_queue` uses for the analogous quit
+        // path (not scoped to the focused agent -- a press that would
+        // discard ANY agent's queue deserves the warning).
+        let pending = self.state.held_prompts.len() + self.state.pending_steers.len();
+        if pending > 0 {
+            self.state.transcript.push(Entry::Notice {
+                text: format!(
+                    "{pending} queued message(s) will be discarded if you press Ctrl-C again"
+                ),
+            });
+        }
         // Board item `01M0RWFH6V709B7WTAFRZGFKG3`: a no-op when no ask is
         // in flight (`abandon_ask`'s own guard) -- checked before the
         // root-turn cancel below so an ask abandoned this press still gets
@@ -222,5 +244,152 @@ impl App {
         // process that would otherwise be orphaned the instant this
         // process exits, with nothing left to ever clean it up.
         self.kill_shell_command_for_quit().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::super::fixtures::{echo_conway_and_store, minimal_cli};
+    use super::super::App;
+    use crate::tui::state::Entry;
+
+    /// **Evidence for a separately-filed item, not a guard for this one --
+    /// do not change `handle_ctrl_c`'s behavior to make this pass
+    /// differently.** The TUI's own keybinding table (`docs/interactive.md`)
+    /// has long claimed `Ctrl-C` "pressed with nothing running, does
+    /// nothing destructive on its own." This test shows that claim is
+    /// false for the ordinary, unconfigured case: `handle_ctrl_c` ->
+    /// `self.handle.cancel(root, "user cancel")` -> `SessionHandle::
+    /// cancel_with(..., CancelMode::Immediate)` (`session_handle.rs`) trips
+    /// the SAME `CancellationToken` `AgentLoop::run_inner`'s resume-gate
+    /// `tokio::select!` races, `biased`, ahead of the gate's own
+    /// `notify.notified()` arm (`agent_loop.rs`, the `ResumeGate::
+    /// awaiting_prompt` branch) -- so a FIRST, single `Ctrl-C` press
+    /// against a root sitting genuinely idle at that gate (the TUI's
+    /// ordinary "nothing running, waiting for you to type" state, since
+    /// the interactive root is always spawned `keep_alive: true` --
+    /// `app/startup.rs::session_spec`'s own doc) routes straight to
+    /// `finish_cancelled`: a TERMINAL result, not a no-op. The session
+    /// ends before the operator ever typed a second message.
+    #[tokio::test]
+    async fn first_ctrl_c_against_a_genuinely_idle_keep_alive_root_ends_the_session() {
+        let conway = echo_conway_and_store().0;
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+
+        // Prove "genuinely idle," not merely "freshly constructed": wait
+        // for the root's own agent-loop task to actually reach the resume
+        // gate (`awaiting_prompt == true`) before pressing anything --
+        // `App::new` never submits a prompt (`Runtime::start_root`'s own
+        // doc: "a prompt-less root ... idles until the user types"), so
+        // this is the TUI's ordinary post-launch, pre-first-message state.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !app.handle.awaiting_prompt(root) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the freshly-started root must reach genuine idle within the bound");
+        assert!(
+            !app.agent_is_finished(root).await,
+            "sanity: the root must still be alive right before the press"
+        );
+
+        let mut last_ctrl_c = None;
+        let outcome = app
+            .handle_ctrl_c(&mut last_ctrl_c)
+            .await
+            .expect("handle_ctrl_c should not error");
+        assert!(
+            outcome.is_none(),
+            "a first press must never exit the process on its own: {outcome:?}"
+        );
+
+        // The root is now terminal -- a single first press, no second
+        // press, no turn ever having run.
+        let became_finished = tokio::time::timeout(Duration::from_secs(5), async {
+            while !app.agent_is_finished(root).await {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            became_finished,
+            "LOAD-BEARING: a first Ctrl-C against an idle keep-alive root must end its \
+             session -- a timeout here would mean this finding no longer holds and the \
+             docs/interactive.md claim this test disproves may be accurate again"
+        );
+    }
+
+    /// Review round 2, SIGNIFICANT finding 2: the FIRST `Ctrl-C` with a
+    /// non-empty queue must leave a visible notice -- break-the-guard
+    /// precedent lives right next to this test (temporarily gate the
+    /// `pending > 0` check in `App::handle_ctrl_c` to `false` and confirm
+    /// this goes red before trusting it green).
+    #[tokio::test]
+    async fn first_ctrl_c_with_a_nonempty_queue_leaves_a_discard_warning() {
+        let conway = echo_conway_and_store().0;
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+        app.state.queue_prompt(root, "important".to_string());
+
+        let mut last_ctrl_c = None;
+        let outcome = app
+            .handle_ctrl_c(&mut last_ctrl_c)
+            .await
+            .expect("handle_ctrl_c should not error");
+
+        assert!(
+            outcome.is_none(),
+            "a first press must never exit on its own: {outcome:?}"
+        );
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text }
+                    if text.contains("1 queued message")
+                        && text.contains("discarded")
+                        && text.contains("Ctrl-C again")
+            )),
+            "the first press must warn about the queue it would discard: {:?}",
+            app.state.transcript
+        );
+        // The queue itself must survive a single press -- this is pure
+        // visibility, never a discard on its own.
+        assert_eq!(app.state.held_prompts.len(), 1);
+    }
+
+    /// An empty queue must stay exactly as quiet as it was before this
+    /// finding -- no new notice noise on the overwhelmingly common path.
+    #[tokio::test]
+    async fn first_ctrl_c_with_an_empty_queue_leaves_no_queue_notice() {
+        let conway = echo_conway_and_store().0;
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let mut last_ctrl_c = None;
+        app.handle_ctrl_c(&mut last_ctrl_c)
+            .await
+            .expect("handle_ctrl_c should not error");
+
+        assert!(
+            !app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text.contains("queued message"))),
+            "an empty queue must produce no queue-discard notice at all: {:?}",
+            app.state.transcript
+        );
     }
 }

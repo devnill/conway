@@ -45,6 +45,7 @@ use crate::tui::view::Theme;
 
 mod ask;
 mod await_cmd;
+mod busy_input;
 mod defaults;
 mod editor;
 mod focus;
@@ -214,6 +215,18 @@ pub struct App {
     /// test modules (e.g. `app.state`).
     env: std::collections::HashMap<String, String>,
     cwd: std::path::PathBuf,
+    /// Review round 1, SIGNIFICANT ("quitting with a queue"): the instant
+    /// `/quit`/`Ctrl-D` was last refused because the queue was non-empty,
+    /// or `None` if it has never fired (or the window since then has
+    /// elapsed) -- `Self::confirm_quit_with_nonempty_queue`'s own arming
+    /// clock, mirroring `app/shutdown.rs`'s `last_ctrl_c` local exactly,
+    /// just as an `App` field rather than a `run()`-local: unlike
+    /// `handle_ctrl_c` (reached from exactly one call site), the quit-
+    /// confirm check runs from two independent `run.rs` match arms
+    /// (`SubmitOutcome::Quit`, reached from `Action::Submit`, and
+    /// `Action::Quit`), so a shared local would have to be threaded
+    /// through both instead of living on `self` once.
+    quit_queue_warned_at: Option<std::time::Instant>,
 }
 
 /// What `App::submit` learned the app loop must additionally do, beyond the
@@ -611,67 +624,135 @@ impl App {
         if self.state.block_message_if_focused_agent_finished() {
             return Ok(SubmitOutcome::Continue);
         }
-        // This item (typed `Event::UserTurn`, closing the gap where one mode
-        // had a capability the facade did not): no local `Entry::User` push
-        // here anymore. `Runtime::prompt` (reached via `prompt_agent` below)
-        // now emits `Event::UserTurn` live on the SAME event stream this app's
-        // run loop already polls, and `state. rs`'s `apply` builds the
-        // `Entry::User` bubble from that envelope
-        // -- the one path both this TUI and a library embedder watching the
-        // bare `EventStream` now share. Pushing it here too would double it;
-        // NOT pushing it at all on a failed `prompt_agent` (the `Err` arm below)
-        // is also correct, not a gap -- a message that was never actually
-        // sent must never appear to have been (echoing it locally used to
-        // do exactly that on a failure).
+        // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` ("Typing while the agent
+        // works"): a message submitted while the FOCUSED agent is still
+        // working (`activity != Idle` -- the same live signal the status
+        // line's own spinner already reads, so "busy" here means exactly
+        // what the operator sees as busy on screen) is handled by
+        // `state.busy_input` instead of reaching `prompt_agent` right away.
         //
-        // WI "bare /spawn & /fork open an interactive session": a plain
-        // (non-slash-command) message now prompts the FOCUSED agent, not
-        // unconditionally the root -- `handle.prompt_agent` (generalizing
-        // `handle.prompt`, which only ever targeted `self.handle.root()`)
-        // is what makes typing into an interactive keep-alive child (after
-        // a bare `/spawn`/`/fork` auto-focused it) actually reach THAT
-        // session instead of silently talking to the root underneath it.
+        // `!`/`/`-prefixed lines never reach here (both return earlier in
+        // this method) -- a shell command or a slash command is unaffected
+        // by `busy_input`: neither is "a prompt" in the sense this setting
+        // governs.
         //
-        // Board item `01M1YVF4X864GKSGZM4PSCTMEH`: a plain message's
-        // `@`-mentioned paths get a clearly-delimited provenance hint
-        // appended before this text actually goes to the model -- see
-        // `mentions::append_mention_hint`'s own doc for why a text suffix,
-        // not a `system_note` (no such primitive exists on `conway`'s
-        // public facade today). A no-op for `/fork`/`/spawn`'s own
-        // `@<agent>` addressing, and for a message with no `@`-mention at
-        // all. Deliberately AFTER `push_history`, above -- history
-        // records exactly what the operator typed, not what was actually
-        // sent.
+        // **Orchestrator ruling, after review round 2:** a THIRD mode,
+        // `interrupt`, and a per-message override that behaved like it
+        // (`prompt.send_now`, default `F2`) existed here. Both cancelled
+        // the focused agent (`CancelMode::Immediate`, the same primitive
+        // `Ctrl-C` uses) before sending the new message -- and that
+        // primitive is unconditionally terminal for a kept-alive agent in
+        // every state, so neither could ever have delivered the new
+        // message into a continuing conversation; their only real effect
+        // was to end the operator's session. Removed outright: conway must
+        // never ship a `busy_input` mode or key whose effect is to end the
+        // session out from under the operator. See `crate::tui::config::
+        // BusyInputMode`'s own doc and `docs/interactive.md` for what a
+        // genuine "interrupt this reply, keep the session" would need (a
+        // non-terminal turn cancel, tracked separately -- this runtime does
+        // not have one today).
+        let focused = self.state.focused_agent;
+        let busy = self.state.activity != crate::tui::state::Activity::Idle;
+        if busy {
+            match self.state.busy_input {
+                crate::tui::config::BusyInputMode::Queue => {
+                    self.state.queue_prompt(focused, text);
+                    return Ok(SubmitOutcome::Continue);
+                }
+                // PHILOSOPHY §1: steer is applied at a turn boundary, never
+                // mid-generation -- `SessionHandle::steer` already
+                // guarantees exactly that (the running turn's own next
+                // tool-loop step, via the existing mailbox/`drain_inbox`
+                // primitive; see `conway_runtime::mailbox`'s own doc). This
+                // mode adds no new delivery mechanism, only this call site
+                // and the pending-visibility bookkeeping.
+                crate::tui::config::BusyInputMode::Steer => {
+                    match self.handle.steer(focused, text.clone()).await {
+                        Ok(()) => self.state.mark_steer_pending(focused, text),
+                        Err(e) => self.state.transcript.push(Entry::Notice {
+                            text: format!("steer failed: {e}"),
+                        }),
+                    }
+                    return Ok(SubmitOutcome::Continue);
+                }
+            }
+        }
+        // Review round 1, CRITICAL: a defensive re-check immediately before
+        // the actual send, using the authoritative, subscription-
+        // independent `Self::agent_is_finished` rather than the
+        // locally-cached `AppState::tree` the earlier, top-of-method
+        // `block_message_if_focused_agent_finished` guard reads -- correct
+        // for the common already-focused case, but not meant to catch a
+        // race between that check and this actual send.
+        if self.agent_is_finished(focused).await {
+            self.state.input = text;
+            self.state.cursor = self.state.input.chars().count();
+            self.state.transcript.push(Entry::Notice {
+                text: format!(
+                    "can't send -- {focused} finished while this message was being prepared; \
+                     restored to the input box"
+                ),
+            });
+            return Ok(SubmitOutcome::Continue);
+        }
+        self.send_prompt_now(focused, text).await;
+        Ok(SubmitOutcome::Continue)
+    }
+
+    /// Sends `text` to `agent` right now -- the common tail every path
+    /// through [`Self::submit`] funnels through once it has decided the
+    /// text should actually reach the model this instant: the ordinary
+    /// not-busy path, and (`app/busy_input.rs`) queued-delivery once a turn
+    /// boundary is reached. This item (typed `Event::UserTurn`, closing the
+    /// gap where one mode had a capability the facade did not): no local
+    /// `Entry::User` push here -- `Runtime::prompt` (reached via
+    /// `prompt_agent` below) emits `Event::UserTurn` live on the SAME event
+    /// stream this app's run loop already polls, and `state.rs`'s `apply`
+    /// builds the `Entry::User` bubble from that envelope -- the one path
+    /// both this TUI and a library embedder watching the bare `EventStream`
+    /// now share. Pushing it here too would double it; NOT pushing it at
+    /// all on a failed `prompt_agent` (the `Err` arm below) is also
+    /// correct, not a gap -- a message that was never actually sent must
+    /// never appear to have been.
+    ///
+    /// Board item `01M1YVF4X864GKSGZM4PSCTMEH`: a plain message's
+    /// `@`-mentioned paths get a clearly-delimited provenance hint appended
+    /// before this text actually goes to the model -- see `mentions::
+    /// append_mention_hint`'s own doc for why a text suffix, not a
+    /// `system_note` (no such primitive exists on `conway`'s public facade
+    /// today). A no-op for `/fork`/`/spawn`'s own `@<agent>` addressing,
+    /// and for a message with no `@`-mention at all.
+    ///
+    /// Fix 1 (SIGNIFICANT, review): `prompt_agent` is fallible (transient
+    /// store I/O, etc.) -- `?`-propagating it here used to unwind straight
+    /// out of `submit` -> `App::run` -> `tui::mod.rs`'s `run`, killing the
+    /// WHOLE interactive process over one failed prompt. Matched instead,
+    /// mirroring every other facade call this module already treats this
+    /// way (`Self::try_focus_agent`, `Self::deliver_first_message`): a
+    /// failure becomes a `Notice`, `activity` is left alone (nothing was
+    /// actually started, so it must not read `Thinking`), and the app loop
+    /// keeps running.
+    pub(super) async fn send_prompt_now(&mut self, agent: conway::AgentId, text: String) {
         let text = crate::tui::mentions::append_mention_hint(text);
-        // Fix 1 (SIGNIFICANT, review): `prompt_agent` is fallible
-        // (transient store I/O, etc.) -- `?`-propagating it here used to
-        // unwind straight out of `submit` -> `App::run` -> `tui::mod.rs`'s
-        // `run`, killing the WHOLE interactive process over one failed
-        // prompt. Matched instead, mirroring every other facade call this
-        // module already treats this way (`Self::try_focus_agent`, `Self::
-        // deliver_first_message`): a failure becomes a `Notice`, `activity`
-        // is left alone (nothing was actually started, so it must not read
-        // `Thinking`), and the app loop keeps running.
-        match self
-            .handle
-            .prompt_agent(self.state.focused_agent, text)
-            .await
-        {
+        match self.handle.prompt_agent(agent, text).await {
             Ok(_) => {
-                // Bug 2 fix: mark the
-                // indicator working the instant Enter is pressed, rather
-                // than waiting for the first event to arrive on the stream
-                // (`state.rs`'s `TurnStarted` arm covers the same window
-                // from the event side; this covers the sliver of time
-                // before that envelope has even round-tripped back).
-                // Unconditional (the old `is_root_focused` guard is
-                // obsolete): `prompt_agent` above targeted `state.
-                // focused_agent` directly, so the focused agent IS the
-                // agent whose turn was just started -- unlike the old
-                // hardcoded-root `handle.prompt`, there is no longer a
-                // "prompted a different agent than the one in view" case
-                // this needed to guard against.
-                self.state.activity = crate::tui::state::Activity::Thinking;
+                // Bug 2 fix: mark the indicator working the instant the
+                // message is actually sent, rather than waiting for the
+                // first event to arrive on the stream (`state.rs`'s
+                // `TurnStarted` arm covers the same window from the event
+                // side; this covers the sliver of time before that envelope
+                // has even round-tripped back). Scoped to the focused
+                // agent: every production call site targets `state.
+                // focused_agent` (an ordinary submit, `interrupt`/send-now,
+                // or queued-delivery for the SAME agent the queue belongs
+                // to), so this is always true in practice, but it is
+                // checked rather than assumed since this method's own
+                // `agent` parameter is not literally `self.state.
+                // focused_agent` by construction the way the pre-item code
+                // was.
+                if agent == self.state.focused_agent {
+                    self.state.activity = crate::tui::state::Activity::Thinking;
+                }
             }
             Err(e) => {
                 self.state.transcript.push(Entry::Notice {
@@ -679,7 +760,6 @@ impl App {
                 });
             }
         }
-        Ok(SubmitOutcome::Continue)
     }
 }
 
@@ -1000,6 +1080,163 @@ mod tests {
             user_turn_text.starts_with("!important"),
             "the backslash must be stripped and the rest sent as a literal prompt: \
              {user_turn_text:?}"
+        );
+    }
+
+    // ---- Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` ("Typing while the agent
+    // works"): `App::submit`'s own `busy_input` branching. `activity` is
+    // set DIRECTLY to simulate "a real turn is in flight", the same
+    // established idiom `plugin_cmd.rs`'s `submit_prompt_outcome_is_refused_
+    // while_the_focused_agent_has_a_turn_in_flight` already uses and
+    // documents (its own doc: "without needing to race a live one") --
+    // this crate's echo backend resolves a real turn synchronously, so
+    // there is no way to observe a GENUINELY in-flight one from a test. ----
+
+    /// Acceptance 1/constraint: `queue` (the default) withholds the message
+    /// entirely -- no `UserTurn` reaches the real session log -- and shows
+    /// it in `AppState::held_prompts`/the transcript instead.
+    #[tokio::test]
+    async fn busy_queue_mode_withholds_the_message_instead_of_sending_it() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+        app.state.activity = Activity::Thinking;
+
+        let outcome = app
+            .submit("second message".to_string())
+            .await
+            .expect("submit should not error");
+
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        assert_eq!(
+            app.state.held_prompts,
+            vec![(root, "second message".to_string())],
+            "queue mode must withhold the message client-side, tagged with its own agent"
+        );
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::QueuedUser(t) if t == "second message")),
+            "the withheld message must render in the pending style: {:?}",
+            app.state.transcript
+        );
+        let records = app
+            .handle
+            .transcript(root)
+            .await
+            .expect("transcript should read back");
+        assert!(
+            !records.iter().any(
+                |r| matches!(r, conway::LogRecord::UserTurn { text, .. } if text == "second message")
+            ),
+            "a withheld message must never reach the real session log: {records:?}"
+        );
+    }
+
+    /// `!` commands are unaffected by `busy_input`. A `!` command never
+    /// reaches `busy_input`'s branch at all (it returns earlier in
+    /// `submit`), so it must still run even while the focused agent is
+    /// busy.
+    #[tokio::test]
+    async fn a_bang_command_runs_immediately_even_while_busy_in_queue_mode() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        app.state.activity = Activity::Thinking;
+
+        let outcome = app
+            .submit("!echo hello-while-busy".to_string())
+            .await
+            .expect("submit should not error");
+
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        assert!(
+            app.state.held_prompts.is_empty(),
+            "a `!` command must never be queued: {:?}",
+            app.state.held_prompts
+        );
+        assert!(
+            app.state.shell_in_flight,
+            "the shell command must still run immediately while busy"
+        );
+    }
+
+    /// `/` commands are unaffected by `busy_input` either -- `/settings`
+    /// still opens immediately even while the focused agent is busy.
+    #[tokio::test]
+    async fn a_slash_command_runs_immediately_even_while_busy_in_queue_mode() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        app.state.activity = Activity::Thinking;
+
+        let outcome = app
+            .submit("/settings".to_string())
+            .await
+            .expect("submit should not error");
+
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        assert!(app.state.settings_open, "the menu must still open");
+        assert!(
+            app.state.held_prompts.is_empty(),
+            "a slash command must never be queued: {:?}",
+            app.state.held_prompts
+        );
+    }
+
+    /// `steer` delivers immediately through the existing mailbox primitive
+    /// (never withheld client-side) and shows it pending until the next
+    /// `Event::TurnStarted`.
+    #[tokio::test]
+    async fn busy_steer_mode_delivers_via_steer_and_shows_it_pending() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+        app.state.busy_input = crate::tui::config::BusyInputMode::Steer;
+        app.state.activity = Activity::Thinking;
+
+        let outcome = app
+            .submit("steer me".to_string())
+            .await
+            .expect("submit should not error");
+
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        assert!(
+            app.state.held_prompts.is_empty(),
+            "steer mode must never withhold client-side: {:?}",
+            app.state.held_prompts
+        );
+        assert_eq!(
+            app.state.pending_steers,
+            vec![(root, "steer me".to_string())]
+        );
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::QueuedUser(t) if t == "steer me")),
+            "a pending steer must render in the pending style: {:?}",
+            app.state.transcript
+        );
+        assert!(
+            !app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text.contains("steer failed"))),
+            "steering the root agent must be accepted (`ensure_own_subtree` admits caller == \
+             target): {:?}",
+            app.state.transcript
         );
     }
 

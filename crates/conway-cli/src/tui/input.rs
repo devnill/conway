@@ -539,6 +539,12 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 state.toggle_thinking();
             } else if id == super::view::settings::LEAF_SHOW_TIMESTAMPS {
                 state.toggle_timestamps();
+            } else if id == super::view::settings::LEAF_BUSY_INPUT {
+                // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: a pure `AppState`
+                // flip, mirroring `LEAF_SHOW_REASONING`/`LEAF_SHOW_
+                // TIMESTAMPS` immediately above -- session-only, no broker/
+                // config write, so no `Action` round trip is needed.
+                state.cycle_busy_input();
             } else if id == super::view::settings::LEAF_PERMISSION_MODE {
                 // V2b: cycles the DISPLAY mirror only. The app loop sees
                 // the returned action and writes the broker, which is the
@@ -1802,6 +1808,27 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         //). Given that the two cannot
         // be separated, the binding goes to the interaction that is both
         // more frequent and more surprising when broken: scrolling.
+        // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: `Up` on an EMPTY input
+        // line pulls the most recently queued message back into the editor
+        // -- but ONLY while a queued message actually exists (`AppState::
+        // recall_last_queued` returns `false`, no mutation at all,
+        // otherwise); with nothing queued, `Up` keeps its EXACT pre-item
+        // meaning below. Checked ahead of `move_cursor_line`/
+        // `ScrollLineUp` precisely because an empty input has no cursor
+        // line to move within anyway (`move_cursor_line` already returns
+        // `false` for an empty buffer) -- this does not take priority away
+        // from anything that key already did on an empty line.
+        //
+        // **Disclosed tension with this arm's own DECSET-1007 doc just
+        // below:** a two-finger scroll with nothing queued is unaffected
+        // (the common case), but with the input empty AND a message
+        // queued, an alternate-scroll-translated `Up` would ALSO recall it.
+        // This is the same ambiguity `ScrollLineUp`'s own doc already
+        // accepts for bare `Up`/`Down` in general (crossterm cannot tell a
+        // wheel-translated key from a real keypress); narrowed here to the
+        // intersection of "nothing typed" and "something queued", which
+        // board item `01M1YVHKTQVXJRDSRYT3TCRXFX` asks for by name.
+        KeyCode::Up if state.input.is_empty() && state.recall_last_queued() => Action::None,
         KeyCode::Up => {
             if move_cursor_line(state, -1) {
                 Action::None
@@ -1837,6 +1864,14 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
                 state.agent_view_open = false;
                 return Action::None;
             }
+            // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`, review round 1
+            // RULING: `Esc` does NOT discard a queued message. `Esc` is a
+            // reflex key; destroying a message on it is unsafe. Discarding
+            // a queued message works the same way discarding anything else
+            // in the input line does -- `Up` recalls it into the editor
+            // (see that key's own arm, above), then `Ctrl-U`/backspacing
+            // clears it -- so `Esc` keeps its exact pre-item meanings
+            // below, untouched.
             // Panel already closed: Esc is the way back to the root's own
             // conversation. A no-op when already on the root, so it does
             // not force an unnecessary transcript clear+replay.
@@ -5031,6 +5066,104 @@ mod tests {
         assert!(state.input.is_empty());
     }
 
+    // ---- Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: queued-message
+    // recall (`Up`) ----
+
+    /// Acceptance 1: "Up recalls the second [most recently queued]
+    /// message" -- driven through the real key router, empty input.
+    #[test]
+    fn up_on_empty_input_recalls_the_most_recently_queued_message() {
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.queue_prompt(agent, "first".to_string());
+        state.queue_prompt(agent, "second".to_string());
+
+        let action = handle_key(&mut state, key(KeyCode::Up));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(state.input, "second");
+        assert_eq!(state.held_prompts, vec![(agent, "first".to_string())]);
+    }
+
+    /// With nothing queued, `Up` on an empty input keeps its EXACT
+    /// pre-existing meaning (`Action::ScrollLineUp`) -- board item
+    /// `01M1YVHKTQVXJRDSRYT3TCRXFX`'s own spec: "otherwise Up keeps its
+    /// current meaning".
+    #[test]
+    fn up_on_empty_input_with_nothing_queued_still_scrolls() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(state.held_prompts.is_empty());
+
+        let action = handle_key(&mut state, key(KeyCode::Up));
+
+        assert_eq!(action, Action::ScrollLineUp);
+        assert!(state.input.is_empty());
+    }
+
+    /// `Up` with text already typed must not steal the keystroke from
+    /// ordinary multi-line cursor movement, queued or not.
+    #[test]
+    fn up_with_text_typed_does_not_recall_even_if_something_is_queued() {
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.queue_prompt(agent, "queued".to_string());
+        type_str(&mut state, "line one");
+        handle_key(&mut state, alt_enter());
+        type_str(&mut state, "line two");
+
+        handle_key(&mut state, key(KeyCode::Up));
+
+        assert_eq!(state.input, "line one\nline two");
+        assert_eq!(
+            state.held_prompts,
+            vec![(agent, "queued".to_string())],
+            "the queue must be untouched while there is text to navigate"
+        );
+    }
+
+    /// Review round 1 RULING: `Esc` no longer discards a queued message --
+    /// its pre-item meanings are untouched regardless of what is queued.
+    /// With the `/agents` panel open, it still just closes the panel.
+    #[test]
+    fn esc_with_something_queued_still_closes_the_agent_panel_not_discard() {
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.queue_prompt(agent, "first".to_string());
+        state.agent_view_open = true;
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(action, Action::None);
+        assert!(!state.agent_view_open);
+        assert_eq!(
+            state.held_prompts,
+            vec![(agent, "first".to_string())],
+            "Esc must never discard a queued message"
+        );
+    }
+
+    /// Review round 1 RULING: the documented way to discard a queued
+    /// message is `Up` (recall into the editor) then an ordinary edit
+    /// (`Ctrl-U`/backspacing) -- driven end to end here.
+    #[test]
+    fn discarding_a_queued_message_is_recall_then_clear() {
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.queue_prompt(agent, "oops".to_string());
+
+        assert!(state.recall_last_queued());
+        assert_eq!(state.input, "oops");
+        assert!(state.held_prompts.is_empty());
+
+        // `Ctrl-U` (`prompt.kill_to_start`): clears the recalled text.
+        handle_key(&mut state, ctrl_key(KeyCode::Char('u')));
+        assert!(state.input.is_empty());
+        assert!(
+            state.held_prompts.is_empty(),
+            "the message must stay discarded, not resurface"
+        );
+    }
+
     #[test]
     fn plain_enter_on_empty_input_is_unaffected_by_the_newline_binding() {
         // Regression guard: the empty-input Enter arm (submit no-op / focus
@@ -5426,10 +5559,12 @@ mod tests {
         // `01M18Q7P25DTSKQJDJJCC3E800` put a "defaults" group ahead of
         // "display", adding two selectable stops in front of the ones
         // this test already walked past ("default role" leaf; "default
-        // model" is `MenuNode::Static` and Down skips it): defaults group
-        // (0), default role (1), display group (2), reasoning (3),
-        // timestamps (4), tool output group (5), tool preview lines (6).
-        for _ in 0..6 {
+        // model" is `MenuNode::Static` and Down skips it); board item
+        // `01M1YVHKTQVXJRDSRYT3TCRXFX` added a third row ("busy input") to
+        // "display" itself: defaults group (0), default role (1), display
+        // group (2), reasoning (3), timestamps (4), busy input (5), tool
+        // output group (6), tool preview lines (7).
+        for _ in 0..7 {
             handle_key(&mut state, key(KeyCode::Down));
         }
         assert!(
@@ -5524,6 +5659,28 @@ mod tests {
                 .any(|r| r.label.contains("show reasoning")),
             "re-expanding must restore the children: {rows_after_expand:?}"
         );
+    }
+
+    /// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: `Enter` on the "busy input"
+    /// row cycles `queue -> steer`, driven end to end through the real key
+    /// router (not a direct `AppState::cycle_busy_input` call -- that unit
+    /// is already covered by `state::busy_input`'s own tests; this one
+    /// proves the settings menu actually reaches it).
+    #[test]
+    fn enter_on_the_busy_input_row_cycles_the_mode() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        assert_eq!(state.busy_input, crate::tui::state::BusyInputMode::Queue);
+
+        let busy_input_idx = crate::tui::view::settings::build_tree(&state)
+            .rows()
+            .iter()
+            .position(|r| r.label.starts_with("busy input"))
+            .expect("the busy input row must exist");
+        state.settings_selected = busy_input_idx;
+
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(state.busy_input, crate::tui::state::BusyInputMode::Steer);
     }
 
     /// Acceptance: arrows navigate the menu WHILE it is open.

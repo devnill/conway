@@ -737,6 +737,20 @@ impl Runtime {
             // child, and that goes through `resume_root`, not `start_root`).
             ephemeral: false,
         })?;
+        // Mirrors `agent_loop.resume_gate.awaiting_prompt`'s own initial
+        // value onto the tree the instant the node exists -- without this,
+        // a prompt-less root (the interactive TUI's own ordinary case)
+        // reads `AgentTree::awaiting_prompt == false` ("busy") for the
+        // entire window between this call returning and its first prompt
+        // ever arriving, even though the loop is, from its very first
+        // iteration, genuinely idle at the resume gate. Found while
+        // investigating a Ctrl-C report: a reproduction built on
+        // `SessionHandle::awaiting_prompt` to prove the root was genuinely
+        // idle before pressing anything could not observe that idle state
+        // at all for a FRESH root, only after its first prompt had already
+        // landed once.
+        self.tree
+            .mark_awaiting_prompt(agent_id, spec.prompt.is_none());
 
         let task: JoinHandle<AgentResult> = tokio::spawn(async move { agent_loop.run().await });
         let join = supervisor::supervise(SuperviseArgs {

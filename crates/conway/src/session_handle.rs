@@ -605,6 +605,41 @@ impl SessionHandle {
         self.rt.turn_in_flight(agent)
     }
 
+    /// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` round 2 (CRITICAL finding:
+    /// "`turn_in_progress` does not cover tool execution"): whether
+    /// `agent`'s own loop is idle at its resume gate RIGHT NOW, with
+    /// nothing left to do until the caller's next prompt arrives --
+    /// spanning a model round-trip, tool dispatch, AND the gap between
+    /// them, up to the genuine end of the turn. `!awaiting_prompt(agent)`
+    /// is therefore the honest "is this agent busy" signal `turn_in_
+    /// progress` alone is NOT: `turn_in_progress` answers only "is a model
+    /// round-trip in flight," which reads `false` for the entire duration
+    /// of every tool call a turn makes (`AgentTree::mark_turn_finished`
+    /// fires before tools run; the NEXT round's `mark_turn_started` only
+    /// fires once they finish) -- exactly the gap a caller polling for
+    /// "has this agent genuinely finished its current turn" must not
+    /// mistake for "done."
+    ///
+    /// `true` for a `keep_alive` agent between turns (the gate a `/settings`-
+    /// configurable `busy_input = queue`'s delivery, and `busy_input =
+    /// interrupt`'s cancel-then-send wait, both poll via `App::
+    /// flush_ready_queues`/`wait_for_agent_idle` in `conway-cli`); always
+    /// `false` for a non-`keep_alive` agent while it is alive (it never
+    /// reaches that gate at all -- it is "busy" for its entire run, with no
+    /// idle windows, until it publishes a terminal result, which this
+    /// method does not itself check -- see `AgentTree::awaiting_prompt`'s
+    /// own doc for the full mechanism, and a caller combining this with a
+    /// non-blocking finished-check, e.g. `Self::await_agent(..).
+    /// now_or_never()`, for the complete "is it safe to treat this agent as
+    /// done with its current work" answer). `false` for an unknown agent.
+    ///
+    /// **Not a wire-format change**, mirroring `turn_in_progress`'s own
+    /// doc: purely in-process bookkeeping inside `conway-runtime`'s
+    /// `AgentTree`, queried fresh on every call.
+    pub fn awaiting_prompt(&self, agent: AgentId) -> bool {
+        self.rt.awaiting_prompt(agent)
+    }
+
     /// Delegates to `Runtime::context_report`, which is itself synchronous
     /// (an in-memory read, no I/O) -- this method is `async` only to match
     /// the binding criterion's signature; there is nothing to await.

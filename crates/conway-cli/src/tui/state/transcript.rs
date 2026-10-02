@@ -215,6 +215,26 @@ pub enum Entry {
         to_model: bool,
         ts: Option<DateTime<Utc>>,
     },
+    /// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` ("Typing while the agent
+    /// works"): a message submitted while an agent's turn was still
+    /// running, shown in a distinct pending style for as long as that
+    /// agent stays focused -- `busy_input = queue`'s withheld text (removed
+    /// the instant it is recalled via `Up` or actually delivered) and
+    /// `busy_input = steer`'s already-sent-but-not-yet-folded-into-context
+    /// text alike (removed once `App::flush_ready_queues` observes that
+    /// agent is no longer mid-generation). A best-effort, LIVE-only
+    /// indicator: switching focus away clears it along with the rest of the
+    /// transcript, and switching back does not reconstruct it (it was never
+    /// persisted) -- see `state::busy_input`'s own module doc. Deliberately
+    /// its OWN variant, not `Entry::User` with a flag: `Entry::User` is
+    /// built
+    /// exclusively from the live `Event::UserTurn`/a replayed
+    /// `LogRecord::UserTurn` (state.rs's own doc: "the ONE path that
+    /// renders a prompt bubble"), and this entry exists precisely for text
+    /// that has NOT (yet, or ever, in the recalled/discarded case) taken
+    /// that path -- conflating the two would let a withheld message look
+    /// exactly like a sent one.
+    QueuedUser(String),
 }
 
 /// A tool call's lifecycle, as reflected in one [`Entry::Tool`].

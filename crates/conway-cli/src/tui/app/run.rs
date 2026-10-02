@@ -160,6 +160,16 @@ impl App {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                    // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: `busy_input`'s
+                    // own delivery/visibility poll -- see `App::
+                    // flush_ready_queues`'s own doc for why this rides the
+                    // existing redraw cadence rather than a dedicated
+                    // ticker (a no-op, no facade call at all, whenever
+                    // nothing is queued -- the common case on every
+                    // ordinary tick).
+                    if self.flush_ready_queues().await {
+                        dirty = true;
+                    }
                     if dirty {
                         terminal.draw(|f| view::draw(&self.state, f, &self.theme))
                             .map_err(|e| conway::FacadeError::Io(e.into()))?;
@@ -503,6 +513,15 @@ impl App {
                                 _ => false,
                             };
                             self.state.apply(&env);
+                            // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: review
+                            // round 1 moved `busy_input` delivery OFF this
+                            // event-apply step entirely -- see `App::
+                            // flush_ready_queues`'s own doc for why an
+                            // event-driven trigger here could never have
+                            // worked for a message queued on any agent other
+                            // than whichever one happened to be focused.
+                            // Delivery is now polled from the redraw tick,
+                            // below.
                             if refresh_session_head {
                                 self.refresh_session_head().await;
                             }
@@ -589,10 +608,16 @@ impl App {
                                     // now funnels through
                                     // `purge_open_ask_modal` too, like
                                     // every other quit path in this file --
-                                    // see that method's own doc.
+                                    // see that method's own doc. Review
+                                    // ROUND 1 (SIGNIFICANT, "quitting with a
+                                    // queue"): `confirm_quit_with_nonempty_
+                                    // queue` gates it further -- see that
+                                    // method's own doc.
                                     SubmitOutcome::Quit => {
-                                        self.purge_open_ask_modal().await;
-                                        return Ok(ExitCode::Completed);
+                                        if self.confirm_quit_with_nonempty_queue() {
+                                            self.purge_open_ask_modal().await;
+                                            return Ok(ExitCode::Completed);
+                                        }
                                     }
                                     SubmitOutcome::FocusNewSession {
                                         child,
@@ -1706,12 +1731,18 @@ impl App {
                                     }
                                 }
                                 Action::Quit => {
-                                    // B5: quitting with the /ask modal open
-                                    // is the discard fate -- the child is
-                                    // purged first, so there is no fourth,
-                                    // fate-less way out of the modal.
-                                    self.purge_open_ask_modal().await;
-                                    return Ok(ExitCode::Completed);
+                                    // Review round 1 (SIGNIFICANT, "quitting
+                                    // with a queue"): gated the same way
+                                    // `/quit` is, below.
+                                    if self.confirm_quit_with_nonempty_queue() {
+                                        // B5: quitting with the /ask modal
+                                        // open is the discard fate -- the
+                                        // child is purged first, so there is
+                                        // no fourth, fate-less way out of the
+                                        // modal.
+                                        self.purge_open_ask_modal().await;
+                                        return Ok(ExitCode::Completed);
+                                    }
                                 }
                                 Action::ScrollUp => self.page_scroll(terminal, true)?,
                                 Action::ScrollDown => self.page_scroll(terminal, false)?,

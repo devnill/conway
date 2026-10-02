@@ -479,6 +479,24 @@ pub fn entry_lines(
             stamp_first(&mut lines, ts.as_ref(), show_timestamps, theme);
             lines
         }
+        // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: a withheld/pending
+        // message, dim + a `queued> ` prefix distinct from `Entry::User`'s
+        // `theme.user`-styled `you> ` -- a message that has not (yet, or
+        // ever) reached the model must never read like one that has.
+        Entry::QueuedUser(text) => text
+            .split('\n')
+            .enumerate()
+            .map(|(i, line)| {
+                if i == 0 {
+                    Line::from(vec![
+                        Span::styled("queued> ", theme.dim),
+                        Span::styled(line.to_string(), theme.dim),
+                    ])
+                } else {
+                    Line::from(Span::styled(line.to_string(), theme.dim))
+                }
+            })
+            .collect(),
     }
 }
 

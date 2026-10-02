@@ -16,10 +16,12 @@
 //! only, the way the two slash commands display toggling replaced
 //! (`/thinking`, `/timestamps` -- both REMOVED, not aliased, see
 //! `commands.rs`'s parser) already did. [`SESSION_NOTE`] says so, on the
-//! footer, on every render; the one leaf with a real backing config key
-//! (`tool_preview_lines`) names it inline (see [`build_tree`]'s own doc) --
-//! the other two display toggles have no config-key equivalent to point to
-//! at all today, so they carry no such annotation.
+//! footer, on every render; a leaf with a real backing config key
+//! (`tool_preview_lines`, and -- board item `01M1YVHKTQVXJRDSRYT3TCRXFX` --
+//! `busy_input`) names it inline (see [`build_tree`]'s own doc) -- the
+//! other two display toggles (`show_reasoning`/`show_timestamps`) have no
+//! config-key equivalent to point to at all today, so they carry no such
+//! annotation.
 //!
 //! **The plugins shortcut row is the one exception, by proxy.** This menu
 //! itself writes nothing -- `/plugin` (`view/plugins.rs`) owns the real
@@ -298,6 +300,9 @@ pub(crate) const LEAF_DEFAULT_ROLE: &str = "default_role";
 pub(crate) const LEAF_PROMOTE_SESSION_MODEL: &str = "promote_session_model";
 pub(crate) const LEAF_SHOW_REASONING: &str = "show_reasoning";
 pub(crate) const LEAF_SHOW_TIMESTAMPS: &str = "show_timestamps";
+/// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: `Enter` cycles `queue -> steer
+/// -> queue` -- `AppState::cycle_busy_input`'s own doc.
+pub(crate) const LEAF_BUSY_INPUT: &str = "busy_input";
 pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
 /// V2b: cycles `prompt` -> `plan` -> `AUTO-ALLOW` -> `prompt`.
 pub(crate) const LEAF_PERMISSION_MODE: &str = "permission_mode";
@@ -502,6 +507,7 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                     bool_label("show timestamps", state.show_timestamps),
                     LEAF_SHOW_TIMESTAMPS,
                 ),
+                MenuNode::leaf(busy_input_label(state.busy_input), LEAF_BUSY_INPUT),
             ],
         ),
         group_node(
@@ -851,6 +857,19 @@ fn bool_label(name: &str, value: bool) -> String {
         "[{box_glyph}] {name} -- {}",
         if value { "on" } else { "off" }
     )
+}
+
+/// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: the `busy input` row's own
+/// label -- states the current mode AND, briefly, what it does, so the row
+/// is legible without having to open `docs/interactive.md`'s own "Typing
+/// while the agent works" section first.
+fn busy_input_label(mode: crate::tui::state::BusyInputMode) -> String {
+    use crate::tui::state::BusyInputMode;
+    let (name, detail) = match mode {
+        BusyInputMode::Queue => ("queue", "hold until the turn boundary, then send"),
+        BusyInputMode::Steer => ("steer", "deliver at the turn's own next tool-loop step"),
+    };
+    format!("busy input -- {name} ({detail}; Enter to cycle; [tui.busy_input])")
 }
 
 /// Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: the `/settings` footer's key

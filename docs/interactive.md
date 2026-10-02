@@ -133,6 +133,93 @@ A Ctrl or Alt chord that is not bound to anything is ignored rather than
 typed as its bare letter — pressing an unbound `Ctrl-X`, for instance,
 does nothing, instead of inserting an `x`.
 
+### Typing while the agent works
+
+Submitting a message while an agent's turn is still running has always
+reached the model eventually — a durable message is appended and that
+agent's own next context build picks it up — but nothing on screen used to
+say so, so you could not tell whether your words were queued, lost, or sent.
+Several things make that visible and configurable.
+
+**Every queued message is tagged with the agent it was typed for, not with
+whichever agent you happen to be looking at when it is finally sent.**
+Switching focus (`/agents`, `/spawn`, `/fork`, `/model`, or any focus-nav
+key) between queuing a message and its delivery never redirects it to a
+different agent, and never strands it either — delivery is driven by polling
+each agent that actually has something queued, independent of focus.
+
+**A queued strip.** While a turn is running, a message you submit for the
+FOCUSED agent appears in the input box's own border title (`"input — 2
+queued: fix the bug..."`) and, at the same time, in the transcript in a dim
+`queued>` style distinct from an ordinary sent message — until it is
+actually delivered. A message queued for a DIFFERENT, non-focused agent
+shows only as a bare count (`"input — 1 queued (other agents)"`) — never its
+text — since you are not looking at that conversation; switch focus to that
+agent to see it in full. The count survives a focus change even though the
+transcript row does not (switching away clears the whole transcript, the
+same way it always has, and switching back rebuilds it from the persisted
+log only — a message that was never sent was never persisted either, so it
+is not reconstructed, though the count on the strip is correct the instant
+you refocus that agent).
+
+**`Up` on an empty input recalls it.** With the input box empty and at least
+one message queued FOR THE AGENT YOU ARE CURRENTLY FOCUSED ON, `Up` pulls the
+MOST RECENTLY queued one back into the editor for re-editing or
+resubmission, removing it from the queue — a recalled message is never also
+delivered. `Up` never reaches into a different agent's own queue. With
+nothing queued for the focused agent, `Up` keeps its ordinary meaning (see
+"Why `Up`/`Down` scroll, not recall history," below) — this is a narrow
+addition to that behavior, not a replacement of it. To discard a queued
+message instead of resending it, recall it with `Up` and then clear the
+input the ordinary way (`Ctrl-U`, or backspacing) — `Esc` does NOT discard a
+queued message (a reflex key is not a safe place for a destructive action)
+and keeps its existing meanings unconditionally.
+
+**`tui.busy_input` picks what "submitted while busy" means**, settable in
+`settings.json` and adjustable for the rest of the session from `/settings`'s
+"display" group (`Enter` cycles it, the same way the permission mode row
+cycles its own three states):
+
+- `queue` (the default) — withholds the message entirely until the agent it
+  was typed for is no longer generating a reply, then sends it, exactly
+  like every other prompt. An agent that finishes outright (rather than
+  simply going idle) before a queued message can be sent never receives
+  it — a notice lists every message that could not be delivered, and the
+  newest is restored to the input box if you are still looking at that
+  same, now-finished agent and have not started typing something else.
+- `steer` — delivers the message at the running turn's own next tool-loop
+  step, via the same steer primitive `/steer <agent> <text>` already uses for
+  a child agent (steer is bidirectional, Claude-Code-style, so steering the
+  very agent you are talking to works the same way). **Steer never lands
+  mid-generation** — it is folded into context no sooner than the model's
+  next inference step within the current turn's tool loop, never while a
+  model call is actually in flight.
+
+There is no third, "cancel the current reply but keep talking to this same
+agent" mode. Doing that would need a turn cancel that returns control to the
+agent rather than ending its session, and conway's runtime does not have
+one today — a `busy_input` mode that reused the existing, session-ending
+cancel would silently end the conversation it claimed to be interrupting,
+so it is not offered; that gap is tracked as its own, separate piece of
+work. If you want to abandon the current session outright, `Ctrl-C` still
+does that.
+
+A `!`/`!>` shell command or a `/`-prefixed slash command is never affected by
+`busy_input` — neither is "a prompt" in the sense this setting governs, and
+both still run (or open) immediately regardless of what the focused agent is
+doing.
+
+**Quitting with a non-empty queue** (`/quit` or `Ctrl-D`) is refused the
+first time, with a notice naming how many messages would be discarded —
+quitting again within a couple of seconds confirms it, the same two-press
+shape double-`Ctrl-C` already uses to force an exit. (Double-`Ctrl-C` itself
+is NOT additionally gated this way — it is already its own deliberate,
+universally-understood "I mean it" signal.) The FIRST `Ctrl-C` is not
+silent about it either, though: if any agent has a non-empty queue when you
+press it, a notice names how many messages would be lost if you press
+`Ctrl-C` again, so the most common escape gesture never discards a queue
+with no warning at all.
+
 ### Mentioning files
 
 Typing `@` at a word boundary (input start, or right after whitespace —
@@ -955,23 +1042,27 @@ on it. The status markers:
 
 `/settings` opens a menu of six groups: **defaults** (the default role and
 the default model — see below), **display** (show reasoning traces, show
-timestamps), **tool output** (how many lines a folded tool call shows
-before `Ctrl-O` is needed), **permissions** (cycle the permission mode;
-review or revoke individual grants under **allow** — flat and structured
-alike; read-only **deny** and **prompt** sections listing every rule —
-flat or structured — that any permissions file, trusted or not, has put in
-force, each with the file it came from; and **hooks**, a fourth, revocable
-review list), **providers** (add or remove a `backends.<id>` entry — see
+timestamps, and `busy input` — `queue`/`steer`, see "Typing
+while the agent works," above), **tool output** (how many lines a folded
+tool call shows before `Ctrl-O` is needed), **permissions** (cycle the
+permission mode; review or revoke individual grants under **allow** — flat
+and structured alike; read-only **deny** and **prompt** sections listing
+every rule — flat or structured — that any permissions file, trusted or
+not, has put in force, each with the file it came from; and **hooks**, a
+fourth, revocable review list), **providers** (add or remove a
+`backends.<id>` entry — see
 [`providers.md`](providers.md#managing-providers-from-the-tui)), and
 **plugins** — a single shortcut row that opens `/plugin` (below); this
 menu itself no longer lists plugins directly. `Up`/`Down` navigate,
-`Enter` toggles a boolean, cycles the default role, expands/collapses a
-group, revokes a selected grant/hook row, or opens `/plugin`,
-`Left`/`Right` step the numeric tool-preview setting, `Esc` closes. The
-two display toggles, the permission-mode cycle, and every revoke action
-apply to this session only; the tool-preview line count persists to
-`[tui.tool_preview_lines]` in `settings.json` when you step it.
-Permission-mode and grant details are covered in
+`Enter` toggles a boolean, cycles the default role or the busy-input mode,
+expands/collapses a group, revokes a selected grant/hook row, or opens
+`/plugin`, `Left`/`Right` step the numeric tool-preview setting, `Esc`
+closes. The display settings (including busy input), the permission-mode
+cycle, and every revoke action apply to this session only — `busy input`
+starts from `[tui.busy_input]` in `settings.json` (default `queue`) but,
+like the other two display rows, cycling it here never writes that file
+back; the tool-preview line count persists to `[tui.tool_preview_lines]`
+when you step it. Permission-mode and grant details are covered in
 [`permissions.md`](permissions.md).
 
 **Defaults, not session state — `/model` and `/role` stay top-level

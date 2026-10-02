@@ -459,6 +459,24 @@ impl App {
         // `None` (no resolvable home directory); the session still runs
         // with in-memory-only history in that case.
         state.history_cap = crate::tui::state::clamp_history_size(tui_config.history_size);
+        // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: `[tui.busy_input]`
+        // (default `queue`) seeds the session's STARTING value; `/settings`
+        // changes it for the rest of this session only, the same
+        // session-only posture `tool_preview_lines` already has (`state::
+        // busy_input`'s own module doc).
+        state.busy_input = tui_config.busy_input;
+        // Orchestrator ruling (review round 2 of the same board item):
+        // `tui.busy_input = "interrupt"` was removed -- see
+        // `crate::tui::config::BusyInputMode`'s own doc. A `settings.json`
+        // still naming it loads successfully (`tui_config.busy_input` is
+        // already the `queue` fallback by the time it reaches here), but
+        // the operator gets a startup notice rather than a silently
+        // different session than the one they configured.
+        if let Some(warning) = tui_config.busy_input_warning {
+            state
+                .transcript
+                .push(crate::tui::state::Entry::Notice { text: warning });
+        }
         let history_path = conway::config::discovery::history_file_path(
             &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
         );
@@ -936,6 +954,7 @@ impl App {
             history_path,
             env: env_vars,
             cwd,
+            quit_queue_warned_at: None,
         })
     }
 

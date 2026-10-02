@@ -900,8 +900,24 @@ impl Runtime {
         // are, immediately above -- `agent_loop` moves into the spawned
         // task below, so nothing on it is readable afterward.
         let plugin_config = agent_loop.plugin_config.clone();
+        // Read out before the whole-struct move into the spawned task
+        // below, same as `prompt_notify`/`parent`/`plugin_config` just
+        // above -- `bool` is `Copy`.
+        let initial_awaiting_prompt = agent_loop.resume_gate.awaiting_prompt;
 
         self.tree.attach(node)?;
+        // Mirrors that initial value onto the tree the instant the node
+        // exists -- see `start_root`'s own identical call (that path
+        // inlines its own attach+spawn rather than sharing this one) for
+        // the full rationale: without this, an agent whose gate starts
+        // `true` (every `resume_root` call, and a `keep_alive` fork/spawn
+        // child -- see `ResumeGate`'s own doc on `SpawnSpec::keep_alive`)
+        // reads `AgentTree::awaiting_prompt == false` ("busy") for the
+        // entire window before its first prompt/steer ever arrives, even
+        // though it is genuinely idle at the resume gate from its very
+        // first iteration.
+        self.tree
+            .mark_awaiting_prompt(agent_id, initial_awaiting_prompt);
 
         let task: JoinHandle<AgentResult> = tokio::spawn(async move { agent_loop.run().await });
         let join = supervisor::supervise(SuperviseArgs {
@@ -1387,6 +1403,17 @@ impl Runtime {
     /// for an unknown agent.
     pub fn turn_in_flight(&self, agent: AgentId) -> bool {
         self.tree.turn_in_flight(agent)
+    }
+
+    /// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` round 2: whether `agent`'s
+    /// own loop is idle at its resume gate RIGHT NOW, with nothing left to
+    /// do until the caller's next prompt -- `AgentTree::awaiting_prompt`'s
+    /// own doc has the full rationale for why this, not a combination of
+    /// `turn_in_flight`/`in_flight_tools`, is the honest single "is this
+    /// agent busy" signal (it spans a model round-trip, tool dispatch, and
+    /// the gap between them). `false` for an unknown agent.
+    pub fn awaiting_prompt(&self, agent: AgentId) -> bool {
+        self.tree.awaiting_prompt(agent)
     }
 
     /// The runtime half of the facade's ephemeral→persistent promote (B3):

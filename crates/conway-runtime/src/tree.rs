@@ -215,6 +215,24 @@ struct TreeEntry {
     /// `agent_loop.rs`'s `run_inner`. See [`InFlightCall`]'s own doc for
     /// why this lives here rather than on `LoopState`.
     in_flight_tools: Mutex<Vec<InFlightCall>>,
+    /// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` round 2 (CRITICAL: a
+    /// "busy" signal composed from `turn_in_flight`/`in_flight_tools`
+    /// alone still has a real gap -- the window between a batch's results
+    /// being processed and the NEXT round's own `mark_turn_started`, during
+    /// which the loop is persisting records and building the next
+    /// context): mirrors `agent_loop.rs`'s own [`ResumeGate::
+    /// awaiting_prompt`] (`agent_loop.rs`), which is the loop's own single
+    /// honest answer to "is there nothing left to do until the caller's
+    /// next prompt arrives" -- `true` for exactly the window a `keep_alive`
+    /// agent's `run_inner` sits at its top-of-loop gate (set by
+    /// `AgentLoop::end_keep_alive_turn`, cleared the instant that wait
+    /// resolves), and permanently `false` for a non-`keep_alive` agent
+    /// (which never reaches that gate at all -- `ResumeGate::default()`),
+    /// matching the intent that a one-shot agent is "busy" the whole time
+    /// it runs, with no idle gaps. `false` at `attach`, matching
+    /// `ResumeGate::default()`'s own starting value exactly (a `keep_alive`
+    /// agent's very first turn also runs immediately, never gated).
+    awaiting_prompt: AtomicBool,
 }
 
 /// The multi-agent tree: attachment, structural lookups, cancellation
@@ -274,6 +292,7 @@ impl AgentTree {
                 cancel_reason: std::sync::Mutex::new(None),
                 turn_in_flight: AtomicBool::new(false),
                 in_flight_tools: Mutex::new(Vec::new()),
+                awaiting_prompt: AtomicBool::new(false),
             },
         );
         // Released before emitting: `EventBus::emit` is synchronous and
@@ -424,6 +443,13 @@ impl AgentTree {
             // that site but always reaches this one (see `turn_in_flight`'s
             // own doc on `TreeEntry`).
             entry.turn_in_flight.store(false, Ordering::SeqCst);
+            // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` round 2: the same
+            // defensive clear for `awaiting_prompt` -- an agent hard-
+            // cancelled WHILE sitting at the resume gate never reaches
+            // either of `agent_loop.rs`'s own `awaiting_prompt = false`
+            // sites (its `tokio::select!` returns via `finish_cancelled`
+            // instead), but always reaches this one.
+            entry.awaiting_prompt.store(false, Ordering::SeqCst);
             let _ = entry.result_tx.send(Some(result));
             Ok(true)
         } else {
@@ -466,6 +492,37 @@ impl AgentTree {
         nodes
             .get(&agent)
             .map(|entry| entry.turn_in_flight.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
+    /// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` round 2: records that
+    /// `agent`'s `ResumeGate::awaiting_prompt` just changed -- called from
+    /// `agent_loop.rs` alongside EVERY site that mutates the real gate
+    /// field (`AgentLoop::end_keep_alive_turn`'s own `= true`, and both of
+    /// `run_inner`'s own `= false` sites, one per `budget.deadline` arm),
+    /// never computed independently. A no-op for an unknown agent, matching
+    /// [`Self::mark_turn_started`]'s same best-effort posture.
+    pub fn mark_awaiting_prompt(&self, agent: AgentId, value: bool) {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        if let Some(entry) = nodes.get(&agent) {
+            entry.awaiting_prompt.store(value, Ordering::SeqCst);
+        }
+    }
+
+    /// Whether `agent`'s own `run_inner` loop is currently sitting at its
+    /// top-of-loop resume gate, idle, with nothing left to do until the
+    /// caller's next prompt arrives -- a plain code span, not a link, to
+    /// this type's own private `awaiting_prompt` field doc: why this (not a
+    /// combination of `turn_in_flight`/`in_flight_tools`) is the honest
+    /// single signal for "is this agent busy right now," spanning a model
+    /// round-trip, tool dispatch, AND the gap between them, up to the
+    /// genuine end of the turn. `false` for an unknown agent, matching
+    /// [`Self::turn_in_flight`]'s same default.
+    pub fn awaiting_prompt(&self, agent: AgentId) -> bool {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        nodes
+            .get(&agent)
+            .map(|entry| entry.awaiting_prompt.load(Ordering::SeqCst))
             .unwrap_or(false)
     }
 

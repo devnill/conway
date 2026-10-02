@@ -1520,6 +1520,13 @@ impl AgentLoop {
                             }
                             () = self.resume_gate.notify.notified() => {
                                 self.resume_gate.awaiting_prompt = false;
+                                // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`
+                                // round 2: mirrors the real gate field on
+                                // the tree, the same way `mark_turn_started`
+                                // mirrors `Event::TurnStarted`'s own
+                                // emission -- see `AgentTree::
+                                // awaiting_prompt`'s own doc.
+                                self.deps.tree.mark_awaiting_prompt(self.agent_id, false);
                             }
                         }
                     }
@@ -1531,6 +1538,7 @@ impl AgentLoop {
                             }
                             () = self.resume_gate.notify.notified() => {
                                 self.resume_gate.awaiting_prompt = false;
+                                self.deps.tree.mark_awaiting_prompt(self.agent_id, false);
                             }
                         }
                     }
@@ -2535,6 +2543,11 @@ impl AgentLoop {
         *contract_retried = false;
         state.runway.reset_turn_scoped();
         self.resume_gate.awaiting_prompt = true;
+        // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` round 2: mirrors the real
+        // gate field on the tree -- see `AgentTree::awaiting_prompt`'s own
+        // doc for why this is the honest "busy" signal a facade caller
+        // outside this loop's own live subscribers can read.
+        self.deps.tree.mark_awaiting_prompt(self.agent_id, true);
     }
 
     /// Checks every configured budget dimension at the top of a turn.

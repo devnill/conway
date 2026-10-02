@@ -33,6 +33,25 @@ use crate::tui::state::{AppState, Mode};
 
 const PLACEHOLDER: &str = "Type a message, or / for commands";
 
+/// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: the queued-strip's own first-
+/// line budget inside the box's border title -- long enough to be useful,
+/// short enough that it cannot crowd out the `input`/`shell`/`shell →
+/// model` chrome word it is appended to. Mirrors `view/transcript.rs`'s own
+/// small, per-module truncation helper rather than sharing one (that
+/// module's own doc: "a handful of near-identical small per-module
+/// time-formatting helpers rather than one shared util with drifting
+/// callers").
+const QUEUED_STRIP_PREVIEW_CHARS: usize = 40;
+
+fn truncate_with_ellipsis(text: &str, budget: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= budget {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(budget.saturating_sub(1)).collect();
+    format!("{truncated}…")
+}
+
 /// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT`, review round 1 (SIGNIFICANT
 /// finding 2, "prose starting with `!` is executed silently"): the box's
 /// own title/border change the INSTANT the draft starts with `!`, before
@@ -57,17 +76,57 @@ const PLACEHOLDER: &str = "Type a message, or / for commands";
 /// `disabled` (a modal/form surface covering the input) wins outright --
 /// mirrors the pre-existing "input (paused)" precedence over anything else
 /// this box could show.
-fn input_box_chrome(state: &AppState, disabled: bool, theme: &Theme) -> (&'static str, Style) {
+fn input_box_chrome(state: &AppState, disabled: bool, theme: &Theme) -> (String, Style) {
     if disabled {
-        return ("input (paused)", theme.border_normal);
+        return ("input (paused)".to_string(), theme.border_normal);
     }
-    if state.input.starts_with("!>") {
+    let (base, style) = if state.input.starts_with("!>") {
         ("shell → model", theme.border_accent)
     } else if state.input.starts_with('!') {
         ("shell", theme.border_accent)
     } else {
         ("input", theme.border_normal)
+    };
+    (queued_strip_title(state, base), style)
+}
+
+/// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: the queued strip itself --
+/// appended to the box's own border title (the line directly framing the
+/// input) rather than a second bordered element, so no layout change is
+/// needed to show it.
+///
+/// Review round 1, CRITICAL fix stated as a choice: `AppState::
+/// queued_strip_summary` returns `(focused_count, first_line, other_
+/// count)`, scoped to the FOCUSED agent -- a DIFFERENT, non-focused
+/// agent's own queue is folded into `other_count` alone, shown as a bare
+/// number with no text (`state::busy_input`'s own module doc states the
+/// reasoning: naming a background agent's in-progress draft in the
+/// currently-focused conversation would leak a different agent's business
+/// into this one). `(0, None, 0)` (nothing queued anywhere, the
+/// overwhelmingly common case) leaves `base` untouched.
+fn queued_strip_title(state: &AppState, base: &str) -> String {
+    let (focused_count, first_line, other_count) = state.queued_strip_summary();
+    if focused_count == 0 && other_count == 0 {
+        return base.to_string();
     }
+    let mut title = if focused_count > 0 {
+        let first_line = first_line.unwrap_or_default();
+        let first_line = first_line.lines().next().unwrap_or(first_line);
+        format!(
+            "{base} — {focused_count} queued: {}",
+            truncate_with_ellipsis(first_line, QUEUED_STRIP_PREVIEW_CHARS)
+        )
+    } else {
+        base.to_string()
+    };
+    if other_count > 0 {
+        if focused_count > 0 {
+            title.push_str(&format!(" (+{other_count} for other agents)"));
+        } else {
+            title.push_str(&format!(" — {other_count} queued (other agents)"));
+        }
+    }
+    title
 }
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
@@ -378,5 +437,100 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(!text.contains("shell"), "{text:?}");
+    }
+
+    /// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`, acceptance 1: "two messages
+    /// typed during a turn show '2 queued'".
+    #[test]
+    fn two_queued_messages_show_the_count_and_the_next_messages_first_line() {
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.queue_prompt(agent, "fix the bug in the parser".to_string());
+        state.queue_prompt(agent, "also run the tests".to_string());
+
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("2 queued"), "{text:?}");
+        assert!(
+            text.contains("fix the bug in the parser"),
+            "the strip must show the NEXT message to send: {text:?}"
+        );
+    }
+
+    /// Review round 1, CRITICAL fix: a message queued for a DIFFERENT,
+    /// non-focused agent shows as a bare count only -- never its text.
+    #[test]
+    fn a_queued_message_for_another_agent_shows_only_a_bare_count() {
+        let a = AgentId::new();
+        let b = AgentId::new();
+        let mut state = AppState::new(a);
+        state.queue_prompt(a, "private draft for a".to_string());
+        state.focus_agent(b);
+
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("1 queued"), "{text:?}");
+        assert!(text.contains("other agents"), "{text:?}");
+        assert!(
+            !text.contains("private draft"),
+            "a non-focused agent's own queued text must never leak into the strip: {text:?}"
+        );
+    }
+
+    /// With nothing queued, the title carries no queued-strip suffix at
+    /// all -- the common, unaffected case.
+    #[test]
+    fn no_queued_messages_shows_no_strip() {
+        let state = AppState::new(AgentId::new());
+
+        let backend = TestBackend::new(60, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!text.contains("queued"), "{text:?}");
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_leaves_short_text_untouched() {
+        assert_eq!(truncate_with_ellipsis("short", 40), "short");
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_shortens_long_text() {
+        let long = "x".repeat(100);
+        let truncated = truncate_with_ellipsis(&long, 10);
+        assert_eq!(truncated.chars().count(), 10);
+        assert!(truncated.ends_with('…'));
     }
 }
