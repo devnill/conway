@@ -1456,6 +1456,7 @@ mod tests {
             },
             3,
             false,
+            &ctrl_o(),
             &hostile_theme,
         );
 

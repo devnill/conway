@@ -7,14 +7,22 @@ how a rollback treats a hand edit you made yourself.
 
 ## What this is for
 
-`conway.history`'s `/conway.history.rewind <seq>` can rewind the
-CONVERSATION to any point without destroying anything — but nothing snapshots
-the FILES a turn touched. Before this plugin, an operator whose model edited
-the wrong file, or took a right one too far, had exactly one recovery: git,
-which cannot tell which uncommitted edits were theirs and which were the
-model's. `conway.checkpoint` snapshots a file's bytes around every
-`write`/`edit` tool call, and gives you three commands to preview and undo
-what changed.
+`conway.checkpoint` is a quick, transient undo for when the model gets a file
+wrong — editor-style, like an aggressive multi-level "undo" that survives a
+killed session, not a version-control substitute. It snapshots a file's bytes
+around every `write`/`edit` tool call, and gives you three commands to
+preview and undo what changed; `conway.history`'s own `/conway.history.rewind
+<seq>` is its conversation-side counterpart, rewinding what was SAID without
+destroying anything.
+
+**This is deliberately narrow, on an explicit operator ruling.** It is not a
+merge tool, and a rollback never tries to keep only "the model's hunks" out
+of a file that also has your own hand edit in it — see [Rollback preserves a
+hand edit, by default](#rollback-preserves-a-hand-edit-by-default) for
+exactly what it does instead. If you want real version control — history
+across sessions, blame, a diff against last week — use git; this plugin
+exists for the five minutes right after an edit went wrong, not as a
+replacement for it.
 
 **This reverses a written ruling, on purpose.** `docs/vision/CATALOGUE.md`
 used to name filesystem checkpointing as something git already solves and
@@ -33,10 +41,11 @@ FIRST time a session touches a given path: the plugin's observer reads the
 target path's real bytes just before the write runs
 (`ToolObserver::before_tool_call`, which fires after the permission decision
 allows the call and before the tool executes) and again right after the
-call lands, and stores both, content-addressed, in a shadow store under
-`.conway/checkpoints`. It reads whatever the tool call's own arguments
-name, without re-deriving the tool's output — so this works identically
-whether `edit` replaced one line or `write` replaced the whole file.
+call lands, and stores both, content-addressed, in a shadow store (see
+[Where the store lives](#where-the-store-lives) for exactly where). It reads
+whatever the tool call's own arguments name, without re-deriving the tool's
+output — so this works identically whether `edit` replaced one line or
+`write` replaced the whole file.
 
 From a path's second touch in a session onward, the "before" bytes are the
 bytes this plugin already captured as that path's most recent earlier
@@ -55,6 +64,29 @@ reason: there is no seam here (or there) that watches what an unconstrained
 shell subprocess actually touched. If a turn ran `bash` at all, treat this
 plugin's coverage of that turn's file changes as partial, not complete.
 
+## Where the store lives
+
+Not inside your project. The shadow store sits beside `conway`'s own session
+log — the operator's own config directory (`~/.conway/` or
+`$CONWAY_CONFIG_DIR`), under a subdirectory keyed by the enclosing git root —
+never `.conway/checkpoints` inside the checkout itself. Two things follow
+from that:
+
+- **`git status` never sees it.** A snapshot is transient undo data, not
+  something that belongs in your working tree's own untracked-file list.
+- **Launch directory doesn't matter.** A launch from a project's root and a
+  launch from one of its subdirectories (`repo/pkg/sub/`, say) share the
+  SAME store, exactly like `conway`'s own session log already does — undo
+  history is keyed to the project, never to whichever directory you happened
+  to be standing in.
+
+If you have a project with a checkpoint store from before this was true, it
+is migrated once, automatically, the next time `conway` runs in that
+project — nothing to do on your end. In the rare case the move itself can't
+complete (the two locations are on different filesystems, say), the old
+store is left exactly where it was, reachable the old way, and new snapshots
+start landing at the new location.
+
 ## Three commands
 
 - **`/conway.checkpoint.list`** — every snapshot this session has recorded,
@@ -64,7 +96,9 @@ plugin's coverage of that turn's file changes as partial, not complete.
   about one session — see [From a shell, after the session is
   gone](#from-a-shell-after-the-session-is-gone).
 - **`/conway.checkpoint.diff <seq>`** — a unified diff, per touched path, of
-  what `rollback <seq>` would change. Read-only; never writes anything.
+  what `rollback <seq>` would change. Read-only; never writes anything. A
+  path a plain rollback would REFUSE (see below) is marked as a conflict
+  rather than previewed as an ordinary restore.
 - **`/conway.checkpoint.rollback <seq> [<path>] [--all] [--rewind]`** —
   restores every path touched at or after `<seq>` to the state it had
   immediately before that (or only `<path>`, when given).
@@ -134,6 +168,24 @@ about to perform. For a path the model *created*, the whole file shows as
 `-` lines and nothing arrives: rolling back deletes it, and the output says
 so in as many words.
 
+**A path a plain rollback would refuse looks different.** If you have a hand
+edit in a file since conway's own last write there, `rollback <seq>` (no
+`--all`) will not touch it — so `diff` says that first, in as many words
+("rollback will not touch this file"), rather than quietly rendering the
+`--all`-forced content as if it were the plain command's own output:
+
+```
+/conway.checkpoint.diff 4
+  /work/notes.txt: rollback will not touch this file -- a hand edit was
+  made since conway.checkpoint's last recorded write; `--all` would
+  discard it and restore the content below
+  --- /work/notes.txt (current)
+  +++ /work/notes.txt (after `rollback 4 --all` -- a plain rollback refuses this path)
+  @@ -1,1 +1,1 @@
+  -YOUR-HAND-EDIT
+  +ORIGINAL-BYTES
+```
+
 ## Rollback preserves a hand edit, by default
 
 A rollback is not a naive overwrite. For every path it touches, it checks
@@ -144,6 +196,15 @@ restore proceeds. **If they differ — you edited the file yourself, by hand,
 since conway's last write — that is a conflict**, reported per path, and the
 file is left untouched. Nothing is silently overwritten. Pass `--all` to
 force the restore anyway, discarding the hand edit.
+
+**A conflict is a refusal, and is reported as one.** From a shell,
+`conway conway.checkpoint.rollback` exits non-zero when any touched path hit
+a conflict — a script checking only the exit code sees the refusal, not a
+false success, even when OTHER paths in the same invocation restored
+cleanly. In the TUI, the same outcome reads as an error notice, not an
+ordinary one. `--rewind` (below) is never honored alongside a conflict
+either: it would fork the conversation at a seq the files never actually
+fully reached.
 
 **A rollback snapshots the CURRENT state before it writes anything, so a
 rollback is itself undoable.** It is recorded as its own entry — visible in
@@ -173,14 +234,16 @@ the two-command recipe instead:
   the bound.
 - **Per-project**: the shadow store's total size is held to 256 MiB
   (`DEFAULT_MAX_PROJECT_BYTES`), shared across every session under the same
-  `.conway/checkpoints` root. When a new snapshot would push the total over
-  the bound, the OLDEST snapshots are evicted first, with a note naming how
-  many. An evicted snapshot is never silently treated as available — a
-  `diff`/`rollback` against it reports plainly that its content is gone.
+  store root (see [Where the store lives](#where-the-store-lives)). When a
+  new snapshot would push the total over the bound, the OLDEST snapshots are
+  evicted first, with a note naming how many. An evicted snapshot is never
+  silently treated as available — a `diff`/`rollback` against it reports
+  plainly that its content is gone.
 
-Both are constructor parameters (`CheckpointPlugin::with_bounds`) for an
-embedder that wants different numbers; the CLI's own default install uses
-the two constants above.
+Both are constructor parameters (`CheckpointPlugin::with_root_and_bounds`,
+or `with_bounds` for an embedder happy with the old in-project store
+location) for an embedder that wants different numbers; the CLI's own
+default install uses the two constants above.
 
 ## What this does not build
 

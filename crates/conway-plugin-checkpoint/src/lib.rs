@@ -106,7 +106,7 @@ mod diff;
 mod store;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use conway::plugin::{
@@ -382,6 +382,20 @@ impl Command for ListCommand {
 /// direction either -- hence the `(current)` / `(after rollback to seq N)`
 /// labels below, which make the direction legible without reading this
 /// source.
+///
+/// # A conflicted path gets a different label, not the same preview
+///
+/// A plain `/conway.checkpoint.rollback <seq>` REFUSES a path whose bytes on
+/// disk right now disagree with what conway itself last wrote there (a hand
+/// edit since) -- `rollback`'s own three-way check, read-only here via
+/// [`CheckpointStore::hand_edit_conflict`]. Before this doc's own item, this
+/// command rendered that path's diff exactly like any other, labelled
+/// `(after rollback to seq N)` -- which is a lie for a conflicted path: an
+/// unforced `rollback <seq>` would not produce that content at all, it would
+/// refuse the path outright and leave the hand edit in place. A conflicted
+/// path now gets an explicit notice line first, and its diff (still shown,
+/// since the content IS what `--all` would produce) is labelled
+/// accordingly -- never presented as what the plain command does.
 struct DiffCommand {
     store: Arc<CheckpointStore>,
 }
@@ -452,6 +466,31 @@ impl Command for DiffCommand {
                 }
             };
             let current_bytes = std::fs::read(&entry.path).unwrap_or_default();
+            // Is this a path a PLAIN `rollback <seq>` would actually refuse?
+            // Same question `rollback` itself asks (`CheckpointStore::
+            // hand_edit_conflict`'s own doc) -- never a second, separately
+            // worded guess at the same rule.
+            let conflict = match self
+                .store
+                .hand_edit_conflict(&session, Path::new(&entry.path))
+            {
+                Ok(conflict) => conflict,
+                Err(err) => {
+                    lines.push(format!(
+                        "{}: error checking for a hand edit: {err}",
+                        entry.path
+                    ));
+                    continue;
+                }
+            };
+            if conflict {
+                lines.push(format!(
+                    "{}: rollback will not touch this file -- a hand edit was made since \
+                     conway.checkpoint's last recorded write; `--all` would discard it and \
+                     restore the content below",
+                    entry.path
+                ));
+            }
             // The `-` side is the CURRENT file and the `+` side is the
             // rollback target -- see this command's own doc comment for
             // why that direction, and not its inverse, is the one a
@@ -459,7 +498,14 @@ impl Command for DiffCommand {
             let old_text = String::from_utf8_lossy(&current_bytes);
             let new_text = String::from_utf8_lossy(&target_bytes);
             let old_label = format!("{} (current)", entry.path);
-            let new_label = format!("{} (after rollback to seq {seq})", entry.path);
+            let new_label = if conflict {
+                format!(
+                    "{} (after `rollback {seq} --all` -- a plain rollback refuses this path)",
+                    entry.path
+                )
+            } else {
+                format!("{} (after rollback to seq {seq})", entry.path)
+            };
             let mut rendered = diff::unified_diff(&old_label, &new_label, &old_text, &new_text);
             if rendered.is_empty() {
                 rendered = format!(
@@ -481,6 +527,33 @@ impl Command for DiffCommand {
 /// three-way conflict/hand-edit-preservation contract this delegates to
 /// [`CheckpointStore::rollback`] entirely -- this command is argument
 /// parsing and report formatting, nothing more.
+///
+/// # A conflict is reported as a refusal, not a success
+///
+/// When `report.conflicts` is non-empty (at least one touched path kept its
+/// hand edit rather than being restored), this returns [`CommandOutcome::
+/// Error`], never [`CommandOutcome::Output`] -- even when OTHER paths in the
+/// same invocation restored cleanly. Two call sites read this outcome, and
+/// both needed the same fix:
+///
+/// - **Headless** (`conway conway.checkpoint.rollback ...`,
+///   `conway_cli::commands::plugin::run`): `CommandOutcome::Output` always
+///   exits 0; a scripted caller that rolled back a path with a surviving
+///   hand edit saw a success and moved on, the exact lie board item
+///   `01M3SJBNF2KZRWA5P5SSF9B868`'s own evidence names. `CommandOutcome::
+///   Error` maps to a non-zero exit there, with no change needed to that
+///   call site at all.
+/// - **The TUI**: `CommandOutcome::Error` is what reads as a refusal rather
+///   than an ordinary notice.
+///
+/// `--rewind` is therefore never honored when a conflict occurred: forking
+/// the conversation at `seq` while a conflicted path was left UNrestored
+/// would claim the files reached that point together with the conversation,
+/// when they did not. The two-command recipe
+/// (`/conway.checkpoint.rollback <seq>` then, once every conflict is
+/// resolved, `/conway.history.rewind <seq>`) still works, and is now the
+/// only way to compose the two over a conflicted path at all -- `--all` or
+/// a narrower `<path>` retry makes the rollback itself conflict-free first.
 struct RollbackCommand {
     store: Arc<CheckpointStore>,
     max_snapshot_bytes: u64,
@@ -564,13 +637,21 @@ impl Command for RollbackCommand {
         }
         for conflicted in &report.conflicts {
             lines.push(format!(
-                "{}: a hand edit was made since conway.checkpoint's last recorded write -- not \
-                 restored (pass --all to force)",
+                "{}: rollback refused -- a hand edit was made since conway.checkpoint's last \
+                 recorded write; pass --all to force (this discards that edit)",
                 conflicted.path
             ));
         }
         for (path, reason) in &report.skipped {
             lines.push(format!("{path}: {reason}"));
+        }
+
+        if !report.conflicts.is_empty() {
+            // A refused rollback is a refusal -- see this struct's own doc,
+            // "A conflict is reported as a refusal, not a success", for why
+            // this is `Error` (never `Output`, never honoring `--rewind`)
+            // even when other paths in this same invocation DID restore.
+            return CommandOutcome::Error(lines.join("\n"));
         }
 
         if rewind {
@@ -597,12 +678,19 @@ pub struct CheckpointPlugin {
 
 impl CheckpointPlugin {
     /// `cwd` is the project directory a relative tool-call path or a
-    /// relative operator-typed `<path>` resolves against, and the parent
-    /// of this plugin's own `.conway/checkpoints` shadow store -- the
-    /// identical `.conway/<name>` convention `conway.skills`/
-    /// `conway.memory` already establish. Uses [`DEFAULT_MAX_SNAPSHOT_BYTES`]/
-    /// [`DEFAULT_MAX_PROJECT_BYTES`]; see [`Self::with_bounds`] for a
-    /// caller that wants different bounds.
+    /// relative operator-typed `<path>` resolves against, and -- the OLD,
+    /// pre-item-`01M3SJBNF2KZRWA5P5SSF9B868` default, still here for an
+    /// embedder with no env-aware resolution of its own -- the parent of
+    /// this plugin's shadow store, at `<cwd>/.conway/checkpoints`. **The
+    /// real `conway-cli` build does not call this**: it calls [`Self::
+    /// with_root`] instead, with a location resolved by `conway::config::
+    /// discovery::checkpoint_store_root` (env-aware: the operator's own
+    /// config directory, keyed by the enclosing git root, never inside the
+    /// project) -- see that function's own doc for why an in-project
+    /// store dirtied `git status` and split one project's undo history
+    /// across however many directories it was launched from. Uses
+    /// [`DEFAULT_MAX_SNAPSHOT_BYTES`]/[`DEFAULT_MAX_PROJECT_BYTES`]; see
+    /// [`Self::with_bounds`] for a caller that wants different bounds.
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         Self::with_bounds(cwd, DEFAULT_MAX_SNAPSHOT_BYTES, DEFAULT_MAX_PROJECT_BYTES)
     }
@@ -617,11 +705,96 @@ impl CheckpointPlugin {
     ) -> Self {
         let cwd = cwd.into();
         let root = cwd.join(".conway").join("checkpoints");
+        Self::with_root_and_bounds(root, cwd, max_snapshot_bytes, max_project_bytes)
+    }
+
+    /// Like [`Self::new`], but `root` -- where the shadow store itself
+    /// lives -- is resolved by the CALLER rather than derived from `cwd`.
+    /// `conway-cli`'s own production wiring (`first_party_plugins::
+    /// checkpoint_plugin`) is the one real caller: it resolves `root` via
+    /// `conway::config::discovery::checkpoint_store_root(cwd, env)`, which
+    /// is why this constructor -- not [`Self::new`] -- is what the shipped
+    /// binary actually installs. Uses [`DEFAULT_MAX_SNAPSHOT_BYTES`]/
+    /// [`DEFAULT_MAX_PROJECT_BYTES`]; see [`Self::with_root_and_bounds`]
+    /// for explicit bounds.
+    pub fn with_root(root: impl Into<PathBuf>, cwd: impl Into<PathBuf>) -> Self {
+        Self::with_root_and_bounds(
+            root,
+            cwd,
+            DEFAULT_MAX_SNAPSHOT_BYTES,
+            DEFAULT_MAX_PROJECT_BYTES,
+        )
+    }
+
+    /// [`Self::with_root`] with explicit bounds -- the fullest constructor,
+    /// every other one on this type delegates to it.
+    ///
+    /// Two things happen here, beyond opening the store, both best-effort
+    /// and both disclosed rather than silently assumed:
+    ///
+    /// 1. **A one-time migration off the OLD in-project location**
+    ///    (`<cwd>/.conway/checkpoints`), when `root` itself is a DIFFERENT
+    ///    path and nothing exists at `root` yet. A plain `fs::rename` --
+    ///    cheap, and correct for the overwhelmingly common case (the old
+    ///    and new locations are on the same filesystem, which they are
+    ///    whenever `CONWAY_CONFIG_DIR`/the operator's home directory and the
+    ///    project live on the same disk). If that rename fails for any
+    ///    reason -- most plausibly a cross-device move, e.g. a project on a
+    ///    network mount with a local home directory -- the old store is
+    ///    left exactly where it is, undiscovered by this or any later
+    ///    `CheckpointPlugin` construction: this plugin's own shadow store
+    ///    is transient undo data, not something worth a second, more
+    ///    elaborate migration path (a dual-root reader, a background copy)
+    ///    over. An operator in that position keeps old snapshots reachable
+    ///    the old way (reading `<cwd>/.conway/checkpoints` directly, or
+    ///    constructing a `CheckpointStore` against it by hand) and gets new
+    ///    ones at the new location from here on.
+    /// 2. **A self-ignoring `.gitignore`** (`*`) written into `root` --
+    ///    belt-and-braces for the rare fallback branch `checkpoint_store_
+    ///    root` itself documents (no home directory discoverable AND
+    ///    `CONWAY_CONFIG_DIR` unset), which still resolves inside the
+    ///    project. Harmless everywhere else: a `.gitignore` sitting outside
+    ///    any git working tree governs nothing.
+    ///
+    /// Both steps are best-effort (`let _ =`) for the identical reason this
+    /// plugin's observer never fails a tool call over a local filesystem
+    /// problem -- a permissions error here should degrade to "no migration,
+    /// no `.gitignore`," never to a `CheckpointPlugin` that fails to
+    /// construct at all.
+    pub fn with_root_and_bounds(
+        root: impl Into<PathBuf>,
+        cwd: impl Into<PathBuf>,
+        max_snapshot_bytes: u64,
+        max_project_bytes: u64,
+    ) -> Self {
+        let cwd = cwd.into();
+        let root = root.into();
+        Self::migrate_legacy_in_project_store(&cwd, &root);
+        let _ = std::fs::create_dir_all(&root);
+        let _ = std::fs::write(root.join(".gitignore"), "*\n");
         Self {
             store: Arc::new(CheckpointStore::new(root, cwd)),
             max_snapshot_bytes,
             max_project_bytes,
         }
+    }
+
+    /// See [`Self::with_root_and_bounds`]'s own doc, point 1, for the full
+    /// contract -- this is just the mechanism: a plain, best-effort
+    /// `fs::rename` of `<cwd>/.conway/checkpoints` onto `root`, run only
+    /// when the two paths actually differ and `root` does not already
+    /// exist (never clobbers a store that is already live at the new
+    /// location, e.g. on this plugin's SECOND construction in the same
+    /// project).
+    fn migrate_legacy_in_project_store(cwd: &Path, root: &Path) {
+        let legacy = cwd.join(".conway").join("checkpoints");
+        if legacy == root || root.exists() || !legacy.exists() {
+            return;
+        }
+        if let Some(parent) = root.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::rename(&legacy, root);
     }
 
     /// The store this plugin's observer and commands share -- exposed for
@@ -668,10 +841,12 @@ impl Plugin for CheckpointPlugin {
                        carry for the identical reason"
                 .to_string(),
             costs: format!(
-                "disk under .conway/checkpoints, bounded to {} bytes per snapshotted file and \
-                 {} bytes total per project -- both a skip and an eviction get a visible \
-                 notice rather than growing past the bound silently",
-                self.max_snapshot_bytes, self.max_project_bytes
+                "disk under {}, bounded to {} bytes per snapshotted file and {} bytes total per \
+                 project -- both a skip and an eviction get a visible notice rather than \
+                 growing past the bound silently",
+                self.store.root().display(),
+                self.max_snapshot_bytes,
+                self.max_project_bytes
             ),
         }
     }
@@ -806,6 +981,137 @@ mod tests {
         );
         assert_eq!(plugin.observers().len(), 1);
         assert!(plugin.tools().is_empty());
+    }
+
+    /// Item `01M3SJBNF2KZRWA5P5SSF9B868`, point 3: `with_root` resolves to
+    /// `root`, not `<cwd>/.conway/checkpoints` -- `description()`'s own
+    /// `costs` string names the REAL directory, so this doubles as the
+    /// regression guard for that string too.
+    #[test]
+    fn with_root_uses_the_given_root_not_cwd_dot_conway_checkpoints() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("elsewhere").join("store");
+        let plugin = CheckpointPlugin::with_root(&root, dir.path());
+        assert_eq!(plugin.store().root(), root);
+        assert!(
+            !dir.path().join(".conway").join("checkpoints").exists(),
+            "with_root must never also create the old in-project location"
+        );
+        assert!(
+            plugin
+                .description()
+                .costs
+                .contains(&root.display().to_string()),
+            "the operator-facing costs string must name the REAL root: {:?}",
+            plugin.description().costs
+        );
+    }
+
+    /// Point 3's self-ignoring `.gitignore` backstop -- written into `root`
+    /// regardless of where `root` resolves, so even the rare in-project
+    /// fallback (`checkpoint_store_root`'s own doc: no home directory
+    /// discoverable) cannot dirty `git status`.
+    #[test]
+    fn with_root_writes_a_self_ignoring_gitignore_into_the_store_root() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("store");
+        let _plugin = CheckpointPlugin::with_root(&root, dir.path());
+        let gitignore = std::fs::read_to_string(root.join(".gitignore"))
+            .expect("with_root must write a .gitignore into its own root");
+        assert_eq!(gitignore, "*\n");
+    }
+
+    /// Point 3's migration contract: an existing in-project store
+    /// (`<cwd>/.conway/checkpoints`, what every `CheckpointPlugin::new`
+    /// caller used before this item) is moved, once, to wherever `with_root`
+    /// resolves -- so a session's already-recorded snapshots are not
+    /// stranded by the relocation.
+    #[test]
+    fn with_root_migrates_an_existing_in_project_store_once() {
+        let dir = TempDir::new().unwrap();
+        let legacy_root = dir.path().join(".conway").join("checkpoints");
+        let old_plugin = CheckpointPlugin::new(dir.path());
+        assert_eq!(old_plugin.store().root(), legacy_root);
+        let session = "sess-migrated";
+        let target = dir.path().join("f.txt");
+        std::fs::write(&target, "v1").unwrap();
+        old_plugin
+            .store()
+            .record_observed(
+                session,
+                1,
+                &target,
+                ToolKind::Write,
+                None,
+                DEFAULT_MAX_SNAPSHOT_BYTES,
+                DEFAULT_MAX_PROJECT_BYTES,
+            )
+            .unwrap();
+        assert!(legacy_root.join("sessions").join(session).exists());
+
+        let new_root = dir.path().join("relocated").join("store");
+        let migrated_plugin = CheckpointPlugin::with_root(&new_root, dir.path());
+        assert!(
+            !legacy_root.exists(),
+            "the legacy store must be MOVED, not copied -- nothing left behind at the old \
+             location on a successful rename"
+        );
+        let entries = migrated_plugin
+            .store()
+            .entries(session)
+            .expect("read the migrated session's entries");
+        assert_eq!(
+            entries.len(),
+            1,
+            "the migrated session's own snapshot must still be there, at the new location"
+        );
+    }
+
+    /// The other half of the migration contract: a SECOND `with_root` call
+    /// against a project that already has a live store at the new location
+    /// must never overwrite it with whatever the legacy directory still
+    /// holds (e.g. from before an earlier migration already ran).
+    #[test]
+    fn with_root_never_clobbers_an_existing_store_at_the_new_location() {
+        let dir = TempDir::new().unwrap();
+        let new_root = dir.path().join("relocated").join("store");
+
+        // A session already recorded at the NEW location.
+        let first = CheckpointPlugin::with_root(&new_root, dir.path());
+        let target = dir.path().join("f.txt");
+        std::fs::write(&target, "already-at-new-location").unwrap();
+        first
+            .store()
+            .record_observed(
+                "sess-new",
+                1,
+                &target,
+                ToolKind::Write,
+                None,
+                DEFAULT_MAX_SNAPSHOT_BYTES,
+                DEFAULT_MAX_PROJECT_BYTES,
+            )
+            .unwrap();
+
+        // A STALE legacy directory also exists (e.g. left behind by a
+        // process that never got to migrate, or recreated after the fact).
+        let legacy_root = dir.path().join(".conway").join("checkpoints");
+        std::fs::create_dir_all(legacy_root.join("sessions").join("sess-legacy")).unwrap();
+
+        let second = CheckpointPlugin::with_root(&new_root, dir.path());
+        assert!(
+            second
+                .store()
+                .entries("sess-new")
+                .expect("read sess-new")
+                .iter()
+                .any(|e| e.path.ends_with("f.txt")),
+            "the already-migrated session must survive a second construction untouched"
+        );
+        assert!(
+            legacy_root.exists(),
+            "a stale legacy directory must be left alone once the new location is already live"
+        );
     }
 
     /// The observer's own end-to-end wiring: a real `write` call, observed,
@@ -1070,10 +1376,14 @@ mod tests {
         std::fs::write(&path, "hand-edited").unwrap();
         let conflict_out = rollback_cmd.invoke(ctx_for(session, "2")).await;
         match conflict_out {
-            CommandOutcome::Output(lines) => {
-                assert!(lines.iter().any(|l| l.contains("hand edit")), "{lines:?}");
+            // Item `01M3SJBNF2KZRWA5P5SSF9B868`: a conflict is a refusal,
+            // never `Output` -- see `RollbackCommand`'s own doc, "A
+            // conflict is reported as a refusal, not a success".
+            CommandOutcome::Error(message) => {
+                assert!(message.contains("hand edit"), "{message}");
+                assert!(message.contains("refused"), "{message}");
             }
-            other => panic!("expected Output, got {other:?}"),
+            other => panic!("expected Error, got {other:?}"),
         }
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -1123,6 +1433,42 @@ mod tests {
             }
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+    }
+
+    /// Item `01M3SJBNF2KZRWA5P5SSF9B868`: `--rewind` must never fork past a
+    /// conflict -- a refused rollback stays refused, not silently folded
+    /// into a conversation fork that claims the files reached `seq` when a
+    /// hand edit actually kept one of them exactly where it was.
+    #[tokio::test]
+    async fn rollback_with_rewind_refuses_rather_than_forking_past_a_conflict() {
+        let dir = TempDir::new().unwrap();
+        let plugin = CheckpointPlugin::new(dir.path());
+        let path = dir.path().join("f.txt");
+        let session = SessionId::new();
+        let observers = plugin.observers();
+        let observer = &observers[0];
+        for (seq, content) in [(1u64, "v1"), (2, "v2")] {
+            std::fs::write(&path, content).unwrap();
+            observer
+                .after_tool_call(&observer_ctx(), &call(session, "write", "f.txt", seq))
+                .await;
+        }
+        std::fs::write(&path, "hand-edited").unwrap();
+
+        let commands = plugin.commands();
+        let rollback_cmd = &commands[2];
+        let outcome = rollback_cmd.invoke(ctx_for(session, "2 --rewind")).await;
+        match outcome {
+            CommandOutcome::Error(message) => {
+                assert!(message.contains("refused"), "{message}");
+            }
+            other => panic!("expected Error (a refusal), got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "hand-edited",
+            "a refused rollback must never write the file, --rewind or not"
+        );
     }
 
     #[tokio::test]
@@ -1188,6 +1534,59 @@ mod tests {
         assert!(
             joined.contains("DELETES it"),
             "an absent baseline means the rollback deletes the path, and must say so: {joined}"
+        );
+    }
+
+    /// Item `01M3SJBNF2KZRWA5P5SSF9B868`: a path a plain `rollback <seq>`
+    /// would REFUSE (a hand edit since conway's last write) must not be
+    /// previewed as an ordinary forthcoming restore -- `diff` must mark it
+    /// as a conflict and label its own diff as what `--all` would produce,
+    /// never what the plain command would.
+    #[tokio::test]
+    async fn diff_marks_a_conflicted_path_instead_of_presenting_a_forced_restore_as_plain() {
+        let dir = TempDir::new().unwrap();
+        let plugin = CheckpointPlugin::new(dir.path());
+        let path = dir.path().join("f.txt");
+        let session = SessionId::new();
+        let observers = plugin.observers();
+        let observer = &observers[0];
+
+        for (seq, content) in [(1u64, "ORIGINAL-BYTES"), (2, "MODEL-WROTE-THIS")] {
+            std::fs::write(&path, content).unwrap();
+            observer
+                .after_tool_call(&observer_ctx(), &call(session, "edit", "f.txt", seq))
+                .await;
+        }
+        // The operator's own hand edit, bypassing conway -- a plain
+        // `rollback 2` would now refuse this path entirely.
+        std::fs::write(&path, "HAND-EDITED-BYTES").unwrap();
+
+        let commands = plugin.commands();
+        let diff_cmd = &commands[1];
+        let CommandOutcome::Output(lines) = diff_cmd.invoke(ctx_for(session, "2")).await else {
+            panic!("expected Output");
+        };
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("rollback will not touch this file"),
+            "a conflicted path must be marked as one `rollback <seq>` would refuse, not \
+             previewed as a plain restore: {joined}"
+        );
+        assert!(
+            joined.contains("--all"),
+            "the notice must name the way past the refusal: {joined}"
+        );
+        // Still useful: the forced-restore content is shown, but labelled
+        // as what `--all` would do, never as the plain command's own
+        // output.
+        assert!(
+            joined.contains("-HAND-EDITED-BYTES") && joined.contains("+ORIGINAL-BYTES"),
+            "the diff itself must still show what --all would restore: {joined}"
+        );
+        assert!(
+            !joined.contains("(after rollback to seq 2)"),
+            "a conflicted path's diff must not carry the PLAIN rollback label -- that is \
+             exactly the lie this item fixes: {joined}"
         );
     }
 

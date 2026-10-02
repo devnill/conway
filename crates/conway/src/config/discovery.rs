@@ -424,6 +424,59 @@ pub fn user_scope_project_permissions_path(
     )
 }
 
+/// Item `01M3SJBNF2KZRWA5P5SSF9B868`: where `conway.checkpoint`'s own
+/// shadow store (every snapshot it has ever captured, for every session in
+/// one project) lives -- the operator's own user-scope config directory,
+/// under a project-keyed subdirectory, never a `.conway/checkpoints`
+/// directory inside the project itself. Mirrors [`session_root`]'s own
+/// `sessions/<project-key>/` scheme exactly (same `find_enclosing_git_root`
+/// -then-[`encode_project_key`] key, same base directory [`user_config_path`]
+/// resolves into), on the identical footing
+/// [`user_scope_project_permissions_path`] already establishes for a
+/// different first-party store -- a new sibling path component
+/// (`checkpoints/<project-key>/`) rather than a new resolution scheme.
+///
+/// **Why not `<project_dir>/.conway/checkpoints`** (this plugin's own
+/// original location): that directory sits inside the checkout, so every
+/// snapshot it ever captures -- shadow copies of a file's bytes, taken on
+/// every `write`/`edit` tool call, purely so an operator can undo one --
+/// showed up as an untracked `.conway/` entry in `git status`, in whatever
+/// directory the operator happened to launch `conway` from (not necessarily
+/// the repository root, so two launches from two different subdirectories of
+/// the SAME project silently split one project's undo history across two
+/// disjoint stores -- the identical defect [`session_root`]'s own doc
+/// describes fixing for the session log, before this item did the same for
+/// checkpoints). This is transient, ephemeral undo data -- `conway.checkpoint`
+/// is a quick rewind for when the model gets it wrong, not a substitute for
+/// git -- so it belongs beside the session store it already keys off of, not
+/// inside the tree an operator commits.
+///
+/// Falls back to the OLD, pre-this-item default (`<project_dir>/.conway/
+/// checkpoints`) only if [`user_config_path`] itself returns `None` -- no
+/// home directory discoverable AND `CONWAY_CONFIG_DIR` unset, the same
+/// extreme edge [`session_root`] refuses to hard-fail over. `conway_plugin_
+/// checkpoint::CheckpointPlugin` writes a self-ignoring `.gitignore` into
+/// whatever directory this resolves to, specifically so that fallback branch
+/// still cannot dirty `git status` even when it lands inside the project.
+///
+/// **Migrates nothing on its own.** A project that already has an in-project
+/// `.conway/checkpoints` store from before this item keeps it exactly where
+/// it is; `CheckpointPlugin`'s own constructor is what moves it (a one-time,
+/// best-effort rename) the first time it resolves this new location and
+/// finds the old one still there -- see that type's own doc for the full
+/// migration contract and what happens when the rename itself cannot
+/// complete (e.g. the two locations are on different filesystems).
+pub fn checkpoint_store_root(project_dir: &Path, env: &HashMap<String, String>) -> PathBuf {
+    let project_dir = normalize_lexically(project_dir);
+    let key_dir = find_enclosing_git_root(&project_dir).unwrap_or_else(|| project_dir.clone());
+    match user_config_path(env).and_then(|p| p.parent().map(Path::to_path_buf)) {
+        Some(config_dir) => config_dir
+            .join("checkpoints")
+            .join(encode_project_key(&key_dir)),
+        None => project_dir.join(".conway").join("checkpoints"),
+    }
+}
+
 /// Lexically normalizes `path`: collapses `.`/`..` components without
 /// touching the filesystem (never resolves a symlink, never checks
 /// existence). Every other function in this module is pure/no-I/O for the
@@ -1150,6 +1203,91 @@ mod tests {
             "both still share the central permission-grants/ directory"
         );
     }
+
+    // -----------------------------------------------------------------
+    // `checkpoint_store_root` (item `01M3SJBNF2KZRWA5P5SSF9B868`) -- the
+    // destination `conway.checkpoint`'s own shadow store resolves to,
+    // instead of `.conway/checkpoints` inside the project.
+    // -----------------------------------------------------------------
+
+    /// **Fails against a version that resolves under the project
+    /// directory**: the headline property this item's own ruling asks for
+    /// -- a shadow snapshot must land under the operator's OWN config
+    /// directory, never inside the checkout (`session_root`'s own
+    /// `sessions/<project-key>/` scheme, mirrored here for
+    /// `checkpoints/<project-key>/`).
+    #[test]
+    fn checkpoint_store_root_resolves_under_the_config_dir_not_the_project() {
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/custom/config_dir".to_string(),
+        );
+        let resolved = checkpoint_store_root(Path::new("/Users/dan/my-project"), &env);
+        assert_eq!(
+            resolved,
+            PathBuf::from("/custom/config_dir/checkpoints/-Users-dan-my-project")
+        );
+        assert!(
+            !resolved.starts_with("/Users/dan/my-project"),
+            "must never resolve under the project directory itself: {}",
+            resolved.display()
+        );
+    }
+
+    /// Two different projects get two different stores, sharing the same
+    /// parent directory -- the identical property
+    /// `session_root_two_different_projects_get_two_different_roots` pins
+    /// for the sessions scheme this mirrors.
+    #[test]
+    fn checkpoint_store_root_differs_per_project_but_shares_a_parent() {
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/custom/config_dir".to_string(),
+        );
+        let a = checkpoint_store_root(Path::new("/Users/dan/project-a"), &env);
+        let b = checkpoint_store_root(Path::new("/Users/dan/project-b"), &env);
+        assert_ne!(a, b);
+        assert_eq!(a.parent(), b.parent(), "both still share the central root");
+    }
+
+    /// Required check: launching from a project's root and from a
+    /// subdirectory of that same project (no `.git` of its own) must
+    /// resolve to the SAME checkpoint store -- the identical property
+    /// `session_root_subdirectory_launch_resolves_to_the_same_key_as_the_
+    /// repo_root` pins for the session log, applied to the checkpoint
+    /// store this item relocates.
+    #[test]
+    fn checkpoint_store_root_subdirectory_launch_resolves_to_the_same_store_as_the_repo_root() {
+        let repo = tempfile_dir();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        let sub = repo.join("pkg").join("sub");
+        fs::create_dir_all(&sub).unwrap();
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/custom/config_dir".to_string(),
+        );
+
+        let from_root = checkpoint_store_root(&repo, &env);
+        let from_sub = checkpoint_store_root(&sub, &env);
+        assert_eq!(
+            from_root, from_sub,
+            "a subdirectory launch must find the SAME checkpoint store a repo-root launch \
+             would: {from_root:?} vs {from_sub:?}"
+        );
+    }
+
+    // The no-home/no-`CONWAY_CONFIG_DIR` fallback (`<project_dir>/.conway/
+    // checkpoints`, matching `session_root`'s own identical fallback shape)
+    // is not separately tested here, for the same reason `session_root`'s
+    // own test suite never exercises IT either: `user_config_path`'s `None`
+    // branch depends on `directories::BaseDirs::new()` finding no real home
+    // directory, which this test process's real environment cannot be made
+    // to simulate hermetically (unlike every other branch above, which
+    // `CONWAY_CONFIG_DIR` already redirects cleanly).
 
     #[test]
     fn find_enclosing_git_root_finds_an_ordinary_directory_dot_git_at_an_ancestor() {
