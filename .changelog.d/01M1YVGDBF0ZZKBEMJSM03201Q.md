@@ -1,0 +1,9 @@
+### Added
+
+- **One-shot mode can attach an image to a prompt** — board item `01M1YVGDBF0ZZKBEMJSM03201Q`. `conway -p "..." --image shot.png` (repeatable, PNG/JPEG/WebP, 5 MB each) reads, validates, and sends the file as a `ContentBlock::Image`, persists it as a new `LogRecord::UserImage` record, and renders it as a one-line `[image #N · WxH · size]` chip in `conway sessions show` and a resumed/live transcript, never the raw bytes.
+- **A model's vision support is now a real routing/admission capability.** `Capabilities::vision`/`RequiredCaps::vision` (a tri-state: declared-yes, declared-no, or undeclared) and a new `[[model]]` metadata field let a model explicitly declare `vision = true`/`vision = false`; `roles.<alias>.vision` adds a static per-role floor. A turn carrying an image routed to a role whose every candidate explicitly declares no vision support is refused at admission, naming the model; an undeclared model (most of `models.json`) is still sent the image, and a provider that genuinely cannot take it answers its own rejection as an ordinary backend error — the same "send, and let an unknown capability's own refusal name itself" choice already made for an undeclared reasoning capability.
+- `conway-cli`'s new `image_attach` module reads an image off the system clipboard (`pngpaste`/`osascript` on macOS, `wl-paste`/`xclip` on Linux, with a clear "install this" error when neither is available) or a file path, bounds its size, sniffs PNG/JPEG/WebP, and decodes pixel dimensions with no new dependency — the TUI composer's own Ctrl-V/drag-drop attach route is not wired to it yet in this change; one-shot's `--image` already uses it end to end.
+
+### Changed
+
+- `docs/interactive.md`, `docs/scripting.md`, and `docs/providers.md` document attaching an image, `--image`, and the vision capability/admission rule respectively.

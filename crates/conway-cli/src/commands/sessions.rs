@@ -449,7 +449,28 @@ async fn show(conway: &Conway, id: &str, json: bool, diff: bool) -> conway::Resu
     } else {
         for record in &records {
             println!("--- {} seq={:?} ---", record.kind_str(), record.seq());
-            println!("{record:#?}");
+            // `UserImage` renders its chip, never the raw `data_base64`
+            // payload -- `#[derive(Debug)]`'s own `{record:#?}` below would
+            // otherwise dump the full base64 string, exactly the "shows the
+            // bytes" failure this item's own acceptance bar names.
+            if let LogRecord::UserImage {
+                index,
+                width,
+                height,
+                data_base64,
+                ..
+            } = record
+            {
+                let byte_len = crate::image_attach::decode_base64(data_base64)
+                    .map(|b| b.len() as u64)
+                    .unwrap_or(0);
+                println!(
+                    "{}",
+                    crate::image_attach::render_chip(*index as usize, byte_len, *width, *height)
+                );
+            } else {
+                println!("{record:#?}");
+            }
             println!();
         }
     }

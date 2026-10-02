@@ -501,6 +501,7 @@ fn is_content_record(record: &LogRecord) -> bool {
     matches!(
         record,
         LogRecord::UserTurn { .. }
+            | LogRecord::UserImage { .. }
             | LogRecord::Assistant { .. }
             | LogRecord::ToolResultRecord { .. }
             | LogRecord::ForkDirective { .. }

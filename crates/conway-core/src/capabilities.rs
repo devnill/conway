@@ -28,6 +28,20 @@ pub struct Capabilities {
     pub max_context_tokens: u32,
     pub reasoning: bool,
     pub reliability_tier: ReliabilityTier,
+    /// Whether this `(backend, model)` accepts [`crate::content::
+    /// ContentBlock::Image`] in a request. Unlike every other field on this
+    /// struct, this is a tri-state, not a plain `bool`: `None` is the
+    /// common case (most `models.json`/metadata entries declare nothing
+    /// about vision at all) and is deliberately NOT the same as `Some(false)`.
+    /// [`RequiredCaps::satisfied_by`]'s vision check only refuses a
+    /// candidate that explicitly declares `Some(false)` -- an undeclared
+    /// (`None`) model is sent the image anyway and a provider that cannot
+    /// actually take it surfaces its own rejection as a normal backend
+    /// error. This mirrors the choice already made for an undeclared
+    /// reasoning-capability model on an Ollama-dialect backend: send, and
+    /// let the provider's own refusal name itself, rather than silently
+    /// dropping content the operator asked to attach.
+    pub vision: Option<bool>,
 }
 
 /// How (and whether) a model supports tool/function calling.
@@ -340,6 +354,13 @@ pub struct RequiredCaps {
     pub reasoning: Option<bool>,
     pub parallel_tool_calls: Option<bool>,
     pub min_reliability: Option<ReliabilityTier>,
+    /// `Some(true)` when this turn's content requires a vision-capable
+    /// model -- set dynamically by the runtime when an assembled turn
+    /// carries a [`crate::content::ContentBlock::Image`], and/or
+    /// statically by a role's configured floor. `Some(false)`/`None` never
+    /// refuse anything on their own: see [`Capabilities::vision`]'s own doc
+    /// for why an UNDECLARED candidate is still admitted.
+    pub vision: Option<bool>,
     /// Tokens reserved for model output and reasoning. A candidate is
     /// compatible only if `est_tokens + headroom_tokens <=
     /// caps.max_context_tokens`. Never `Option`: a request with no reserved
@@ -361,6 +382,7 @@ impl Default for RequiredCaps {
             reasoning: None,
             parallel_tool_calls: None,
             min_reliability: None,
+            vision: None,
             headroom_tokens: DEFAULT_HEADROOM_TOKENS,
         }
     }
@@ -398,7 +420,14 @@ impl RequiredCaps {
     /// per unmet requirement (used verbatim in `RoutingReason::CapabilitySkip`
     /// and `RoutingError::NoCandidate`), checked in this fixed order:
     /// tool_calling, context (headroom-aware), min_context (explicit floor),
-    /// structured_output, reasoning, parallel_tool_calls, min_reliability.
+    /// structured_output, reasoning, parallel_tool_calls, min_reliability,
+    /// vision.
+    ///
+    /// `vision` is the one requirement above that does NOT reject an
+    /// undeclared candidate: it only fires when `self.vision == Some(true)`
+    /// AND the candidate EXPLICITLY declares `caps.vision == Some(false)` --
+    /// see [`Capabilities::vision`]'s own doc for why an unknown vision
+    /// capability is let through rather than refused.
     ///
     /// All arithmetic is saturating; no `u32` overflow path can panic.
     pub fn satisfied_by(&self, caps: &Capabilities, est_tokens: u32) -> Result<(), Vec<String>> {
@@ -479,6 +508,17 @@ impl RequiredCaps {
                     caps.reliability_tier
                 ));
             }
+        }
+
+        // Vision: deliberately asymmetric with every requirement above --
+        // see this method's own doc and `Capabilities::vision`'s doc for
+        // why `caps.vision == None` (the common, undeclared case) is never
+        // a refusal, only an explicit `Some(false)` is.
+        if self.vision == Some(true) && caps.vision == Some(false) {
+            missing.push(format!(
+                "vision: requires true, model {:?} does not support images",
+                caps.vision
+            ));
         }
 
         if missing.is_empty() {
@@ -706,6 +746,7 @@ mod tests {
 
     fn caps(max_context_tokens: u32) -> Capabilities {
         Capabilities {
+            vision: None,
             tool_calling: ToolCallSupport::NonStreamingOnly,
             cache: CacheMode::None,
             parallel_tool_calls: false,
@@ -861,6 +902,57 @@ mod tests {
     fn headroom_default_applies_when_field_omitted() {
         let rc: RequiredCaps = serde_json::from_str("{}").unwrap();
         assert_eq!(rc.headroom_tokens, DEFAULT_HEADROOM_TOKENS);
+    }
+
+    /// `vision` is `None` by default on both sides, and the floor is a
+    /// no-op when nothing ever required it.
+    #[test]
+    fn vision_absent_on_both_sides_is_never_a_rejection() {
+        let required = RequiredCaps::default();
+        let model_caps = caps(32_768);
+        assert!(required.satisfied_by(&model_caps, 0).is_ok());
+    }
+
+    /// The asymmetric half this field exists for: `required.vision ==
+    /// Some(true)` only refuses a candidate that EXPLICITLY declares
+    /// `Some(false)` -- an UNDECLARED candidate (`vision: None`, the common
+    /// case for most `models.json` entries) is still admitted. See
+    /// `Capabilities::vision`'s own doc for the product reasoning ("send,
+    /// and let a provider rejection surface as a named error" over
+    /// silently refusing or dropping).
+    #[test]
+    fn vision_required_admits_an_undeclared_model_but_refuses_an_explicit_no() {
+        let required = RequiredCaps {
+            vision: Some(true),
+            ..RequiredCaps::default()
+        };
+
+        let undeclared = Capabilities {
+            vision: None,
+            ..caps(32_768)
+        };
+        assert!(
+            required.satisfied_by(&undeclared, 0).is_ok(),
+            "an undeclared model must still be admitted"
+        );
+
+        let declared_no = Capabilities {
+            vision: Some(false),
+            ..caps(32_768)
+        };
+        let err = required
+            .satisfied_by(&declared_no, 0)
+            .expect_err("a model explicitly declaring no vision support must be refused");
+        assert!(
+            err.iter().any(|m| m.contains("vision")),
+            "the refusal must name the vision requirement: {err:?}"
+        );
+
+        let declared_yes = Capabilities {
+            vision: Some(true),
+            ..caps(32_768)
+        };
+        assert!(required.satisfied_by(&declared_yes, 0).is_ok());
     }
 
     #[test]

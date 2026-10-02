@@ -273,6 +273,7 @@ mod tests {
             // `strategy_for` falls back to `Strategy::Generate` and this
             // backend's deliberately-`unimplemented!` `generate` panics.
             conway_core::capabilities::Capabilities {
+                vision: None,
                 tool_calling: conway_core::capabilities::ToolCallSupport::Streaming {
                     validated: true,
                 },

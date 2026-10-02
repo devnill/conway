@@ -55,6 +55,7 @@ async fn new_handle(conway: &Conway) -> SessionHandle {
 
 fn caps() -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::None,
         cache: CacheMode::None,
         parallel_tool_calls: false,

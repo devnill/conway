@@ -1119,12 +1119,23 @@ impl AgentLoop {
         loop {
             let est_tokens = report.total_tokens_est;
             let has_tools = !tools.is_empty();
+            let has_image = segments_carry_an_image(&segments);
             let mut required = RequiredCaps {
                 headroom_tokens: headroom,
                 ..RequiredCaps::default()
             };
             if has_tools {
                 required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
+            }
+            if has_image {
+                // A dynamic, per-turn floor: this turn's assembled segments
+                // carry an image, so the candidate must be vision-capable --
+                // see `conway_core::capabilities::RequiredCaps::vision`'s
+                // own doc for the asymmetric refusal rule this ends up
+                // enforcing (an explicitly non-vision model is refused by
+                // name at admission; an undeclared one is still sent the
+                // image).
+                required.vision = Some(true);
             }
             let route_req = RouteRequest {
                 role: self.spec.role.clone(),
@@ -3059,6 +3070,20 @@ impl AgentLoop {
 /// agent's role. Resolved exactly once per turn by the caller, into a
 /// local reused for both the `RouteRequest` and the `AttemptRequest` — see
 /// the module doc's reconciliation note.
+/// Whether any segment in `segments` carries a `ContentBlock::Image` --
+/// `route_and_attempt`'s own dynamic vision-floor trigger (terminal image
+/// attachment item): a turn whose assembled context carries an image adds
+/// `RequiredCaps::vision = Some(true)` to the routing request for that
+/// attempt, the same way `has_tools` already adds a `tool_calling` floor.
+/// Pulled out as its own pure function so this one check is unit-testable
+/// without constructing a full `AgentLoop`.
+fn segments_carry_an_image(segments: &[PromptSegment]) -> bool {
+    segments
+        .iter()
+        .flat_map(|segment| segment.content.iter())
+        .any(|block| matches!(block, ContentBlock::Image { .. }))
+}
+
 fn resolve_headroom(spec: &AgentSpec, policy: &HeadroomPolicy) -> u32 {
     spec.headroom_override
         .unwrap_or_else(|| policy.resolve(&spec.role))
@@ -3315,5 +3340,47 @@ mod tests {
             0,
             "a failed persist must append nothing"
         );
+    }
+
+    /// `segments_carry_an_image`: the pure trigger `route_and_attempt` uses
+    /// to add the dynamic `RequiredCaps::vision = Some(true)` floor. No
+    /// image anywhere -> `false`; an image buried in any one segment (not
+    /// just the most recent) -> `true`.
+    #[test]
+    fn segments_carry_an_image_detects_an_image_block_anywhere_in_the_turn() {
+        let text_only = vec![PromptSegment::new(
+            conway_core::content::Role::User,
+            vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+            conway_core::provenance::Provenance::UserPrompt,
+        )];
+        assert!(!super::segments_carry_an_image(&text_only));
+
+        let with_image = vec![
+            PromptSegment::new(
+                conway_core::content::Role::System,
+                vec![ContentBlock::Text {
+                    text: "system prompt".into(),
+                }],
+                conway_core::provenance::Provenance::AgentDef {
+                    name: "assistant".into(),
+                },
+            ),
+            PromptSegment::new(
+                conway_core::content::Role::User,
+                vec![
+                    ContentBlock::Text {
+                        text: "what's this?".into(),
+                    },
+                    ContentBlock::Image {
+                        media_type: "image/png".into(),
+                        data_base64: "aGVsbG8=".into(),
+                    },
+                ],
+                conway_core::provenance::Provenance::UserPrompt,
+            ),
+        ];
+        assert!(super::segments_carry_an_image(&with_image));
     }
 }

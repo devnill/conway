@@ -354,8 +354,8 @@ use std::time::Duration;
 
 use conway::gates::AllowListGate;
 use conway::{
-    AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, PermissionDecisionKind, ResultStatus,
-    RoleAlias, SessionHandle, SessionId, SessionSpec, ToolName, ToolSelector,
+    AgentDef, AgentResult, AttachedImage, Budget, Conway, Event, ForkSpec, PermissionDecisionKind,
+    ResultStatus, RoleAlias, SessionHandle, SessionId, SessionSpec, ToolName, ToolSelector,
 };
 use futures::StreamExt;
 use schemars::schema::RootSchema;
@@ -435,6 +435,7 @@ pub async fn run(
     skills_plugin: Arc<conway_plugin_skills::SkillsPlugin>,
 ) -> conway::Result<ExitCode> {
     let text = read_prompt(cli)?;
+    let images = load_images(cli)?;
 
     let handle = resolve_session(cli, &conway).await?;
 
@@ -442,7 +443,11 @@ pub async fn run(
     // after `prompt()` has already appended could miss the turn's own
     // first envelopes.
     let mut events = handle.events();
-    let _turn = handle.prompt(text).await?;
+    let _turn = if images.is_empty() {
+        handle.prompt(text).await?
+    } else {
+        handle.prompt_with_images(text, images).await?
+    };
 
     let sigint = signal::install();
     // Board item A5.3: the SIGTERM/SIGHUP sibling of `sigint` above -- see
@@ -1908,6 +1913,28 @@ fn read_prompt(cli: &Cli) -> conway::Result<String> {
     }
 }
 
+/// Loads every `--image <path>` into an [`AttachedImage`], in the order
+/// given. A load failure (unreadable path, unrecognized format, over
+/// [`crate::image_attach::MAX_IMAGE_BYTES`]) is a usage error naming the
+/// path and the reason -- the same `ExitCode::Usage` (2) classification
+/// every other malformed-flag failure in this module gets, never a silent
+/// skip of that one image.
+fn load_images(cli: &Cli) -> conway::Result<Vec<AttachedImage>> {
+    cli.image
+        .iter()
+        .map(|path| {
+            let attachment = crate::image_attach::load_image_path(path)
+                .map_err(|err| usage_error(format!("--image {}: {err}", path.display())))?;
+            Ok(AttachedImage {
+                media_type: attachment.media_type.to_string(),
+                data_base64: crate::image_attach::encode_base64(&attachment.bytes),
+                width: attachment.width,
+                height: attachment.height,
+            })
+        })
+        .collect()
+}
+
 /// Builds the one-shot gate from `--permission-mode`/`--allowed-tools`/
 /// `--deny-tools`. See this module's doc comment, reconciliation #2, for
 /// why an empty `--allowed-tools` denies every tool rather than allowing
@@ -1946,6 +1973,7 @@ mod tests {
     fn cli_with(mode: OneShotPermissionMode, allowed: Vec<String>, denied: Vec<String>) -> Cli {
         Cli {
             print: Some("hi".into()),
+            image: Vec::new(),
             output_format: OutputFormat::Text,
             allowed_tools: allowed,
             deny_tools: denied,

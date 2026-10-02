@@ -47,6 +47,24 @@ pub enum ContentBlock {
     },
 }
 
+/// A single image an operator attaches to their own turn (terminal image
+/// attachment): the input-side counterpart of [`ContentBlock::Image`].
+/// Distinct from that type because an attachment also carries decoded
+/// pixel dimensions for the `[image #N · WxH · size]` chip a caller
+/// renders -- a fact [`ContentBlock::Image`] itself has no field for,
+/// since the wire format a provider actually reads never needs it.
+/// `conway_runtime::runtime::Runtime::prompt_with_images` is the one place
+/// this becomes both a `crate::log::LogRecord::UserImage` (for replay/
+/// resume) and, via the context builder, a plain [`ContentBlock::Image`]
+/// for the outgoing request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AttachedImage {
+    pub media_type: String,
+    pub data_base64: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
 /// Every [`ContentBlock::Text`] block's text, concatenated in order.
 ///
 /// The ONE narrowing from a block sequence to the plain text a transcript

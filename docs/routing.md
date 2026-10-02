@@ -368,9 +368,12 @@ Once resolved, a candidate is checked against the role's requirement
 floor and, last, against context headroom. A role's requirement floor is
 set directly in `settings.json` — `roles.<alias>` carries
 `tool_calling`, `structured_output`, `parallel_tool_calls`, `reasoning`,
-`min_reliability`, and `min_context`, alongside `chain` and
+`min_reliability`, `min_context`, and `vision`, alongside `chain` and
 `headroom_tokens`, and `ConwayConfig::routing()` maps every one of them
-into the candidate's `RequiredCaps`:
+into the candidate's `RequiredCaps`. `vision` is the one floor field with
+asymmetric semantics — see
+[providers.md](providers.md#vision-attaching-an-image) for why an
+undeclared model is never refused the way the other six are:
 
 ```json
 // .conway/settings.json
@@ -411,18 +414,20 @@ caller (or, for a real turn, `conway-runtime`'s own turn-time logic —
 currently just a `tool_calling >= non_streaming` floor whenever the turn
 has any registered tools) already supplied — per field, whichever of the
 two demands more wins; neither side can weaken the other. `conway-plugin-routing`'s
-`satisfies` still walks all seven `RequiredCaps` fields against that merged
-result, headroom last, exactly as before; a candidate that fails one shows
+`satisfies` still walks all eight `RequiredCaps` fields (`vision` added
+later — see [providers.md](providers.md#vision-attaching-an-image)) against
+that merged result, headroom last, exactly as before; a candidate that
+fails one shows
 up as an ordinary `RoutingReason::CapabilitySkip` / `context: ...`-style
 entry, e.g. `reliability_tier: requires Verified, has Community`.
 
 ## Sampling and reasoning params
 
 `roles.<alias>.params` is a different knob than everything in ["Capability
-matching"](#capability-matching) above: those six fields (`tool_calling`,
+matching"](#capability-matching) above: those seven fields (`tool_calling`,
 `structured_output`, `parallel_tool_calls`, `reasoning`, `min_reliability`,
-`min_context`) are a FLOOR a candidate model must clear before it is routed
-to at all. `params` is what conway actually SENDS once a candidate is
+`min_context`, `vision`) are a FLOOR a candidate model must clear before it
+is routed to at all. `params` is what conway actually SENDS once a candidate is
 chosen — temperature, top-p, a token cap, stop sequences, a sampling seed,
 and a free `extra` map for whatever provider-specific key that request
 needs, e.g. Anthropic's extended-thinking token budget or an

@@ -96,7 +96,7 @@ pub use conway_core::permission_pattern::{
 pub mod permission_pattern {
     pub use conway_core::permission_pattern::*;
 }
-pub use conway_core::content::{CacheAccounting, ToolCategory, Usage};
+pub use conway_core::content::{AttachedImage, CacheAccounting, ToolCategory, Usage};
 pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{
     AgentId, EndpointId, LogSeq, MemoryId, ModelRef, RoleAlias, SegmentId, SessionId, ToolName,

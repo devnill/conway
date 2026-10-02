@@ -125,6 +125,7 @@ impl Backend for AskBackend {
 
     fn capabilities(&self, _model: &ModelId) -> conway_core::capabilities::Capabilities {
         conway_core::capabilities::Capabilities {
+            vision: None,
             // `ToolCallSupport::None` so the attempt engine picks the
             // streaming path (`strategy_for`: no tools -> Stream), which is
             // what emits `Event::TextDelta` per `StreamChunk::TextDelta`.

@@ -30,6 +30,12 @@ pub mod diff;
 pub mod exit;
 pub mod first_party_plugins;
 pub mod first_run;
+// Terminal image attachment: clipboard/path image reading, size bounding,
+// format sniffing, dimension decoding, and chip rendering -- shared by the
+// TUI composer, one-shot's `--image`, and `conway sessions show`'s replay
+// renderer, the same "second file at the crate root, not under `tui/`"
+// shape `diff.rs`'s own module doc establishes for the same reason.
+pub mod image_attach;
 pub mod mcp_plugins;
 mod model_pin;
 pub mod oneshot;

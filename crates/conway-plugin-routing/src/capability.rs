@@ -118,6 +118,7 @@ pub(crate) fn strictest(config_floor: &RequiredCaps, request: &RequiredCaps) -> 
             |t| reliability_rank(&t),
         ),
         min_context: strictest_min(config_floor.min_context, request.min_context),
+        vision: strictest_bool(config_floor.vision, request.vision),
         headroom_tokens: request.headroom_tokens,
     }
 }
@@ -157,8 +158,15 @@ fn strictest_min(a: Option<u32>, b: Option<u32>) -> Option<u32> {
 /// The non-size half of the capability predicate: every requirement in
 /// `required` EXCEPT the context/headroom gate, in the fixed order
 /// tool_calling, structured_output, parallel_tool_calls, reasoning,
-/// reliability_tier, min_context. Returns every unmet requirement (never
-/// short-circuits on the first) as a human-readable string.
+/// reliability_tier, min_context, vision. Returns every unmet requirement
+/// (never short-circuits on the first) as a human-readable string.
+///
+/// `vision` is deliberately asymmetric with every other field here: it
+/// only fires when `required.vision == Some(true)` AND the candidate
+/// EXPLICITLY declares `caps.vision == Some(false)` -- an undeclared
+/// (`None`) candidate is never refused on vision grounds, matching
+/// `conway_core::capabilities::RequiredCaps::satisfied_by`'s identical
+/// choice (see that method's own doc for why).
 ///
 /// Split out so `router.rs`'s
 /// `check_candidate` can ask "did anything OTHER than size fail?"
@@ -212,6 +220,10 @@ pub(crate) fn non_size_missing(caps: &Capabilities, required: &RequiredCaps) -> 
                 caps.max_context_tokens
             ));
         }
+    }
+
+    if required.vision == Some(true) && caps.vision == Some(false) {
+        missing.push("vision: required, model declares it does not support images".to_string());
     }
 
     missing
@@ -361,6 +373,7 @@ mod tests {
 
     fn caps(max_context_tokens: u32) -> Capabilities {
         Capabilities {
+            vision: None,
             tool_calling: ToolCallSupport::Streaming { validated: true },
             cache: CacheMode::None,
             parallel_tool_calls: true,
@@ -373,6 +386,7 @@ mod tests {
 
     fn weak_caps() -> Capabilities {
         Capabilities {
+            vision: None,
             tool_calling: ToolCallSupport::None,
             cache: CacheMode::None,
             parallel_tool_calls: false,

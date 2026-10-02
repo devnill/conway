@@ -37,6 +37,7 @@ pub(super) fn conway_over_config(config: ConwayConfig) -> Conway {
 pub(super) fn minimal_cli() -> Cli {
     Cli {
         print: None,
+        image: Vec::new(),
         output_format: OutputFormat::Text,
         allowed_tools: Vec::new(),
         deny_tools: Vec::new(),

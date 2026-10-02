@@ -125,6 +125,7 @@ const MODEL: &str = "fake/tiny-model";
 /// router's rejection attributable to context size alone.
 fn caps(max_context_tokens: u32) -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::Streaming { validated: true },
         cache: CacheMode::None,
         parallel_tool_calls: true,

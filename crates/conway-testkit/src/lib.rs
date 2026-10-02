@@ -75,6 +75,7 @@ use conway_core::routing::{BreakerState, Observation, Route, RouteRequest, Routi
 
 fn default_capabilities() -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::None,
         cache: CacheMode::None,
         parallel_tool_calls: false,

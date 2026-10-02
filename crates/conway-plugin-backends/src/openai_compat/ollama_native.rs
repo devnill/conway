@@ -136,6 +136,23 @@ use super::wire::{reasoning_effort_candidate, segments_to_messages};
 /// shape, native Ollama has no top-level equivalents for any of them.
 /// `think` is NOT one of them: it is Ollama's own top-level request field,
 /// not an `options` entry (confirmed empirically the same day).
+///
+/// **Images (terminal image attachment item, review round 1): a user
+/// message's `images` is ALSO a sibling top-level field, raw base64, no
+/// `data:` URI prefix, no media type** — VERIFIED live, 2026-10-02,
+/// against a local Ollama serving `ministral-3:14b` (declares
+/// `capabilities: ["completion", "vision", "tools"]` via its own
+/// `/api/tags`): `POST /api/chat` with `{"role":"user","content":"...",
+/// "images":["<raw base64>"]}` succeeds and the model answers about the
+/// attached image's actual content (a real, non-trivial
+/// `prompt_eval_count`, not a cache hit). The OpenAI-compatible
+/// `image_url` content-ARRAY shape this function used before this fix
+/// does NOT work here: the identical request with `content` as an array
+/// of `{"type":"image_url",...}` entries answers a loud, immediate `400`
+/// — `{"error":"json: cannot unmarshal array into Go struct field
+/// .ChatRequest.messages.content of type string"}` — Ollama's native
+/// `content` field is typed as a plain Go `string`, so an array is a
+/// decode error, not a tolerated-but-ignored shape.
 pub(crate) fn build_native_request_body(
     req: &GenerateRequest,
     profile: &Profile,
@@ -641,8 +658,10 @@ fn process_native_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use conway_core::content::SamplingParams;
+    use conway_core::content::{Role, SamplingParams};
     use conway_core::ids::ModelId;
+    use conway_core::provenance::Provenance;
+    use conway_core::segment::PromptSegment;
 
     use crate::config::Dialect;
 
@@ -694,6 +713,52 @@ mod tests {
         assert_eq!(body["options"]["num_predict"], 256);
         assert!(body.get("max_tokens").is_none());
         assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    /// Terminal image attachment item (review round 1, significant finding
+    /// #1): Ollama's native `/api/chat` has no OpenAI-style `image_url`
+    /// content-array entry -- it wants plain-string `content` plus a
+    /// sibling top-level `images` array of RAW base64 strings (no `data:`
+    /// URI prefix, no media type). Confirmed against a live local Ollama
+    /// (see this module's own doc for the exact request/response this
+    /// pins). Before this fix, `build_native_request_body` reused the
+    /// OpenAI-compatible `image_url` array shape unconditionally, which a
+    /// real Ollama server does not understand.
+    #[test]
+    fn build_native_request_body_sends_plain_content_and_top_level_images_for_an_image_bearing_turn(
+    ) {
+        let req = GenerateRequest {
+            segments: vec![PromptSegment::new(
+                Role::User,
+                vec![
+                    ContentBlock::Text {
+                        text: "what's broken here?".into(),
+                    },
+                    ContentBlock::Image {
+                        media_type: "image/png".into(),
+                        data_base64: "aGVsbG8=".into(),
+                    },
+                ],
+                Provenance::UserPrompt,
+            )],
+            ..minimal_request()
+        };
+        let body = build_native_request_body(&req, &Dialect::Ollama.profile(), false, None, None);
+        let message = &body["messages"][0];
+        assert_eq!(message["role"], "user");
+        assert_eq!(
+            message["content"], "what's broken here?",
+            "native content must be the plain concatenated text, never an `image_url` array"
+        );
+        assert_eq!(
+            message["images"],
+            json!(["aGVsbG8="]),
+            "native images are a top-level sibling array of raw base64, no data: URI prefix"
+        );
+        assert!(
+            message.get("image_url").is_none(),
+            "the OpenAI-compatible image_url shape must never appear on the native path"
+        );
     }
 
     #[test]

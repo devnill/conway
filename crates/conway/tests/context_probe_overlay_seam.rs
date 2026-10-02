@@ -658,6 +658,7 @@ const T1_BACKSTOP_MODEL: &str = "mutable/tiny-model";
 /// attributable to context size alone.
 fn caps(max_context_tokens: u32) -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::Streaming { validated: true },
         cache: CacheMode::None,
         parallel_tool_calls: true,

@@ -317,6 +317,7 @@ impl ConwayConfig {
                 reasoning: entry.reasoning,
                 min_reliability: entry.min_reliability,
                 min_context: entry.min_context,
+                vision: entry.vision,
                 ..conway_core::capabilities::RequiredCaps::default()
             };
             roles.insert(
@@ -1014,6 +1015,15 @@ pub struct RoleEntry {
     /// to) the headroom-aware per-request gate — see
     /// `conway_core::capabilities::RequiredCaps::min_context`'s own doc.
     pub min_context: Option<u32>,
+    /// A static per-role vision floor: `Some(true)` restricts this role's
+    /// chain to candidates that do not EXPLICITLY declare themselves
+    /// non-vision. Independent of (and combined with, via `strictest`'s
+    /// "either side can only add a restriction" rule) the DYNAMIC
+    /// requirement the runtime adds to any single turn that actually
+    /// carries a `ContentBlock::Image` — see
+    /// `conway_core::capabilities::RequiredCaps::vision`'s own doc for the
+    /// full asymmetric-refusal rule this maps onto.
+    pub vision: Option<bool>,
     /// This role's sampling/reasoning settings — `[roles.<alias>.params]`.
     /// Distinct from every field above: those are capability FLOORS a
     /// candidate model must clear before it is routed to at all;

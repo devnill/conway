@@ -606,6 +606,43 @@ impl ContextBuilder {
         // stale.
         let mut not_admitted: Vec<NotAdmittedEntry> = Vec::new();
         for (node, record) in &input.path.nodes {
+            // Terminal image attachment item: `LogRecord::UserImage` is
+            // appended immediately after the `UserTurn` it belongs to
+            // (`Runtime::prompt_with_images`'s own doc), so folding its
+            // image block into that already-pushed segment's own `content`
+            // -- rather than pushing a second, standalone `Role::User`
+            // segment -- is a decision made HERE, once, at construction
+            // time. This is NOT the segment-merging `segments_to_messages`'
+            // own doc forbids (§8: an already-assembled segment list is
+            // never re-combined downstream of this function) -- it is
+            // choosing, while BUILDING that list, how many segments one
+            // logical turn's records produce in the first place. Without
+            // this, a one-shot `--image` turn renders as two SEPARATE
+            // `user`-role wire messages (text, then image) instead of one
+            // message carrying both — most providers expect alternating
+            // roles, and `conway-cli`'s own `oneshot_image.rs` acceptance
+            // test caught the pre-fix two-message shape as a real wire
+            // defect, not a style nit. Falls through to the ordinary
+            // standalone-segment path (via `own_segment`/
+            // `record_role_and_content` below) on a malformed log where no
+            // preceding `Role::User` segment exists to fold into, rather
+            // than panicking or dropping the image.
+            if let LogRecord::UserImage {
+                media_type,
+                data_base64,
+                ..
+            } = &**record
+            {
+                if let Some(last) = segments.last_mut() {
+                    if last.role == Role::User {
+                        last.content.push(ContentBlock::Image {
+                            media_type: media_type.clone(),
+                            data_base64: data_base64.clone(),
+                        });
+                        continue;
+                    }
+                }
+            }
             match node.stamp {
                 NodeStamp::Inherited { from } => {
                     let Some((role, content)) = record_role_and_content(
@@ -833,6 +870,20 @@ fn build_report(
 fn text_block(text: &str) -> Vec<ContentBlock> {
     vec![ContentBlock::Text {
         text: text.to_string(),
+    }]
+}
+
+/// Wraps a `LogRecord::UserImage`'s inline payload as the single
+/// `ContentBlock::Image` its own user-turn segment carries -- the context
+/// side of the terminal image-attachment item: the record's `index`/
+/// `width`/`height` exist for the chip renderer (`conway-cli`'s
+/// `sessions show` and the TUI composer), never for the wire -- a provider
+/// only ever sees `media_type`/`data_base64`, exactly like any other
+/// `ContentBlock::Image`.
+fn image_block(media_type: &str, data_base64: &str) -> Vec<ContentBlock> {
+    vec![ContentBlock::Image {
+        media_type: media_type.to_string(),
+        data_base64: data_base64.to_string(),
     }]
 }
 
@@ -1226,6 +1277,11 @@ fn record_role_and_content(
 ) -> Option<(Role, Vec<ContentBlock>)> {
     match record {
         LogRecord::UserTurn { text, .. } => Some((Role::User, text_block(text))),
+        LogRecord::UserImage {
+            media_type,
+            data_base64,
+            ..
+        } => Some((Role::User, image_block(media_type, data_base64))),
         LogRecord::Assistant { content, .. } => Some((Role::Assistant, content.clone())),
         LogRecord::ToolResultRecord { result, .. } => Some((
             Role::ToolResult,
@@ -1275,6 +1331,21 @@ fn own_segment(
             // (kept readable for already-persisted records).
             Some((Role::User, text_block(text), prov.clone()))
         }
+        // `UserImage` always stamps `Provenance::UserPrompt` -- unlike
+        // `UserTurn` just above, there is no merged-ask carry-through to
+        // honor here: `Conway::pull_in` folds a child's `ForkDirective`/
+        // `UserTurn` records into the parent, never a `UserImage` (B2's own
+        // scope predates this variant), so every `UserImage` this session
+        // ever appends is this session's own attachment.
+        LogRecord::UserImage {
+            media_type,
+            data_base64,
+            ..
+        } => Some((
+            Role::User,
+            image_block(media_type, data_base64),
+            Provenance::UserPrompt,
+        )),
         LogRecord::Assistant { content, .. } => {
             Some((Role::Assistant, content.clone(), Provenance::Assistant))
         }
@@ -2651,6 +2722,18 @@ mod own_segment_provenance_tests {
         }
     }
 
+    fn user_image_record() -> LogRecord {
+        LogRecord::UserImage {
+            seq: LogSeq(0),
+            ts: Utc::now(),
+            index: 1,
+            media_type: "image/png".into(),
+            data_base64: "aGVsbG8=".into(),
+            width: Some(1280),
+            height: Some(800),
+        }
+    }
+
     fn assistant_record(content: Vec<ContentBlock>) -> LogRecord {
         LogRecord::Assistant {
             seq: LogSeq(1),
@@ -2712,6 +2795,114 @@ mod own_segment_provenance_tests {
                 .expect("a UserTurn maps");
         assert_eq!(role, Role::User);
         assert_eq!(prov, Provenance::UserPrompt);
+    }
+
+    /// End-to-end through `ContextBuilder::build`: a `UserTurn` immediately
+    /// followed by its own `UserImage` must fold into ONE `Role::User`
+    /// segment carrying `[Text, Image]`, in that order -- NOT two separate
+    /// `user`-role segments. This is the regression `conway-cli`'s own
+    /// `oneshot_image.rs` acceptance test caught for real: two consecutive
+    /// `user`-role wire messages (one plain string, one an image-only
+    /// array) is not the shape any provider's chat-completions wire format
+    /// expects, and the test asserting `user_message["content"]` is an
+    /// array once an image is attached failed against the FIRST `user`
+    /// message (the text-only one) before this fold existed.
+    #[test]
+    fn build_folds_a_user_image_into_the_immediately_preceding_user_turn_segment() {
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
+            system_prompt: None,
+            instructions: vec![],
+            skills: vec![],
+            tools: vec![],
+            path: path_from_legacy(
+                None,
+                &[
+                    LogRecord::UserTurn {
+                        seq: LogSeq(0),
+                        ts: Utc::now(),
+                        text: "what's broken here?".into(),
+                        prov: Provenance::UserPrompt,
+                    },
+                    LogRecord::UserImage {
+                        seq: LogSeq(1),
+                        ts: Utc::now(),
+                        index: 1,
+                        media_type: "image/png".into(),
+                        data_base64: "aGVsbG8=".into(),
+                        width: Some(1280),
+                        height: Some(800),
+                    },
+                ],
+                SessionId::new(),
+            )
+            .unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
+            tool_result_bound_tokens: 0,
+        };
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+
+        let user_segments: Vec<_> = segments.iter().filter(|s| s.role == Role::User).collect();
+        assert_eq!(
+            user_segments.len(),
+            1,
+            "the text turn and its image must fold into exactly one user segment, not two: \
+             {segments:#?}"
+        );
+        assert_eq!(
+            user_segments[0].content,
+            vec![
+                ContentBlock::Text {
+                    text: "what's broken here?".into()
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data_base64: "aGVsbG8=".into(),
+                }
+            ]
+        );
+    }
+
+    /// Terminal image attachment item: `LogRecord::UserImage` maps to a
+    /// `Role::User` segment carrying exactly one `ContentBlock::Image` with
+    /// the record's own `media_type`/`data_base64` -- never the `index`/
+    /// `width`/`height` fields, which exist only for the chip renderer, not
+    /// the wire. Both context-assembly entry points (`own_segment`, this
+    /// session's own records, and `record_role_and_content`, an inherited
+    /// prefix) must agree.
+    #[test]
+    fn own_segment_and_record_role_and_content_both_map_a_user_image_to_an_image_block() {
+        let record = user_image_record();
+
+        let mut not_admitted = Vec::new();
+        let (role, content, prov) =
+            own_segment(&record, 0, 0, &mut not_admitted).expect("a UserImage maps");
+        assert_eq!(role, Role::User);
+        assert_eq!(prov, Provenance::UserPrompt);
+        assert_eq!(
+            content,
+            vec![ContentBlock::Image {
+                media_type: "image/png".into(),
+                data_base64: "aGVsbG8=".into(),
+            }]
+        );
+
+        let mut not_admitted = Vec::new();
+        let (role, content) = record_role_and_content(&record, 0, 0, &mut not_admitted)
+            .expect("a UserImage maps on the inherited-prefix path too");
+        assert_eq!(role, Role::User);
+        assert_eq!(
+            content,
+            vec![ContentBlock::Image {
+                media_type: "image/png".into(),
+                data_base64: "aGVsbG8=".into(),
+            }]
+        );
     }
 
     /// Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` (operator-typed `!` shell

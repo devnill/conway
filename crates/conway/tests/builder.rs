@@ -42,6 +42,7 @@ fn expect_build_err(result: Result<Conway, FacadeError>, msg: &str) -> FacadeErr
 
 fn caps() -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::Streaming { validated: true },
         cache: CacheMode::None,
         parallel_tool_calls: true,

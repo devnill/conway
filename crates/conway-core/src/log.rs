@@ -418,6 +418,35 @@ pub enum LogRecord {
         text: String,
         prov: Provenance,
     },
+    /// An image the operator attached alongside the immediately preceding
+    /// [`Self::UserTurn`] in the same agent's log (terminal image
+    /// attachment). Kept as its own record rather than a new field on
+    /// `UserTurn` so `UserTurn::text` stays the plain, search-friendly
+    /// prose it always was — `conway::discovery_host`'s full-text search
+    /// reads `UserTurn::text` directly, and folding base64 image bytes into
+    /// that same field would both bloat every such scan and risk a false
+    /// "match" on opaque base64 content.
+    ///
+    /// Image bytes are stored inline, base64-encoded — the same shape
+    /// [`crate::content::ContentBlock::Image`] already uses for the
+    /// provider wire format — rather than spilled to a side file: this
+    /// store's own layout is one file per session, `root/<session_id>
+    /// .jsonl`, with no subdirectories, and a content-addressed blob store
+    /// beside it would need its own write/garbage-collection lifecycle this
+    /// variant does not take on. The attach path bounds every image's byte
+    /// size before it ever reaches this record, so this is never an
+    /// unbounded append.
+    UserImage {
+        seq: LogSeq,
+        ts: DateTime<Utc>,
+        /// 1-based position among the turn's own attachments — matches the
+        /// `[image #N ...]` chip numbering the TUI/one-shot renderer uses.
+        index: u32,
+        media_type: String,
+        data_base64: String,
+        width: Option<u32>,
+        height: Option<u32>,
+    },
     Assistant {
         seq: LogSeq,
         ts: DateTime<Utc>,
@@ -704,6 +733,7 @@ impl LogRecord {
         match self {
             LogRecord::Header(_) => None,
             LogRecord::UserTurn { seq, .. }
+            | LogRecord::UserImage { seq, .. }
             | LogRecord::Assistant { seq, .. }
             | LogRecord::ToolResultRecord { seq, .. }
             | LogRecord::ForkDirective { seq, .. }
@@ -725,6 +755,7 @@ impl LogRecord {
         match self {
             LogRecord::Header(_) => "header",
             LogRecord::UserTurn { .. } => "user_turn",
+            LogRecord::UserImage { .. } => "user_image",
             LogRecord::Assistant { .. } => "assistant",
             LogRecord::ToolResultRecord { .. } => "tool_result",
             LogRecord::ForkDirective { .. } => "fork_directive",

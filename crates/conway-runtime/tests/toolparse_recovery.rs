@@ -291,6 +291,7 @@ impl Backend for AccumulatingBackend {
 /// mechanic (`attempt.rs`) is reachable exactly as it is in production.
 fn caps() -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::Streaming { validated: true },
         cache: CacheMode::None,
         parallel_tool_calls: false,

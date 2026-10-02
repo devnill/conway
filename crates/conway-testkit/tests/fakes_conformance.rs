@@ -644,6 +644,7 @@ fn fake_router_context_too_large_exercises_headroom_gate() {
 #[test]
 fn fake_backend_with_capabilities_default_headroom_is_enforced() {
     let caps = Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::None,
         cache: CacheMode::None,
         parallel_tool_calls: false,

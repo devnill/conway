@@ -65,6 +65,7 @@ use futures::StreamExt;
 /// declares for a real Claude model.
 fn anthropic_like_capabilities() -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::Streaming { validated: true },
         cache: CacheMode::ExplicitBreakpoints {
             max_breakpoints: 4,

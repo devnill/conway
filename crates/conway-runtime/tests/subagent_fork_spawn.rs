@@ -3999,6 +3999,7 @@ impl Backend for PanickingBackend {
 
     fn capabilities(&self, _model: &ModelId) -> Capabilities {
         Capabilities {
+            vision: None,
             tool_calling: ToolCallSupport::None,
             cache: CacheMode::None,
             parallel_tool_calls: false,

@@ -49,6 +49,15 @@ pub struct Cli {
     )]
     pub print: Option<String>,
 
+    /// Attach an image to the one-shot prompt -- PNG, JPEG, or WebP,
+    /// repeatable for multiple images. Ignored by the TUI (which has its
+    /// own Ctrl-V/`@`-path attach routes, `docs/interactive.md`). A role
+    /// whose candidates all explicitly declare no vision support refuses
+    /// at admission, naming the model (`docs/providers.md`'s "Vision"
+    /// section); an undeclared model is still sent the image.
+    #[arg(long = "image", value_name = "PATH")]
+    pub image: Vec<PathBuf>,
+
     /// How one-shot output is shaped: `text` for model output alone, `json`
     /// for one object at the end, `jsonl` for one event per line as it
     /// happens. Ignored by the TUI.

@@ -96,6 +96,7 @@ const MODEL: &str = "fake/tiny-model";
 /// contributes to a rejection here.
 fn caps(reliability_tier: ReliabilityTier) -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::Streaming { validated: true },
         cache: CacheMode::None,
         parallel_tool_calls: true,

@@ -35,6 +35,13 @@ pub struct ModelMetadata {
     pub structured_output: Option<StructuredOutputSpec>,
     #[serde(default)]
     pub reasoning: Option<bool>,
+    /// Whether this model accepts image content blocks. `None` (the
+    /// default -- most entries declare nothing here) is read downstream as
+    /// "unknown", not "no": see `conway_core::capabilities::Capabilities::
+    /// vision`'s own doc for why an undeclared model is still sent an
+    /// image rather than refused at admission.
+    #[serde(default)]
+    pub vision: Option<bool>,
     #[serde(default)]
     pub reliability_tier: Option<ReliabilityTier>,
     /// E.g. `"Q4_K_M"`. Informational, and — only when `reliability_tier`
@@ -147,24 +154,28 @@ id = "claude-sonnet-4-6"
 reliability_tier = "verified"
 tool_calling = "streaming_validated"
 parallel_tool_calls = true
+vision = true
 
 [[model]]
 id = "claude-haiku-4-5"
 reliability_tier = "verified"
 tool_calling = "streaming_validated"
 parallel_tool_calls = true
+vision = true
 
 [[model]]
 id = "gpt-4.1"
 reliability_tier = "verified"
 tool_calling = "streaming_validated"
 parallel_tool_calls = true
+vision = true
 
 [[model]]
 id = "gpt-5"
 reliability_tier = "verified"
 tool_calling = "streaming_validated"
 parallel_tool_calls = true
+vision = true
 
 [[model]]
 id = "qwen3-coder-30b"
@@ -180,6 +191,10 @@ tool_calling = "non_streaming"
 id = "llama3.1-8b"
 reliability_tier = "community"
 tool_calling = "non_streaming"
+# Text-only: Meta's own model card lists no image input for this release
+# (the vision variant ships as a distinct "llama3.2-11b-vision"-style id,
+# not this one) -- a real, sourced "no" rather than conway's own guess.
+vision = false
 
 # ORIGINAL reasoning (2026-08-29), kept for the incident record --
 # `max_context_tokens = 1_000_000`: ollama.com/library/glm-5.2 states "a
@@ -375,6 +390,32 @@ mod tests {
                 "DEFAULTS missing entry for {id}"
             );
         }
+    }
+
+    /// Board item (image attachment): a declared-vision model reads
+    /// `Some(true)`, an explicitly-declared-text-only model reads
+    /// `Some(false)`, and a model this table says nothing about at all
+    /// reads `None` -- the tri-state the admission gate's
+    /// "undeclared is not the same as explicitly false" rule depends on.
+    #[test]
+    fn defaults_declare_vision_as_a_tri_state() {
+        let store = ModelMetadataStore::defaults();
+        assert_eq!(
+            store
+                .get(&ModelId::new("claude-sonnet-4-6"))
+                .unwrap()
+                .vision,
+            Some(true)
+        );
+        assert_eq!(
+            store.get(&ModelId::new("llama3.1-8b")).unwrap().vision,
+            Some(false)
+        );
+        assert_eq!(
+            store.get(&ModelId::new("qwen3-coder-30b")).unwrap().vision,
+            None,
+            "an entry that never mentions vision must stay None (unknown), not default to false"
+        );
     }
 
     /// The 1M-context Kimi variant's id contains literal `[`/`]`. TOML

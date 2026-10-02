@@ -190,6 +190,20 @@ than inline text, so it shows up at the end of your own message, visibly,
 rather than hidden.) `@`-mentions never cause conway itself to read or send
 file contents — only what the model's own tool calls fetch, same as always.
 
+### Attaching an image
+
+The TUI's own clipboard/drag-drop attach route is not wired yet — the
+building blocks (clipboard reading, size/format validation, the
+`[image #N · WxH · size]` chip) live in `conway-cli`'s `image_attach`
+module, ready for the composer to call, but no key submits an attachment
+into a live turn in this release. **One-shot mode already attaches images
+end to end:** `conway -p "..." --image shot.png` — see
+[scripting.md](scripting.md#attaching-an-image---image) for the flag and
+[providers.md](providers.md#vision-attaching-an-image) for which models
+actually look at it. An attached image you resume into, or review with
+`conway sessions show`, renders as that same one-line chip, never the raw
+bytes.
+
 ### Running a command yourself
 
 Half the time you want to run `git status` or `ls`, you do not want to

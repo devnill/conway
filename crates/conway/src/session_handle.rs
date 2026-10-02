@@ -21,7 +21,7 @@ use conway_core::agent::{
     AgentDefRef, AgentKnobs, AgentResult, AgentTreeSnapshot, Budget, CancelMode, SubagentMode,
     SubagentSpec,
 };
-use conway_core::content::{ContentBlock, ToolResult, Usage};
+use conway_core::content::{AttachedImage, ContentBlock, ToolResult, Usage};
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::{Envelope, Event};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId};
@@ -206,6 +206,38 @@ impl SessionHandle {
         let stream = EventStream::live(session, Some(agent), self.rt.subscribe());
         self.rt.prompt(agent, text.into()).await?;
         Ok(TurnHandle::new(self.rt.clone(), session, agent, stream))
+    }
+
+    /// [`Self::prompt_agent`], widened to carry one or more [`AttachedImage`]s
+    /// alongside `text` (terminal image attachment) -- the `--image`/Ctrl-V/
+    /// `@`-path attach routes' one entry point into a live turn. `images`
+    /// empty behaves identically to `prompt_agent`;
+    /// `conway_runtime::runtime::Runtime::prompt_with_images`'s own doc
+    /// explains why this is not simply `prompt_agent` plus a follow-up
+    /// append (a single wake notification must not fire until every
+    /// record -- text and every image -- is durably appended).
+    pub async fn prompt_agent_with_images(
+        &self,
+        agent: AgentId,
+        text: impl Into<String>,
+        images: Vec<AttachedImage>,
+    ) -> Result<TurnHandle> {
+        let session = self.resolve_agent_session(agent).await?;
+        let stream = EventStream::live(session, Some(agent), self.rt.subscribe());
+        self.rt
+            .prompt_with_images(agent, text.into(), images, Provenance::UserPrompt)
+            .await?;
+        Ok(TurnHandle::new(self.rt.clone(), session, agent, stream))
+    }
+
+    /// [`Self::prompt`], widened to attach images -- see
+    /// [`Self::prompt_agent_with_images`]'s own doc.
+    pub async fn prompt_with_images(
+        &self,
+        text: impl Into<String>,
+        images: Vec<AttachedImage>,
+    ) -> Result<TurnHandle> {
+        self.prompt_agent_with_images(self.root, text, images).await
     }
 
     /// [`Self::prompt_agent`], stamped [`Provenance::CommandPrompt`] instead
