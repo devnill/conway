@@ -665,6 +665,20 @@ impl App {
                                         }
                                     }
                                 },
+                                // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`:
+                                // `prompt.send_now` (default `F2`) -- see
+                                // `Action::SendNow`'s own doc (`input.rs`).
+                                // Always targets the FOCUSED agent -- `Ctrl-C`
+                                // targets the ROOT instead (`App::
+                                // handle_ctrl_c`'s own doc), deliberately the
+                                // other way round, since `busy_input` (the
+                                // mode this is a per-message override of) has
+                                // always governed the FOCUSED agent's own
+                                // busy turn, never the root unconditionally.
+                                Action::SendNow(text) => {
+                                    self.interrupt_and_send(self.state.focused_agent, text)
+                                        .await;
+                                }
                                 Action::PermissionDecision(decision) => {
                                     self.state.resolve_current_prompt(decision);
                                 }

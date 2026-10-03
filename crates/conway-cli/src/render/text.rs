@@ -158,6 +158,15 @@ impl Renderer for TextRenderer {
             Event::TurnAborted { limit, .. } => {
                 diag::warn(format!("turn ended: {limit} reached"));
             }
+            // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the operator-abort
+            // sibling of `Event::TurnAborted` immediately above -- same
+            // "turn ended, session alive" semantics, a different cause
+            // (`reason` is the caller-supplied text, not a budget key), so
+            // it gets its own stderr line rather than sharing the "reached"
+            // wording that would misdescribe it.
+            Event::TurnAbortedByUser { reason, .. } => {
+                diag::warn(format!("turn aborted: {reason}"));
+            }
             // Only the ROOT's finish is this run's terminal occasion. A
             // subagent's `AgentFinished` reaches this stream too (lifecycle
             // events bypass the session/agent filter), and flushing on it

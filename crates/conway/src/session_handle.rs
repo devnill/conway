@@ -1072,6 +1072,44 @@ impl SessionHandle {
         .map_err(FacadeError::Runtime)
     }
 
+    /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: aborts `target`'s CURRENT
+    /// turn, if one is genuinely in flight -- the non-terminal sibling of
+    /// [`Self::cancel`]/[`Self::cancel_with`]. Where those always end
+    /// `target` (publishing a terminal [`AgentResult`], `CancelMode`'s own
+    /// doc), this cancels only the in-flight backend attempt and/or tool
+    /// batch (including killing a held tool's process group, via the same
+    /// path an ordinary cancel always has) and returns `target` to idling at
+    /// its resume gate with its conversation intact -- a `keep_alive` agent
+    /// (the interactive root, or a focused child under the same contract)
+    /// accepts and answers a NEW prompt in the SAME session afterward. See
+    /// `conway_runtime::runtime::Runtime::abort_turn`'s own doc (and the
+    /// tree-level primitive it forwards to, in `conway-runtime`'s own `tree`
+    /// module) for the full mechanism and the `keep_alive`-only scope.
+    ///
+    /// Returns `Ok(true)` when a live turn was actually aborted, `Ok(false)`
+    /// when `target` had no turn in flight right now -- idle at its resume
+    /// gate, or already aborted -- which is deliberately NOT an error: the
+    /// TUI's first `Ctrl-C` cannot tell in advance whether a turn is
+    /// running, and must stay a safe, non-destructive no-op for the idle
+    /// case rather than surfacing a `Result` every caller has to inspect and
+    /// suppress itself.
+    ///
+    /// Rejects `target` with `Err(FacadeError::Runtime)` when it does not
+    /// belong to this session's agent tree, mirroring `cancel_with`'s own
+    /// check exactly -- see `Self::ensure_agent_in_session`'s doc.
+    ///
+    /// Calls through `conway_runtime::runtime::Runtime::abort_turn` directly
+    /// (not a `SubagentHost` trait method, unlike `cancel`/`steer`): this
+    /// primitive is not model-facing (no `conway_abort_turn` tool exists),
+    /// so it needs no caller/target authorization beyond the session-
+    /// ownership check performed just above.
+    pub async fn abort_turn(&self, target: AgentId, reason: &str) -> Result<bool> {
+        self.ensure_agent_in_session(target)?;
+        self.rt
+            .abort_turn(target, reason.to_string())
+            .map_err(FacadeError::Runtime)
+    }
+
     /// Verifies `agent` is reachable from `self.root` by walking
     /// `AgentNode.parent` links in `Runtime::tree()`'s snapshot -- the
     /// "session-ownership check" the binding notes describe. Called

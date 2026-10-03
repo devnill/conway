@@ -29,6 +29,22 @@ pub enum Action {
     /// hook is defined here, handlers land elsewhere") -- the app loop
     /// branches on the leading `/`.
     Submit(String),
+    /// `prompt.send_now` (default `F2`, board item
+    /// `01M3XGPGT5W7GABVTC7F2NA0C9`): the per-message "send now" override --
+    /// aborts the focused agent's current turn (a no-op if it is already
+    /// idle -- `SessionHandle::abort_turn`'s own idle contract), waits for
+    /// it to report `awaiting_prompt`, then sends `text` into that same
+    /// still-live agent, regardless of the session's own `tui.busy_input`
+    /// mode. Carries the submitted text exactly like [`Action::Submit`]
+    /// (built the identical way: `Enter`'s own `KeyCode::Enter` arm is
+    /// `resolve_keymap_action`'s one sibling that also drains `state.input`)
+    /// -- a `prompt.send_now` existed here once, through review round 2 of
+    /// board item `01M1YVHKTQVXJRDSRYT3TCRXFX`, and was removed because the
+    /// ONLY cancellation primitive available then (`CancelMode::Immediate`)
+    /// was unconditionally terminal; this reinstates it on top of the
+    /// non-terminal `abort_turn` primitive that removal's own ruling named
+    /// as the prerequisite.
+    SendNow(String),
     /// A permission prompt was answered.
     PermissionDecision(PermissionDecision),
     /// `Ctrl-C`: cancel the running turn (first press) or exit 130 (second
@@ -2041,6 +2057,23 @@ fn resolve_keymap_action(state: &mut AppState, key: KeyEvent) -> Option<Action> 
         .matches(Context::Prompt, "open_editor", key)
     {
         return Some(Action::OpenExternalEditor);
+    }
+    // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: `prompt.send_now` (default
+    // `F2`) -- an empty input line has nothing to send, mirroring
+    // `KeyCode::Enter`'s own identical empty-input guard immediately below
+    // in the fixed chain (this resolves FIRST, so it needs the same guard
+    // rather than relying on that one). Drains `state.input`/resets
+    // `state.cursor`/clears the palette exactly like `Enter`'s own arm, so
+    // the input box empties the instant this is pressed, not only once the
+    // app loop finishes the abort-then-send round trip.
+    if state.keybindings.matches(Context::Prompt, "send_now", key) {
+        if state.input.is_empty() {
+            return Some(Action::None);
+        }
+        let text = std::mem::take(&mut state.input);
+        state.cursor = 0;
+        state.clear_palette();
+        return Some(Action::SendNow(text));
     }
     if state
         .keybindings

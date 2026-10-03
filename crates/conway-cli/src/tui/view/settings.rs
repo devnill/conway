@@ -300,8 +300,9 @@ pub(crate) const LEAF_DEFAULT_ROLE: &str = "default_role";
 pub(crate) const LEAF_PROMOTE_SESSION_MODEL: &str = "promote_session_model";
 pub(crate) const LEAF_SHOW_REASONING: &str = "show_reasoning";
 pub(crate) const LEAF_SHOW_TIMESTAMPS: &str = "show_timestamps";
-/// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: `Enter` cycles `queue -> steer
-/// -> queue` -- `AppState::cycle_busy_input`'s own doc.
+/// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`/`01M3XGPGT5W7GABVTC7F2NA0C9`:
+/// `Enter` cycles `queue -> steer -> interrupt -> queue` --
+/// `AppState::cycle_busy_input`'s own doc.
 pub(crate) const LEAF_BUSY_INPUT: &str = "busy_input";
 pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
 /// V2b: cycles `prompt` -> `plan` -> `AUTO-ALLOW` -> `prompt`.
@@ -868,6 +869,10 @@ fn busy_input_label(mode: crate::tui::state::BusyInputMode) -> String {
     let (name, detail) = match mode {
         BusyInputMode::Queue => ("queue", "hold until the turn boundary, then send"),
         BusyInputMode::Steer => ("steer", "deliver at the turn's own next tool-loop step"),
+        BusyInputMode::Interrupt => (
+            "interrupt",
+            "abort the current turn, then send into the same live agent",
+        ),
     };
     format!("busy input -- {name} ({detail}; Enter to cycle; [tui.busy_input])")
 }

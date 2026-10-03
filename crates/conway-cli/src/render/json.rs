@@ -41,6 +41,15 @@ impl Renderer for JsonRenderer {
             // to `self.out` at all.
             Event::AgentProgress { note } => diag::warn(note),
             Event::BudgetWarning { text, .. } => diag::warn(text),
+            // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: `TurnAbortedByUser`
+            // (the operator-abort sibling of `TurnAborted`, which this
+            // renderer already drops into the wildcard below) is deliberately
+            // left there too, for the identical reason `TurnAborted` is --
+            // this renderer's whole promise is silence on stdout until
+            // `finish`, and a one-shot `conway -p` run is never `keep_alive`
+            // in practice, so there is no real caller of `abort_turn` that
+            // ever reaches this renderer.
+            //
             // Everything else really is dropped: this mode's whole promise
             // is that stdout stays empty until `finish`. The wildcard is
             // unavoidable (`conway_core::Event` is `#[non_exhaustive]` and

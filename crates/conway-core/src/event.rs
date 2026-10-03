@@ -221,6 +221,31 @@ pub enum Event {
         limit: String,
         steps_this_turn: u32,
     },
+    /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: a `keep_alive` agent's
+    /// current user turn was ended by an explicit OPERATOR request --
+    /// `SessionHandle::abort_turn` (the TUI's first `Ctrl-C` mid-turn, or
+    /// `tui.busy_input = "interrupt"`'s own cancel-then-send) -- not by a
+    /// budget dimension tripping. Shares [`Event::TurnAborted`]'s "ends the
+    /// turn, not the session" contract exactly (the harness performs the
+    /// same `conway_runtime::agent_loop::AgentLoop::end_keep_alive_turn`
+    /// reset and returns to idling for the operator's next prompt), kept as
+    /// a DISTINCT variant rather than folded into `TurnAborted` itself
+    /// because `limit`/`steps_this_turn` are documented as a budget
+    /// dimension's own bare key -- an operator abort has no such key, only
+    /// the free-text `reason` the caller supplied (e.g. `"user cancel"`),
+    /// and overloading `limit` with it would misrepresent what tripped to
+    /// any consumer that already treats `TurnAborted::limit` as a budget
+    /// dimension. `agent_id` is carried explicitly, mirroring every other
+    /// per-agent event in this enum. `reason` mirrors
+    /// `ResultStatus::Cancelled`'s own caller-supplied reason exactly, and
+    /// is also what the companion `LogRecord::SystemNote { reason:
+    /// "turn_aborted_by_operator", .. }` (persisted just before this is
+    /// emitted, mirroring `TurnAborted`'s own persist-before-emit ordering)
+    /// tells the model in its own text.
+    TurnAbortedByUser {
+        agent_id: AgentId,
+        reason: String,
+    },
     /// Board item A5.6: `agent_id` crossed `conway_runtime::runway::
     /// BUDGET_WARN_FRACTION` (80%) of one of its own budget dimensions
     /// (`max_steps`/`max_tool_calls`/`max_tokens`/`deadline`). Emitted
@@ -464,6 +489,13 @@ mod tests {
                 "turn_aborted",
             ),
             (
+                Event::TurnAbortedByUser {
+                    agent_id: AgentId::new(),
+                    reason: "user cancel".into(),
+                },
+                "turn_aborted_by_user",
+            ),
+            (
                 Event::BudgetWarning {
                     agent_id: AgentId::new(),
                     limit: "max_steps=5".into(),
@@ -609,7 +641,10 @@ mod tests {
         // this happened to `AgentProgress` and `BudgetWarning`: both
         // reached the TUI and `jsonl`, both fell into the wildcard arm in
         // `render::text` and `render::json`, and no test anywhere failed.
-        assert_eq!(variants.len(), 27);
+        //
+        // `TurnAbortedByUser` (board item `01M3XGPGT5W7GABVTC7F2NA0C9`) is
+        // the 28th -- wired into all three places named above.
+        assert_eq!(variants.len(), 28);
         for (event, expected_tag) in variants {
             let value = serde_json::to_value(&event).unwrap();
             assert_eq!(value["event"], expected_tag, "tag for {event:?}");

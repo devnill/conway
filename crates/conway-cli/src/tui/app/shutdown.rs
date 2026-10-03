@@ -29,13 +29,27 @@ use crate::tui::state::{Entry, Mode};
 const DOUBLE_CTRL_C_WINDOW: Duration = Duration::from_secs(2);
 
 impl App {
-    /// First `Ctrl-C`: cancel the running turn (and, board item
-    /// `01M0RWFH6V709B7WTAFRZGFKG3`, abandon an in-flight `/ask` if one is
-    /// running -- see [`App::abandon_ask`]'s own doc; the two are
-    /// independent and both best-effort, so an ask with nothing else
-    /// running still gets abandoned, and an ordinary turn with no ask in
-    /// flight is unaffected), arm the double-press window. Second `Ctrl-C`
-    /// within [`DOUBLE_CTRL_C_WINDOW`]: exit 130.
+    /// First `Ctrl-C`: **board item `01M3XGPGT5W7GABVTC7F2NA0C9`** -- aborts
+    /// the ROOT's current turn (not the focused agent: this mirrors the
+    /// pre-existing target of the cancel call this replaces, and
+    /// `docs/interactive.md` describes `Ctrl-C` as stopping the session's
+    /// own reply, not whichever agent happens to be in view) if one is
+    /// genuinely running, via [`conway::SessionHandle::abort_turn`] -- the
+    /// NON-terminal primitive: the root accepts and answers another prompt
+    /// in the SAME session afterward, unlike the `SessionHandle::cancel`
+    /// this method used to call, which always ended it (the bug board item
+    /// `01M3XGPGT5W7GABVTC7F2NA0C9` fixes; see this module's own
+    /// `first_ctrl_c_...` tests below for the before/after). Pressed with
+    /// the root genuinely idle (sitting at its
+    /// resume gate, awaiting the operator's next prompt): nothing
+    /// destructive happens at all -- a notice tells the operator a second
+    /// press is what quits. Also (board item `01M0RWFH6V709B7WTAFRZGFKG3`)
+    /// abandons an in-flight `/ask` if one is running -- see
+    /// [`App::abandon_ask`]'s own doc; the two are independent and both
+    /// best-effort, so an ask with nothing else running still gets
+    /// abandoned, and an ordinary turn with no ask in flight is unaffected.
+    /// Arms the double-press window either way. Second `Ctrl-C` within
+    /// [`DOUBLE_CTRL_C_WINDOW`]: exit 130, unchanged.
     pub(super) async fn handle_ctrl_c(
         &mut self,
         last_ctrl_c: &mut Option<Instant>,
@@ -97,12 +111,34 @@ impl App {
         // its own "ask abandoned -- cleaning up" notice ahead of whatever
         // the root cancel below reports.
         self.abandon_ask().await;
-        // Best-effort: a cancel failure (e.g. nothing running) is not fatal
-        // to the session -- surfaced as a notice, not a crash.
-        if let Err(e) = self.handle.cancel(self.handle.root(), "user cancel").await {
-            self.state.transcript.push(Entry::Notice {
-                text: format!("cancel failed: {e}"),
-            });
+        // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: `abort_turn`, not
+        // `cancel` -- stops only the root's current turn (if any), leaving
+        // the agent itself, and the session, alive. `Ok(true)` means a live
+        // turn was actually aborted; `Ok(false)` means the root was already
+        // idle at its resume gate, in which case this press must do nothing
+        // destructive (the bug board item `01M3XGPGT5W7GABVTC7F2NA0C9` fixes)
+        // -- a notice tells the operator what a SECOND press does instead,
+        // mirroring the queued-message notice immediately above. Best-effort
+        // either way: a
+        // failure (e.g. an unknown root, which should never happen in
+        // practice) is not fatal to the session -- surfaced as a notice, not
+        // a crash.
+        match self
+            .handle
+            .abort_turn(self.handle.root(), "user cancel")
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                self.state.transcript.push(Entry::Notice {
+                    text: "nothing to interrupt -- press Ctrl-C again to quit".to_string(),
+                });
+            }
+            Err(e) => {
+                self.state.transcript.push(Entry::Notice {
+                    text: format!("abort failed: {e}"),
+                });
+            }
         }
         Ok(None)
     }
@@ -255,26 +291,20 @@ mod tests {
     use super::super::App;
     use crate::tui::state::Entry;
 
-    /// **Evidence for a separately-filed item, not a guard for this one --
-    /// do not change `handle_ctrl_c`'s behavior to make this pass
-    /// differently.** The TUI's own keybinding table (`docs/interactive.md`)
-    /// has long claimed `Ctrl-C` "pressed with nothing running, does
-    /// nothing destructive on its own." This test shows that claim is
-    /// false for the ordinary, unconfigured case: `handle_ctrl_c` ->
-    /// `self.handle.cancel(root, "user cancel")` -> `SessionHandle::
-    /// cancel_with(..., CancelMode::Immediate)` (`session_handle.rs`) trips
-    /// the SAME `CancellationToken` `AgentLoop::run_inner`'s resume-gate
-    /// `tokio::select!` races, `biased`, ahead of the gate's own
-    /// `notify.notified()` arm (`agent_loop.rs`, the `ResumeGate::
-    /// awaiting_prompt` branch) -- so a FIRST, single `Ctrl-C` press
-    /// against a root sitting genuinely idle at that gate (the TUI's
-    /// ordinary "nothing running, waiting for you to type" state, since
-    /// the interactive root is always spawned `keep_alive: true` --
-    /// `app/startup.rs::session_spec`'s own doc) routes straight to
-    /// `finish_cancelled`: a TERMINAL result, not a no-op. The session
-    /// ends before the operator ever typed a second message.
+    /// **Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: this test used to be named
+    /// `..._ends_the_session` and proved the opposite of what it proves
+    /// now** -- it was "evidence for a separately-filed item" (this one),
+    /// deliberately not a guard, because the fix needed a new primitive
+    /// (`SessionHandle::abort_turn`) this file's own B3e slice did not have.
+    /// Now that `handle_ctrl_c` calls `abort_turn` instead of `cancel`, a
+    /// first press against a root sitting genuinely idle at its resume gate
+    /// (the TUI's ordinary "nothing running, waiting for you to type" state)
+    /// finds no live turn to abort (`AgentTree::abort_turn`'s own `Ok(false)`
+    /// idle case) and does nothing destructive at all -- `docs/
+    /// interactive.md`'s claim that `Ctrl-C` "pressed with nothing running,
+    /// does nothing destructive" is accurate again.
     #[tokio::test]
-    async fn first_ctrl_c_against_a_genuinely_idle_keep_alive_root_ends_the_session() {
+    async fn first_ctrl_c_against_a_genuinely_idle_keep_alive_root_leaves_the_session_live() {
         let conway = echo_conway_and_store().0;
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
@@ -310,20 +340,26 @@ mod tests {
             "a first press must never exit the process on its own: {outcome:?}"
         );
 
-        // The root is now terminal -- a single first press, no second
-        // press, no turn ever having run.
-        let became_finished = tokio::time::timeout(Duration::from_secs(5), async {
-            while !app.agent_is_finished(root).await {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .is_ok();
+        // LOAD-BEARING: give any wrongly-triggered cancellation a real
+        // window to land, then prove it never did -- the root must still be
+        // alive, genuinely idle, and ready for the operator's next prompt.
+        tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            became_finished,
-            "LOAD-BEARING: a first Ctrl-C against an idle keep-alive root must end its \
-             session -- a timeout here would mean this finding no longer holds and the \
-             docs/interactive.md claim this test disproves may be accurate again"
+            !app.agent_is_finished(root).await,
+            "a first Ctrl-C against an idle keep-alive root must leave the session live -- \
+             finding it finished here would mean the regression board item \
+             01M3XGPGT5W7GABVTC7F2NA0C9 fixes has come back"
+        );
+        assert!(
+            app.handle.awaiting_prompt(root),
+            "the root must still be sitting at its resume gate, ready for another prompt"
+        );
+        assert!(
+            app.state.transcript.iter().any(
+                |e| matches!(e, Entry::Notice { text } if text.contains("Ctrl-C again to quit"))
+            ),
+            "an idle first press must tell the operator what a second press does: {:?}",
+            app.state.transcript
         );
     }
 

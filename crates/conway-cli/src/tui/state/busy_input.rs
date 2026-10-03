@@ -115,21 +115,21 @@ impl AppState {
     /// `activate_settings_selection` calls this directly, with no `Action`
     /// round trip.
     ///
-    /// **Orchestrator ruling (after review round 2):** a third value,
-    /// `interrupt`, existed here and cycled `queue -> steer -> interrupt ->
-    /// queue`. Removed outright -- review round 2 established that this
-    /// runtime's cancellation is unconditionally terminal for a kept-alive
-    /// agent in every state, so `interrupt` could only ever END the
-    /// operator's session, never "cancel this reply, keep talking." The
-    /// orchestrator ruled conway must never ship a `busy_input` mode or key
-    /// whose effect is to end the session out from under the operator. See
-    /// `crate::tui::config::BusyInputMode`'s own doc for the config-load
-    /// compatibility fallback a `settings.json` still naming `interrupt`
-    /// gets.
+    /// **A third value, `interrupt`, cycled `queue -> steer -> interrupt ->
+    /// queue` here through review round 2 of board item
+    /// `01M1YVHKTQVXJRDSRYT3TCRXFX`, was removed by orchestrator ruling
+    /// (this runtime's only cancellation primitive at the time was
+    /// unconditionally terminal for a kept-alive agent, so `interrupt` could
+    /// only ever END the session, never "cancel this reply, keep talking"),
+    /// and is reinstated by board item `01M3XGPGT5W7GABVTC7F2NA0C9`** on top
+    /// of `SessionHandle::abort_turn`, the non-terminal primitive that
+    /// removal's own ruling named as the prerequisite -- see
+    /// [`crate::tui::config::BusyInputMode`]'s own doc.
     pub fn cycle_busy_input(&mut self) {
         self.busy_input = match self.busy_input {
             BusyInputMode::Queue => BusyInputMode::Steer,
-            BusyInputMode::Steer => BusyInputMode::Queue,
+            BusyInputMode::Steer => BusyInputMode::Interrupt,
+            BusyInputMode::Interrupt => BusyInputMode::Queue,
         };
     }
 
@@ -347,13 +347,18 @@ mod tests {
     use super::*;
     use conway::AgentId;
 
+    /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the cycle is now three-wide
+    /// (`Interrupt` reinstated) -- `queue -> steer -> interrupt -> queue`.
     #[test]
-    fn cycle_busy_input_wraps_queue_steer_queue() {
+    fn cycle_busy_input_wraps_queue_steer_interrupt_queue() {
         let mut state = AppState::new(AgentId::new());
         assert_eq!(state.busy_input, BusyInputMode::Queue);
 
         state.cycle_busy_input();
         assert_eq!(state.busy_input, BusyInputMode::Steer);
+
+        state.cycle_busy_input();
+        assert_eq!(state.busy_input, BusyInputMode::Interrupt);
 
         state.cycle_busy_input();
         assert_eq!(state.busy_input, BusyInputMode::Queue);

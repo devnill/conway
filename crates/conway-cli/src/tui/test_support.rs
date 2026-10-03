@@ -181,6 +181,12 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         }
         Action::None
         | Action::Submit(_)
+        // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: mirrors `Action::Submit`
+        // immediately above -- `SendNow` needs a live `SessionHandle::
+        // abort_turn` call (`App::interrupt_and_send`) this terminal-free
+        // harness has no session to make, so it is applied in
+        // `app/run.rs`'s run loop only; a test asserts on the ACTION alone.
+        | Action::SendNow(_)
         | Action::CtrlC
         | Action::Quit
         // Board item `01M1YVJ4RA5V7FF95MFRQMTQW3`: `Ctrl-G` needs a live

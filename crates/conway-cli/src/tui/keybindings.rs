@@ -233,12 +233,21 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` ("Typing while the agent
     // works"): a per-message "send now" override, `prompt.send_now`
-    // (`F2`), lived here through review round 2. Removed by orchestrator
-    // ruling: it cancelled the focused agent first, the same way
-    // `busy_input = interrupt` did, and that primitive is unconditionally
-    // terminal for a kept-alive agent in every state -- its only real
-    // effect was to end the operator's session, which conway must never
-    // ship a key for. `F2` is free again.
+    // (`F2`), lived here through review round 2 and was removed by
+    // orchestrator ruling -- it cancelled the focused agent first, the same
+    // way `busy_input = interrupt` did, and that primitive was
+    // unconditionally terminal for a kept-alive agent in every state.
+    //
+    // Reinstated by board item `01M3XGPGT5W7GABVTC7F2NA0C9` on top of
+    // `SessionHandle::abort_turn`, the non-terminal primitive that
+    // removal's own ruling named as the prerequisite -- see
+    // `Action::SendNow`'s own doc (`input.rs`) for the full mechanism.
+    ActionSpec {
+        context: Context::Prompt,
+        name: "send_now",
+        description: "abort the focused agent's current turn (if any) and send this message now",
+        defaults: &["F2"],
+    },
     ActionSpec {
         context: Context::Transcript,
         name: "toggle_tool_output",

@@ -114,7 +114,7 @@ while you're composing:
 | `Ctrl-G` | Edit the current input in `$VISUAL`/`$EDITOR` (falling back to `vi`) — see "Keybindings" below. |
 | `Home` / `End` | With the input box empty, jump the transcript to the top/tail instead of moving the cursor. |
 | `PageUp` / `PageDown` | Scroll the transcript a page at a time. |
-| `Ctrl-C` | Interrupt the current turn (or, pressed with nothing running, does nothing destructive on its own). Also abandons an in-flight `/ask`, if one is running — see below. |
+| `Ctrl-C` | Abort the session's current reply, in place — the session stays live, and it accepts and answers your next message normally. Pressed with nothing running, it does nothing destructive at all (just a quiet notice that a second press is what quits). Also abandons an in-flight `/ask`, if one is running — see below. |
 | `Ctrl-D` | Quit, when the input box is empty. |
 | `@` + a few letters | Open a file-mention completion list — see "Mentioning files," below. |
 | `Tab` | Inside an open mention list, insert the highlighted candidate; otherwise, complete the path-shaped word under the cursor. |
@@ -194,15 +194,15 @@ cycles its own three states):
   mid-generation** — it is folded into context no sooner than the model's
   next inference step within the current turn's tool loop, never while a
   model call is actually in flight.
-
-There is no third, "cancel the current reply but keep talking to this same
-agent" mode. Doing that would need a turn cancel that returns control to the
-agent rather than ending its session, and conway's runtime does not have
-one today — a `busy_input` mode that reused the existing, session-ending
-cancel would silently end the conversation it claimed to be interrupting,
-so it is not offered; that gap is tracked as its own, separate piece of
-work. If you want to abandon the current session outright, `Ctrl-C` still
-does that.
+- `interrupt` — aborts the focused agent's current turn (killing any tool it
+  was mid-way through running, process group and all) and sends your new
+  message into the SAME agent the instant it reports idle — the "cancel this
+  reply, keep talking" mode. The session is never ended by this: it is the
+  same non-terminal abort `Ctrl-C` uses, scoped to the focused agent rather
+  than the session as a whole. `prompt.send_now` (default `F2`, see
+  "Keybindings" below) is the per-message, one-off version of this — press it
+  on any message, in any `busy_input` mode, to abort-and-send just that one
+  message without changing your configured mode.
 
 A `!`/`!>` shell command or a `/`-prefixed slash command is never affected by
 `busy_input` — neither is "a prompt" in the sense this setting governs, and
@@ -1042,7 +1042,7 @@ on it. The status markers:
 
 `/settings` opens a menu of six groups: **defaults** (the default role and
 the default model — see below), **display** (show reasoning traces, show
-timestamps, and `busy input` — `queue`/`steer`, see "Typing
+timestamps, and `busy input` — `queue`/`steer`/`interrupt`, see "Typing
 while the agent works," above), **tool output** (how many lines a folded
 tool call shows before `Ctrl-O` is needed), **permissions** (cycle the
 permission mode; review or revoke individual grants under **allow** — flat
@@ -1291,6 +1291,10 @@ the same list with your OWN effective bindings, not these defaults.
   under the cursor (see "Mentioning files," below). Only reached while no
   `@`-mention list is open — `mentions.accept` (below) owns `Tab` while one
   is.
+- `prompt.send_now` — default `F2` — abort the focused agent's current turn
+  (a no-op if it is already idle) and send this message now, regardless of
+  the session's own `busy_input` mode — the per-message, one-off twin of
+  `busy_input = interrupt` (see "Typing while the agent works," above).
 
 On a multi-line draft (`Alt-Enter`/`Shift-Enter`), all four of
 `line_start`/`line_end`/`kill_to_start`/`kill_to_end` act on the cursor's

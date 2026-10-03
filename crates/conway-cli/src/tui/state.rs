@@ -3066,6 +3066,19 @@ impl AppState {
                     text: format!("turn ended: {limit} reached; type to continue"),
                 });
             }
+            // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the operator-abort
+            // sibling of `Event::TurnAborted` immediately above -- same
+            // "the agent is still alive, just idling for the next prompt"
+            // contract (the first `Ctrl-C` mid-turn, or `busy_input =
+            // "interrupt"`'s own cancel-then-send), a different cause, so
+            // this gets its own wording naming the operator's own reason
+            // rather than reusing "reached" (a budget-dimension word that
+            // would misdescribe an operator abort).
+            Event::TurnAbortedByUser { reason, .. } => {
+                self.transcript.push(Entry::Notice {
+                    text: format!("turn aborted ({reason}); type to continue"),
+                });
+            }
             // Board item A5.6: a child (or the root) crossed 80% of one of
             // its own budget dimensions -- the model-facing wrap-up notice
             // this event's own doc says it mirrors already reached the

@@ -261,6 +261,22 @@ cancel_with` is the embedder-facing counterpart; `SessionHandle::cancel`
 keeps calling it with `CancelMode::Immediate`, unchanged from before this
 distinction existed.
 
+**`SessionHandle::abort_turn` is a separate, non-terminal primitive, not a
+third `CancelMode`.** Where `cancel`/`cancel_with` always end the target
+(publishing a terminal result either way), `abort_turn` stops only the
+target's CURRENT turn -- the in-flight backend call and/or tool batch,
+including killing a held tool's process group -- and returns the target to
+idling at its resume gate with its conversation intact; a `keep_alive`
+target accepts and answers a new prompt in the same session right
+afterward. It has no model-facing tool counterpart (`conway_cancel` is
+unaffected by it, and keeps its own unconditionally-terminal meaning) --
+it exists for an embedder that wants "stop this reply, keep talking,"
+conway-cli's interactive TUI being the first caller (its `Ctrl-C` and
+`tui.busy_input = "interrupt"`). A no-op, `Ok(false)`, when the target has
+no turn in flight right now (idle, or already aborted) -- never an error
+for that case, since a caller like a keyboard interrupt cannot know in
+advance whether a turn is running.
+
 ### When a model's tool call is malformed (board item `01M23SDCE6T85Z48CRQ8NBY6PV`)
 
 A model's tool call has to arrive as real, schema-valid JSON before it can

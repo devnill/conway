@@ -27,11 +27,20 @@
 //! doc comment, which names this crate as the place such a bridge belongs.
 //! Each call derives a `child_token()` from it and races that token's
 //! `cancelled()` against the tool's `invoke` future via `tokio::select!` —
-//! so a stuck or uncooperative tool is abandoned promptly (the losing
-//! `select!` branch is dropped) rather than relying solely on the tool
-//! polling `ToolCtx::cancel`. The same signal is *also* forwarded into a
-//! fresh `conway_core::ports::CancellationToken` handed to the tool via
-//! `ToolCtx`, so well-behaved tools still see the cooperative flag.
+//! so a cancelled call's own caller (the turn) is never held up by it: the
+//! losing `select!` branch is dropped and this function returns immediately,
+//! regardless of whether the tool itself has noticed yet. The same signal is
+//! *also* forwarded into a fresh `conway_core::ports::CancellationToken`
+//! handed to the tool via `ToolCtx`, so well-behaved tools still see the
+//! cooperative flag and can act on it (`bash` kills its own process group).
+//!
+//! **A tool that never polls that flag at all does not therefore run
+//! forever.** `invoke` is always dispatched through this module's own
+//! `GracefulInvocation`, which bounds exactly this case with a
+//! `TOOL_CANCEL_GRACE` grace period before a force-`abort()` — see both
+//! items' own doc, further down in this same file, for the full mechanism
+//! and why it exists (board item `01M3XGPGT5W7GABVTC7F2NA0C9`, review round
+//! 2).
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -342,6 +351,121 @@ impl ToolRunner {
     }
 }
 
+/// Board item `01M3XGPGT5W7GABVTC7F2NA0C9` (review round 2): how long a
+/// cancelled tool call's own spawned task gets to notice `ToolCtx::cancel`
+/// and finish on its own (a cooperative tool like `bash` kills its process
+/// group well within this) before [`GracefulInvocation`]'s `Drop` impl
+/// force-`abort()`s it.
+///
+/// Chosen deliberately LARGER than `kill_group`'s own SIGTERM-to-SIGKILL
+/// escalation window (2s, `conway_tools::process::unix::TERM_GRACE`) plus
+/// margin for `bash`'s own `POLL_INTERVAL` (50ms) to notice the signal in
+/// the first place: a grace shorter than that risks `abort()`ing a
+/// COOPERATIVE tool's own task while `kill_group` is still mid-escalation,
+/// which could tear down the Rust task driving the kill before the OS
+/// process it was killing is actually confirmed dead. This value cannot
+/// reference `TERM_GRACE` directly and add a margin to it in code —
+/// `conway-runtime` must not depend on `conway-tools` (an ordinary plugin
+/// crate, not a core dependency; `crates/conway/tests/
+/// architecture_invariants.rs`'s own `t4_runtime_depends_on_core_only`
+/// guards exactly this) — so the arithmetic is stated here in prose instead,
+/// and `docs/tools.md`'s own "Timeouts" section restates it for an operator
+/// who never reads this source file.
+const TOOL_CANCEL_GRACE: Duration = Duration::from_secs(3);
+
+/// Wraps one tool call's spawned `invoke` task so that DROPPING this value
+/// — which is exactly what happens to `execute_one`'s own local `invocation`
+/// when the function's outer `tokio::select!` resolves to its cancelled arm,
+/// discarding the whole future that owns it — is never an UNBOUNDED orphan.
+///
+/// **The gap this closes.** Before board item `01M3XGPGT5W7GABVTC7F2NA0C9`,
+/// the `None` (`[limits].tool_timeout_secs` unset — the actual production
+/// default) path awaited `invoke` INLINE, so dropping that future on
+/// cancellation also stopped polling the tool's own work outright: an
+/// implicit backstop, bought at the cost of a COOPERATIVE tool (like
+/// `bash`, which must keep running long enough to see `ToolCtx::cancel` and
+/// call `kill_group`) never getting the chance to finish its own cleanup —
+/// the very defect that item fixed, by always spawning `invoke` as its own
+/// task and awaiting the `JoinHandle`. That fix brought the cooperative
+/// cleanup back, but it also REMOVED the implicit backstop: `tokio::spawn`
+/// detaches on drop, so an UNCOOPERATIVE tool (one that never polls
+/// `ToolCtx::cancel` at all) kept running as a genuinely unbounded orphaned
+/// task once the outer select dropped the future awaiting it — nothing was
+/// left holding the `JoinHandle` to ever `abort()` it. Caught in review,
+/// before it shipped.
+///
+/// **The fix.** While a value of this type is alive and being awaited (via
+/// [`Self::join`]), it behaves identically to awaiting the inner
+/// `JoinHandle` directly. The moment it is DROPPED instead — whether because
+/// the task already finished (the ordinary, non-cancelled path, where
+/// dropping it is a harmless no-op) or because the enclosing future was
+/// dropped out from under it (cancellation) — its [`Drop`] impl checks
+/// whether the spawned task is still running and, if so, spawns a SEPARATE,
+/// detached supervisor task that races [`TOOL_CANCEL_GRACE`] against the
+/// handle's own completion, calling `abort()` only once the grace period
+/// actually elapses. Spawning that supervisor is synchronous and cheap, so
+/// `Drop::drop` — and therefore whatever caller triggered the drop by racing
+/// against cancellation — never itself waits on the grace period:
+/// cancellation still returns immediately, exactly as it always has.
+struct GracefulInvocation {
+    handle: Option<tokio::task::JoinHandle<Result<ToolOutput, ToolError>>>,
+}
+
+impl GracefulInvocation {
+    /// Spawns `fut` as its own task immediately, wrapped for the bounded,
+    /// drop-time backstop described on the type's own doc.
+    fn spawn(
+        fut: impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send + 'static,
+    ) -> Self {
+        Self {
+            handle: Some(tokio::spawn(fut)),
+        }
+    }
+
+    /// Awaits the spawned task to completion — identical to awaiting the
+    /// inner `JoinHandle` directly. See the type's own doc for what dropping
+    /// this (instead of awaiting it to completion) does.
+    async fn join(&mut self) -> Result<Result<ToolOutput, ToolError>, tokio::task::JoinError> {
+        self.handle
+            .as_mut()
+            .expect("GracefulInvocation::join called more than once")
+            .await
+    }
+}
+
+impl Drop for GracefulInvocation {
+    fn drop(&mut self) {
+        let Some(mut handle) = self.handle.take() else {
+            return;
+        };
+        if handle.is_finished() {
+            // The ordinary, non-cancelled path: `join` already polled this
+            // to `Ready` and `execute_one` is now dropping the wrapper at
+            // the end of its own scope. Nothing left to bound.
+            return;
+        }
+        // Detached on purpose: this task outlives `self`, which is exactly
+        // what lets a COOPERATIVE tool keep running past this drop. It is
+        // itself bounded by `TOOL_CANCEL_GRACE` either way, so it can never
+        // become the next unbounded orphan in turn.
+        // Without a current runtime (a drop during runtime shutdown), there
+        // is nothing to run the grace on and `tokio::spawn` would panic:
+        // abort at once instead.
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            handle.abort();
+            return;
+        };
+        rt.spawn(async move {
+            tokio::select! {
+                _ = &mut handle => {}
+                () = tokio::time::sleep(TOOL_CANCEL_GRACE) => {
+                    handle.abort();
+                }
+            }
+        });
+    }
+}
+
 /// Runs one call end to end: resolve → validate → propose → authorize →
 /// (start → invoke → truncate) → finish. Free function (not a method) so it
 /// owns everything it needs and can be spawned as an independent, `'static`
@@ -576,26 +700,46 @@ async fn execute_one(
                 ),
             };
 
-            // Board item `01M1FSHJ3FG522MHA9CMBJTVW1`: the runner-level tool
-            // timeout. `None` (the default -- `[limits].tool_timeout_secs ==
-            // 0`) takes the exact pre-existing path: `invoke` is awaited
-            // directly, byte-identical to before this field existed.
-            //
-            // `Some(duration)` spawns `invoke` as its OWN tokio task rather
-            // than awaiting it inline, specifically so a timeout does not
-            // have to drop it: `tokio::select!`/`tokio::time::timeout`
-            // around an inline future DROPS the loser the instant the timer
-            // wins, which would abandon the tool's own future without ever
-            // giving it a further poll -- a cooperative tool watching
-            // `core_cancel` would never actually observe the signal this
-            // sends it. Spawned, the task keeps running (and keeps being
-            // polled by the runtime) after this function stops waiting on
-            // it, so calling `core_cancel.cancel()` below and then
-            // returning immediately still lets a well-behaved tool (like
-            // `bash`, which kills its process group) react on its own time
-            // -- this function just stops blocking the turn on it.
+            // Board item `01M1FSHJ3FG522MHA9CMBJTVW1`'s own timeout field,
+            // and board item `01M3XGPGT5W7GABVTC7F2NA0C9`'s fix to the gap
+            // it left in the `None` arm (the actual production default --
+            // `[limits].tool_timeout_secs == 0` -- so this is the path every
+            // real cancellation through this runner takes). `None` used to
+            // await `invoke` INLINE, so dropping the future on cancellation
+            // (the OUTER `tokio::select!` at this function's own top)
+            // stopped polling the tool's own work outright, before a
+            // cooperative tool's own loop (`bash`'s `ctx.cancel` poll, which
+            // needs at least one more scheduling tick) ever got the chance
+            // to run `kill_group`. `None` now dispatches `invoke` through
+            // [`GracefulInvocation`], exactly like `Some` always has via its
+            // own `JoinHandle` -- see that type's own doc for the full
+            // mechanism, including the bounded backstop
+            // ([`TOOL_CANCEL_GRACE`]) a review round added for an
+            // UNCOOPERATIVE tool that never polls `ToolCtx::cancel` at all.
             let invoked = match tool_timeout {
-                None => resolved.tool.invoke(call.clone(), tool_ctx).await,
+                None => {
+                    let spawned_tool = resolved.tool.clone();
+                    let spawned_call = call.clone();
+                    let mut invocation = GracefulInvocation::spawn(async move {
+                        spawned_tool.invoke(spawned_call, tool_ctx).await
+                    });
+                    match invocation.join().await {
+                        Ok(invoked) => invoked,
+                        Err(join_err) => {
+                            bridge.abort();
+                            let detail = if join_err.is_panic() {
+                                panic_message(join_err.into_panic())
+                            } else {
+                                "task ended unexpectedly".to_string()
+                            };
+                            return ToolOutcome::error(
+                                call_id.clone(),
+                                tool_name.clone(),
+                                format!("tool `{tool_name}` panicked: {detail}"),
+                            );
+                        }
+                    }
+                }
                 Some(duration) => {
                     // Cloned out of `resolved` (which borrows the registry
                     // and is not `'static`) so the spawned task below owns

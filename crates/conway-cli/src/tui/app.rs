@@ -637,21 +637,25 @@ impl App {
         // by `busy_input`: neither is "a prompt" in the sense this setting
         // governs.
         //
-        // **Orchestrator ruling, after review round 2:** a THIRD mode,
-        // `interrupt`, and a per-message override that behaved like it
-        // (`prompt.send_now`, default `F2`) existed here. Both cancelled
-        // the focused agent (`CancelMode::Immediate`, the same primitive
-        // `Ctrl-C` uses) before sending the new message -- and that
-        // primitive is unconditionally terminal for a kept-alive agent in
-        // every state, so neither could ever have delivered the new
-        // message into a continuing conversation; their only real effect
-        // was to end the operator's session. Removed outright: conway must
-        // never ship a `busy_input` mode or key whose effect is to end the
-        // session out from under the operator. See `crate::tui::config::
-        // BusyInputMode`'s own doc and `docs/interactive.md` for what a
-        // genuine "interrupt this reply, keep the session" would need (a
-        // non-terminal turn cancel, tracked separately -- this runtime does
-        // not have one today).
+        // **Orchestrator ruling, after review round 2 of board item
+        // `01M1YVHKTQVXJRDSRYT3TCRXFX`:** a THIRD mode, `interrupt`, and a
+        // per-message override that behaved like it (`prompt.send_now`,
+        // default `F2`) existed here and were removed outright -- both
+        // cancelled the focused agent (`CancelMode::Immediate`, the same
+        // primitive `Ctrl-C` used at the time) before sending the new
+        // message, and that primitive was unconditionally terminal for a
+        // kept-alive agent in every state, so neither could ever have
+        // delivered the new message into a continuing conversation; their
+        // only real effect was to end the operator's session.
+        //
+        // **Reinstated by board item `01M3XGPGT5W7GABVTC7F2NA0C9`**, which
+        // built the non-terminal primitive the ruling above named as
+        // missing (`SessionHandle::abort_turn`): `Interrupt` now aborts just
+        // the focused agent's current turn, waits for it to report
+        // `awaiting_prompt` (bounded -- see `INTERRUPT_WAIT_BOUND`), and
+        // sends the new message into that same still-live agent. F2
+        // ("send now") is the per-message, one-off twin of this mode --
+        // `Action::SendNow` in `input.rs`'s `ACTIONS` table.
         let focused = self.state.focused_agent;
         let busy = self.state.activity != crate::tui::state::Activity::Idle;
         if busy {
@@ -674,6 +678,10 @@ impl App {
                             text: format!("steer failed: {e}"),
                         }),
                     }
+                    return Ok(SubmitOutcome::Continue);
+                }
+                crate::tui::config::BusyInputMode::Interrupt => {
+                    self.interrupt_and_send(focused, text).await;
                     return Ok(SubmitOutcome::Continue);
                 }
             }
@@ -762,7 +770,85 @@ impl App {
             }
         }
     }
+
+    /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the shared implementation
+    /// behind `tui.busy_input = "interrupt"` and `prompt.send_now` (`F2`) --
+    /// aborts `agent`'s current turn via `SessionHandle::abort_turn` (a safe
+    /// no-op when `agent` is already idle, per that method's own doc, which
+    /// is exactly what makes this fn correct to call UNCONDITIONALLY from
+    /// `F2` regardless of whether a turn happens to be running), waits
+    /// (bounded -- [`INTERRUPT_WAIT_BOUND`]) for `agent` to report
+    /// `awaiting_prompt`, then sends `text` into that same still-live agent
+    /// via [`Self::send_prompt_now`].
+    ///
+    /// **The bound exists because this runs on the TUI's own render/input
+    /// loop task** -- unlike a background turn, there is nothing else
+    /// driving the screen while this awaits, so an unbounded wait here would
+    /// freeze the whole interface. A mid-generation abort (`turn_cancel`
+    /// raced directly inside the backend call) resolves near-instantly; a
+    /// mid-tool-batch one waits for the held tool's own cancellation-aware
+    /// cleanup (`conway_tools::shell::bash`'s `kill_group`, polled at most
+    /// every 50ms) to finish, which is still well inside the bound for any
+    /// cooperative tool. On a genuine timeout (an uncooperative tool, or an
+    /// agent that was never going to idle in time), the message is queued
+    /// instead of silently dropped -- the SAME fallback `tui.busy_input =
+    /// "queue"` already gives every message, so a slow interrupt degrades to
+    /// "sent a little later," never "lost."
+    pub(super) async fn interrupt_and_send(&mut self, agent: conway::AgentId, text: String) {
+        // `prompt.send_now` (`F2`) reaches this directly from `app/run.rs`'s
+        // own `Action::SendNow` arm, bypassing `Self::submit`'s own
+        // finished-agent guard (`block_message_if_focused_agent_finished`)
+        // entirely -- without this check, pressing `F2` against an agent
+        // that already finished would wait out the FULL `INTERRUPT_WAIT_
+        // BOUND` (its `awaiting_prompt` was cleared to `false` for good,
+        // `AgentTree::publish_result`'s own defensive clear, and nothing
+        // will ever set it `true` again) before silently queuing into a
+        // dead agent. Mirrors `Self::submit`'s own pre-send re-check
+        // exactly: restore the text to the input box with a notice, rather
+        // than queue it where nothing will ever deliver it.
+        if self.agent_is_finished(agent).await {
+            self.state.input = text;
+            self.state.cursor = self.state.input.chars().count();
+            self.state.transcript.push(Entry::Notice {
+                text: format!(
+                    "can't send -- {agent} finished while this message was being prepared; \
+                     restored to the input box"
+                ),
+            });
+            return;
+        }
+        if let Err(e) = self.handle.abort_turn(agent, "busy_input=interrupt").await {
+            self.state.transcript.push(Entry::Notice {
+                text: format!("interrupt failed: {e}"),
+            });
+            self.state.queue_prompt(agent, text);
+            return;
+        }
+        let became_idle = tokio::time::timeout(INTERRUPT_WAIT_BOUND, async {
+            while !self.handle.awaiting_prompt(agent) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok();
+        if became_idle {
+            self.send_prompt_now(agent, text).await;
+        } else {
+            self.state.transcript.push(Entry::Notice {
+                text: "interrupt did not complete in time -- message queued instead".to_string(),
+            });
+            self.state.queue_prompt(agent, text);
+        }
+    }
 }
+
+/// How long [`App::interrupt_and_send`] waits for the aborted agent to
+/// report idle before falling back to queuing the message -- generous
+/// enough for a cooperative tool's own cancellation-aware cleanup (polled at
+/// most every 50ms, `conway_tools::shell::bash`'s own `POLL_INTERVAL`), short
+/// enough that a genuinely stuck abort does not freeze the TUI's render loop
+/// for long.
+const INTERRUPT_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(test)]
 mod tests {

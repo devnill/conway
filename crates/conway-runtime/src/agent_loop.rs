@@ -1105,6 +1105,17 @@ impl AgentLoop {
         .await
     }
 
+    // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: `turn_cancel` below is the
+    // 8th parameter -- one past clippy's default `too_many_arguments`
+    // threshold. Every parameter here is already load-bearing (this method
+    // owns routing, the attempt call, AND the bounded overflow-retry loop,
+    // per its own doc), and `turn_cancel` cannot be folded into any existing
+    // one (it is not part of the request being built, it is the cancellation
+    // primitive racing the call that builds it) -- grouping it with an
+    // unrelated parameter into a struct would obscure, not clarify, the
+    // signature, unlike the genuine groupings this crate's own `ToolBatchCtx`/
+    // `CurateCtx` already use elsewhere for a cohesive bundle of fields.
+    #[allow(clippy::too_many_arguments)]
     async fn route_and_attempt(
         &self,
         turn: u32,
@@ -1113,6 +1124,14 @@ impl AgentLoop {
         mut report: ContextReport,
         headroom: u32,
         artifacts: &ArtifactWriteHandle,
+        // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: this turn's own abort
+        // token (`run_inner`'s `turn_cancel`), raced by `attempt.rs`'s
+        // `run_generate`/`run_stream` exactly where `self.cancel` used to be
+        // -- NOT `self.cancel` itself, so a caller that wants only this turn
+        // stopped can reach a mid-generation backend call without ending the
+        // agent. See `run_inner`'s own call site for how a trip is told
+        // apart from an ordinary whole-agent cancel.
+        turn_cancel: &CancellationToken,
     ) -> Result<(AttemptOutcome, ContextReport), RuntimeError> {
         let mut overflow_attempts: u8 = 0;
 
@@ -1151,7 +1170,7 @@ impl AgentLoop {
                         headroom,
                         max_tokens_override: None,
                         cache_ttl: self.spec.cache_ttl,
-                        cancel: self.cancel.clone(),
+                        cancel: turn_cancel.clone(),
                     };
                     match self.deps.attempt.execute(attempt_req).await {
                         Ok(outcome) => return Ok((outcome, report)),
@@ -1546,6 +1565,25 @@ impl AgentLoop {
                 continue;
             }
 
+            // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: a fresh, turn-scoped
+            // abort token for the backend attempt and tool batch this
+            // iteration is about to dispatch. A `self.cancel.child_token()`
+            // -- not a second, independent token -- so an ordinary whole-
+            // agent cancel still reaches it structurally (`Immediate`'s
+            // existing reach is unchanged), but a caller that wants only
+            // THIS turn stopped (`AgentTree::abort_turn`, reached via
+            // `SessionHandle::abort_turn`) can trip it alone, leaving
+            // `self.cancel` -- and this agent's life -- untouched.
+            // Registered on the tree BEFORE the backend attempt begins (see
+            // `AgentTree::set_turn_abort_token`'s own doc for why this
+            // ordering matters), so a caller racing in from outside can
+            // reach a turn that is still mid-generation, not only one
+            // mid-tool-batch.
+            let turn_cancel = self.cancel.child_token();
+            self.deps
+                .tree
+                .set_turn_abort_token(self.agent_id, turn_cancel.clone());
+
             // Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: marked BEFORE the bus
             // emit, mirroring `Event::TurnStarted`'s own ordering guarantee
             // (this module's doc: no later `seq` observed before an earlier
@@ -1817,6 +1855,7 @@ impl AgentLoop {
                 report,
                 headroom,
                 &artifacts,
+                &turn_cancel,
             );
             let route_attempt_result = match self.spec.budget.deadline {
                 Some(deadline) => {
@@ -1840,6 +1879,39 @@ impl AgentLoop {
                 }
                 None => route_attempt_fut.await,
             };
+            // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: a backend attempt
+            // cancelled by THIS turn's own abort token alone (not
+            // `self.cancel`, the agent's whole-lifetime one) is an operator
+            // abort, not an agent-ending cancellation -- caught here, before
+            // `try_rt!` below ever gets a chance to unwind the whole agent
+            // through `finish_error` the way an ordinary `self.cancel` trip
+            // still does. Gated on `self.spec.keep_alive`: an agent with no
+            // resume gate to return to has nothing for `abort_current_turn`'s
+            // reset to mean, so it falls through to the pre-existing
+            // whole-agent-ending behavior instead -- the same thing would
+            // have happened before this turn-scoped token existed at all.
+            if route_attempt_result.is_err()
+                && self.spec.keep_alive
+                && turn_cancel.is_cancelled()
+                && !self.cancel.is_cancelled()
+            {
+                let reason = self
+                    .deps
+                    .tree
+                    .take_turn_abort_reason(self.agent_id)
+                    .unwrap_or_else(|| "operator abort".to_string());
+                let abort_result = self
+                    .abort_current_turn(
+                        &mut state,
+                        &mut result_builder,
+                        &mut contract_retried,
+                        reason,
+                        None,
+                    )
+                    .await;
+                try_rt!(state, abort_result);
+                continue;
+            }
             let (outcome, report) = try_rt!(state, route_attempt_result);
             // Captured BEFORE any of this turn's own tool-dispatch/cancel/
             // budget checks below, so a termination mid-tool-batch still
@@ -2112,7 +2184,15 @@ impl AgentLoop {
                 agent_path: self.agent_path.clone(),
                 session_id: self.session,
                 chdir: chdir.clone(),
-                cancel: self.cancel.clone(),
+                // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: this turn's own
+                // abort token, not `self.cancel` -- `ToolRunner::run_batch`
+                // forwards this into the real process-group kill path
+                // (`ToolCtx::cancel`/`conway_tools::shell::bash`'s own
+                // `kill_group`) exactly as it always has, but tripping it
+                // alone no longer requires ending the whole agent to kill a
+                // held tool's process group; see `turn_cancel`'s own
+                // construction, above in this loop.
+                cancel: turn_cancel.clone(),
                 subagents: self.deps.subagents.clone(),
                 context_path_host: self.deps.context_path_host.clone(),
                 session_discovery_host: self.deps.session_discovery_host.clone(),
@@ -2193,6 +2273,44 @@ impl AgentLoop {
                 // `AgentTree::mark_tools_finished`'s own doc for why leaving
                 // the marker set is what makes that possible.
                 return Ok(self.finish_cancelled(&state, &result_builder).await);
+            }
+            // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: a batch cancelled by
+            // THIS turn's own abort token alone (not `self.cancel`, checked
+            // immediately above) is an operator abort, not a whole-agent
+            // cancellation -- the batch's outcomes are dropped here for the
+            // identical reason the arm above drops them (any call that
+            // completed real side effects before the trip never reaches the
+            // session log), and the held tool's process group is already
+            // dead by the time this is reached (`ToolRunner::run_batch`'s
+            // own `call_cancel`/`core_cancel` bridge, which `batch_ctx.cancel`
+            // -- this turn's token -- feeds exactly like an ordinary cancel
+            // always has). Gated on `self.spec.keep_alive` for the identical
+            // reason `route_and_attempt`'s own call site is: an agent with no
+            // resume gate falls through to the pre-existing whole-agent-
+            // ending behavior instead.
+            if turn_cancel.is_cancelled() {
+                let in_flight = self.deps.tree.in_flight_tools(self.agent_id);
+                let note = crate::result::interrupted_call_note(&in_flight);
+                self.deps.tree.mark_tools_finished(self.agent_id);
+                if !self.spec.keep_alive {
+                    return Ok(self.finish_cancelled(&state, &result_builder).await);
+                }
+                let reason = self
+                    .deps
+                    .tree
+                    .take_turn_abort_reason(self.agent_id)
+                    .unwrap_or_else(|| "operator abort".to_string());
+                let abort_result = self
+                    .abort_current_turn(
+                        &mut state,
+                        &mut result_builder,
+                        &mut contract_retried,
+                        reason,
+                        note,
+                    )
+                    .await;
+                try_rt!(state, abort_result);
+                continue;
             }
             // The batch returned WITHOUT this agent having been cancelled --
             // every outcome below is about to be processed normally, so
@@ -2548,6 +2666,71 @@ impl AgentLoop {
         // doc for why this is the honest "busy" signal a facade caller
         // outside this loop's own live subscribers can read.
         self.deps.tree.mark_awaiting_prompt(self.agent_id, true);
+        // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the just-ended turn's own
+        // abort token (if any -- a natural completion and a budget trip
+        // never set one in the first place, only this loop's own operator-
+        // abort call sites do) is now stale, mirroring `awaiting_prompt`'s
+        // own "every path back to idle resets the same way" shape. Clearing
+        // it here, in the ONE shared "end a keep_alive turn" implementation,
+        // is what makes `AgentTree::abort_turn` a safe no-op while idle.
+        self.deps.tree.clear_turn_abort_token(self.agent_id);
+    }
+
+    /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the operator-abort
+    /// counterpart of `BudgetCheck::TurnAborted`'s own inline handling in
+    /// [`Self::run_inner`] -- persists the model-facing `SystemNote`, emits
+    /// the live [`Event::TurnAbortedByUser`], then performs the SAME
+    /// turn-boundary reset ([`Self::end_keep_alive_turn`]) a budget trip and
+    /// a natural completion already share, so there is never a second,
+    /// independently-drifting copy of "end this turn, keep the session."
+    ///
+    /// `in_flight_note` is [`crate::result::interrupted_call_note`]'s
+    /// rendering of whatever tool call(s) were still dispatched the instant
+    /// the abort token tripped, if any -- `None` when the abort landed while
+    /// a backend call (not a tool batch) was in flight, or when nothing was
+    /// dispatched. Appended to the model-facing text exactly like
+    /// [`Self::finish_cancelled`]'s own trailing-text convention, so the
+    /// model is told WHICH call was interrupted, not just that one was.
+    ///
+    /// Only ever called from a `self.spec.keep_alive` branch (both call
+    /// sites in `run_inner` check this first) -- an agent with no resume
+    /// gate to return to has nothing for this reset to mean; see
+    /// `end_keep_alive_turn`'s own doc.
+    async fn abort_current_turn(
+        &mut self,
+        state: &mut LoopState,
+        result_builder: &mut ResultBuilder,
+        contract_retried: &mut bool,
+        reason: String,
+        in_flight_note: Option<String>,
+    ) -> Result<(), RuntimeError> {
+        let mut text = format!(
+            "this turn was ended by the operator ({reason}). Answer with what you have; your \
+             next prompt continues this same session."
+        );
+        if let Some(note) = in_flight_note {
+            text = format!("{text}\n\n{note}");
+        }
+        self.persist(|seq| LogRecord::SystemNote {
+            seq,
+            ts: Utc::now(),
+            text,
+            reason: "turn_aborted_by_operator".to_string(),
+            prov: Provenance::SystemNote {
+                reason: "turn_aborted_by_operator".to_string(),
+            },
+        })
+        .await?;
+        self.deps.bus.emit(
+            self.session,
+            self.agent_id,
+            Event::TurnAbortedByUser {
+                agent_id: self.agent_id,
+                reason,
+            },
+        );
+        self.end_keep_alive_turn(state, result_builder, contract_retried);
+        Ok(())
     }
 
     /// Checks every configured budget dimension at the top of a turn.

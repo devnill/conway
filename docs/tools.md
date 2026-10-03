@@ -292,6 +292,20 @@ layers:
   ([limits].tool_timeout_secs); raise the limit, split the work, or run it
   in a child`.
 
+**Cancellation (the operator pressing `Ctrl-C`, `/cancel`, or `conway_cancel`
+reaching a tool mid-call) works the same way `[limits].tool_timeout_secs`'s
+expiry does, with one addition: a bounded grace period for a tool that
+ignores the signal entirely.** Every call's own `invoke` runs as its own
+task, so cancellation never has to wait for it before returning control to
+the turn — but a well-behaved tool like `bash` still needs a real moment to
+notice `ToolCtx::cancel` and run its own cleanup (`kill_group`'s own 2-second
+SIGTERM-to-SIGKILL escalation, below). The runner gives any cancelled call up
+to 3 seconds to finish on its own; a tool that never checks the cancellation
+flag at all — and so would otherwise keep running as an orphaned task forever
+— is force-stopped once that grace period elapses. This never delays the
+turn itself: the 3-second window applies only to the tool's own call, not to
+when the model sees the result.
+
 **When both apply to the same `bash` call, the smaller one wins** — whichever
 fires first ends the call; the other simply never gets the chance to. A
 `bash` call with `timeout_ms: 300000` under an operator's

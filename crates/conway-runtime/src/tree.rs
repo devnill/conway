@@ -233,6 +233,29 @@ struct TreeEntry {
     /// `ResumeGate::default()`'s own starting value exactly (a `keep_alive`
     /// agent's very first turn also runs immediately, never gated).
     awaiting_prompt: AtomicBool,
+    /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the CURRENT turn's abort
+    /// token, if a real turn is actually in flight right now -- distinct
+    /// from [`AgentNode::cancel`] (this agent's whole-lifetime token,
+    /// structurally shared with every descendant). Set by `agent_loop.rs`
+    /// immediately before a turn's backend attempt is dispatched (so a mid-
+    /// generation abort is reachable, not only a mid-tool-batch one),
+    /// cleared by [`AgentTree::clear_turn_abort_token`] -- called from
+    /// `AgentLoop::end_keep_alive_turn`, the ONE shared "return to the
+    /// resume gate" implementation, so every path back to idle clears it the
+    /// same way `awaiting_prompt` and `turn_in_flight` already are. `None`
+    /// at `attach`, and `None` for the entire time this agent sits at its
+    /// resume gate -- which is exactly what makes [`AgentTree::abort_turn`]
+    /// a safe no-op while idle, matching `awaiting_prompt`'s own "honest
+    /// busy signal" contract: an idle agent has no live token to trip.
+    turn_abort: Mutex<Option<CancellationToken>>,
+    /// The `reason` most recently supplied to [`AgentTree::abort_turn`]
+    /// naming THIS agent, consumed (not merely read) by
+    /// `agent_loop.rs` via [`AgentTree::take_turn_abort_reason`] the moment
+    /// it notices its own turn token has been tripped -- mirrors
+    /// `cancel_reason`'s "stash before tripping the token" ordering so the
+    /// reason is always already here by the time the loop observes the
+    /// trip.
+    turn_abort_reason: Mutex<Option<String>>,
 }
 
 /// The multi-agent tree: attachment, structural lookups, cancellation
@@ -293,6 +316,8 @@ impl AgentTree {
                 turn_in_flight: AtomicBool::new(false),
                 in_flight_tools: Mutex::new(Vec::new()),
                 awaiting_prompt: AtomicBool::new(false),
+                turn_abort: Mutex::new(None),
+                turn_abort_reason: Mutex::new(None),
             },
         );
         // Released before emitting: `EventBus::emit` is synchronous and
@@ -450,6 +475,11 @@ impl AgentTree {
             // sites (its `tokio::select!` returns via `finish_cancelled`
             // instead), but always reaches this one.
             entry.awaiting_prompt.store(false, Ordering::SeqCst);
+            // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the same defensive
+            // clear for the turn-abort token -- a terminal result means
+            // there is no longer a live turn for `AgentTree::abort_turn` to
+            // ever reach, regardless of which exit path produced it.
+            *entry.turn_abort.lock().expect("turn abort lock poisoned") = None;
             let _ = entry.result_tx.send(Some(result));
             Ok(true)
         } else {
@@ -524,6 +554,96 @@ impl AgentTree {
             .get(&agent)
             .map(|entry| entry.awaiting_prompt.load(Ordering::SeqCst))
             .unwrap_or(false)
+    }
+
+    /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: records `agent`'s CURRENT
+    /// turn's abort token -- called from `agent_loop.rs` immediately before
+    /// that turn's backend attempt is dispatched, mirroring
+    /// [`Self::mark_tools_started`]'s "before the thing it guards" ordering
+    /// so a caller racing [`Self::abort_turn`] in from outside can never
+    /// observe a turn that is genuinely starting but reads as idle. A no-op
+    /// for an unknown agent, matching [`Self::mark_turn_started`]'s same
+    /// best-effort posture.
+    pub(crate) fn set_turn_abort_token(&self, agent: AgentId, token: CancellationToken) {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        if let Some(entry) = nodes.get(&agent) {
+            *entry.turn_abort.lock().expect("turn abort lock poisoned") = Some(token);
+        }
+    }
+
+    /// The turn-boundary twin of [`Self::set_turn_abort_token`]: clears
+    /// `agent`'s current turn token, called from `AgentLoop::
+    /// end_keep_alive_turn` -- the one shared "return to the resume gate"
+    /// implementation -- so every path back to idle (natural completion, a
+    /// budget-triggered `TurnAborted`, or an operator-triggered one) leaves
+    /// [`Self::abort_turn`] a safe no-op until the next turn actually
+    /// starts. A no-op for an unknown agent, matching this module's other
+    /// best-effort setters.
+    pub(crate) fn clear_turn_abort_token(&self, agent: AgentId) {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        if let Some(entry) = nodes.get(&agent) {
+            *entry.turn_abort.lock().expect("turn abort lock poisoned") = None;
+        }
+    }
+
+    /// Trips `agent`'s CURRENT turn's abort token, if one is live right now
+    /// -- the non-terminal sibling of [`Self::cancel`]: where `cancel` trips
+    /// the agent's whole-lifetime token (ending the agent, structurally
+    /// propagating to every descendant), this trips only the narrower,
+    /// turn-scoped child token `agent_loop.rs` races the in-flight backend
+    /// attempt and tool batch against, leaving the agent itself -- and its
+    /// `CancellationToken` subtree -- untouched. `reason` is stashed first
+    /// (mirroring [`Self::cancel`]'s own "stash before tripping" ordering),
+    /// readable back via `Self::take_turn_abort_reason`, so it is always
+    /// already present by the time the loop observes the trip.
+    ///
+    /// Returns `Ok(true)` when a live token was actually tripped, `Ok(false)`
+    /// when `agent` has no turn in flight right now -- idle at its resume
+    /// gate, between the two in-flight windows mid-turn, or already aborted
+    /// -- which is deliberately NOT an error: a caller (the TUI's first
+    /// `Ctrl-C`) that cannot tell in advance whether a turn is running needs
+    /// a safe, non-destructive no-op for the idle case, not a `Result` it
+    /// must inspect and suppress itself every time. `Err` only for an
+    /// `agent` unknown to this tree entirely.
+    pub fn abort_turn(&self, agent: AgentId, reason: String) -> Result<bool, RuntimeError> {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        let entry = nodes
+            .get(&agent)
+            .ok_or(RuntimeError::AgentNotFound { agent })?;
+        let token = entry
+            .turn_abort
+            .lock()
+            .expect("turn abort lock poisoned")
+            .clone();
+        match token {
+            Some(token) if !token.is_cancelled() => {
+                *entry
+                    .turn_abort_reason
+                    .lock()
+                    .expect("turn abort reason lock poisoned") = Some(truncate_reason(reason));
+                token.cancel();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Consumes (not merely reads) the `reason` most recently supplied to
+    /// [`Self::abort_turn`] naming `agent` directly -- `agent_loop.rs` calls
+    /// this the moment it notices its own turn token has been tripped, so a
+    /// stale reason can never be read back a second time for a LATER turn's
+    /// own abort. `None` for an agent never itself the direct target of
+    /// `abort_turn`, and for an unknown agent, matching [`Self::
+    /// cancel_reason`]'s same default-rather-than-error convention.
+    pub(crate) fn take_turn_abort_reason(&self, agent: AgentId) -> Option<String> {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        nodes.get(&agent).and_then(|entry| {
+            entry
+                .turn_abort_reason
+                .lock()
+                .expect("turn abort reason lock poisoned")
+                .take()
+        })
     }
 
     /// Board item A5.6: records that `agent` has just dispatched `calls` to

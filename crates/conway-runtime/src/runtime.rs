@@ -1250,6 +1250,19 @@ impl Runtime {
         self.tree.cancel(agent, reason)
     }
 
+    /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: a direct, thin pass-through
+    /// to [`crate::tree::AgentTree::abort_turn`], mirroring [`Self::cancel`]
+    /// immediately above exactly -- see that method's own doc for why this
+    /// is non-`async` (synchronous, like every other `AgentTree` mutation)
+    /// and why `SessionHandle::abort_turn` calls through this rather than a
+    /// `SubagentHost` trait method: unlike `cancel`/`steer`, this primitive
+    /// is not model-facing (no `conway_abort_turn` tool exists), so it needs
+    /// no caller/target authorization beyond the session-ownership check
+    /// `SessionHandle` already performs itself before reaching here.
+    pub fn abort_turn(&self, agent: AgentId, reason: String) -> Result<bool, RuntimeError> {
+        self.tree.abort_turn(agent, reason)
+    }
+
     /// Every envelope emitted after this call. Two concurrent subscribers
     /// observe identical `seq` sequences per session (guaranteed by
     /// `EventBus::emit`'s atomic assign-then-publish).

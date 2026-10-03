@@ -108,6 +108,37 @@ impl Tool for DelayTool {
     }
 }
 
+/// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`, review round 2: an
+/// UNCOOPERATIVE tool -- one that never reads `ctx` (let alone
+/// `ctx.cancel`) at all -- ticking a shared counter forever on a fixed
+/// interval. The counter is the observable proof of whether this tool's own
+/// spawned task is still alive, from OUTSIDE that task (an `Arc<AtomicUsize>`
+/// the test polls, not a signal the tool itself would have to cooperate to
+/// send): a tool shaped exactly like this one is what `GracefulInvocation`'s
+/// own bounded, drop-time backstop exists for in
+/// `conway_runtime::tools::runner` -- without it, this tool's task would
+/// become a genuinely unbounded orphan the instant a cancellation drops the
+/// future awaiting it, since `tokio::spawn` detaches on drop and nothing
+/// else would ever stop it.
+struct UncooperativeTickTool {
+    name: ToolName,
+    ticks: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for UncooperativeTickTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        simple_spec(self.name.clone())
+    }
+
+    async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        loop {
+            self.ticks.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
 /// Sleeps for `delay`, polling `ctx.cancel.is_cancelled()` every 5ms so it
 /// can react promptly rather than only at the end of a long
 /// `tokio::time::sleep` -- `conway_core::ports::CancellationToken` is a
@@ -714,6 +745,87 @@ async fn batch_cancellation_returns_within_100ms_with_cancelled_outcomes() {
     for outcome in &outcomes {
         assert!(text_of(outcome).contains("cancelled"), "{outcome:?}");
     }
+}
+
+/// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`, review round 2: an
+/// UNCOOPERATIVE tool -- one that never polls `ctx.cancel` at all -- must
+/// still be bounded. `run_batch` itself returns promptly either way (mirrors
+/// `batch_cancellation_returns_within_100ms_with_cancelled_outcomes`
+/// immediately above); what this test proves is what happens to the tool's
+/// own spawned task AFTER that return: it keeps ticking for a while (the
+/// grace period a COOPERATIVE tool like `bash` needs to see `ctx.cancel` and
+/// clean up its own process group), then is force-stopped -- it does not
+/// become a genuinely unbounded orphan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_uncooperative_tool_keeps_ticking_through_the_grace_then_is_aborted() {
+    let ticks = Arc::new(AtomicUsize::new(0));
+    let reg = registry(vec![Arc::new(UncooperativeTickTool {
+        name: ToolName::new("ticker"),
+        ticks: ticks.clone(),
+    })]);
+    let (runner, _bus) = runner_with_gate(reg, PermissionDecision::AllowOnce);
+    let mut ctx = batch_ctx(1);
+    let cancel = CancellationToken::new();
+    ctx.cancel = cancel.clone();
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel.cancel();
+    });
+
+    let start = Instant::now();
+    let outcomes = runner
+        .run_batch(&ctx, vec![call("c1", "ticker", serde_json::json!({}))])
+        .await;
+    let elapsed = start.elapsed();
+
+    // `run_batch` must still return promptly on cancellation -- the grace
+    // period governs the detached task's OWN fate afterward, never the
+    // turn's; this is the "don't make the turn wait on the grace" half of
+    // the fix.
+    assert!(
+        elapsed < Duration::from_millis(300),
+        "run_batch must return promptly on cancellation, grace or no grace: {elapsed:?}"
+    );
+    assert_eq!(outcomes.len(), 1);
+    assert!(outcomes[0].is_error);
+    assert!(
+        text_of(&outcomes[0]).contains("cancelled"),
+        "{:?}",
+        outcomes[0]
+    );
+
+    let ticks_at_cancel = ticks.load(Ordering::SeqCst);
+    assert!(
+        ticks_at_cancel > 0,
+        "sanity: the tool must have genuinely started ticking before the batch was cancelled"
+    );
+
+    // Still well inside the grace period (`TOOL_CANCEL_GRACE`, 3s, private to
+    // `runner.rs` -- this test only asserts the observable behavior it
+    // produces, not the exact constant): the uncooperative tool's own task
+    // must still be alive and ticking. This is the whole reason the grace
+    // exists at all.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let ticks_mid_grace = ticks.load(Ordering::SeqCst);
+    assert!(
+        ticks_mid_grace > ticks_at_cancel,
+        "the uncooperative tool's own task must still be running partway through its grace \
+         period: {ticks_at_cancel} then {ticks_mid_grace}"
+    );
+
+    // Comfortably past the grace period: the task must now be aborted and
+    // stay stopped for good.
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    let ticks_after_grace = ticks.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let ticks_settled = ticks.load(Ordering::SeqCst);
+    assert_eq!(
+        ticks_after_grace, ticks_settled,
+        "LOAD-BEARING: an uncooperative tool's own task must be aborted once its grace period \
+         elapses -- a continuing increase here would mean it is still running as an unbounded \
+         orphan, the exact regression this item's review round 2 caught"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
