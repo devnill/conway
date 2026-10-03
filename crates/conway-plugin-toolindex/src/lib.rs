@@ -189,12 +189,62 @@ pub const PLUGIN_ID: &str = "conway.toolindex";
 /// model as `describe_tool` once this plugin is installed.
 pub const TOOL_NAME: &str = "describe_tool";
 
+/// Hard upper bound, in `char`s, on the description portion of a deferred
+/// tool's [`index_entry`] -- the ceiling [`truncate_description`] applies
+/// when a tool's first sentence is itself longer than this (or has no
+/// sentence-ending punctuation at all). `docs/plugins/toolindex.md`'s own
+/// "The problem, measured" section carries the before/after char counts
+/// this bound was chosen against.
+const MAX_INDEX_DESCRIPTION_CHARS: usize = 100;
+
+/// Narrows `description` (already trimmed of leading/trailing whitespace
+/// by the caller) down to its first sentence -- the text up to and
+/// including the first `.`/`!`/`?` -- or, when that first sentence is
+/// itself longer than [`MAX_INDEX_DESCRIPTION_CHARS`] (or the description
+/// has no sentence-ending punctuation at all), to that many characters,
+/// cut at the last word boundary at or before the limit and marked with a
+/// trailing `…` so a reader can tell it was cut.
+///
+/// This is the fix for the gap DOGFOOD 3 measured: before this function
+/// existed, [`index_entry`] kept an MCP server's full multi-sentence
+/// description verbatim (`docs/plugins/toolindex.md` promised a one-line
+/// index entry; a multi-hundred-character description made the "one
+/// line" true only in the newline sense, not the token-cost sense the doc
+/// actually means). The full, untruncated description is never lost --
+/// `ToolIndexHook::before_request` caches each tool's real, pre-narrowing
+/// `ToolSpec` before this function is ever called on it, and
+/// `DescribeToolTool::invoke` serves that cached original back in full.
+fn truncate_description(description: &str) -> String {
+    let sentence_end = description
+        .char_indices()
+        .find(|&(_, c)| matches!(c, '.' | '!' | '?'))
+        .map(|(i, c)| i + c.len_utf8());
+    let candidate = match sentence_end {
+        Some(end) => &description[..end],
+        None => description,
+    };
+    if candidate.chars().count() <= MAX_INDEX_DESCRIPTION_CHARS {
+        return candidate.to_string();
+    }
+    let truncated: String = candidate
+        .chars()
+        .take(MAX_INDEX_DESCRIPTION_CHARS)
+        .collect();
+    let cut = match truncated.rfind(char::is_whitespace) {
+        Some(pos) if pos > 0 => &truncated[..pos],
+        _ => truncated.as_str(),
+    };
+    format!("{}…", cut.trim_end())
+}
+
 /// The one-line index entry a deferrable tool's `description` is narrowed
 /// to: `name: description (call describe_tool(name="...") for the full
 /// schema)`, or `name (call describe_tool(name="...") for the full
 /// schema)` when the tool carries no (or only whitespace) description.
-/// Kept as a plain function so the hook and any test share one source of
-/// truth for the exact index form -- mirrors `conway_plugin_skills`'s own
+/// `description` itself is [`truncate_description`]'d first -- see that
+/// function's own doc for exactly what "one-line" means here. Kept as a
+/// plain function so the hook and any test share one source of truth for
+/// the exact index form -- mirrors `conway_plugin_skills`'s own
 /// `index_entry`.
 fn index_entry(spec: &ToolSpec) -> String {
     let description = spec.description.trim();
@@ -204,8 +254,9 @@ fn index_entry(spec: &ToolSpec) -> String {
             spec.name, spec.name
         )
     } else {
+        let short = truncate_description(description);
         format!(
-            "{}: {description} (call describe_tool(name=\"{}\") for the full schema)",
+            "{}: {short} (call describe_tool(name=\"{}\") for the full schema)",
             spec.name, spec.name
         )
     }
@@ -514,6 +565,90 @@ mod tests {
             "no description must not produce an empty `name: ` prefix: {text}"
         );
         assert!(text.contains("describe_tool(name=\"mcp_noisy\")"));
+    }
+
+    // -----------------------------------------------------------------
+    // `truncate_description` -- first sentence, or a fixed short bound.
+    // DOGFOOD 3's own gap: the index entry's description must genuinely
+    // be bounded, not the full multi-sentence text an MCP server sends.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_short_single_sentence_is_kept_whole() {
+        assert_eq!(
+            truncate_description("Search the configured index."),
+            "Search the configured index."
+        );
+    }
+
+    /// A real, multi-sentence MCP-tool-shaped description (the exact shape
+    /// DOGFOOD 3 flagged, e.g. `list_directory`'s own ~380-char
+    /// description): narrows to the first sentence alone, well under
+    /// `MAX_INDEX_DESCRIPTION_CHARS`, and drops the rest -- the second and
+    /// third sentences never appear in the index entry at all.
+    #[test]
+    fn a_multi_sentence_description_narrows_to_its_first_sentence() {
+        let description = "Returns a listing of files and subdirectories within the given \
+                            path, each entry prefixed with [FILE] or [DIR]. Only the \
+                            top-level contents are shown; it does not recurse into \
+                            subdirectories. Use the search tool instead to find a file by \
+                            name across the whole project.";
+        let short = truncate_description(description);
+        assert_eq!(
+            short,
+            "Returns a listing of files and subdirectories within the given path, each \
+             entry prefixed with…"
+        );
+        assert!(
+            short.len() <= MAX_INDEX_DESCRIPTION_CHARS + "…".len(),
+            "truncated description ({} chars) must respect the bound",
+            short.chars().count()
+        );
+        assert!(
+            !short.contains("Only the top-level"),
+            "the second sentence must not leak into the index entry: {short}"
+        );
+    }
+
+    /// A single, long, run-on sentence (no `.`/`!`/`?` before the bound) is
+    /// cut to [`MAX_INDEX_DESCRIPTION_CHARS`] at the last word boundary,
+    /// marked with a trailing `…` -- not left at full length, and not cut
+    /// mid-word.
+    #[test]
+    fn a_long_single_sentence_is_cut_at_the_bound_on_a_word_boundary() {
+        let description = "Performs operation number 3 against the external index, accepting \
+                            a free-text query, an optional result limit, and a list of filter \
+                            expressions to narrow the result set.";
+        let short = truncate_description(description);
+        assert_eq!(
+            short,
+            "Performs operation number 3 against the external index, accepting a free-text \
+             query, an optional…"
+        );
+        assert!(short.chars().count() <= MAX_INDEX_DESCRIPTION_CHARS + 1);
+    }
+
+    /// `index_entry` itself routes its description through
+    /// `truncate_description` -- the end-to-end proof that a deferred
+    /// tool's one-line announcement is genuinely bounded, closing the gap
+    /// DOGFOOD 3 measured (a 380-char MCP description kept verbatim).
+    #[test]
+    fn index_entry_bounds_a_long_multi_sentence_description() {
+        let long_description = "Returns a listing of files and subdirectories within the \
+                                 given path, each entry prefixed with [FILE] or [DIR]. Only \
+                                 the top-level contents are shown; it does not recurse into \
+                                 subdirectories. Use the search tool instead to find a file \
+                                 by name across the whole project.";
+        let s = spec("list_directory", long_description);
+        let text = index_entry(&s);
+        assert!(
+            !text.contains("Use the search tool instead"),
+            "the third sentence must not reach the wire: {text}"
+        );
+        assert!(
+            text.len() < long_description.len(),
+            "the index entry must be shorter than the real description it stands in for"
+        );
     }
 
     // -----------------------------------------------------------------

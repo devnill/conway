@@ -30,6 +30,61 @@ tokens; an installed MCP server or subprocess plugin on top of that is what
 pushes a small window over the edge. (Re-verify before quoting either
 number — specs in this tree go stale fast.)
 
+**The index entry itself used to not be one line, in the sense that
+mattered.** DOGFOOD 3 (2026-09-30, a real session against a 32,768-token
+window) found that deferral correctly dropped a tool's parameter schema
+down to the trivial `{}` placeholder, but kept an MCP server's full,
+multi-sentence `description` verbatim — one real example, `list_directory`,
+ran to ~380 characters. The 14 deferred MCP tools in that session still
+cost ~2,100 tokens on that basis alone: deferral was saving the schema, not
+the description, which is most of what made "one-line" a promise this
+plugin's doc made but its code did not keep.
+
+Fixed: a deferred tool's description is now narrowed to its first sentence,
+or (whichever is shorter) a 100-character bound cut at the last word
+boundary — see [`src/lib.rs`'s own `truncate_description`](../../crates/conway-plugin-toolindex/src/lib.rs)
+doc for the exact rule. The full, untruncated description is never lost; it
+is exactly what `describe_tool` serves back. Measured before/after on this
+crate's own `tests/toolindex_e2e.rs` fixture tool (`mcp_tool_3`, a single
+169-character sentence — already fairly compact, since it predates this
+fix): its index entry shrinks from 241 characters (full description) to 169
+(truncated) — a modest ~30% cut on an already-short, single-sentence
+description, and a far larger one on a real multi-sentence MCP description
+like the `list_directory` case above (a ~380-character description, index
+entry included, narrows to its first sentence alone, capped at 100
+characters if that sentence itself runs long).
+
+## The fixed per-request floor: conway's own subagent tools
+
+DOGFOOD 3's other finding: conway's own `conway_fork`/`conway_ask`/
+`conway_cancel`/`conway_spawn`/`conway_steer` tools are never deferred by
+this plugin (`always_announced_names`, above) and are installed by default
+(`conway-tools`' `SubagentPlugin`), so their combined wire cost is a floor
+every session pays on every request, with or without `conway.toolindex`
+installed, and regardless of how many MCP tools an operator adds on top.
+Measured (`crates/conway-tools/tests/subagent_wire_cost.rs`, the exact
+`{"type":"function","function":{"name":...,"description":...,
+"parameters":...}}` wire shape `OpenAiCompatBackend` sends, pinned so a
+drift here is a build failure, not a stale doc):
+
+| Tool            | Wire JSON chars |
+|-----------------|-----------------|
+| `conway_fork`   | 2,602           |
+| `conway_ask`    | 2,544           |
+| `conway_cancel` | 2,380           |
+| `conway_spawn`  | 2,188           |
+| `conway_steer`  | 840             |
+| **Total**       | **10,554**      |
+
+Roughly 2,600 estimated tokens (`heuristic-chars4`) on every single
+request, before any MCP/subprocess/first-party-plugin tool is counted at
+all. **Whether these five should themselves be shortened or made
+deferrable is a design question this item deliberately leaves to the
+operator** — `always_announced_names`' own "mechanical, not a guess" rule
+above exists precisely because membership in that set is a fixed, disclosed
+list, not something this plugin should start quietly trimming on its own
+opinion of which built-in tools "matter less."
+
 ## What installing it costs
 
 ```json

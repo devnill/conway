@@ -998,6 +998,24 @@ fn admit_tool_result(
 /// unchanged (e.g. via `compose_context_path`) would hit the identical
 /// bound again, so the honest next moves are narrowing the request that
 /// produced it, or delegating the narrowing to a child.
+///
+/// **The narrowing example is deliberately conditional, not a claim about
+/// `tool` specifically** (toolindex/context-window measurement item,
+/// 01M3TEKJH2HRK6QBTMJXSC1D77's own traced DOGFOOD-3 finding): this
+/// function has no tool registry to consult, so it cannot know whether
+/// `tool` actually HAS a narrowing argument, only that SOME built-in tools
+/// do. The note used to assert flatly that `{tool}` could be re-invoked
+/// "with a narrower range or query (e.g. the `read` tool's own
+/// `offset`/`limit` args...)" regardless of which tool had actually
+/// overflowed -- for `conway.web`'s `web_fetch` (no `offset`/`limit`, only
+/// its own `max_bytes`), a real DOGFOOD-3 session read that advice,
+/// correctly found it did not apply, and fell straight to forking a child
+/// rather than ever retrying with a smaller `max_bytes` -- the OTHER
+/// remedy this note already names and `web_fetch` genuinely supports. The
+/// wording below states what is true for every tool ("check whether it
+/// accepts one"), names three real, in-tree precedents as illustration,
+/// and leaves "or fork a child" as the remedy that is ALWAYS available
+/// regardless of what `tool` actually accepts.
 fn not_admitted_note(
     tool: &ToolName,
     call_id: &str,
@@ -1011,9 +1029,10 @@ fn not_admitted_note(
          {original_bytes} bytes (~{tokens_est} estimated tokens), exceeding this turn's \
          {bound_tokens}-token tool-result bound. The full result is preserved in this session's \
          durable log (turn {turn}) but was withheld from this request -- re-admitting it \
-         unchanged would hit the same bound. To use it: re-invoke `{tool}` with a narrower range \
-         or query (e.g. the `read` tool's own `offset`/`limit` args, or a tighter grep/search \
-         filter) so the result fits, or fork a child with `conway_fork` to read and process the \
+         unchanged would hit the same bound. To use it: check whether `{tool}` itself accepts a \
+         narrower request -- a size/range/query argument that shrinks the result (e.g. `read`'s \
+         own `offset`/`limit`, `grep`'s own filter, or `web_fetch`'s own `max_bytes`) -- and \
+         re-invoke it with one if so, or fork a child with `conway_fork` to read and process the \
          full result and report back only a small, distilled answer."
     )
 }
@@ -3324,12 +3343,23 @@ mod tool_call_pairing_tests {
     /// used in the tests below (repeats past any reasonable heuristic-
     /// chars4 estimate of a "small" bound).
     fn oversized_tool_result(seq: u64, call_id: &str) -> LogRecord {
+        oversized_tool_result_named(seq, call_id, "read")
+    }
+
+    /// [`oversized_tool_result`], naming a tool other than `read` --
+    /// `not_admitted_note_never_states_a_specific_tool_has_offset_limit`'s
+    /// own fixture: that test needs a tool whose name is NOT `read`, so a
+    /// regression that reintroduces a flat "the `read` tool's own
+    /// `offset`/`limit`" claim about whatever `tool` actually is would be
+    /// caught even when `tool` happens to be named `read` in every OTHER
+    /// test in this module.
+    fn oversized_tool_result_named(seq: u64, call_id: &str, tool: &str) -> LogRecord {
         LogRecord::ToolResultRecord {
             seq: LogSeq(seq),
             ts: Utc::now(),
             result: ToolResult {
                 call_id: call_id.to_string(),
-                tool: ToolName::new("read"),
+                tool: ToolName::new(tool),
                 blocks: vec![ContentBlock::Text {
                     text: "x".repeat(10_000),
                 }],
@@ -3492,6 +3522,42 @@ mod tool_call_pairing_tests {
         assert!(text.contains("re-invoke"), "{text:?}");
         assert!(text.contains("conway_fork"), "{text:?}");
         assert!(!text.contains("compact"), "{text:?}");
+    }
+
+    /// The DOGFOOD-3 finding this item traced: the narrowing example must
+    /// never be stated as a fact about the SPECIFIC tool that overflowed --
+    /// `web_fetch` has no `offset`/`limit` at all, only its own
+    /// `max_bytes`, so a not-admitted note for a `web_fetch` result that
+    /// flatly asserted "re-invoke `web_fetch` with... the `read` tool's own
+    /// `offset`/`limit` args" would be actively misleading advice about a
+    /// tool that cannot follow it. The fix is conditional wording
+    /// ("check whether `{tool}` itself accepts...") plus naming
+    /// `web_fetch`'s OWN real remedy (`max_bytes`) as one of the
+    /// illustrations, alongside the always-available fork-a-child remedy.
+    #[test]
+    fn not_admitted_note_never_states_a_specific_tool_has_offset_limit() {
+        let input = input_with_bound(
+            vec![
+                assistant(1, vec![tool_use("a")]),
+                oversized_tool_result_named(2, "a", "web_fetch"),
+            ],
+            10,
+        );
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+        let text = all_rendered_text(&segments);
+
+        assert!(
+            !text.contains("re-invoke `web_fetch` with a narrower range"),
+            "must not assert `web_fetch` specifically has a narrower-range argument: {text:?}"
+        );
+        assert!(
+            text.contains("max_bytes"),
+            "must name web_fetch's own real narrowing argument: {text:?}"
+        );
+        assert!(
+            text.contains("conway_fork"),
+            "the always-available fork remedy must still be present: {text:?}"
+        );
     }
 
     /// Boundary: `admit_tool_result`'s own check is `tokens_est <=
