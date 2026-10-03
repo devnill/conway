@@ -208,7 +208,10 @@ pub fn max_context_tokens_source(inputs: &CapabilityInputs<'_>) -> ContextTokens
 /// override field, so they resolve as `metadata > dialect_defaults` (with
 /// `reasoning` defaulting to `false` when neither says otherwise — no
 /// dialect declares a `reasoning` default). `cache` is always the dialect's
-/// value: neither `metadata` nor `overrides` carries a cache hint.
+/// value: neither `metadata` nor `overrides` carries a cache hint. `vision`
+/// is `metadata > None` with no dialect layer at all (unlike `reasoning`'s
+/// `false` floor) and no `overrides` field — see [`Capabilities::vision`]'s
+/// own doc for why an absent declaration must stay `None`, not `false`.
 pub fn build_capabilities(inputs: CapabilityInputs<'_>) -> Capabilities {
     let CapabilityInputs {
         dialect_defaults,
@@ -228,6 +231,12 @@ pub fn build_capabilities(inputs: CapabilityInputs<'_>) -> Capabilities {
         .unwrap_or(dialect_defaults.structured_output);
 
     let reasoning = metadata.and_then(|m| m.reasoning).unwrap_or(false);
+
+    // Unlike every field above, an absent `vision` stays `None`
+    // ("unknown"), never defaulted to `false` -- see `Capabilities::
+    // vision`'s own doc for why an undeclared model must still be sent an
+    // image rather than refused.
+    let vision = metadata.and_then(|m| m.vision);
 
     let max_context_tokens = overrides
         .and_then(|o| o.max_context_tokens)
@@ -258,6 +267,7 @@ pub fn build_capabilities(inputs: CapabilityInputs<'_>) -> Capabilities {
         reasoning,
         reliability_tier,
         cache: dialect_defaults.cache,
+        vision,
     }
 }
 
@@ -336,6 +346,41 @@ mod tests {
                 min_prefix_tokens: 0
             }
         );
+        assert_eq!(
+            caps.vision, None,
+            "an undeclared model's vision capability must stay unknown, not default to false"
+        );
+    }
+
+    /// `vision` resolves `metadata > None`: no dialect default exists for
+    /// it at all (unlike `reasoning`'s `false` floor), and declaring it
+    /// `Some(false)` must survive composition rather than being coerced to
+    /// `None`.
+    #[test]
+    fn vision_resolves_from_metadata_with_no_dialect_layer() {
+        let metadata = ModelMetadata {
+            vision: Some(true),
+            ..ModelMetadata::default()
+        };
+        let caps = build_capabilities(CapabilityInputs {
+            dialect_defaults: openai_defaults(),
+            metadata: Some(&metadata),
+            overrides: None,
+            probed_max_context_tokens: None,
+        });
+        assert_eq!(caps.vision, Some(true));
+
+        let metadata = ModelMetadata {
+            vision: Some(false),
+            ..ModelMetadata::default()
+        };
+        let caps = build_capabilities(CapabilityInputs {
+            dialect_defaults: openai_defaults(),
+            metadata: Some(&metadata),
+            overrides: None,
+            probed_max_context_tokens: None,
+        });
+        assert_eq!(caps.vision, Some(false));
     }
 
     #[test]
@@ -417,6 +462,7 @@ mod tests {
             parallel_tool_calls: Some(true),
             structured_output: Some(StructuredOutputSpec::JsonSchema),
             reasoning: Some(true),
+            vision: None,
             reliability_tier: Some(ReliabilityTier::Community),
             quantization: None,
         };

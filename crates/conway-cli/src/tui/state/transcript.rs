@@ -762,6 +762,28 @@ fn push_record(entries: &mut Vec<Entry>, record: &conway::LogRecord) {
         // `record_to_event`'s own first arm treats it identically.
         LogRecord::Header(_) => {}
         LogRecord::UserTurn { text, .. } => entries.push(Entry::User(text.clone())),
+        // Renders the same `[image #N · WxH · size]` chip every other
+        // surface (one-shot's own echo, `conway sessions show`) uses --
+        // never the raw `data_base64` payload. `Entry::Notice` is the
+        // existing render slot this reuses, same precedent the trailing
+        // `other =>` wildcard arm's own doc already explains for a kind
+        // with no dedicated `Entry` variant of its own.
+        LogRecord::UserImage {
+            index,
+            width,
+            height,
+            data_base64,
+            ..
+        } => entries.push(Entry::Notice {
+            text: crate::image_attach::render_chip(
+                *index as usize,
+                crate::image_attach::decode_base64(data_base64)
+                    .map(|b| b.len() as u64)
+                    .unwrap_or(0),
+                *width,
+                *height,
+            ),
+        }),
         LogRecord::Assistant { ts, content, .. } => push_assistant_content(entries, content, *ts),
         LogRecord::ToolResultRecord { result, .. } => {
             fold_tool_result(

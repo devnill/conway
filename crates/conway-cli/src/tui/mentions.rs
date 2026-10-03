@@ -378,7 +378,13 @@ pub fn mention_mode(input: &str) -> MentionMode {
 /// tie-breaking on the candidate text itself for a fully deterministic
 /// order. `None` when `fragment` is not a subsequence of `candidate` at
 /// all. An empty `fragment` matches every candidate, at its minimal score.
-fn score(candidate: &str, fragment: &str) -> Option<(usize, usize, usize)> {
+///
+/// `pub(crate)` (board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`): `view::
+/// palette::matches` reuses this SAME scorer for its own fuzzy/subsequence
+/// ranking tier rather than hand-writing a second one -- the identical
+/// "one algorithm, two call sites" shape this module's own doc already
+/// describes for the `AppState` split.
+pub(crate) fn score(candidate: &str, fragment: &str) -> Option<(usize, usize, usize)> {
     let cand: Vec<char> = candidate.chars().collect();
     if fragment.is_empty() {
         return Some((0, 0, cand.len()));

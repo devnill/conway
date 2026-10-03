@@ -191,6 +191,7 @@ impl Backend for ThirdPartyBackend {
 
     fn capabilities(&self, _model: &ModelId) -> Capabilities {
         Capabilities {
+            vision: None,
             tool_calling: ToolCallSupport::Streaming { validated: true },
             cache: CacheMode::ImplicitPrefix {
                 min_prefix_tokens: 0,

@@ -51,3 +51,17 @@ conway = { path = "../conway", features = ["test-support"] }
 conway-core = { path = "../conway-core" }
 conway-testkit = { path = "../conway-testkit" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# Board item `01M3TEKJH2HRK6QBTMJXSC1D77`'s own acceptance criterion: a
+# WIREMOCK, body-level proof that a deferred tool's narrowed description
+# genuinely reaches the real wire bounded -- not only a `ScriptedBackend`
+# (`toolindex_e2e.rs`'s own harness, which never serializes a real HTTP
+# body at all). `conway-plugin-backends` is this plugin's one new dev-only
+# edge (never a `[dependencies]` entry -- nothing in `src/` may name it):
+# `tests/wire_body.rs` drives its real `OpenAiCompatBackendFactory` against
+# a loopback `wiremock` server, mirroring that crate's own
+# `tests/builder_end_to_end.rs` harness exactly. `wiremock` itself is
+# already a pinned workspace dependency (`conway-plugin-backends`,
+# `conway-plugin-web`, `conway` are existing consumers), not a new one
+# (C-04).
+conway-plugin-backends = { path = "../conway-plugin-backends" }
+wiremock = { workspace = true }

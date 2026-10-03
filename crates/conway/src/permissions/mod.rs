@@ -737,11 +737,10 @@ pub(crate) fn load_permission_files(
     }
 }
 
-/// Records an explicit trust decision for `path`'s CURRENT bytes on disk
-/// (`crate::config::trust::TrustStore::trust`) and immediately installs
-/// its `allow` rules for this running session. See `Conway::
-/// trust_permission_file`'s own doc (`crates/conway/src/conway.rs`) for
-/// the full contract -- this is a relocation, not a rewrite. `cwd` is the
+/// [`trust_permission_file_bytes`] with `path`'s CURRENT bytes read fresh
+/// here, rather than supplied by the caller. See `Conway::
+/// trust_permission_file`'s own doc (`crates/conway/src/conway.rs`) for the
+/// full contract -- this is a relocation, not a rewrite. `cwd` is the
 /// owning `Conway`'s own configured cwd (`self.config.cwd`), passed
 /// explicitly since this function, unlike a `Conway` method, has no
 /// `self.config` to read.
@@ -754,12 +753,39 @@ pub(crate) fn trust_permission_file(
     cwd: &Path,
 ) -> std::io::Result<TrustPermissionReport> {
     let contents = std::fs::read_to_string(path)?;
+    trust_permission_file_bytes(rt, env, path, &contents, scope, granting_agent, cwd)
+}
+
+/// [`trust_permission_file`] with the bytes supplied by the caller rather
+/// than re-read here -- `crate::config::trust::TrustStore::trust_bytes`'s
+/// own counterpart for the `permission_file` kind, and the mechanism behind
+/// `Conway::trust_permission_file_bytes`'s own contract (`crates/conway/src/
+/// conway.rs`). **Never re-reads `path`**: the TUI's `/trust permissions`
+/// shows the operator `contents` in a preview card BEFORE this runs, and a
+/// file rewritten between that preview and the operator's confirm (a
+/// concurrent `git pull`, a build script) must not be silently swept into a
+/// decision the operator never saw -- trusting whatever happens to be on
+/// disk at confirm time would do exactly that. Both the trust record
+/// ([`crate::config::trust::TrustStore::trust_bytes`]) and the rules
+/// installed this call ([`permission_pattern::parse_rules`]) are derived
+/// from `contents` alone; `path` is used only as the trust subject's key and
+/// as the provenance `install_allow_rule` records against each rule, never
+/// read from disk.
+pub(crate) fn trust_permission_file_bytes(
+    rt: &Runtime,
+    env: &HashMap<String, String>,
+    path: &Path,
+    contents: &str,
+    scope: PermissionScope,
+    granting_agent: AgentId,
+    cwd: &Path,
+) -> std::io::Result<TrustPermissionReport> {
     // Refuse a file naming an unrecognized top-level key BEFORE recording
     // a trust decision for it -- a typo'd file's rules were never going to
     // install anyway (see `permission_file_unknown_field_error`'s own
     // doc), so trusting it first would record a decision for content that
     // installs nothing, silently, on every subsequent load.
-    if let Some(err) = permission_pattern::permission_file_unknown_field_error(&contents) {
+    if let Some(err) = permission_pattern::permission_file_unknown_field_error(contents) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
@@ -768,8 +794,8 @@ pub(crate) fn trust_permission_file(
             ),
         ));
     }
-    crate::config::trust::TrustStore::trust(env, path)?;
-    let rules = permission_pattern::parse_rules(&contents);
+    crate::config::trust::TrustStore::trust_bytes(env, path, contents)?;
+    let rules = permission_pattern::parse_rules(contents);
     // B2: the same relative-`paths_under` base `load_permission_files`
     // computes, so a rule installs with the SAME boundary whether it took
     // effect at startup (already-trusted file) or here (`/trust

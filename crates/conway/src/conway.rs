@@ -1179,6 +1179,41 @@ impl Conway {
         )
     }
 
+    /// [`Self::trust_permission_file`] with the bytes supplied by the
+    /// caller rather than re-read here -- [`Self::preview_trust_target`]'s
+    /// write half, mirroring `conway-cli`'s `trust_project_settings_bytes`
+    /// shape for the `settings.json` kind. **Never re-reads `path`**: the
+    /// TUI's `/trust permissions` preview card shows the operator `contents`
+    /// BEFORE this runs, and a file rewritten between that preview and the
+    /// operator's confirm (a concurrent `git pull`, a build script) must not
+    /// be silently swept into a decision the operator never saw -- a
+    /// `path`-only call would trust whatever happens to be on disk at
+    /// confirm time instead of the bytes actually shown. Same error/install
+    /// contract as [`Self::trust_permission_file`] otherwise: the
+    /// unrecognized-top-level-key check runs against `contents`, the trust
+    /// record is written for `contents`'s digest
+    /// (`crate::config::trust::TrustStore::trust_bytes`), and the rules
+    /// installed this call are parsed from `contents`, never from a fresh
+    /// read of `path`.
+    pub fn trust_permission_file_bytes(
+        &self,
+        env: &std::collections::HashMap<String, String>,
+        path: &std::path::Path,
+        contents: &str,
+        scope: conway_core::agent::PermissionScope,
+        granting_agent: conway_core::ids::AgentId,
+    ) -> std::io::Result<TrustPermissionReport> {
+        crate::permissions::trust_permission_file_bytes(
+            &self.rt,
+            env,
+            path,
+            contents,
+            scope,
+            granting_agent,
+            &self.config.cwd,
+        )
+    }
+
     pub fn config(&self) -> &ConwayConfig {
         &self.config
     }

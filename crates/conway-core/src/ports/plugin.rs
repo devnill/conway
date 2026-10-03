@@ -822,6 +822,15 @@ pub struct PluginHookRule {
     /// Milliseconds this hook's runner will allow the command before
     /// killing it -- `HookEntry::timeout_ms`'s identical contract.
     pub timeout_ms: u64,
+    /// The deadline this hook's runner should use INSTEAD of `timeout_ms` on
+    /// whichever invocation it judges genuinely first for `command` --
+    /// `HookEntry::first_call_timeout_ms`'s identical contract (board item,
+    /// the "a busy machine kills a hook/plugin that answers in milliseconds"
+    /// incident). A plugin author with no first-run concept of its own may
+    /// set this equal to `timeout_ms`, a no-op elevation -- the same escape
+    /// hatch `conway_tools::process::child_session::ChildSession::spawn`'s
+    /// own `first_call_timeout_ms` parameter documents.
+    pub first_call_timeout_ms: u64,
     /// Whether this rule is active. A plugin declaring a disabled hook is
     /// legitimate (e.g. a capability gated on something the plugin itself
     /// decided not to enable yet) -- `HookEntry::enabled`'s identical

@@ -120,6 +120,7 @@ fn child_reported_hooks(runner: Arc<RecordingRunner>) -> Arc<HookDispatcher> {
             id: "watcher".to_string(),
             command: vec!["/bin/true".to_string()],
             timeout_ms: 1_000,
+            first_call_timeout_ms: 1_000,
             matcher: None,
             origin: HookOrigin::Operator,
             spawn_only: false,

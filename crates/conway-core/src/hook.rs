@@ -13,7 +13,8 @@
 //! that would mean no plain shell script could ever be a hook), and other
 //! invocation modalities are anticipated -- nothing in this module encodes
 //! "one-shot" as part of what a hook conceptually receives or returns; that
-//! is [`HookInvocation`]'s `command`/`timeout_ms` fields alone, and the
+//! is [`HookInvocation`]'s `command`/`timeout_ms`/`first_call_timeout_ms`
+//! fields alone, and the
 //! *outcome* an invocation reports is a
 //! [`crate::error::HookFailure`]/[`HookAnswer`] pair, not "an exit code."
 
@@ -69,7 +70,7 @@ impl HookEvent {
 ///
 /// `#[non_exhaustive]`, with [`Self::new`] as the construction path -- the
 /// same decision [`HookEvent`]'s own doc explains, for the same reason:
-/// three fields is still cheap for a constructor to name positionally, and
+/// four fields is still cheap for a constructor to name positionally, and
 /// this is the type external `HookRunner` implementors build most often
 /// (once per invocation), so the growth-room protection matters here more
 /// than almost anywhere else in this module -- a hidden field added later
@@ -80,17 +81,39 @@ impl HookEvent {
 pub struct HookInvocation {
     pub command: Vec<String>,
     pub timeout_ms: u64,
+    /// The deadline a [`crate::ports::HookRunner`] implementation should give
+    /// this invocation INSTEAD of `timeout_ms`, if -- and only if -- the
+    /// runner judges this to be the genuinely first time it has ever run
+    /// `command` (board item, the macOS-first-exec/scheduler-contention
+    /// incident this field answers). A caller with no first-run concept of
+    /// its own passes the same value as `timeout_ms` here, making the
+    /// elevation a no-op -- the identical no-op-elevation escape hatch
+    /// `conway_tools::process::child_session::ChildSession::spawn`'s own
+    /// `first_call_timeout_ms` parameter documents for a caller without a
+    /// warm-up tier of its own. Deciding WHETHER this is "the first time" is
+    /// the runner's own business (today, `conway_tools::hook_runner::
+    /// ProcessHookRunner` tracks it per exact `command`, matching the OS's
+    /// own first-exec cost being a property of the FILE being executed, not
+    /// of which hook rule configured it) -- this field carries only the
+    /// budget to use, never the decision of when to use it.
+    pub first_call_timeout_ms: u64,
     pub event: HookEvent,
 }
 
 impl HookInvocation {
     /// Construct one directly -- the ONLY way from outside this crate, now
-    /// that `#[non_exhaustive]` forbids the struct-literal form. Three
+    /// that `#[non_exhaustive]` forbids the struct-literal form. Four
     /// fields, positional, no builder.
-    pub fn new(command: Vec<String>, timeout_ms: u64, event: HookEvent) -> Self {
+    pub fn new(
+        command: Vec<String>,
+        timeout_ms: u64,
+        first_call_timeout_ms: u64,
+        event: HookEvent,
+    ) -> Self {
         Self {
             command,
             timeout_ms,
+            first_call_timeout_ms,
             event,
         }
     }
@@ -468,6 +491,7 @@ mod tests {
         let invocation = HookInvocation {
             command: vec!["/usr/bin/env".into(), "true".into()],
             timeout_ms: 5_000,
+            first_call_timeout_ms: 20_000,
             event: HookEvent {
                 name: "pre_tool_use".into(),
                 payload: serde_json::json!(null),
@@ -488,11 +512,13 @@ mod tests {
         let via_new = HookInvocation::new(
             vec!["/usr/bin/env".into(), "true".into()],
             5_000,
+            20_000,
             HookEvent::new("pre_tool_use", serde_json::json!(null)),
         );
         let via_literal = HookInvocation {
             command: vec!["/usr/bin/env".into(), "true".into()],
             timeout_ms: 5_000,
+            first_call_timeout_ms: 20_000,
             event: HookEvent {
                 name: "pre_tool_use".into(),
                 payload: serde_json::json!(null),

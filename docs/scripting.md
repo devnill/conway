@@ -79,6 +79,34 @@ stdin your script happened to inherit.
 conway exits once the root agent's turn reaches a terminal state — see
 "Exit codes" below.
 
+### Attaching an image: `--image`
+
+```console
+conway -p "what's broken in this screenshot?" --image bug.png
+```
+
+`--image <path>` attaches a PNG, JPEG, or WebP file to the prompt; repeat
+the flag for more than one image. Each path is read and validated up
+front — before the session even starts — so a bad path or an unrecognized
+format is a usage error (exit code 2) naming the file, never a silent
+drop:
+
+```console
+$ conway -p "what is this?" --image notes.txt
+conway: error: --image notes.txt: notes.txt: not a recognized PNG/JPEG/WebP image
+```
+
+An image over 5 MB is refused the same way, naming the size and the
+bound. There is no flag-level downscaling: shrink the file yourself first
+if it is too large.
+
+Whether the resolved model actually looks at the image depends on what it
+declares — see [providers.md](providers.md#vision-attaching-an-image). A
+model explicitly declared non-vision refuses the whole request at
+admission, naming the model; an undeclared model (the common case) is
+sent the image regardless, and a provider that genuinely cannot take it
+answers with its own error.
+
 ## Exit codes
 
 Exit codes are the entire contract a script can rely on. Every row below

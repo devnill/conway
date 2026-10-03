@@ -304,7 +304,7 @@ fn segment_to_messages(segment: &PromptSegment, profile: &Profile, native: bool)
     }
     match segment.role {
         Role::System => vec![system_message(&segment.content)],
-        Role::User => vec![user_message(&segment.content, profile)],
+        Role::User => vec![user_message(&segment.content, profile, native)],
         Role::Assistant => vec![assistant_message(&segment.content, native)],
         Role::ToolResult => tool_result_messages(&segment.content),
         // `Role` is `#[non_exhaustive]`; no fifth variant exists today.
@@ -329,7 +329,58 @@ fn system_message(content: &[ContentBlock]) -> Value {
     json!({ "role": "system", "content": concat_text(content) })
 }
 
-fn user_message(content: &[ContentBlock], profile: &Profile) -> Value {
+fn user_message(content: &[ContentBlock], profile: &Profile, native: bool) -> Value {
+    // An attached image always wins over `flatten_multiblock_user`: that
+    // flag exists to collapse multiple TEXT blocks into one string for a
+    // dialect that cannot parse a content array, but a user segment
+    // carrying an image can never honestly flatten to a string without
+    // silently dropping the image an operator explicitly attached (terminal
+    // image attachment item) -- so this path always renders an image shape
+    // instead, regardless of the profile's own flatten preference. Which
+    // shape depends on `native`, exactly the same fork point
+    // `assistant_message` already has for tool-call arguments: Ollama's
+    // native `/api/chat` has no OpenAI-style `image_url` content-array
+    // entry at all -- confirmed against its own API docs and a live
+    // `/api/chat` call (2026-10-02, see this module's own doc for the
+    // model and request/response excerpt) -- it wants plain-string
+    // `content` (the ordinary concatenated-text shape) plus a sibling
+    // top-level `images` array of RAW base64 strings, no `data:` URI
+    // prefix and no media type (the endpoint sniffs the format itself).
+    if content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image { .. }))
+    {
+        if native {
+            let images: Vec<Value> = content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Image { data_base64, .. } => Some(json!(data_base64)),
+                    _ => None,
+                })
+                .collect();
+            return json!({
+                "role": "user",
+                "content": concat_text(content),
+                "images": images,
+            });
+        }
+        let items: Vec<Value> = content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
+                ContentBlock::Image {
+                    media_type,
+                    data_base64,
+                } => Some(json!({
+                    "type": "image_url",
+                    "image_url": { "url": format!("data:{media_type};base64,{data_base64}") }
+                })),
+                _ => None,
+            })
+            .collect();
+        return json!({ "role": "user", "content": items });
+    }
+
     let blocks: Vec<&str> = content
         .iter()
         .filter_map(|block| match block {
@@ -1714,6 +1765,76 @@ mod tests {
             "a change at the FRONT of the conversation must be visible in the shared-prefix \
              comparison -- if this ever started passing, the sibling byte-stability test above \
              would no longer be proving anything"
+        );
+    }
+
+    /// Terminal image attachment item: a user segment carrying a text block
+    /// AND a `ContentBlock::Image` must render the OpenAI-compatible
+    /// `image_url` array shape, with the image surviving as its own entry
+    /// -- never silently dropped the way the pre-fix text-only
+    /// `filter_map` would have. Uses `Dialect::Ollama.profile()`
+    /// (`flatten_multiblock_user: true` -- unlike `openai`'s own profile,
+    /// which keeps the array natively; see `only_openai_keeps_the_
+    /// multiblock_user_array`) specifically to prove the image wins over
+    /// flattening, not just that an already-unflattened profile happens to
+    /// preserve it.
+    #[test]
+    fn user_segment_with_an_image_renders_the_image_url_array_even_when_the_profile_flattens() {
+        let profile = Dialect::Ollama.profile();
+        assert!(
+            profile.flatten_multiblock_user,
+            "this test's whole point is that an image overrides flattening -- pin the premise"
+        );
+        let segments = vec![PromptSegment::new(
+            Role::User,
+            vec![
+                ContentBlock::Text {
+                    text: "what is this?".into(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data_base64: "aGVsbG8=".into(),
+                },
+            ],
+            Provenance::UserPrompt,
+        )];
+        let messages = segments_to_messages(&segments, &profile, false);
+        assert_eq!(messages.len(), 1);
+        let content = messages[0]["content"]
+            .as_array()
+            .expect("content must be an array once an image is present, never a flattened string");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0], json!({"type": "text", "text": "what is this?"}));
+        assert_eq!(
+            content[1],
+            json!({
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,aGVsbG8="}
+            })
+        );
+    }
+
+    /// An image-only user segment (no text block alongside it) must still
+    /// render it, not collapse to an empty string the way the pre-fix
+    /// `blocks: Vec<&str>` (sourced only from `ContentBlock::Text`) would
+    /// have for an input with no text block at all.
+    #[test]
+    fn user_segment_with_only_an_image_still_renders_it() {
+        let segments = vec![PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Image {
+                media_type: "image/jpeg".into(),
+                data_base64: "Zm9v".into(),
+            }],
+            Provenance::UserPrompt,
+        )];
+        let messages = segments_to_messages(&segments, &Dialect::OpenAi.profile(), false);
+        let content = messages[0]["content"].as_array().expect("array");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "image_url");
+        assert_eq!(
+            content[0]["image_url"]["url"],
+            "data:image/jpeg;base64,Zm9v"
         );
     }
 }

@@ -35,6 +35,7 @@ fn load_reads_fixture_with_field_by_field_equality_for_two_entries() {
             parallel_tool_calls: Some(false),
             structured_output: Some(StructuredOutputSpec::JsonSchema),
             reasoning: Some(false),
+            vision: None,
             reliability_tier: Some(ReliabilityTier::Community),
             quantization: Some("Q4_K_M".to_string()),
         }
@@ -52,6 +53,7 @@ fn load_reads_fixture_with_field_by_field_equality_for_two_entries() {
             parallel_tool_calls: Some(true),
             structured_output: Some(StructuredOutputSpec::JsonSchema),
             reasoning: Some(true),
+            vision: None,
             reliability_tier: Some(ReliabilityTier::Verified),
             quantization: None,
         }

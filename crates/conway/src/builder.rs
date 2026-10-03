@@ -2277,6 +2277,7 @@ impl ConwayBuilder {
                     match_tool: rule.match_tool,
                     command: rule.command,
                     timeout_ms: rule.timeout_ms,
+                    first_call_timeout_ms: rule.first_call_timeout_ms,
                     enabled: rule.enabled,
                     on_failure: rule.on_failure,
                 },
@@ -2588,6 +2589,7 @@ impl ConwayBuilder {
                 id: rule.id.clone(),
                 command: rule.command.clone(),
                 timeout_ms: rule.timeout_ms,
+                first_call_timeout_ms: rule.first_call_timeout_ms,
                 // carried through
                 // unchanged -- `PermissionBroker::pre_tool_use_hook_denial`
                 // is where `None` vs `Some` actually decides anything.
@@ -2650,6 +2652,7 @@ impl ConwayBuilder {
                     id: rule.id.clone(),
                     command: rule.command.clone(),
                     timeout_ms: rule.timeout_ms,
+                    first_call_timeout_ms: rule.first_call_timeout_ms,
                     // carried
                     // through unchanged -- only meaningful for
                     // `post_tool_use` and a `carries_tool_name` plugin

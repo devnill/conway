@@ -225,6 +225,7 @@ impl Backend for RecordingBackend {
 
 fn caps(tool_calling: ToolCallSupport, max_context_tokens: u32) -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling,
         cache: CacheMode::None,
         parallel_tool_calls: false,

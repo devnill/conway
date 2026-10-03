@@ -312,6 +312,37 @@ fn concat_text(content: &[ContentBlock]) -> String {
 }
 
 fn user_content_blocks(content: &[ContentBlock]) -> Vec<Value> {
+    // An attached image always renders as its own typed block (Anthropic's
+    // documented `{"type":"image","source":{"type":"base64",...}}` shape);
+    // a text block alongside it renders as its own `{"type":"text",...}`
+    // entry too, in content order -- never collapsed into one concatenated
+    // string the way text-only content is below, since that concatenation
+    // has no way to carry a non-text block at all (terminal image
+    // attachment item).
+    if content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image { .. }))
+    {
+        return content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
+                ContentBlock::Image {
+                    media_type,
+                    data_base64,
+                } => Some(json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data_base64,
+                    }
+                })),
+                _ => None,
+            })
+            .collect();
+    }
+
     let text = concat_text(content);
     if text.is_empty() {
         Vec::new()
@@ -1234,5 +1265,66 @@ mod tests {
              be visible in the shared-prefix comparison -- if this ever started passing, the \
              sibling byte-stability test above would no longer be proving anything"
         );
+    }
+
+    /// Terminal image attachment item: a user segment carrying a text block
+    /// AND a `ContentBlock::Image` must render BOTH as their own typed
+    /// Anthropic content blocks, in order -- never silently drop the image
+    /// the way the pre-fix `concat_text`-only path would have (it only
+    /// ever read `ContentBlock::Text`).
+    #[test]
+    fn user_segment_with_an_image_renders_both_a_text_and_an_image_block() {
+        let segments = vec![PromptSegment::new(
+            Role::User,
+            vec![
+                ContentBlock::Text {
+                    text: "what is this?".into(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data_base64: "aGVsbG8=".into(),
+                },
+            ],
+            Provenance::UserPrompt,
+        )];
+        let (_system, messages, _) = segments_to_body_parts(&segments);
+        assert_eq!(messages.len(), 1);
+        let content = messages[0]["content"]
+            .as_array()
+            .expect("user content must be an array once an image is present");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0], json!({"type": "text", "text": "what is this?"}));
+        assert_eq!(
+            content[1],
+            json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "aGVsbG8="
+                }
+            })
+        );
+    }
+
+    /// An image-only user segment (no text alongside it) must still render
+    /// -- `concat_text` alone would have produced an EMPTY content array
+    /// for this input (no `Text` block to concatenate), silently dropping
+    /// the only thing the user actually sent.
+    #[test]
+    fn user_segment_with_only_an_image_still_renders_it() {
+        let segments = vec![PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Image {
+                media_type: "image/jpeg".into(),
+                data_base64: "Zm9v".into(),
+            }],
+            Provenance::UserPrompt,
+        )];
+        let (_system, messages, _) = segments_to_body_parts(&segments);
+        let content = messages[0]["content"].as_array().expect("array");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["media_type"], "image/jpeg");
     }
 }

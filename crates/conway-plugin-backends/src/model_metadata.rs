@@ -35,6 +35,13 @@ pub struct ModelMetadata {
     pub structured_output: Option<StructuredOutputSpec>,
     #[serde(default)]
     pub reasoning: Option<bool>,
+    /// Whether this model accepts image content blocks. `None` (the
+    /// default -- most entries declare nothing here) is read downstream as
+    /// "unknown", not "no": see `conway_core::capabilities::Capabilities::
+    /// vision`'s own doc for why an undeclared model is still sent an
+    /// image rather than refused at admission.
+    #[serde(default)]
+    pub vision: Option<bool>,
     #[serde(default)]
     pub reliability_tier: Option<ReliabilityTier>,
     /// E.g. `"Q4_K_M"`. Informational, and — only when `reliability_tier`
@@ -130,6 +137,41 @@ fn normalize_model_id(id: &str) -> String {
     }
 }
 
+/// Splits an Ollama-style tagged id (`name:tag`, e.g. `glm-5.2:cloud`,
+/// `qwen3:8b`, `llama3.2:latest`) into `(base, tag)` on the first `:`.
+/// `None` for an id with no `:` at all.
+fn split_tag(id: &str) -> Option<(&str, &str)> {
+    id.split_once(':')
+}
+
+/// Whether `tag` looks like it names a distinct parameter-size (or
+/// quantization-plus-size, e.g. `27b-mlx`) variant rather than a
+/// same-weights deployment label (`latest`, `cloud`, `instruct`, ...).
+///
+/// Matched on the tag's leading, dash-delimited segment against the shape
+/// `<digits>[.<digits>](b|m)` case-insensitively -- `8b`, `70b`, `1.5b`,
+/// `27b-mlx` all match; `latest`, `cloud`, `instruct`, `q4_k_m` do not.
+/// A false negative here (a size tag not caught) is the unsafe direction:
+/// [`ModelMetadataStore::get`] only ever consults this to decide whether
+/// *not* to fall back, so an unmatched tag it cannot name falls back by
+/// default. Intentionally conservative about what counts as "obviously a
+/// size", not an attempt to enumerate every ollama tag convention: a bare
+/// `name:tag` id's base metadata is already an approximation (see `get`'s
+/// own doc), and this only blocks the one case where that approximation is
+/// known to be routinely wrong -- a different parameter count, which can
+/// mean a genuinely different trained context window.
+fn tag_looks_like_a_size_variant(tag: &str) -> bool {
+    let head = tag.split('-').next().unwrap_or(tag).to_ascii_lowercase();
+    let digits_end = head
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(head.len());
+    if digits_end == 0 {
+        return false;
+    }
+    let (digits, suffix) = head.split_at(digits_end);
+    digits.chars().any(|c| c.is_ascii_digit()) && (suffix == "b" || suffix == "m")
+}
+
 /// Wire shape of a metadata file: an array-of-tables, `[[model]]`.
 #[derive(Debug, Deserialize)]
 struct ModelMetadataFile {
@@ -147,24 +189,28 @@ id = "claude-sonnet-4-6"
 reliability_tier = "verified"
 tool_calling = "streaming_validated"
 parallel_tool_calls = true
+vision = true
 
 [[model]]
 id = "claude-haiku-4-5"
 reliability_tier = "verified"
 tool_calling = "streaming_validated"
 parallel_tool_calls = true
+vision = true
 
 [[model]]
 id = "gpt-4.1"
 reliability_tier = "verified"
 tool_calling = "streaming_validated"
 parallel_tool_calls = true
+vision = true
 
 [[model]]
 id = "gpt-5"
 reliability_tier = "verified"
 tool_calling = "streaming_validated"
 parallel_tool_calls = true
+vision = true
 
 [[model]]
 id = "qwen3-coder-30b"
@@ -180,6 +226,10 @@ tool_calling = "non_streaming"
 id = "llama3.1-8b"
 reliability_tier = "community"
 tool_calling = "non_streaming"
+# Text-only: Meta's own model card lists no image input for this release
+# (the vision variant ships as a distinct "llama3.2-11b-vision"-style id,
+# not this one) -- a real, sourced "no" rather than conway's own guess.
+vision = false
 
 # ORIGINAL reasoning (2026-08-29), kept for the incident record --
 # `max_context_tokens = 1_000_000`: ollama.com/library/glm-5.2 states "a
@@ -321,15 +371,52 @@ impl ModelMetadataStore {
         Self { entries }
     }
 
-    /// Looks up `model`, trying (in order): the exact id as given, then the
-    /// normalized (`normalize_model_id`) id, then `None`.
+    /// Looks up `model`, trying in order:
+    ///
+    /// 1. The exact id as given.
+    /// 2. The normalized (`normalize_model_id`) id.
+    /// 3. If `model` has an Ollama-style `name:tag` shape and `tag` does
+    ///    not look like a parameter-size variant
+    ///    (`tag_looks_like_a_size_variant`), `name`'s own exact and
+    ///    normalized entries.
+    ///
+    /// Step 3 is the tag-suffixed fallback: an id like `glm-5.2:cloud` or
+    /// `llama3.2:latest` names the same weights, same context window, as
+    /// the bare `glm-5.2` / `llama3.2` entry on file, so a store that
+    /// declares one should answer for the other too -- steps 1 and 2 would
+    /// otherwise never bridge `name:tag` to a `name`-only entry (`:` folds
+    /// to `-`, not away, in `normalize_model_id`). It does NOT fire for a
+    /// tag that looks like it names a different parameter count (`:8b`,
+    /// `:70b`, `:27b-mlx`, ...): a smaller or larger instantiation of a
+    /// model family is, for conway's purposes, a different model, and its
+    /// real context window is not assumed to match whatever the bare
+    /// family name happens to have on file.
+    ///
+    /// An explicit entry for the tagged id itself -- whether written
+    /// verbatim (`"glm-5.2:cloud"`) or in its normalized form
+    /// (`"glm-5.2-cloud"`) -- always wins: it is checked in steps 1/2,
+    /// before step 3 is ever reached.
     pub fn get(&self, model: &ModelId) -> Option<&ModelMetadata> {
         let raw = model.as_str();
         if let Some(entry) = self.entries.get(raw) {
             return Some(entry);
         }
         let normalized = normalize_model_id(raw);
-        self.entries.get(&normalized)
+        if let Some(entry) = self.entries.get(&normalized) {
+            return Some(entry);
+        }
+        if let Some((base, tag)) = split_tag(raw) {
+            if !tag_looks_like_a_size_variant(tag) {
+                if let Some(entry) = self.entries.get(base) {
+                    return Some(entry);
+                }
+                let normalized_base = normalize_model_id(base);
+                if let Some(entry) = self.entries.get(&normalized_base) {
+                    return Some(entry);
+                }
+            }
+        }
+        None
     }
 
     /// Number of entries in the store.
@@ -375,6 +462,32 @@ mod tests {
                 "DEFAULTS missing entry for {id}"
             );
         }
+    }
+
+    /// Board item (image attachment): a declared-vision model reads
+    /// `Some(true)`, an explicitly-declared-text-only model reads
+    /// `Some(false)`, and a model this table says nothing about at all
+    /// reads `None` -- the tri-state the admission gate's
+    /// "undeclared is not the same as explicitly false" rule depends on.
+    #[test]
+    fn defaults_declare_vision_as_a_tri_state() {
+        let store = ModelMetadataStore::defaults();
+        assert_eq!(
+            store
+                .get(&ModelId::new("claude-sonnet-4-6"))
+                .unwrap()
+                .vision,
+            Some(true)
+        );
+        assert_eq!(
+            store.get(&ModelId::new("llama3.1-8b")).unwrap().vision,
+            Some(false)
+        );
+        assert_eq!(
+            store.get(&ModelId::new("qwen3-coder-30b")).unwrap().vision,
+            None,
+            "an entry that never mentions vision must stay None (unknown), not default to false"
+        );
     }
 
     /// The 1M-context Kimi variant's id contains literal `[`/`]`. TOML
@@ -493,6 +606,90 @@ mod tests {
             Some(ReliabilityTier::Community)
         );
         assert_eq!(quantization_tier_hint("unknown-format"), None);
+    }
+
+    /// The regression this item exists for: `glm-5.2:cloud` (an Ollama
+    /// `:cloud` tag, DOGFOOD 3's exact wire id) must resolve the bundled
+    /// `glm-5.2` entry's window, not fall through to the 32,768-token
+    /// `"ollama"` profile floor. Before the tag-suffixed fallback, this
+    /// `get` call returned `None`: `normalize_model_id` turned the query
+    /// into `glm-5.2-cloud`, matching neither the exact nor normalized form
+    /// of the stored `glm-5.2` key.
+    #[test]
+    fn cloud_tag_falls_back_to_the_base_models_window() {
+        let store = ModelMetadataStore::defaults();
+        let entry = store
+            .get(&ModelId::new("glm-5.2:cloud"))
+            .expect("glm-5.2:cloud must fall back to the bundled glm-5.2 entry");
+        assert_eq!(entry.max_context_tokens, Some(1_048_576));
+    }
+
+    /// `:latest` is the other tag DOGFOOD 3's update names as "same model,
+    /// same window" -- same fallback, different tag spelling.
+    #[test]
+    fn latest_tag_falls_back_to_the_base_models_window() {
+        let store = ModelMetadataStore::defaults();
+        let entry = store
+            .get(&ModelId::new("qwen3-coder-30b:latest"))
+            .expect("qwen3-coder-30b:latest must fall back to the bare entry");
+        assert_eq!(entry.reliability_tier, Some(ReliabilityTier::Community));
+    }
+
+    /// A size tag (`:8b`, `:70b`, `:27b-mlx`, ...) is NOT assumed to share
+    /// the bare family name's window: a different parameter count can be a
+    /// genuinely different trained context window, so this must stay
+    /// `None` rather than silently borrow an unrelated size's metadata.
+    #[test]
+    fn size_tag_does_not_fall_back_to_the_base_models_window() {
+        let store = ModelMetadataStore::defaults();
+        assert!(
+            store.get(&ModelId::new("qwen3-coder-30b:8b")).is_none(),
+            "a size-tagged id must not silently inherit the bare family's metadata"
+        );
+        assert!(store.get(&ModelId::new("llama3.1-8b:27b-mlx")).is_none());
+    }
+
+    /// An explicit entry for the TAGGED id itself always wins over the
+    /// tag-suffixed fallback to its base: a `models.json` (or bundled
+    /// `DEFAULTS`) author who wrote a tag-specific entry meant it to be
+    /// consulted, even though its tag would otherwise have been eligible
+    /// for the base fallback.
+    #[test]
+    fn explicit_entry_for_the_tagged_id_wins_over_the_base_fallback() {
+        let store = ModelMetadataStore::parse(
+            r#"
+            [[model]]
+            id = "glm-5.2"
+            max_context_tokens = 1048576
+
+            [[model]]
+            id = "glm-5.2:cloud"
+            max_context_tokens = 32768
+            "#,
+        )
+        .unwrap();
+        let entry = store.get(&ModelId::new("glm-5.2:cloud")).unwrap();
+        assert_eq!(
+            entry.max_context_tokens,
+            Some(32_768),
+            "the explicit tagged entry must win, not the base fallback"
+        );
+    }
+
+    #[test]
+    fn tag_looks_like_a_size_variant_classifies_known_shapes() {
+        for tag in ["8b", "70b", "1.5b", "27b-mlx", "230b-instruct"] {
+            assert!(
+                tag_looks_like_a_size_variant(tag),
+                "{tag} should be classified as a size variant"
+            );
+        }
+        for tag in ["latest", "cloud", "instruct", "q4_k_m", "chat"] {
+            assert!(
+                !tag_looks_like_a_size_variant(tag),
+                "{tag} should not be classified as a size variant"
+            );
+        }
     }
 
     #[test]

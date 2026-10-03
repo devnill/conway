@@ -55,6 +55,7 @@ use conway_testkit::{text_response, FakeGate, FakeStore, ScriptedBackend, Script
 /// filtering should.
 fn caps() -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::Streaming { validated: true },
         cache: CacheMode::None,
         parallel_tool_calls: true,

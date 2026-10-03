@@ -37,6 +37,7 @@ fn to_hook_entry(registration: HookRegistration) -> HookEntry {
         match_tool: registration.match_tool,
         command: registration.command,
         timeout_ms: registration.timeout_ms,
+        first_call_timeout_ms: registration.timeout_ms,
         enabled: registration.enabled,
         // `HookEntry::on_failure` landed in the same wave as this test
         // (board item `01M0X1AH44SNMK5TZ507K30QNP`) and neither writer could
@@ -256,6 +257,7 @@ fn to_plugin_hook_rule(registration: HookRegistration) -> PluginHookRule {
         match_tool: registration.match_tool,
         command: registration.command,
         timeout_ms: registration.timeout_ms,
+        first_call_timeout_ms: registration.timeout_ms,
         enabled: registration.enabled,
         on_failure: Default::default(),
         spawn_only: registration.spawn_only,

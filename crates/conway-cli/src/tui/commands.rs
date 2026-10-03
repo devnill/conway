@@ -282,7 +282,18 @@ pub enum SlashCommand {
     Ask {
         question: String,
     },
-    Quit,
+    /// `/quit` or its retired alias `/exit` (board item
+    /// `01M1YVH1X49WYSQ9C2Z4D6B4XM`, "B3d"). `via_exit_alias` is `true` only
+    /// when the operator typed `/exit`: [`execute`]'s own `Quit` arm reads
+    /// it to print a one-release "use `/quit`" notice BEFORE quitting --
+    /// still quits either way, so muscle memory from another tool is never
+    /// punished, but the notice nudges the operator toward the one spelling
+    /// this crate means to keep. [`describe`] ignores the field (both
+    /// spellings describe identically, as `/quit`); only [`parse`] sets it
+    /// and only [`execute`] reads it.
+    Quit {
+        via_exit_alias: bool,
+    },
     /// A plugin-declared command:
     /// `full_name` is the command word with its leading `/` AND leading
     /// whitespace stripped (e.g. `"acme.greet"` for `/acme.greet`), still
@@ -534,7 +545,7 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             usage: "/help",
             description: "show this help",
         },
-        SlashCommand::Quit => CommandSpec {
+        SlashCommand::Quit { .. } => CommandSpec {
             name: "/quit",
             usage: "/quit",
             description: "exit",
@@ -619,7 +630,9 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
         SlashCommand::Model { model: None },
         SlashCommand::Role { role: None },
         SlashCommand::Help,
-        SlashCommand::Quit,
+        SlashCommand::Quit {
+            via_exit_alias: false,
+        },
         SlashCommand::SkillsPropose,
     ]
 }
@@ -827,9 +840,22 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             let question = parse_one_arg(rest, "/ask <text>")?;
             Ok(SlashCommand::Ask { question })
         }
-        "/quit" | "/exit" => {
+        "/quit" => {
             parse_no_arg(rest, word)?;
-            Ok(SlashCommand::Quit)
+            Ok(SlashCommand::Quit {
+                via_exit_alias: false,
+            })
+        }
+        // Board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`: `/exit` is retired as a
+        // plain alias -- it still quits (muscle memory from another tool
+        // must not be punished), but `via_exit_alias: true` lets
+        // `execute`'s `Quit` arm print a one-release "use `/quit`" nudge
+        // first.
+        "/exit" => {
+            parse_no_arg(rest, word)?;
+            Ok(SlashCommand::Quit {
+                via_exit_alias: true,
+            })
         }
         // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): recognized as
         // its OWN literal word, matched BEFORE the generic plugin-command
@@ -1507,6 +1533,32 @@ pub trait Host {
         granting_agent: AgentId,
     ) -> std::io::Result<TrustPermissionReport>;
 
+    /// [`Self::trust_permission_file`] with the bytes supplied by the
+    /// caller rather than re-read here -- the permissions-file counterpart
+    /// of [`Self::trust_project_settings_bytes`], and the one the TUI's
+    /// `/trust permissions` Confirm arm actually calls: `card.contents` is
+    /// the EXACT bytes the trust-preview card showed the operator
+    /// (`TrustPreviewCard::contents`), never a fresh read of `path`.
+    ///
+    /// **Security-load-bearing, same reasoning as
+    /// [`Self::trust_project_settings_bytes`]: never re-reads `path`.** A
+    /// permissions.json rewritten between preview and confirm (a concurrent
+    /// `git pull`, a build script) must not be silently swept into a
+    /// decision the operator never saw -- a path-only call would both
+    /// record trust for, AND install allow rules from, whatever happens to
+    /// be on disk at confirm time instead of the bytes actually shown.
+    /// [`Self::trust_permission_file`] is kept for callers that have not
+    /// already read the file themselves; this trait has none today -- the
+    /// TUI Confirm arm is the only caller, and it always holds the
+    /// previewed `contents` already.
+    async fn trust_permission_file_bytes(
+        &self,
+        path: &std::path::Path,
+        contents: &str,
+        scope: PermissionScope,
+        granting_agent: AgentId,
+    ) -> std::io::Result<TrustPermissionReport>;
+
     /// `/trust permissions`'s read-only FIRST step (board item, split from
     /// `01KZHVFCN6ZEAXV7K5JHRQN1YB`'s `(kind, id, digest)`/plugin-subject
     /// generalisation, which this does not pre-empt): a thin passthrough to
@@ -1761,6 +1813,21 @@ impl Host for LiveHost<'_> {
         let env_vars: HashMap<String, String> = std::env::vars().collect();
         self.conway
             .trust_permission_file(&env_vars, path, scope, granting_agent)
+    }
+
+    async fn trust_permission_file_bytes(
+        &self,
+        path: &std::path::Path,
+        contents: &str,
+        scope: PermissionScope,
+        granting_agent: AgentId,
+    ) -> std::io::Result<TrustPermissionReport> {
+        // Collected fresh per call, exactly like `trust_permission_file`
+        // just above -- `Conway::trust_permission_file_bytes`'s own
+        // `TrustStore::trust_bytes` reads `env` for user config resolution.
+        let env_vars: HashMap<String, String> = std::env::vars().collect();
+        self.conway
+            .trust_permission_file_bytes(&env_vars, path, contents, scope, granting_agent)
     }
 
     async fn preview_trust_target(&self, path: &std::path::Path) -> std::io::Result<TrustPreview> {
@@ -3326,7 +3393,15 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 Effect::RunModalAsk { question }
             }
         }
-        SlashCommand::Quit => Effect::Quit,
+        SlashCommand::Quit { via_exit_alias } => {
+            if via_exit_alias {
+                // One-release nudge (board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`):
+                // `/exit` still quits -- see `SlashCommand::Quit`'s own
+                // doc for why -- this only steers the next keystroke.
+                notice(state, "use `/quit`");
+            }
+            Effect::Quit
+        }
         SlashCommand::Plugin { full_name, args } => match host.resolve_command(&full_name) {
             Some(command) => {
                 // Resolved against `state.focused_agent` -- the agent the
@@ -3459,8 +3534,12 @@ pub async fn apply_trust_decision<H: Host>(
     state: &mut AppState,
     host: &H,
 ) {
-    let (path, settings) = match &state.mode {
-        Mode::TrustPreview(card) => (card.path.clone(), card.settings.clone()),
+    let (path, contents, settings) = match &state.mode {
+        Mode::TrustPreview(card) => (
+            card.path.clone(),
+            card.contents.clone(),
+            card.settings.clone(),
+        ),
         _ => return,
     };
     match decision {
@@ -3470,8 +3549,15 @@ pub async fn apply_trust_decision<H: Host>(
         }
         TrustDecision::Confirm => {
             let root_agent = state.root_agent();
+            // **Security-load-bearing**: `contents` is the EXACT bytes this
+            // card showed the operator at preview time
+            // (`TrustPreviewCard::contents`'s own doc) -- never re-read
+            // here, so a permissions.json edited between preview and this
+            // confirm (a concurrent `git pull`, a build script) is never
+            // swept into a decision the operator was never shown. Mirrors
+            // `settings.contents`'s own handling just below.
             match host
-                .trust_permission_file(&path, PermissionScope::Session, root_agent)
+                .trust_permission_file_bytes(&path, &contents, PermissionScope::Session, root_agent)
                 .await
             {
                 Ok(report) => {
@@ -5125,7 +5211,12 @@ mod tests {
 
     #[test]
     fn quit_parses() {
-        assert_eq!(parse("/quit"), Ok(SlashCommand::Quit));
+        assert_eq!(
+            parse("/quit"),
+            Ok(SlashCommand::Quit {
+                via_exit_alias: false
+            })
+        );
     }
 
     #[test]
@@ -5136,7 +5227,12 @@ mod tests {
 
     #[test]
     fn exit_parses_as_an_alias_for_quit() {
-        assert_eq!(parse("/exit"), Ok(SlashCommand::Quit));
+        assert_eq!(
+            parse("/exit"),
+            Ok(SlashCommand::Quit {
+                via_exit_alias: true
+            })
+        );
     }
 
     #[test]
@@ -5263,9 +5359,14 @@ mod tests {
             if row.name == "/exit" {
                 // The one row NOT derived from a `SlashCommand` variant --
                 // see `builtin_commands`'s own doc. Proven separately,
-                // below, that it round-trips to the same variant as
-                // `/quit`.
-                assert_eq!(cmd, SlashCommand::Quit);
+                // below, that it round-trips to the same `Quit` variant as
+                // `/quit`, distinguished only by `via_exit_alias`.
+                assert_eq!(
+                    cmd,
+                    SlashCommand::Quit {
+                        via_exit_alias: true
+                    }
+                );
                 continue;
             }
             assert_eq!(
@@ -5279,13 +5380,20 @@ mod tests {
 
     /// The one row [`builtin_commands`] carries that is NOT a distinct
     /// `SlashCommand` variant: `/exit` is a second accepted spelling of
-    /// `/quit`. Proves the two spellings really do parse to the identical
-    /// command, so the hand-written `/exit` row cannot silently drift from
-    /// `parse`'s own `"/quit" | "/exit"` alias.
+    /// `/quit`, both landing in the same `Quit` variant -- `describe`
+    /// names both `/quit`, and `execute` quits for both (`via_exit_alias`
+    /// only decides whether a nudge is printed first, proven below in
+    /// `exit_quits_and_prints_a_notice_quit_does_not`). Board item
+    /// `01M1YVH1X49WYSQ9C2Z4D6B4XM` retired the old "both parse identically"
+    /// guarantee on purpose: `/exit` must be distinguishable from `/quit` at
+    /// `execute` time for the nudge to exist at all.
     #[test]
-    fn exit_and_quit_both_parse_to_the_same_described_variant() {
-        assert_eq!(parse("/quit"), parse("/exit"));
-        assert_eq!(describe(&parse("/quit").unwrap()).name, "/quit");
+    fn exit_and_quit_both_describe_as_quit_but_remember_which_spelling_was_typed() {
+        let quit = parse("/quit").unwrap();
+        let exit = parse("/exit").unwrap();
+        assert_ne!(quit, exit, "the two spellings must stay distinguishable");
+        assert_eq!(describe(&quit).name, "/quit");
+        assert_eq!(describe(&exit).name, "/quit");
     }
 
     /// No two rows share a name -- a duplicate would mean the same command
@@ -5469,6 +5577,15 @@ mod tests {
         /// success path (installed rules, notices, registration errors) and
         /// the failure path (`Entry::Error`, not `Entry::Notice`).
         trust_result: Option<TrustPermissionReport>,
+        /// Records every `(path, contents)` pair `Host::
+        /// trust_permission_file_bytes` was actually called with --
+        /// `trusted_settings_bytes`'s own exact counterpart for the
+        /// `permission_file` kind, board item
+        /// `01M3WP0CERXV53S7GYN6B0J33Q`'s own security finding: the ONE
+        /// assertion that proves consent was to the bytes the trust-preview
+        /// card SHOWED, not a fresh re-read of `path`. See
+        /// [`Self::trusted_permission_bytes`].
+        trusted_permission_bytes: Mutex<Vec<(std::path::PathBuf, String)>>,
         /// Board item (split from `01KZHVFCN6ZEAXV7K5JHRQN1YB`): when
         /// `Some`, `preview_trust_target` succeeds with this preview;
         /// otherwise it fails with a fixed `std::io::Error` -- lets a
@@ -5539,6 +5656,7 @@ mod tests {
                 classify_intent: None,
                 plugin_commands: HashMap::new(),
                 trust_result: None,
+                trusted_permission_bytes: Mutex::new(Vec::new()),
                 preview_result: None,
                 project_settings_preview: None,
                 trusted_settings_bytes: Mutex::new(Vec::new()),
@@ -5620,6 +5738,12 @@ mod tests {
         /// a fresh re-read.
         fn trusted_settings_bytes(&self) -> Vec<(std::path::PathBuf, String)> {
             self.trusted_settings_bytes.lock().unwrap().clone()
+        }
+
+        /// Every `(path, contents)` pair `trust_permission_file_bytes` was
+        /// actually called with -- see that field's own doc.
+        fn trusted_permission_bytes(&self) -> Vec<(std::path::PathBuf, String)> {
+            self.trusted_permission_bytes.lock().unwrap().clone()
         }
 
         /// Scripts `resumable_sessions` to succeed with `rows` -- see that
@@ -5829,6 +5953,26 @@ mod tests {
             _granting_agent: AgentId,
         ) -> std::io::Result<TrustPermissionReport> {
             self.calls.lock().unwrap().push("trust_permission_file");
+            self.trust_result.clone().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "fake: trust failed")
+            })
+        }
+
+        async fn trust_permission_file_bytes(
+            &self,
+            path: &std::path::Path,
+            contents: &str,
+            _scope: PermissionScope,
+            _granting_agent: AgentId,
+        ) -> std::io::Result<TrustPermissionReport> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push("trust_permission_file_bytes");
+            self.trusted_permission_bytes
+                .lock()
+                .unwrap()
+                .push((path.to_path_buf(), contents.to_string()));
             self.trust_result.clone().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "fake: trust failed")
             })
@@ -7842,6 +7986,63 @@ mod tests {
         );
     }
 
+    /// `/quit` quits with no nudge at all.
+    #[tokio::test]
+    async fn quit_quits_with_no_notice() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Quit {
+                via_exit_alias: false,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::Quit));
+        assert!(
+            state.transcript.is_empty(),
+            "/quit must push no notice: {:?}",
+            state.transcript
+        );
+    }
+
+    /// Board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`: `/exit` still quits (muscle
+    /// memory from another tool is never punished) but prints a one-release
+    /// "use `/quit`" notice first.
+    #[tokio::test]
+    async fn exit_quits_and_prints_a_notice_quit_does_not() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Quit {
+                via_exit_alias: true,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::Quit), "/exit must still quit");
+        let notices: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            notices.iter().any(|t| t.contains("/quit")),
+            "/exit must notice the operator toward /quit: {notices:?}"
+        );
+    }
+
     /// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: `/plugin` opens the
     /// listing -- a pure `AppState` flip, mirroring `/settings`'s own test
     /// exactly.
@@ -7940,8 +8141,8 @@ mod tests {
     /// The headline property proved here: `/trust
     /// permissions` opens the preview card FIRST, showing the file's
     /// current content and status -- it must NOT call
-    /// `trust_permission_file` (which would both install and trust in the
-    /// same action) until an explicit confirm.
+    /// `trust_permission_file_bytes` (which would both install and trust in
+    /// the same action) until an explicit confirm.
     #[tokio::test]
     async fn trust_opens_a_preview_card_before_trusting_anything() {
         let root = AgentId::new();
@@ -8020,9 +8221,14 @@ mod tests {
     }
 
     /// Confirming the open card is what actually calls
-    /// `trust_permission_file` and records the installed count -- the SAME
-    /// facade call and message shape `/trust permissions` used to produce
-    /// immediately, before the preview step was added.
+    /// `trust_permission_file_bytes` and records the installed count -- the
+    /// SAME message shape `/trust permissions` used to produce immediately,
+    /// before the preview step was added (the call itself moved from
+    /// `trust_permission_file` to the bytes-taking variant under board item
+    /// `01M3WP0CERXV53S7GYN6B0J33Q`, so a changed file cannot be swept into
+    /// a decision the operator never saw -- see
+    /// `confirming_trusts_permissions_json_for_exactly_the_previewed_bytes`
+    /// for that property pinned directly).
     #[tokio::test]
     async fn confirming_the_trust_preview_installs_rules_and_records_the_installed_count() {
         let root = AgentId::new();
@@ -8045,7 +8251,7 @@ mod tests {
 
         assert_eq!(
             host.calls(),
-            vec!["trust_permission_file"],
+            vec!["trust_permission_file_bytes"],
             "no settings section was in the card (board item \
              01M3TJQGJHFFPWE2YYN60WN1XB), so nothing else must be trusted"
         );
@@ -8132,6 +8338,51 @@ mod tests {
         );
     }
 
+    /// Board item `01M3WP0CERXV53S7GYN6B0J33Q`'s own security finding,
+    /// pinned directly for the permissions.json half of the card (the
+    /// settings.json half was already pinned by
+    /// `confirming_trusts_settings_json_for_exactly_the_bytes_the_card_showed`,
+    /// above; the permissions.json half was NOT, which is exactly the gap
+    /// the item's evidence found): confirming trusts and installs from
+    /// EXACTLY `card.contents` -- the bytes the preview card actually
+    /// showed the operator -- never a fresh re-read of `card.path`.
+    ///
+    /// **Fails against a version that calls `Host::trust_permission_file`
+    /// (path-only)**: that call has no `contents` parameter to pass the
+    /// card's own bytes through at all, so `host.trusted_permission_bytes()`
+    /// would not exist to assert on, and a real `LiveHost` would trust and
+    /// install from whatever is on `path` at confirm time rather than what
+    /// the card displayed.
+    #[tokio::test]
+    async fn confirming_trusts_permissions_json_for_exactly_the_previewed_bytes() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        let shown_contents = r#"{"allow":["read:*"]}"#;
+        state.offer_trust_preview(TrustPreviewCard {
+            path: path.clone(),
+            contents: shown_contents.to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+            settings: None,
+        });
+        let host = FakeHost::new(root).with_trust_result(TrustPermissionReport {
+            installed: 1,
+            registration_errors: Vec::new(),
+            notices: Vec::new(),
+        });
+
+        apply_trust_decision(TrustDecision::Confirm, &mut state, &host).await;
+
+        assert_eq!(
+            host.trusted_permission_bytes(),
+            vec![(path.clone(), shown_contents.to_string())],
+            "consent must be recorded (and rules installed) for EXACTLY the \
+             bytes the card showed at preview time, never a fresh re-read of \
+             whatever is on disk now -- the file may have changed since"
+        );
+    }
+
     /// Cancelling the open card makes NO facade call at all -- there is
     /// nothing to undo when nothing was ever written.
     #[tokio::test]
@@ -8152,7 +8403,7 @@ mod tests {
 
         assert!(
             host.calls().is_empty(),
-            "cancelling must never call trust_permission_file"
+            "cancelling must never call trust_permission_file_bytes"
         );
         assert!(
             matches!(state.mode, Mode::Normal),

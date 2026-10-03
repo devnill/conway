@@ -928,6 +928,7 @@ mod tests {
                 CacheMode, ReliabilityTier, StructuredOutput, ToolCallSupport,
             };
             Capabilities {
+                vision: None,
                 tool_calling: ToolCallSupport::None,
                 cache: CacheMode::None,
                 parallel_tool_calls: false,

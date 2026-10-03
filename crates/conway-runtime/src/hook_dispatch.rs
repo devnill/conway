@@ -182,6 +182,12 @@ pub struct HookSpec {
     pub id: String,
     pub command: Vec<String>,
     pub timeout_ms: u64,
+    /// The deadline this hook's runner should use INSTEAD of `timeout_ms` on
+    /// whichever invocation it judges genuinely first for `command` -- the
+    /// rule's `HookEntry::first_call_timeout_ms`, carried through untouched.
+    /// See that field's own doc, and `conway_core::hook::HookInvocation::
+    /// first_call_timeout_ms`'s, for the full argument.
+    pub first_call_timeout_ms: u64,
     /// The rule's `HookEntry::match_tool` , carried through untouched. `None`
     /// (the config-default) fires this hook for every event it is
     /// subscribed to, unchanged from before this field existed. `Some`
@@ -516,6 +522,7 @@ impl HookDispatcher {
             let invocation = HookInvocation::new(
                 hook.command.clone(),
                 hook.timeout_ms,
+                hook.first_call_timeout_ms,
                 HookEvent::new(event, payload.clone()),
             );
             if let Err(failure) = runner.run(&invocation).await {
@@ -573,6 +580,7 @@ impl HookDispatcher {
             let invocation = HookInvocation::new(
                 hook.command.clone(),
                 hook.timeout_ms,
+                hook.first_call_timeout_ms,
                 HookEvent::new(event, payload.clone()),
             );
             match runner.run(&invocation).await {
@@ -654,6 +662,7 @@ impl HookDispatcher {
             let invocation = HookInvocation::new(
                 hook.command.clone(),
                 hook.timeout_ms,
+                hook.first_call_timeout_ms,
                 HookEvent::new(event, payload.clone()),
             );
             match runner.run(&invocation).await {
@@ -817,6 +826,7 @@ mod tests {
             id: id.to_string(),
             command: vec!["/bin/true".to_string()],
             timeout_ms: 1_000,
+            first_call_timeout_ms: 1_000,
             matcher: None,
             origin: HookOrigin::Operator,
             spawn_only: false,

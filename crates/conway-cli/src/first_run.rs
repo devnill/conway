@@ -1604,15 +1604,20 @@ fn assumed_floor_honesty_note(kind: &str, dialect: Option<&str>) -> Option<Strin
 // entry still always wins) -- only the final `None`-branch fallback gains
 // this one additional real signal.
 //
-// **What this correction does NOT claim to fix:** a model string the
-// bundled table's own bare-id/normalized lookup cannot bridge to its entry
-// -- e.g. `glm-5.2:cloud` (`ModelMetadataStore::normalize_model_id` turns
-// that into `glm-5.2-cloud`, which matches neither the exact nor the
-// normalized form of the stored `glm-5.2` key) -- still resolves `Unverified`
-// end to end, notice AND real admission bound alike: for that exact model
-// string this notice SHOULD still fire, and correctly does (traced, not
-// fixed, here -- that is a different item's own scope; see this function's
-// own doc for the pointer).
+// **2026-10-02 follow-up, board item `01M3TEKJH2HRK6QBTMJXSC1D77`: the gap
+// this correction left open is now closed.** A tag-suffixed wire id like
+// `glm-5.2:cloud` (DOGFOOD 3's own exact id) used to resolve `Unverified`
+// end to end -- `ModelMetadataStore::get`'s exact-then-normalized lookup
+// turned the query into `glm-5.2-cloud`, matching neither the exact nor the
+// normalized form of the stored `glm-5.2` key. `ModelMetadataStore::get`
+// now adds a third pass: a `name:tag` id whose tag does not look like a
+// parameter-size variant (`:cloud`, `:latest`, ... -- not `:8b`, `:70b`,
+// `:27b-mlx`, ...) falls back to `name`'s own entry. `glm-5.2:cloud`
+// qualifies, so this notice correctly no longer fires for it (see
+// `crates/conway-plugin-backends/src/model_metadata.rs`'s own doc on `get`
+// for the exact rule, and this file's own now-renamed
+// `bundled_model_metadata_declares_window_true_for_a_cloud_tag_suffixed_variant`
+// test).
 // ---------------------------------------------------------------------
 
 /// Pure: `None` unless the pair this session's first turn is about to run
@@ -3052,17 +3057,20 @@ mod tests {
     }
 
     #[test]
-    fn bundled_model_metadata_declares_window_false_for_a_cloud_tag_suffixed_variant() {
-        // Traced, not fixed, here (a different board item's own scope --
-        // see this module's top doc on `01M3T76R6RGWK83ERATQATBM1H`):
-        // `glm-5.2:cloud` is NOT bridged to the bundled `glm-5.2` entry by
-        // `ModelMetadataStore::get`'s exact-then-normalized lookup
-        // (`normalize_model_id` turns the QUERY into `glm-5.2-cloud`, which
-        // matches neither the raw nor the normalized form of the STORED
-        // `glm-5.2` key) -- so a real `OpenAiCompatBackend` resolves
-        // `Unverified` end to end for that exact model string, and this
-        // notice correctly still fires for it.
-        assert!(!bundled_model_metadata_declares_window(
+    fn bundled_model_metadata_declares_window_true_for_a_cloud_tag_suffixed_variant() {
+        // Fixed by a later board item (toolindex/context-window
+        // measurement, 01M3TEKJH2HRK6QBTMJXSC1D77): `ModelMetadataStore::
+        // get` now falls back from a tag-suffixed id to its base entry
+        // when the tag doesn't look like a parameter-size variant --
+        // `glm-5.2:cloud`'s `:cloud` tag qualifies, so this now bridges to
+        // the bundled `glm-5.2` entry the same way the bare id already did.
+        // This was PINNED `false` before that fix (see
+        // `crates/conway-plugin-backends/src/model_metadata.rs`'s own
+        // `cloud_tag_falls_back_to_the_base_models_window` for the fix
+        // itself); a real `OpenAiCompatBackend` now resolves a real window
+        // for this exact wire id, end to end, so this notice must no longer
+        // fire for it.
+        assert!(bundled_model_metadata_declares_window(
             "openai-compat",
             "glm-5.2:cloud"
         ));

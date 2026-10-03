@@ -895,11 +895,13 @@ dependencies = [
  "async-trait",
  "conway",
  "conway-core",
+ "conway-plugin-backends",
  "conway-testkit",
  "schemars",
  "serde",
  "serde_json",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]

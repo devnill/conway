@@ -54,6 +54,7 @@ fn model_ref(backend: &str, model: &str) -> ModelRef {
 
 fn caps(max_context_tokens: u32) -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::Streaming { validated: true },
         cache: CacheMode::None,
         parallel_tool_calls: true,
@@ -566,6 +567,7 @@ fn global_default_headroom_applies_when_role_has_no_override() {
 /// Weak capabilities: fails `tool_calling` outright, independent of context.
 fn weak_caps(max_context_tokens: u32) -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::None,
         cache: CacheMode::None,
         parallel_tool_calls: true,
@@ -1122,4 +1124,64 @@ fn an_operator_per_model_headroom_is_never_clamped_to_fit_the_window() {
         }
         other => panic!("expected ContextTooLarge, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------
+// Vision (terminal image attachment)
+// ---------------------------------------------------------------------
+
+/// A turn carrying an image (`required.vision = Some(true)`, the dynamic
+/// floor `conway-runtime`'s `route_and_attempt` adds the moment an
+/// assembled turn carries a `ContentBlock::Image`) is refused at admission
+/// when the role's only candidate EXPLICITLY declares it does not support
+/// vision -- the refusal names the model, not just a bare count, exactly
+/// like every other capability-floor rejection `NoCandidate::considered`
+/// already carries.
+#[test]
+fn image_attached_turn_refuses_a_model_declared_non_vision_naming_it() {
+    let a = model_ref("local", "llama3.1-8b");
+    let config = routing_config(vec![("vision_role", vec![a.clone()], None)], 4_096);
+    let mut non_vision_caps = caps(100_000);
+    non_vision_caps.vision = Some(false);
+    let index = index_with(&[(a.clone(), non_vision_caps)]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let mut req = request("vision_role", 1_000);
+    req.required.vision = Some(true);
+    let err = router
+        .resolve(&req)
+        .expect_err("the only candidate declares no vision support");
+    match err {
+        RoutingError::NoCandidate { considered, .. } => {
+            assert_eq!(considered.len(), 1);
+            assert_eq!(considered[0].0, a, "the refusal must name the model");
+            assert!(
+                considered[0].1.contains("vision"),
+                "the refusal must name the vision requirement: {}",
+                considered[0].1
+            );
+        }
+        other => panic!("expected NoCandidate naming the model, got {other:?}"),
+    }
+}
+
+/// The asymmetric half of the same rule: a model this index says NOTHING
+/// about (`vision: None`, the common case -- most `models.json` entries
+/// never declare it) is still admitted for an image-carrying turn. Refusing
+/// here would be "assume no" for every undeclared model, which the product
+/// decision explicitly rejected in favor of "send, and let a genuine
+/// provider rejection surface as its own named error."
+#[test]
+fn image_attached_turn_still_admits_a_model_with_no_declared_vision_capability() {
+    let a = model_ref("local", "mystery-model");
+    let config = routing_config(vec![("vision_role", vec![a.clone()], None)], 4_096);
+    let index = index_with(&[(a.clone(), caps(100_000))]); // vision defaults to None
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let mut req = request("vision_role", 1_000);
+    req.required.vision = Some(true);
+    let routes = router
+        .resolve(&req)
+        .expect("an undeclared model must still be admitted, not refused");
+    assert_eq!(routes[0].model, a.model);
 }

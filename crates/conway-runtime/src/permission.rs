@@ -221,6 +221,12 @@ pub struct PreToolUseHookSpec {
     pub id: String,
     pub command: Vec<String>,
     pub timeout_ms: u64,
+    /// The deadline this hook's runner should use INSTEAD of `timeout_ms` on
+    /// whichever invocation it judges genuinely first for `command` -- the
+    /// rule's `HookEntry::first_call_timeout_ms`, carried through untouched.
+    /// See `crate::hook_dispatch::HookSpec::first_call_timeout_ms`'s own doc
+    /// for the identical field on the sibling tier.
+    pub first_call_timeout_ms: u64,
     /// The rule's `HookEntry::match_tool` , carried through untouched. `None` (the
     /// config default) consults this hook for every `pre_tool_use` call --
     /// see [`crate::hook_dispatch::HookSpec::matcher`]'s own doc for the
@@ -2659,6 +2665,7 @@ impl PermissionBroker {
             let invocation = HookInvocation::new(
                 hook.command.clone(),
                 hook.timeout_ms,
+                hook.first_call_timeout_ms,
                 HookEvent::new("pre_tool_use", payload.clone()),
             );
             match runner.run(&invocation).await {
@@ -3531,6 +3538,7 @@ mod tests {
             id: id.to_string(),
             command: vec!["/usr/bin/env".to_string(), "true".to_string()],
             timeout_ms: 1_000,
+            first_call_timeout_ms: 1_000,
             matcher: None,
             // Today's -- and the default's -- fail-closed posture: every
             // EXISTING test below that builds its fixture through this

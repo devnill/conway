@@ -49,6 +49,7 @@ mod busy_input;
 mod checkpoint_focus;
 mod defaults;
 mod editor;
+mod exit_guard;
 mod focus;
 mod marketplace;
 mod mention_scan;
@@ -335,6 +336,32 @@ impl App {
             let history = self.state.history.clone();
             let _ = tokio::task::spawn_blocking(move || crate::tui::history::save(&path, &history))
                 .await;
+        }
+        // Board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`: a bare `exit`/`quit`/`q`/
+        // `:q`/`:wq` line is another tool's muscle memory, not a prompt the
+        // operator meant for the model -- hint instead of silently sending
+        // it and getting a cheerful, useless reply (`exit_guard`'s own doc;
+        // the operator's own real sessions are the trigger). Checked AFTER
+        // history is recorded (T8: every submitted line is) but BEFORE the
+        // `!`/`/` dispatch below -- neither shape can ever collide with it,
+        // since no intercepted word starts with `!` or `/`.
+        match exit_guard::check(&text, self.state.pending_exit_word.as_deref()) {
+            exit_guard::Decision::Pass => {
+                self.state.pending_exit_word = None;
+            }
+            exit_guard::Decision::Hint => {
+                self.state.pending_exit_word = Some(text.trim().to_lowercase());
+                self.state.transcript.push(Entry::Notice {
+                    text: exit_guard::HINT.to_string(),
+                });
+                return Ok(SubmitOutcome::Continue);
+            }
+            exit_guard::Decision::Send => {
+                // The operator repeated the exact word on purpose -- clear
+                // the pending state and fall through, sending it as an
+                // ordinary prompt like any other line.
+                self.state.pending_exit_word = None;
+            }
         }
         // Board item `01M1YVFRPH0DCE8N0DR5BS5BRT` ("Run a shell command
         // yourself"): a `!`-prefixed line is handled here, BEFORE the `/`
@@ -1166,6 +1193,123 @@ mod tests {
         assert!(
             user_turn_text.starts_with("!important"),
             "the backslash must be stripped and the rest sent as a literal prompt: \
+             {user_turn_text:?}"
+        );
+    }
+
+    /// Board item `01M1YVH1X49WYSQ9C2Z4D6B4XM`: a bare `exit` submission is
+    /// intercepted -- a hint lands in the transcript instead of a
+    /// `UserTurn` being sent to the model.
+    #[tokio::test]
+    async fn a_bare_exit_is_intercepted_with_a_hint_and_sends_nothing() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let outcome = app
+            .submit("exit".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text.contains("/quit"))),
+            "a hint pointing at /quit must land in the transcript: {:?}",
+            app.state.transcript
+        );
+
+        let records = app
+            .handle
+            .transcript(app.handle.root())
+            .await
+            .expect("transcript should read back");
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, conway::LogRecord::UserTurn { .. })),
+            "the intercepted word must never reach the model as a UserTurn: {records:?}"
+        );
+    }
+
+    /// The same word, submitted a SECOND time in a row, is sent through as
+    /// an ordinary prompt -- the operator's own override of the hint.
+    #[tokio::test]
+    async fn exit_twice_in_a_row_sends_the_word_to_the_model() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let first = app
+            .submit("exit".to_string())
+            .await
+            .expect("first submit should not error");
+        assert!(matches!(first, SubmitOutcome::Continue));
+
+        let second = app
+            .submit("exit".to_string())
+            .await
+            .expect("second submit should not error");
+        assert!(matches!(second, SubmitOutcome::Continue));
+
+        let records = app
+            .handle
+            .transcript(app.handle.root())
+            .await
+            .expect("transcript should read back");
+        let user_turn_text = records
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                conway::LogRecord::UserTurn { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("a second identical submission must send a UserTurn");
+        assert!(
+            user_turn_text.starts_with("exit"),
+            "the literal word must be sent, unchanged: {user_turn_text:?}"
+        );
+    }
+
+    /// A single intercepted word, NOT repeated, never leaks into a
+    /// following, unrelated submission's behavior -- an ordinary prompt
+    /// right after a hint is sent normally, not swallowed.
+    #[tokio::test]
+    async fn an_unrelated_prompt_after_a_hint_is_sent_normally() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        app.submit("exit".to_string())
+            .await
+            .expect("first submit should not error");
+        app.submit("what is 2+2".to_string())
+            .await
+            .expect("second submit should not error");
+
+        let records = app
+            .handle
+            .transcript(app.handle.root())
+            .await
+            .expect("transcript should read back");
+        let user_turn_text = records
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                conway::LogRecord::UserTurn { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("the unrelated prompt must reach the model");
+        assert!(
+            user_turn_text.starts_with("what is 2+2"),
+            "the unrelated prompt must be sent unchanged, not treated as a repeat: \
              {user_turn_text:?}"
         );
     }

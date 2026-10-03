@@ -3,18 +3,17 @@
 //! correctly -- one copy rather than several that could silently drift --
 //! namely `conway-tools/tests/kill_group.rs` (both its own spawn
 //! sites), `conway-tools/tests/hook_runner.rs` (its `warm` helper only --
-//! see below), `conway-cli/tests/subprocess_plugins.rs`, and
-//! `conway-plugin-claude/tests/end_to_end.rs`. Each of those writes a small
-//! fixture script to a fresh `TempDir` at test time and then runs it; this
-//! crate exists so every one of them makes the same exec-safety choice about
-//! HOW to run it, rather than independent restatements that could silently
-//! drift.
+//! see below), and `conway-plugin-claude/tests/end_to_end.rs`. Each of
+//! those writes a small fixture script to a fresh `TempDir` at test time and
+//! then runs it; this crate exists so every one of them makes the same
+//! exec-safety choice about HOW to run it, rather than independent
+//! restatements that could silently drift.
 //!
 //! Dev-dependency only. Nothing under any crate's `src/` may depend on this
 //! -- it exists to keep a test's own fixture-launch decision out of
 //! production code, not to become part of it.
 //!
-//! # Two call sites that deliberately do NOT use this, and why
+//! # Call sites that deliberately do NOT use this, and why
 //!
 //! Board item `01M3CMQZZCSRF7YB9GEMA92M0C` set out to convert every
 //! `Command::new(path)` site sharing this shape, including
@@ -47,6 +46,24 @@
 //! `timeout_ms` is 5000, and none assert on elapsed wall time), and
 //! converting it is safe -- verified by dozens of repeated runs with no
 //! regression.
+//!
+//! **`conway-cli/tests/subprocess_plugins.rs::warm` used to be listed here
+//! as a consumer; it no longer is (board item, the 2026-10-02
+//! deterministic-timeout incident).** That helper's entire job is
+//! IDENTICAL to `hook_runner.rs::warm_hanging_fixture`'s and
+//! `child_session_grace.rs::warm`'s above: pre-pay the exact macOS-only
+//! first-direct-exec tax an immediately-following, unmodifiable production
+//! spawn of the SAME file (`SubprocessPlugin::discover`'s own `tool.spec/1`
+//! spawn, which names the SCRIPT itself as `command`, never an interpreter)
+//! would otherwise pay inside its own timing budget. Routing it through
+//! `script_command` was the identical mistake those two already-reverted
+//! conversions were, confirmed the identical way: direct reproduction on
+//! the real compiled binary (several runs, alone, under load) reported
+//! `conway`'s own `plugin 'acme-greet' timed out after 5000ms` for a plugin
+//! that answers in 0.02s by hand once warm. See that function's own doc
+//! for the fix (reverted to `Command::new(path)`, matching this crate's own
+//! two existing exceptions) and why the `ETXTBSY` race this crate exists to
+//! dodge is a non-issue there regardless.
 //!
 //! # The race this closes, and why it is a race and not a bug in the fixture
 //!

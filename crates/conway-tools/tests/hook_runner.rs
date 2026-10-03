@@ -279,8 +279,32 @@ fn correctness_timeout_ms() -> u64 {
     30_000 * scale
 }
 
+/// Builds an invocation with NO first-run elevation of its own
+/// (`first_call_timeout_ms == timeout_ms`): the right default for every test
+/// here that is not specifically about the first-call-elevation or grace
+/// mechanisms, since `ProcessHookRunner` always sees each test's
+/// freshly-generated script path for the first time regardless -- without
+/// this no-op, every single-call test below would silently exercise the
+/// ELEVATED tier instead of the ordinary one it means to.
 fn invocation(command: Vec<String>, timeout_ms: u64, payload: serde_json::Value) -> HookInvocation {
-    HookInvocation::new(command, timeout_ms, HookEvent::new("pre_tool_use", payload))
+    invocation_with_first_call(command, timeout_ms, timeout_ms, payload)
+}
+
+/// [`invocation`], with an explicit, possibly-different
+/// `first_call_timeout_ms` -- for the tests that are specifically about the
+/// first-run-elevation mechanism.
+fn invocation_with_first_call(
+    command: Vec<String>,
+    timeout_ms: u64,
+    first_call_timeout_ms: u64,
+    payload: serde_json::Value,
+) -> HookInvocation {
+    HookInvocation::new(
+        command,
+        timeout_ms,
+        first_call_timeout_ms,
+        HookEvent::new("pre_tool_use", payload),
+    )
 }
 
 /// Asserts `kill(-pgid, 0)` can no longer reach the group -- POLLED, not
@@ -562,6 +586,14 @@ static PROCESS_GROUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_ne
 /// (SIGTERM, then SIGKILL after the grace period) and reported as a timeout
 /// -- within BOUNDED time, proven by wrapping the whole call in an outer
 /// `tokio::time::timeout` shorter than "forever."
+///
+/// **`after_ms` is `2_000 * GRACE_CEILING_FACTOR` (`6_000`), not the bare
+/// `timeout_ms` of `2_000` this test gave `invocation`.** A genuinely hung
+/// process still gets ONE bounded grace extension before this host gives up
+/// on it (the module doc's "plus bounded grace on every call" section) --
+/// the fail-closed OUTCOME here is unchanged (still killed, still reported),
+/// only the STATED bound grew to match the real total wait, so this
+/// assertion is the test that would catch a grace factor silently drifting.
 #[tokio::test]
 async fn hang_trapping_sigterm_is_killed_and_reported_as_timed_out() {
     let _guard = PROCESS_GROUP_LOCK.lock().await;
@@ -594,7 +626,7 @@ while true; do sleep 1; done
 
     assert_eq!(
         result,
-        Err(HookFailure::TimedOut { after_ms: 2_000 }),
+        Err(HookFailure::TimedOut { after_ms: 6_000 }),
         "got {result:?}"
     );
 
@@ -636,13 +668,108 @@ while true; do sleep 1; done
     let result = tokio::time::timeout(Duration::from_secs(20), runner.run(&invocation))
         .await
         .expect("the runner must return within 20s");
-    assert_eq!(result, Err(HookFailure::TimedOut { after_ms: 2_000 }));
+    // `6_000`, not the bare `2_000` handed to `invocation` -- see
+    // `hang_trapping_sigterm_is_killed_and_reported_as_timed_out`'s own doc
+    // for why (the bounded grace extension this host gives every call before
+    // concluding a still-running process is genuinely unresponsive).
+    assert_eq!(result, Err(HookFailure::TimedOut { after_ms: 6_000 }));
 
     // The backgrounded `sleep 300 &` inherited the same pgid as the script
     // itself (process_group(0) makes the script the group leader; a plain
     // `&` background job does not call setsid, so it stays in the group).
     let pgid: i32 = wait_for_pgid(&pgid_file).trim().parse().unwrap();
     assert_group_dead(pgid);
+}
+
+// ------------------------------------- first-run allowance / grace ---
+
+/// **Acceptance: a hook that is slow on its first start, but otherwise
+/// correct, is NOT killed.** The fixture answers immediately on every run
+/// except its genuinely first one (a marker file it creates for itself),
+/// where it sleeps 6s before answering -- simulating the one-time OS-side
+/// cost (Gatekeeper/XProtect/Spotlight contention on a brand-new
+/// executable's first `execve`, board item `01M09MPZ9C188AHNBKWEJ3CEQA`) this
+/// item's own first-call elevation exists to absorb. Deliberately NOT
+/// `warm()`-ed first: warming would itself consume the marker-gated "slow"
+/// branch outside this call's own clock, which would prove nothing about the
+/// mechanism this test exists to check -- `ProcessHookRunner`'s OWN first
+/// invocation of this exact command must be the one that pays the 6s cost.
+///
+/// `timeout_ms` (`1_000`, times `GRACE_CEILING_FACTOR` = a `3_000` ceiling)
+/// is nowhere near enough to survive a 6s sleep on its own -- only
+/// `first_call_timeout_ms` (`10_000`) can, which is the whole point: this
+/// test fails if the elevation is ever accidentally removed or only applied
+/// to a DIFFERENT invocation than the genuinely-first one.
+#[tokio::test]
+async fn first_run_allowance_absorbs_a_slow_but_correct_first_start() {
+    let dir = TempDir::new().unwrap();
+    let marker = dir.path().join("first-run-marker");
+    let script = fixture(
+        dir.path(),
+        "slow_first_start.sh",
+        &format!(
+            r#"#!/bin/sh
+cat >/dev/null
+if [ ! -e {marker} ]; then
+  touch {marker}
+  sleep 6
+fi
+printf '{{}}'
+"#,
+            marker = marker.to_str().unwrap()
+        ),
+    );
+
+    let runner = TestHookRunner::new();
+    let invocation = invocation_with_first_call(
+        vec![script.to_str().unwrap().to_string()],
+        1_000,
+        10_000,
+        serde_json::json!(null),
+    );
+
+    let answer = tokio::time::timeout(Duration::from_secs(20), runner.run(&invocation))
+        .await
+        .expect("the runner must return within 20s")
+        .expect("a hook that is merely slow on its first start, not hung, must succeed");
+    assert_eq!(answer, HookAnswer::default());
+}
+
+/// **Production fix for `crates/conway-tools/tests/hook_runner.rs` itself
+/// timing out at a flat 5000ms under a concurrent build (commit
+/// `8ab117ab`'s own evidence -- that commit widened the TEST's correctness
+/// budget, not production).** A hook that answers correctly, merely a little
+/// late (scheduler contention, not a hang), is NOT killed on the first
+/// millisecond past `timeout_ms` -- it gets ONE bounded grace extension for
+/// the SAME still-running process first. The fixture sleeps 1.5s against a
+/// `timeout_ms` of `1_000` (which alone would kill it) but well inside the
+/// `3_000`ms grace ceiling (`1_000 * GRACE_CEILING_FACTOR`) that saves it.
+/// `first_call_timeout_ms` is deliberately the SAME as `timeout_ms` here (a
+/// no-op elevation) so this test is isolated to the GRACE mechanism alone,
+/// not the separate first-call elevation `first_run_allowance_absorbs_a_
+/// slow_but_correct_first_start` already covers.
+#[tokio::test]
+async fn grace_absorbs_an_ordinary_call_running_a_little_late() {
+    let dir = TempDir::new().unwrap();
+    let script = fixture(
+        dir.path(),
+        "a_little_late.sh",
+        "#!/bin/sh\ncat >/dev/null\nsleep 1.5\nprintf '{}'\n",
+    );
+    warm(&script).await;
+
+    let runner = TestHookRunner::new();
+    let invocation = invocation(
+        vec![script.to_str().unwrap().to_string()],
+        1_000,
+        serde_json::json!(null),
+    );
+
+    let answer = tokio::time::timeout(Duration::from_secs(20), runner.run(&invocation))
+        .await
+        .expect("the runner must return within 20s")
+        .expect("a call running a little late, not hung, must succeed via grace");
+    assert_eq!(answer, HookAnswer::default());
 }
 
 /// The pgid file is written by the fixture BEFORE it starts hanging, but

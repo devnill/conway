@@ -50,6 +50,7 @@ mod result_contract_via_def {
 
     fn caps_ok() -> Capabilities {
         Capabilities {
+            vision: None,
             tool_calling: ToolCallSupport::Streaming { validated: true },
             cache: CacheMode::None,
             parallel_tool_calls: true,
@@ -354,6 +355,7 @@ mod max_steps_via_def {
 
     fn caps_ok() -> Capabilities {
         Capabilities {
+            vision: None,
             tool_calling: ToolCallSupport::Streaming { validated: true },
             cache: CacheMode::None,
             parallel_tool_calls: true,

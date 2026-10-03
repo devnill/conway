@@ -49,6 +49,7 @@ use futures::StreamExt;
 
 fn caps(max_context_tokens: u32) -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::NonStreamingOnly,
         cache: CacheMode::None,
         parallel_tool_calls: false,
@@ -496,5 +497,172 @@ async fn unverified_window_writes_no_window_note_but_budget_notes_still_fire() {
     assert!(
         notes.iter().any(|t| t.contains("max_steps")),
         "a budget note must still fire even though the window is unknown: {notes:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Acceptance 4 (toolindex/context-window measurement item,
+// 01M3TEKJH2HRK6QBTMJXSC1D77): an oversized tool result on a small
+// window reaches the NEXT request as an in-band not-admitted note, never
+// as silently-vanished content.
+//
+// This reproduces DOGFOOD 3's own traced incident almost exactly: a
+// `web_fetch`-shaped tool (same `TruncationPolicy::Head` shape,
+// `max_bytes = 200_000`, as the real `conway.web` tool's own default --
+// `crates/conway-plugin-web/src/fetch.rs`) returns a 58,488-char page (the
+// exact figure DOGFOOD 3 recorded for a real `docs.python.org` fetch) on a
+// 32,768-token window, with no `[routing]` override at all -- the
+// `ToolResultBoundPolicy::default()` every `build_runtime` call in this
+// file already uses, i.e. conway's real, unconfigured, out-of-the-box
+// behavior. `58,488 / 4 ~= 14,622` estimated tokens comfortably exceeds
+// the default 8,192-token bound, so `conway_runtime::context::builder::
+// admit_tool_result` (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`) must swap
+// the real page text for its own not-admitted note before the NEXT
+// request is ever built -- this test drives a real `AgentLoop`, through a
+// real `ScriptedBackend`, and reads the actual second `GenerateRequest`
+// body, not a `ContextBuilder` unit call with a hand-built `ContextInput`.
+// ---------------------------------------------------------------------
+
+const DOGFOOD3_PAGE_CHARS: usize = 58_488;
+
+/// Mirrors `conway_plugin_web::fetch::WebFetchTool`'s own announced shape
+/// closely enough for this test's purpose -- same tool name, same
+/// `TruncationPolicy::Head { max_bytes: 200_000 }` (`conway-plugin-web`'s
+/// own `FetchConfig::default`), same "far too large for the default
+/// tool-result bound, nowhere near large enough to hit that truncation
+/// cap" relationship a real oversized fetch has. This crate does not
+/// depend on `conway-plugin-web` (a first-party PLUGIN crate, never a
+/// dependency of the runtime it plugs into), so a fixture tool stands in,
+/// exactly like `BigTool` above already does for an un-named "big result"
+/// tool.
+struct WebFetchShapedTool;
+
+#[async_trait]
+impl Tool for WebFetchShapedTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new("web_fetch"),
+            description: "test-only stand-in for conway.web's web_fetch".into(),
+            schema: schema_any_object(),
+            category: ToolCategory::Read,
+            permission: PermissionClass::Safe,
+        }
+    }
+
+    async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            blocks: vec![ContentBlock::Text {
+                text: "x".repeat(DOGFOOD3_PAGE_CHARS),
+            }],
+            is_error: false,
+            truncation: conway_core::content::TruncationPolicy::Head { max_bytes: 200_000 },
+            artifacts: vec![],
+        })
+    }
+}
+
+/// The real content a `GenerateRequest`'s own segments carry -- every
+/// `ContentBlock::Text`, including text nested inside a
+/// `ContentBlock::ToolResultBlock` -- concatenated. Mirrors
+/// `conway_runtime::context::builder`'s own private `all_rendered_text`
+/// test helper, independently here since that one is not `pub`.
+fn all_rendered_text(req: &conway_core::ports::GenerateRequest) -> String {
+    fn collect(blocks: &[ContentBlock], out: &mut String) {
+        for block in blocks {
+            match block {
+                ContentBlock::Text { text } => out.push_str(text),
+                ContentBlock::ToolResultBlock { blocks, .. } => collect(blocks, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = String::new();
+    for segment in &req.segments {
+        collect(&segment.content, &mut out);
+    }
+    out
+}
+
+#[tokio::test]
+async fn an_oversized_tool_result_reaches_the_next_request_as_an_in_band_note_not_vanished_content()
+{
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(tool_call("fetch-1", "web_fetch")),
+            ScriptedTurn::Respond(conway_testkit::text_response("done")),
+        ])
+        // The exact figure this item traced as DOGFOOD 3's own floor.
+        .with_capabilities(caps(32_768)),
+    );
+    let (runtime, store) = build_runtime(
+        backend.clone(),
+        vec![Arc::new(FixtureToolsPlugin {
+            tools: vec![Arc::new(WebFetchShapedTool)],
+        })],
+        HeadroomPolicy::default(),
+    );
+    let mut stream = runtime.subscribe();
+
+    let agent_id = runtime
+        .start_root(root_spec("fetch the page", Budget::default(), false))
+        .await
+        .unwrap();
+    let session = session_of(&runtime, agent_id);
+
+    let result = wait_for_agent_finished(&mut stream, agent_id).await;
+    assert_eq!(
+        result.status,
+        conway_core::agent::ResultStatus::Completed,
+        "the not-admitted note must be small enough that the turn completes normally, not \
+         ContextTooLarge: {:?}",
+        result.status
+    );
+
+    let calls = backend.calls();
+    assert_eq!(
+        calls.len(),
+        2,
+        "the tool-call turn plus the follow-up turn that saw its result: {calls:?}"
+    );
+    let second_request_text = all_rendered_text(&calls[1]);
+
+    assert!(
+        !second_request_text.contains(&"x".repeat(100)),
+        "the oversized page's real content must never reach the next request: \
+         {} chars total",
+        second_request_text.len()
+    );
+    assert!(
+        second_request_text.contains("not admitted"),
+        "the model must be told in-band what happened, not left to find an empty result: \
+         {second_request_text:?}"
+    );
+    assert!(
+        second_request_text.contains("durable log"),
+        "the note must say where the full result still lives: {second_request_text:?}"
+    );
+    assert!(
+        second_request_text.contains("conway_fork"),
+        "the note must name a real, always-available remedy: {second_request_text:?}"
+    );
+
+    // This session's own durable log still holds the REAL, un-truncated
+    // page -- "withheld from this request", never discarded. Proves the
+    // note's own claim, rather than trusting it.
+    let full_log = store
+        .read(&session, SeqRange::full())
+        .await
+        .expect("read session records");
+    let kept_the_real_result = full_log.iter().any(|r| match r {
+        LogRecord::ToolResultRecord { result, .. } => result
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.len() == DOGFOOD3_PAGE_CHARS)),
+        _ => false,
+    });
+    assert!(
+        kept_the_real_result,
+        "the full result must survive in the durable log even though it was withheld from \
+         context"
     );
 }

@@ -82,6 +82,7 @@ impl Backend for ScriptBackend {
 
     fn capabilities(&self, _model: &ModelId) -> conway_core::capabilities::Capabilities {
         conway_core::capabilities::Capabilities {
+            vision: None,
             tool_calling: conway_core::capabilities::ToolCallSupport::None,
             cache: conway_core::capabilities::CacheMode::None,
             parallel_tool_calls: false,

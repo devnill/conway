@@ -104,6 +104,7 @@ use conway_core::agent::{
 use conway_core::capabilities::{CacheMode, HeadroomPolicy, ToolResultBoundPolicy};
 use conway_core::config::{AgentDef, SkillDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::containment::{CanonicalRoot, Containment};
+use conway_core::content::AttachedImage;
 use conway_core::error::{ConwayError, RuntimeError, StoreError};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, LogSeq, RoleAlias, SeqRange, SessionId, ToolName};
@@ -1162,6 +1163,30 @@ impl Runtime {
         text: String,
         prov: Provenance,
     ) -> Result<(), RuntimeError> {
+        self.prompt_with_images(agent, text, Vec::new(), prov).await
+    }
+
+    /// [`Self::prompt_with_provenance`], widened to append one or more
+    /// [`AttachedImage`]s as their own `LogRecord::UserImage` records
+    /// (terminal image attachment) immediately after the `UserTurn` --
+    /// NOT a thin wrapper over that method, deliberately: this method's
+    /// single `prompt_notify.notify_one()` fires only after EVERY record
+    /// (the text turn AND every image) has been durably appended, so the
+    /// woken agent's next context read always sees the whole turn, image
+    /// included, never just the text half of it.
+    ///
+    /// `images` is empty for every existing caller of `prompt`/
+    /// `prompt_with_provenance` (both stay thin wrappers over THIS method
+    /// with `images: vec![]`) -- see those methods' own doc for the
+    /// persist-before-act/subscribe-before-act guarantees this inherits
+    /// unchanged.
+    pub async fn prompt_with_images(
+        &self,
+        agent: AgentId,
+        text: String,
+        images: Vec<AttachedImage>,
+        prov: Provenance,
+    ) -> Result<(), RuntimeError> {
         let (session, prompt_notify) = {
             let agents = self.agents.read().expect("agents lock poisoned");
             let handle = agents
@@ -1170,16 +1195,6 @@ impl Runtime {
             (handle.session, handle.prompt_notify.clone())
         };
 
-        // `prompt_submitted` for a FOLLOW-UP prompt on a live session (board
-        // item). After the session is resolved, so
-        // the payload can name it, but BEFORE the `store.append` below -- a
-        // denied prompt must leave no record behind, exactly as if it had
-        // never been typed.
-        //
-        // `text` is passed by reference and returned to the caller untouched.
-        // Nothing here can rewrite it: `dispatch_deny_only` reads only
-        // `HookPermissionVerdict`, which has no field capable of carrying
-        // replacement text.
         if let Some(reason) = self
             .hooks
             .dispatch_deny_only(
@@ -1195,9 +1210,6 @@ impl Runtime {
         {
             return Err(RuntimeError::PromptDenied { reason });
         }
-        // See `start_root`'s note: `append`'s `assign_seq` always overwrites
-        // this placeholder with the store's own next value, so no
-        // `store.head` round trip is needed first.
         self.store
             .append(
                 &session,
@@ -1209,16 +1221,28 @@ impl Runtime {
                 },
             )
             .await?;
+        // Review round 1, accepted with no change: this loop's appends (one
+        // per image, after the `UserTurn` above) are not atomic as a group
+        // -- a store failure partway through leaves the text turn and
+        // whichever images already landed durable, with no rollback.
+        for (position, image) in images.iter().enumerate() {
+            self.store
+                .append(
+                    &session,
+                    LogRecord::UserImage {
+                        seq: LogSeq::ZERO,
+                        ts: Utc::now(),
+                        index: (position + 1) as u32,
+                        media_type: image.media_type.clone(),
+                        data_base64: image.data_base64.clone(),
+                        width: image.width,
+                        height: image.height,
+                    },
+                )
+                .await?;
+        }
         self.bus
             .emit(session, agent, Event::UserTurn { text, prov });
-        // Generalized by keep-alive: wakes a `resume_root` agent's
-        // gated first iteration, OR a `keep_alive: true` agent's gated
-        // end-of-turn idle wait -- both the same `ResumeGate` (see that
-        // type's doc). `Notify::notify_one`'s single stored permit means
-        // this is safe even if that agent's task has not polled its
-        // `notified()` yet -- the permit is buffered and consumed by the
-        // very next `.await` on it. A no-op for every other agent (nothing
-        // ever awaits this `Notify`).
         prompt_notify.notify_one();
         Ok(())
     }

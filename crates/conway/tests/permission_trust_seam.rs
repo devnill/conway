@@ -653,6 +653,106 @@ async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
     );
 }
 
+/// Board item `01M3WP0CERXV53S7GYN6B0J33Q` (security re-review of the trust
+/// rework): `/trust permissions` shows the operator a PREVIEW of a file's
+/// bytes, then (after an explicit confirm) must trust and install from
+/// EXACTLY those bytes -- never whatever happens to be on disk at confirm
+/// time. This drives `Conway::trust_permission_file_bytes` (the production
+/// seam the TUI's Confirm arm actually calls, through `Host::
+/// trust_permission_file_bytes`) with bytes that deliberately no longer
+/// match the file on disk, simulating the race the item's own evidence
+/// names: a `git pull` or a build script rewriting `permissions.json`
+/// between the preview card opening and the operator pressing `y`.
+///
+/// **Fails against a version that re-reads `path` instead of trusting
+/// `contents`** (i.e. `trust_permission_file_bytes` implemented as a thin
+/// wrapper around the old path-based `trust_permission_file`): the `write:*`
+/// rule the race slipped onto disk would install and grant silently, this
+/// test's `gate.requests()` assertion on the `write` call would see zero
+/// requests instead of one, and `trust_store.is_trusted(&path,
+/// &changed_on_disk)` would be `true` instead of `false`.
+#[tokio::test]
+async fn trust_permission_file_bytes_trusts_only_the_previewed_bytes_not_a_changed_file_on_disk() {
+    let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
+    let fixture_path = write_fixture_file(project.path());
+    let (_config_dir, env) = isolated_env();
+    let path = project.path().join(".conway").join("permissions.json");
+    let agent = AgentId::new();
+
+    // The "preview" step reads the file's bytes at preview time -- exactly
+    // what `Conway::preview_trust_target` returns and what the TUI's
+    // trust-preview card shows the operator (`TrustPreviewCard::contents`).
+    let previewed_contents =
+        std::fs::read_to_string(&path).expect("read the previewed permissions.json");
+
+    // THEN the file is rewritten before the operator confirms -- a wider
+    // `allow` list the operator never saw and never reviewed.
+    let changed_contents = r#"{"allow": ["read:*", "write:*"]}"#;
+    std::fs::write(&path, changed_contents).expect("simulate a concurrent rewrite");
+
+    let gate = RecordingGate::new();
+    let conway = build_conway_with_builtins(
+        base_config_at(project.path()),
+        scripted_backend(vec![
+            ScriptedTurn::Respond(read_call_response(&fixture_path)),
+            ScriptedTurn::Respond(text_response("done")),
+        ]),
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    // Confirm trusts the PREVIEWED bytes, not whatever is on disk now.
+    let report = conway
+        .trust_permission_file_bytes(
+            &env,
+            &path,
+            &previewed_contents,
+            PermissionScope::Session,
+            agent,
+        )
+        .expect("trusting the previewed bytes succeeds");
+    assert_eq!(
+        report.installed, 1,
+        "only the previewed file's ONE rule (`read:*`) may install -- the \
+         changed file's extra `write:*` rule was never shown to the operator \
+         and must not be counted, let alone installed: {report:?}"
+    );
+
+    run_one_scripted_call(&conway).await;
+    assert!(
+        gate.requests().is_empty(),
+        "the previewed `read:*` rule must still take effect for the read \
+         call: {:?}",
+        gate.requests()
+    );
+
+    let trust_store = conway::config::trust::TrustStore::load(&env);
+    assert!(
+        trust_store.is_trusted(&path, &previewed_contents),
+        "the trust record must cover the PREVIEWED bytes"
+    );
+    assert!(
+        !trust_store.is_trusted(&path, changed_contents),
+        "the trust record must NOT cover the CHANGED bytes that landed on \
+         disk between preview and confirm -- the operator consented to the \
+         bytes shown, not to whatever is on disk a moment later"
+    );
+
+    // The changed file on disk must re-arm the untrusted-project notice on
+    // the next load, exactly as an ordinary post-trust edit already does
+    // (`editing_a_trusted_project_files_content_de_trusts_it`, below) --
+    // the operator never consented to THESE bytes, so they get no more
+    // effect than an untrusted file ever gets.
+    let report =
+        conway.load_permission_files(project.path(), &env, PermissionScope::Session, agent);
+    assert_eq!(
+        report.notices.len(),
+        1,
+        "the file now on disk differs from what was trusted, so it must be \
+         reported as requiring a fresh trust decision: {:?}",
+        report.notices
+    );
+}
+
 /// Editing a trusted project file's content silently de-trusts it -- no
 /// modal, just the rule reverting to requiring the gate again, driven
 /// through the same two real calls (`load_permission_files` after a `git

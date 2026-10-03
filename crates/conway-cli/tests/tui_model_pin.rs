@@ -60,6 +60,7 @@ use common::{run_conway, write_fixture};
 fn minimal_cli() -> Cli {
     Cli {
         print: None,
+        image: Vec::new(),
         output_format: OutputFormat::Text,
         allowed_tools: Vec::new(),
         deny_tools: Vec::new(),

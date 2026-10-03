@@ -1376,6 +1376,44 @@ conway: error: failed to load provider profiles from ./.conway/profiles.toml: ..
   unknown field `sends_paralel_tool_calls`, expected one of `id`, `chat_path`, ...
 ```
 
+### Vision: attaching an image
+
+A role's resolved model declares whether it accepts an image the same way
+it declares `reasoning`: a `[[model]]` entry in a metadata file (or
+conway's own bundled defaults) may set `vision = true` or `vision = false`.
+Unlike `reasoning`, an entry that says nothing at all about `vision` is
+**not** the same as `vision = false` — most `models.json`/metadata entries
+will never mention it, and treating silence as "no" would refuse an image
+to a model that may well take one fine. So:
+
+- `vision = true`: the model is declared vision-capable. An image always
+  reaches it.
+- `vision = false`: the model is declared explicitly NOT vision-capable.
+  Attaching an image to a turn routed to a role whose every chain candidate
+  declares this refuses at admission, naming the model and the reason — a
+  `no candidate for role ...` error whose per-candidate detail reads
+  `vision: required, model declares it does not support images`, the same
+  shape every other capability-floor rejection already uses.
+- Undeclared (the common case): the image is sent anyway, and a provider
+  that genuinely cannot take it answers its own rejection as an ordinary
+  backend error — the same "send, and let an unknown capability's own
+  refusal name itself" choice this doc's own ["Turning reasoning
+  up"](#turning-reasoning-up-reasoning_effort-and-think) section already
+  made for an Ollama model with no declared `reasoning`.
+
+`roles.<alias>.vision = true` in `settings.json` additionally narrows a
+role's own chain to vision-declared-or-undeclared candidates ahead of any
+single turn ever attaching an image — a static floor, independent of (and
+combined with, never weaker than) the dynamic per-turn requirement the
+runtime adds the moment an assembled turn actually carries an image.
+
+Attaching an image is a TUI (Ctrl-V/file-path) or one-shot (`--image
+<path>`, repeatable) concern — see
+[interactive.md](interactive.md#attaching-an-image) and
+[scripting.md](scripting.md#attaching-an-image---image) for how to attach
+one; this section only covers how a candidate's own declared support is
+read.
+
 ### Adding a provider variant
 
 One procedure adds a provider variant to *either* family — the field

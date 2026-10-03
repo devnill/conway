@@ -57,6 +57,7 @@ use tokio_util::sync::CancellationToken;
 
 fn caps_ok() -> Capabilities {
     Capabilities {
+        vision: None,
         tool_calling: ToolCallSupport::Streaming { validated: true },
         cache: CacheMode::None,
         parallel_tool_calls: true,
