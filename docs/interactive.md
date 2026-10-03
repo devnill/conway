@@ -114,7 +114,7 @@ while you're composing:
 | `Ctrl-G` | Edit the current input in `$VISUAL`/`$EDITOR` (falling back to `vi`) — see "Keybindings" below. |
 | `Home` / `End` | With the input box empty, jump the transcript to the top/tail instead of moving the cursor. |
 | `PageUp` / `PageDown` | Scroll the transcript a page at a time. |
-| `Ctrl-C` | Abort the session's current reply, in place — the session stays live, and it accepts and answers your next message normally. Pressed with nothing running, it does nothing destructive at all (just a quiet notice that a second press is what quits). Also abandons an in-flight `/ask`, if one is running — see below. |
+| `Ctrl-C` | Abort the session's current reply, in place — the session stays live, and it accepts and answers your next message normally. Pressed with nothing running, it does nothing destructive at all (just a quiet notice that a second press is what quits). Also abandons an in-flight `/ask` or `/distill`, if one is running — see below. |
 | `Ctrl-D` | Quit, when the input box is empty. |
 | `@` + a few letters | Open a file-mention completion list — see "Mentioning files," below. |
 | `Tab` | Inside an open mention list, insert the highlighted candidate; otherwise, complete the path-shaped word under the cursor. |
@@ -696,6 +696,8 @@ anything else.
 | Command | Usage | Effect |
 | --- | --- | --- |
 | `/ask` | `/ask <text>` | Ask an ephemeral fork a side question — it doesn't affect the live session. While it's in flight, the `activity` status field shows `⠋ asking… Ns`, same as an ordinary turn; `Ctrl-C` abandons it (cancels the child and, if it's stuck waiting on a tool permission decision, discards that prompt too — nothing is left running). Once it answers, the reply opens in its own modal; choose to fork it into a real session, pull the Q&A into your transcript, or discard it. Pulling it in appends the question and answer to your transcript immediately, live — no restart or `/resume` needed — with a marker line naming the ask it came from, so a merged exchange is never mistaken for one you typed yourself. |
+| `/new` | `/new` | End this session cleanly and start a fresh one in its place — see "`/new` and `/distill`: shrinking a conversation, out loud" below. |
+| `/distill` | `/distill [<instructions>]` | Fork the focused agent, distill a briefing for a fresh agent, and show it before spawning one — see "`/new` and `/distill`: shrinking a conversation, out loud" below. |
 | `/agents` | `/agents` | Toggle the below-chat agent-tree panel. |
 | `/settings` | `/settings` | Open the settings menu (display preferences, permission mode, and grant management). |
 | `/plugin` | `/plugin` | List every plugin conway can run today — compiled-in, subprocess, and MCP — each row naming where it came from and what it contributes. |
@@ -723,6 +725,67 @@ typing `/` — the `/` palette is generated from the same command table this
 page's own list is, so the two cannot drift apart the way they once did
 (board item `01M0RW29F2ATVGCV0R8H0GQEYH`: `/trust` and `/tree` used to work
 while being absent from the palette).
+
+### `/new` and `/distill`: shrinking a conversation, out loud
+
+conway has no `/compact` and never will — nothing in a session is summarized
+or rewritten behind your back (see "What conway deliberately will not do" in
+[`GUIDE.md`](../GUIDE.md)). PHILOSOPHY.md's own §3 names the move it
+recommends instead for a conversation that has grown heavy: "fork → distill
+the part that matters → spawn a clean child with that briefing." That chain
+is partial inheritance, built rather than configured — the reduction ends up
+as an artifact you can read before you commit to it. `/new` and `/distill`
+are that move, made into two typed verbs, the same liberty `/ask` already
+took over the identical primitives for usability.
+
+**`/new`** is the plain one: it ends the current session and starts a fresh
+one in its place, same cwd, same role/model. Nothing is deleted — the old
+session stays exactly as it was, still listed by `conway sessions list` and
+still resumable with `/resume <id>`, and a notice names its id the moment
+`/new` finishes. A queued message (`busy_input = queue`), a `!` shell command,
+a `/distill`, an `/ask`, or a skill proposal still in flight refuses `/new`
+outright, naming what's in the way, rather than silently discarding or
+orphaning it; an agent turn in flight is aborted first (the same non-terminal
+abort `Ctrl-C`'s first press uses — see "Typing while the agent works,"
+above), not refused, since stopping the reply is the whole point of starting
+over. What resets is the conversation — transcript, queues, focus, and any
+permission you granted for that session only. Your configuration carries
+over: keybindings, input history, `busy_input`, the status line, display
+toggles, permission mode and rules, and the "project config ignored" marker.
+`/resume` keeps the same set.
+
+**`/distill [<instructions>]`** is the fork-then-brief move. It forks the
+*focused* agent (ephemeral, exactly like `/ask`), and runs one directed turn
+asking that fork to write a briefing covering the task, the decisions already
+made and why, the open questions, and the files that matter — enough that a
+fresh agent with none of this conversation's history needs nothing else to
+start. `<instructions>`, if given, steers what the briefing should focus on,
+the same way free text steers a `/fork`. The fork is bounded (20 steps, 180
+seconds) — a reflection that goes sideways cannot spend an unbounded number
+of tokens before the briefing even appears. `Ctrl-C` abandons an in-flight
+`/distill` — the same way it already abandons an in-flight `/ask` — and if
+the fork's briefing still arrives afterward, it is silently dropped rather
+than popping its modal over a `/distill` you already gave up on.
+
+Once the briefing is ready, it opens in its own modal with three ways out:
+
+- **`Enter`** spawns a brand-new agent and delivers the briefing as its
+  opening prompt, then switches this TUI onto it — a notice reports the cost
+  of the move: the old agent's context size versus the new agent's, in
+  tokens. `/context` on the fresh agent shows exactly what it started with:
+  the briefing, and nothing of the old transcript.
+- **`e`** opens the briefing in `$EDITOR` first (the same editor path
+  `Ctrl-G` and the skill-proposal modal already use) — the edited text is
+  what `Enter` then delivers.
+- **`Esc`** discards the briefing. Nothing is spawned; the fork (already an
+  ephemeral, throwaway child by this point) leaves no residue.
+
+The old agent and its session are untouched either way — still forkable,
+still resumable — `/distill` only ever adds a new one.
+
+Neither verb ever runs on its own: there is no "at 90% we distill for you,"
+and no automatic trigger of either command. You type `/new` or `/distill`,
+or you don't — nothing about either chain happens behind your back.
 
 ### `/context`: the summary header and the preamble section
 

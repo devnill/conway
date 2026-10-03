@@ -74,8 +74,8 @@ use ratatui::Frame;
 
 use super::state::{
     AddProviderContextWindowState, AddProviderCredentialState, AppState, AskModal,
-    DenyFeedbackState, EditingPatternState, EditingShellPrefixState, IntentConfirm, Mode,
-    SkillProposalModal, TrustPreviewCard, UiFormState,
+    DenyFeedbackState, DistillModal, EditingPatternState, EditingShellPrefixState, IntentConfirm,
+    Mode, SkillProposalModal, TrustPreviewCard, UiFormState,
 };
 pub use theme::Theme;
 
@@ -247,6 +247,13 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
         draw_skill_proposal(frame, areas.transcript, modal, state.modal_scroll, theme);
     }
 
+    // `/distill` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): the eighth
+    // surface in the SAME never-stack family every branch above this one
+    // belongs to.
+    if let Mode::Distill(modal) = &state.mode {
+        draw_distill(frame, areas.transcript, modal, state.modal_scroll, theme);
+    }
+
     // T7: the `/help` keybinding overlay is NOT a `Mode` variant (see
     // `AppState::help_open`'s own doc) -- it is gated on `Mode::Normal`
     // here instead, which is exactly how it avoids ever stacking on top of
@@ -398,6 +405,7 @@ fn layout(state: &AppState, area: Rect) -> Areas {
                 | Mode::TrustPreview(_)
                 | Mode::UiForm(_)
                 | Mode::SkillProposal(_)
+                | Mode::Distill(_)
         )
         && area.height > input_height + STATUS_HEIGHT + 3;
 
@@ -1252,6 +1260,69 @@ fn draw_skill_proposal(
         "[enter] write  [e] edit  [esc] discard  [PageUp/PageDown] scroll"
     } else {
         "[enter] write  [e] edit  [esc] discard"
+    };
+    let error_line = match &modal_state.error {
+        Some(err) => Line::from(Span::styled(format!("error: {err}"), theme.error)),
+        None => Line::from(""),
+    };
+    let footer_lines = vec![Line::from(hint), error_line];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
+/// Rows the `/distill` modal's footer ALWAYS reserves -- mirrors
+/// [`SKILL_PROPOSAL_FOOTER_ROWS`] exactly (this modal, like the
+/// skill-proposal one, has a real in-modal error state: a failed spawn keeps
+/// it open with the error shown, via `AppState::fail_distill`).
+const DISTILL_FOOTER_ROWS: u16 = 2;
+
+/// `/distill`'s own modal (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`):
+/// bottom-anchored, content-sized, capped, via the shared [`modal`]
+/// primitive -- following [`draw_skill_proposal`]'s precedent exactly. Shows
+/// the distilled briefing a forked, now-already-purged child wrote; the
+/// footer shows the three decision keys -- `[enter] spawn  [e] edit  [esc]
+/// discard` -- and, after a FAILED spawn, the error that kept the modal open
+/// (red), mirroring [`draw_skill_proposal`]'s footer shape exactly.
+fn draw_distill(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    modal_state: &DistillModal,
+    scroll: u16,
+    theme: &Theme,
+) {
+    let mut body_lines = vec![
+        Line::from(Span::styled("briefing for a fresh agent", theme.emphasized)),
+        Line::from(""),
+    ];
+    body_lines.extend(
+        modal_state
+            .briefing
+            .split('\n')
+            .map(|line| Line::from(line.to_string())),
+    );
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        DISTILL_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " DISTILL ",
+        theme.border_accent,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[enter] spawn  [e] edit  [esc] discard  [PageUp/PageDown] scroll"
+    } else {
+        "[enter] spawn  [e] edit  [esc] discard"
     };
     let error_line = match &modal_state.error {
         Some(err) => Line::from(Span::styled(format!("error: {err}"), theme.error)),

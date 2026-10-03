@@ -193,7 +193,23 @@ impl AgentResult {
     pub fn is_terminal_success(&self) -> bool {
         matches!(self.status, ResultStatus::Completed)
     }
+
+    /// `true` when [`Self::summary`] carries something the agent actually
+    /// said: neither blank nor the runtime's synthesized
+    /// [`NO_OUTPUT_SUMMARY_PREFIX`] placeholder. A caller that feeds the
+    /// summary onward as content (the TUI's `/distill` briefing) checks
+    /// this rather than `summary.is_empty()`, which the placeholder defeats.
+    pub fn has_output(&self) -> bool {
+        let summary = self.summary.trim();
+        !summary.is_empty() && !summary.starts_with(NO_OUTPUT_SUMMARY_PREFIX)
+    }
 }
+
+/// The opening of the summary the runtime synthesizes for an agent that
+/// finished with no trailing text and no `report` call, so its result still
+/// says so explicitly. One definition, shared by the producer and by
+/// [`AgentResult::has_output`], so the two cannot drift.
+pub const NO_OUTPUT_SUMMARY_PREFIX: &str = "(no output; terminal status: ";
 
 /// Truncate `s` to at most `max_chars` `char`s, cutting only on a character
 /// boundary. No-op if `s` already has `max_chars` or fewer `char`s.
@@ -1268,6 +1284,22 @@ mod tests {
             "",
         );
         assert!(!failed.is_terminal_success());
+    }
+
+    #[test]
+    fn has_output_rejects_blank_and_the_no_output_placeholder() {
+        let with = |summary: &str| {
+            AgentResult::new(
+                AgentId::new(),
+                SessionId::new(),
+                ResultStatus::Completed,
+                summary,
+            )
+        };
+        assert!(with("a real briefing").has_output());
+        assert!(!with("").has_output());
+        assert!(!with("  \n ").has_output());
+        assert!(!with(&format!("{NO_OUTPUT_SUMMARY_PREFIX}completed)")).has_output());
     }
 
     #[test]

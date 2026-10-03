@@ -48,11 +48,14 @@ mod await_cmd;
 mod busy_input;
 mod checkpoint_focus;
 mod defaults;
+mod distill;
 mod editor;
 mod exit_guard;
 mod focus;
 mod marketplace;
 mod mention_scan;
+#[cfg(test)]
+mod new_session;
 mod plugin_cmd;
 mod plugin_status;
 mod plugin_toggle;
@@ -69,6 +72,7 @@ mod viewport;
 pub(super) mod fixtures;
 
 use ask::AskUpdate;
+use distill::DistillDone;
 use plugin_cmd::PluginCommandDone;
 use shell_cmd::Bang;
 use skill_propose::SkillProposeDone;
@@ -128,6 +132,12 @@ pub struct App {
     /// awaited inline.
     skill_propose_tx: mpsc::UnboundedSender<SkillProposeDone>,
     skill_propose_rx: Option<mpsc::UnboundedReceiver<SkillProposeDone>>,
+    /// Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`: mirrors `skill_propose_tx`/
+    /// `skill_propose_rx` exactly, same reasoning -- see `app/distill.rs`'s
+    /// own module doc for why `/distill`'s ephemeral fork+await is spawned
+    /// off this loop rather than awaited inline.
+    distill_tx: mpsc::UnboundedSender<DistillDone>,
+    distill_rx: Option<mpsc::UnboundedReceiver<DistillDone>>,
     /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: mirrors `plugin_cmd_tx`/
     /// `plugin_cmd_rx` exactly, same reasoning, for the providers section's
     /// own background classification -- see `provider_status.rs`'s own
@@ -532,6 +542,16 @@ impl App {
                             self.refresh_session_head().await;
                             return Ok(SubmitOutcome::Resubscribe);
                         }
+                        // `/new` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`):
+                        // identical follow-up to `Effect::Resumed` just
+                        // above -- see that variant's own doc for why this
+                        // is a separate `Effect` variant carrying the
+                        // identical payload rather than a reuse.
+                        Effect::NewSession(handle) => {
+                            self.handle = handle;
+                            self.refresh_session_head().await;
+                            return Ok(SubmitOutcome::Resubscribe);
+                        }
                         Effect::FocusNewSession {
                             child,
                             parent,
@@ -584,6 +604,19 @@ impl App {
                         // own doc and `Self::spawn_skill_propose`'s.
                         Effect::RunSkillPropose { root } => {
                             self.spawn_skill_propose(root);
+                        }
+                        // `/distill` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`):
+                        // `execute`'s `SlashCommand::Distill` arm has
+                        // already validated and set `state.
+                        // distill_in_flight` -- THIS is where the actual
+                        // `tokio::spawn` runs, mirroring `RunSkillPropose`'s
+                        // own arm exactly. See `Effect::RunDistill`'s own
+                        // doc and `Self::spawn_distill`'s.
+                        Effect::RunDistill {
+                            parent,
+                            instructions,
+                        } => {
+                            self.spawn_distill(parent, instructions);
                         }
                         // Board item `01M0WB5W5DX844HSJQG3JP23X0`: `execute`
                         // cannot reach `App::apply_marketplace_install`
@@ -970,6 +1003,147 @@ mod tests {
             Some(other_head),
             "resuming must read back the RESUMED session's own head, not leave it None or \
              stale"
+        );
+    }
+
+    /// Review finding (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`, finding 6):
+    /// `/resume`'s own hand-rolled carry-across used to be
+    /// `agent_names`/`plugin_commands`/`plugin_status_contributions` only,
+    /// silently dropping `AppState::grants_path` (and its `permission_mode`/
+    /// `permission_paths`/configured-deny-rule siblings) along with it --
+    /// `app/run.rs::persist_permission_rule`'s own doc: "early-returns when
+    /// `grants_path` is `None`" -- so a "remember this" grant answered after
+    /// `/resume` would silently stop being written to disk. Same "real
+    /// `App::submit`, two `Conway`s sharing one `FakeStore`" shape as
+    /// `resuming_a_session_refreshes_its_own_head_seq` immediately above,
+    /// proving `AppState::reset_for_new_session` closes the gap for
+    /// `/resume` too, not just `/new`. Mirrors `new_session.rs`'s own
+    /// `new_carries_grants_path_and_configured_permission_rules_forward`,
+    /// including its negative half: a session-scoped allow grant must NOT
+    /// survive.
+    #[tokio::test]
+    async fn resume_carries_grants_path_and_configured_permission_rules_forward() {
+        let (conway, store) = echo_conway_and_store();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let other_sid = {
+            let other_conway = echo_conway_over(store.clone());
+            let other = other_conway
+                .new_session(conway::SessionSpec::default())
+                .await
+                .expect("new_session should succeed");
+            let sid = other.id();
+            other
+                .prompt("hello")
+                .await
+                .expect("prompt should not error")
+                .text()
+                .await
+                .expect("turn should complete");
+            sid
+        };
+
+        let grants_path = std::path::PathBuf::from("/tmp/conway-test-grants.json");
+        let permission_path = std::path::PathBuf::from("/tmp/conway-test-permissions.json");
+        app.state.grants_path = Some(grants_path.clone());
+        app.state.permission_mode = conway::PermissionMode::Plan;
+        app.state.permission_paths = vec![permission_path.clone()];
+        app.state.permission_denies = vec![(
+            conway::PatternRule::parse("bash:rm -rf *").expect("valid rule"),
+            conway::PatternOrigin::File(permission_path.clone()),
+        )];
+        app.state.permission_grants = vec![(
+            conway::PatternRule::parse("bash:git status").expect("valid rule"),
+            conway::PatternOrigin::Interactive,
+        )];
+
+        // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG` (round 2, widened): the
+        // same ruling applies to every other field `App::new` configures
+        // once from config/CLI/environment and never recomputes -- see
+        // `AppState::reset_for_new_session`'s own doc for the full set, and
+        // `new_session.rs`'s own identical additions to its `/new` sibling.
+        let keybindings_dir = tempfile::tempdir().expect("tempdir");
+        let keybindings_path = keybindings_dir.path().join("keybindings.json");
+        std::fs::write(
+            &keybindings_path,
+            r#"{"prompt": {"open_editor": ["Ctrl-T"]}}"#,
+        )
+        .expect("write keybindings.json");
+        app.state.keybindings = crate::tui::keybindings::Keymap::load(&keybindings_path)
+            .expect("the hand-written keybindings.json must parse");
+        app.state.busy_input = crate::tui::config::BusyInputMode::Steer;
+        app.state.history =
+            std::collections::VecDeque::from(vec!["an old-session history entry".to_string()]);
+        app.state.status_line_config.fields = vec!["cwd".to_string()];
+        app.state.project_config_ignored = true;
+        app.state.transcript.push(Entry::Notice {
+            text: "SECRET_OLD_TRANSCRIPT_ENTRY".to_string(),
+        });
+
+        app.submit(format!("/resume {other_sid}"))
+            .await
+            .expect("submit should not error");
+
+        assert_eq!(
+            app.state.grants_path,
+            Some(grants_path),
+            "grants_path must survive /resume -- otherwise persist_permission_rule silently \
+             stops writing any grant for the rest of the process"
+        );
+        assert_eq!(app.state.permission_mode, conway::PermissionMode::Plan);
+        assert_eq!(app.state.permission_paths, vec![permission_path.clone()]);
+        assert_eq!(
+            app.state.permission_denies,
+            vec![(
+                conway::PatternRule::parse("bash:rm -rf *").expect("valid rule"),
+                conway::PatternOrigin::File(permission_path),
+            )],
+            "a configured (file-sourced) deny rule must survive /resume"
+        );
+        assert!(
+            app.state.permission_grants.is_empty(),
+            "a session-scoped allow grant must NOT survive /resume -- it belonged to the old \
+             session: {:?}",
+            app.state.permission_grants
+        );
+        assert_eq!(
+            app.state
+                .keybindings
+                .keys_for(crate::tui::keybindings::Context::Prompt, "open_editor"),
+            vec!["Ctrl-T".to_string()],
+            "the loaded keybindings table must survive /resume"
+        );
+        assert_eq!(
+            app.state.busy_input,
+            crate::tui::config::BusyInputMode::Steer,
+            "the busy_input display preference must survive /resume"
+        );
+        assert!(
+            app.state
+                .history
+                .contains(&"an old-session history entry".to_string()),
+            "input history must survive /resume: {:?}",
+            app.state.history
+        );
+        assert_eq!(
+            app.state.status_line_config.fields,
+            vec!["cwd".to_string()],
+            "the status-line config must survive /resume"
+        );
+        assert!(
+            app.state.project_config_ignored,
+            "the project-config-ignored security marker must survive /resume"
+        );
+        assert!(
+            app.state.transcript.iter().all(|e| !matches!(
+                e,
+                Entry::Notice { text } if text == "SECRET_OLD_TRANSCRIPT_ENTRY"
+            )),
+            "the OLD session's own transcript must NOT survive /resume: {:?}",
+            app.state.transcript
         );
     }
 

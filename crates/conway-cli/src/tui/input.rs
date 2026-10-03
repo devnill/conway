@@ -15,7 +15,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::keybindings::Context;
 use super::state::{
-    AppState, AskFate, IntentChoice, Mode, SkillProposalFate, TrustDecision, UiFormDecision,
+    AppState, AskFate, DistillFate, IntentChoice, Mode, SkillProposalFate, TrustDecision,
+    UiFormDecision,
 };
 
 /// What a keypress means for the app loop to carry out.
@@ -222,6 +223,18 @@ pub enum Action {
     /// `content` and applies the result via `AppState::
     /// apply_skill_proposal_edit`.
     SkillProposalEdit,
+    /// Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`: a decision key was pressed
+    /// while the `/distill` modal was open (`Enter` spawn / `Esc` discard).
+    /// The app loop runs `App::spawn_from_distill`/`AppState::close_distill`;
+    /// this module only reports which fate was chosen -- mirrors
+    /// `SkillProposalFate` exactly.
+    DistillFate(DistillFate),
+    /// `e` was pressed while the `/distill` modal was open -- the ONE key on
+    /// this modal that needs a live terminal, mirrors `SkillProposalEdit`
+    /// exactly. The app loop's own arm calls `editor::edit_prompt_externally`
+    /// against the modal's current `briefing` and applies the result via
+    /// `AppState::apply_distill_edit`.
+    DistillEdit,
     /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: `Enter` on the settings
     /// providers section's own `add_provider:<id>` leaf -- carries the
     /// chosen [`crate::first_run::ProviderChoice::id`] (never the whole
@@ -402,6 +415,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::EditingDenyFeedback(_) => handle_deny_feedback_key(state, key),
         // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`).
         Mode::SkillProposal(_) => handle_skill_proposal_key(state, key),
+        // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`.
+        Mode::Distill(_) => handle_distill_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
 }
@@ -1037,6 +1052,50 @@ fn handle_skill_proposal_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Enter => Action::SkillProposalFate(SkillProposalFate::Write),
         KeyCode::Char('e') | KeyCode::Char('E') => Action::SkillProposalEdit,
         KeyCode::Esc => Action::SkillProposalFate(SkillProposalFate::Discard),
+        _ => Action::None,
+    }
+}
+
+/// The `/distill` modal's key handling (board item
+/// `01M1YVKQ6ABQDWYSA7CEF20WKG`): exactly three ways out -- `Enter` (spawn a
+/// fresh agent with the briefing), `e` (edit it in `$EDITOR` first), `Esc`
+/// (discard). Mirrors [`handle_skill_proposal_key`]'s shape exactly: every
+/// other key is SWALLOWED, the input line is inert, `/agents` is neither
+/// visible nor available, and the quit keys (`Ctrl-C`/`Ctrl-D`) still pass
+/// through as `Action::CtrlC`/`Action::Quit` -- quitting with the modal open
+/// IS the discard outcome (the ephemeral fork child that produced this
+/// briefing is ALREADY purged by the time this modal exists at all, see
+/// [`crate::tui::state::DistillModal`]'s own doc).
+///
+/// `e` only fires on a bare keypress -- a modifier held (Ctrl-E, Alt-E, ...)
+/// is NOT the edit choice, the same guard [`handle_skill_proposal_key`]
+/// applies.
+fn handle_distill_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
+    }
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
+    match key.code {
+        KeyCode::Enter => Action::DistillFate(DistillFate::Spawn),
+        KeyCode::Char('e') | KeyCode::Char('E') => Action::DistillEdit,
+        KeyCode::Esc => Action::DistillFate(DistillFate::Discard),
         _ => Action::None,
     }
 }
@@ -2532,7 +2591,7 @@ fn kill_to_line_end(state: &mut AppState) {
 
 #[cfg(test)]
 mod tests {
-    use conway::AgentId;
+    use conway::{AgentId, SessionId};
     use ratatui::layout::Rect;
 
     use super::*;
@@ -4663,6 +4722,98 @@ mod tests {
         // `SkillProposalModal`'s own doc) -- quitting here is a plain
         // discard, no purge-first special case the way `/ask`'s modal
         // needs.
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
+            Action::CtrlC
+        );
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('d'))),
+            Action::Quit
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`: the `/distill` modal's own
+    // key handling had zero coverage before this -- mirrors the
+    // `skill_proposal_*` tests immediately above exactly (`handle_distill_
+    // key`'s own doc: "mirrors `handle_skill_proposal_key`'s shape
+    // exactly").
+    // -----------------------------------------------------------------
+
+    fn distill_state() -> AppState {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_distill(crate::tui::state::DistillModal {
+            child: AgentId::new(),
+            briefing: "BRIEFING: the task is X.".to_string(),
+            old_session: SessionId::new(),
+            old_context_tokens: None,
+            error: None,
+        });
+        state
+    }
+
+    #[test]
+    fn distill_enter_e_esc_map_to_spawn_edit_discard() {
+        let mut state = distill_state();
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Enter)),
+            Action::DistillFate(DistillFate::Spawn)
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('e'))),
+            Action::DistillEdit,
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('E'))),
+            Action::DistillEdit,
+            "a capital E must also fire the edit action"
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Esc)),
+            Action::DistillFate(DistillFate::Discard)
+        );
+        // None of these keys close the modal themselves -- the app loop
+        // does (`App::spawn_from_distill`/`AppState::close_distill`).
+        assert!(matches!(state.mode, Mode::Distill(_)));
+    }
+
+    /// `e`/`Enter`/`Esc` only fire on a BARE keypress -- a modifier held
+    /// (Ctrl-E, Alt-Enter, ...) must not be mistaken for the choice, the
+    /// same B5 M2 guard every other modal-bearing surface's key handler
+    /// applies (`handle_distill_key`'s own doc).
+    #[test]
+    fn distill_edit_key_requires_no_modifier() {
+        let mut state = distill_state();
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('e'))),
+            Action::None
+        );
+        assert!(matches!(state.mode, Mode::Distill(_)));
+    }
+
+    #[test]
+    fn distill_swallows_text_and_palette_keys() {
+        let mut state = distill_state();
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('x'))),
+            Action::None
+        );
+        assert!(state.input.is_empty(), "the input line must stay inert");
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('/'))),
+            Action::None
+        );
+        assert!(state.input.is_empty());
+        assert!(matches!(state.mode, Mode::Distill(_)));
+    }
+
+    #[test]
+    fn distill_quit_keys_pass_through() {
+        let mut state = distill_state();
+        // The ephemeral fork child that produced this briefing is ALREADY
+        // purged by the time the modal exists at all (see `DistillModal`'s
+        // own doc) -- quitting here is a plain discard, no purge-first
+        // special case the way `/ask`'s modal needs.
         assert_eq!(
             handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
             Action::CtrlC

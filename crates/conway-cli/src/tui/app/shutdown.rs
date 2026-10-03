@@ -111,6 +111,12 @@ impl App {
         // its own "ask abandoned -- cleaning up" notice ahead of whatever
         // the root cancel below reports.
         self.abandon_ask().await;
+        // Review finding (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`, minor):
+        // a no-op when no `/distill` is in flight (`App::abandon_distill`'s
+        // own guard) -- mirrors `abandon_ask` immediately above, including
+        // being independent of it (both best-effort, both checked before
+        // the root-turn cancel below).
+        self.abandon_distill();
         // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: `abort_turn`, not
         // `cancel` -- stops only the root's current turn (if any), leaving
         // the agent itself, and the session, alive. `Ok(true)` means a live
@@ -268,6 +274,21 @@ impl App {
         // unbounded hang" posture the mechanical trigger's own lossy-
         // delivery decision already accepts elsewhere in this feature.
         let _ = self.state.take_pending_skill_proposal();
+        // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`: drain a parked `/distill`
+        // briefing on exit too, for the identical reason the skill proposal
+        // just above needs it -- there is no live child to purge (the
+        // ephemeral fork that produced this briefing is ALREADY purged, see
+        // `DistillModal`'s own doc), so quitting here IS the discard fate.
+        // A briefing currently LIVE in `Mode::Distill` needs no special
+        // handling either, mirroring `take_pending_skill_proposal`'s own
+        // doc. The same disclosed gap applies too: a distill fork still IN
+        // FLIGHT (`state.distill_in_flight`, no modal yet) has no
+        // `state.ask_child`-style handle this method could cancel; its own
+        // spawned task is bounded (`DISTILL_MAX_STEPS`/`DISTILL_DEADLINE_
+        // SECS`) and holds its own `Conway` clone, so it purges its
+        // ephemeral child and exits on its own schedule even after this
+        // method returns.
+        let _ = self.state.take_pending_distill();
         // Review round 1 (SIGNIFICANT finding 1, "orphaned child on
         // quit"): an in-flight `!` command's own process group, killed and
         // bound-awaited -- see `Self::kill_shell_command_for_quit`'s own

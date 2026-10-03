@@ -76,8 +76,8 @@ use std::sync::Arc;
 use conway::plugin::{Command, CommandCtx, ToolSpec};
 use conway::{
     AgentId, AgentIntent, ContextReport, Conway, Envelope, Event, ForkSpec, ModelRef,
-    PermissionScope, Provenance, RoleAlias, RoutingReason, SessionHandle, SessionId, SpawnSpec,
-    SubagentMode, ToolName, ToolSelector, TrustPermissionReport, TrustPreview, Usage,
+    PermissionScope, Provenance, RoleAlias, RoutingReason, SessionHandle, SessionId, SessionSpec,
+    SpawnSpec, SubagentMode, ToolName, ToolSelector, TrustPermissionReport, TrustPreview, Usage,
 };
 
 use super::form::PendingFormAsk;
@@ -282,6 +282,30 @@ pub enum SlashCommand {
     Ask {
         question: String,
     },
+    /// `/new` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): ends the current
+    /// interactive session cleanly (it stays resumable -- nothing is
+    /// deleted) and starts a fresh root session in place, same cwd, same
+    /// role/model pin. Takes no arguments -- `parse` rejects anything else
+    /// with `usage: /new (no arguments)`. The five refusals -- a non-empty
+    /// busy-input queue, a `!` shell command in flight, a `/distill` in
+    /// flight, an `/ask` in flight, and a skill proposal in flight (a later
+    /// review finding: each of these is a single-slot async flow whose
+    /// eventual reply has nowhere left to land once `AppState` is reset out
+    /// from under it) -- and the in-flight turn abort can only be
+    /// known/done at `execute` time (live `AppState`/`Host`), so none of
+    /// them is checked here.
+    New,
+    /// `/distill [<instructions>]` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`):
+    /// forks the focused agent (ephemeral, like [`SlashCommand::Ask`]) and
+    /// runs one directed turn distilling a briefing for a fresh agent;
+    /// `instructions`, when given, is the operator's own steer on what that
+    /// briefing should focus on, folded into the fork's fixed directive.
+    /// The ONE validation `parse` can do (none -- unlike `/ask`, an empty
+    /// argument is a valid, instruction-less `/distill`) leaves everything
+    /// else (a distill already in flight) to `execute`.
+    Distill {
+        instructions: Option<String>,
+    },
     /// `/quit` or its retired alias `/exit` (board item
     /// `01M1YVH1X49WYSQ9C2Z4D6B4XM`, "B3d"). `via_exit_alias` is `true` only
     /// when the operator typed `/exit`: [`execute`]'s own `Quit` arm reads
@@ -441,6 +465,17 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             usage: "/ask <text>",
             description: "ask an ephemeral fork a question (does not affect the live session)",
         },
+        SlashCommand::New => CommandSpec {
+            name: "/new",
+            usage: "/new",
+            description: "end this session cleanly (it stays resumable) and start a fresh one",
+        },
+        SlashCommand::Distill { .. } => CommandSpec {
+            name: "/distill",
+            usage: "/distill [<instructions>]",
+            description: "fork the focused agent, distill a briefing for a fresh agent, and \
+                           show it before spawning one",
+        },
         SlashCommand::Agents => CommandSpec {
             name: "/agents",
             usage: "/agents",
@@ -595,6 +630,8 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
         SlashCommand::Ask {
             question: String::new(),
         },
+        SlashCommand::New,
+        SlashCommand::Distill { instructions: None },
         SlashCommand::Agents,
         SlashCommand::Settings,
         SlashCommand::Plugins { action: None },
@@ -839,6 +876,19 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/ask" => {
             let question = parse_one_arg(rest, "/ask <text>")?;
             Ok(SlashCommand::Ask { question })
+        }
+        "/new" => {
+            parse_no_arg(rest, "/new")?;
+            Ok(SlashCommand::New)
+        }
+        "/distill" => {
+            let trimmed = rest.trim();
+            let instructions = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+            Ok(SlashCommand::Distill { instructions })
         }
         "/quit" => {
             parse_no_arg(rest, word)?;
@@ -1213,6 +1263,17 @@ pub enum Effect {
     /// swapped for this one and its event stream resubscribed (`execute`
     /// cannot do either itself: both live in the app loop, not here).
     Resumed(SessionHandle),
+    /// `/new` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`) succeeded -- a fresh
+    /// root session, already built by `execute`'s own `SlashCommand::New`
+    /// arm (it needed no live terminal/channel, only the `Host::new_session`
+    /// call that arm already made). The caller's active `SessionHandle` must
+    /// be swapped for this one and its event stream resubscribed -- the
+    /// IDENTICAL follow-up [`Self::Resumed`] already needs, carried as its
+    /// own variant (rather than reusing `Resumed`) only so a caller's own
+    /// `match` can tell "resumed a prior session" and "started a fresh one"
+    /// apart for logging/display if it ever needs to; today both arms do the
+    /// identical thing (`App::submit`'s own `Effect` match).
+    NewSession(SessionHandle),
     /// A bare/implicit `/spawn` or `/fork` succeeded (WI "bare /spawn &
     /// /fork open an interactive session"): `child` was created as a fresh,
     /// interactive KEEP-ALIVE session and must be auto-focused by the app
@@ -1307,6 +1368,22 @@ pub enum Effect {
     /// `CommandCtx`-equivalent identity (`host.root()`), captured here
     /// rather than re-read inside the spawned task.
     RunSkillPropose { root: AgentId },
+    /// `/distill [<instructions>]` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`)
+    /// validated -- `execute` has already refused it when a `/distill` is
+    /// already in flight and has set `state.distill_in_flight`. **`execute`
+    /// never spawns the task itself** -- the same reasoning
+    /// [`Self::RunSkillPropose`]'s own doc gives: forking the ephemeral
+    /// child and draining its turn needs the live `SessionHandle`/`Conway`/
+    /// `distill_tx`, none of which `Host`/`execute` has. The caller
+    /// (`App::submit`, via `App::spawn_distill`) does the actual
+    /// `tokio::spawn`. `parent` is the FOCUSED agent (`AppState::
+    /// focused_agent`, captured here rather than re-read inside the spawned
+    /// task) -- unlike `/ask`/`/conway.skills.propose` (always the root),
+    /// `/distill` forks whichever agent the operator is actually looking at.
+    RunDistill {
+        parent: AgentId,
+        instructions: Option<String>,
+    },
     /// `/plugin install <url> <id>` validated -- **`execute` never fetches
     /// anything itself.** `App::apply_marketplace_install` needs `env`
     /// (to resolve `settings.json`'s path via `CONWAY_CONFIG_DIR`) and
@@ -1458,6 +1535,33 @@ pub trait Host {
     /// that test fail against a naive inline-await implementation and pass
     /// against the real one).
     async fn await_agent(&self, target: AgentId) -> conway::Result<conway::AgentResult>;
+    /// `/new` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): a thin passthrough
+    /// to `SessionHandle::abort_turn` on this session's own root, the SAME
+    /// primitive `app/shutdown.rs::App::handle_ctrl_c`'s first press already
+    /// uses -- see that method's own doc for why `abort_turn`, not `cancel`,
+    /// is the non-terminal "stop the current reply, keep the session alive"
+    /// operation. `execute`'s `SlashCommand::New` arm calls this BEFORE
+    /// starting the fresh session, so an in-flight reply is stopped rather
+    /// than left to run on, orphaned, against a session the operator has
+    /// already left. Routed through this trait like every other facade call
+    /// so that arm's validation is unit-testable against `tests::FakeHost`.
+    /// `Ok(true)` means a live turn was actually aborted; `Ok(false)` means
+    /// the root was already idle (nothing to abort) -- both are success,
+    /// never surfaced as an error.
+    async fn abort_turn(&self, target: AgentId, reason: String) -> conway::Result<bool>;
+    /// `/new` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): a thin passthrough
+    /// to `Conway::new_session` -- the SAME construction primitive
+    /// `tui/app/startup.rs::App::session_spec`'s own flag-free path already
+    /// uses to open the TUI's very first session, reused here to start a
+    /// completely fresh one in place. Routed through this trait like every
+    /// other facade call so `execute`'s `SlashCommand::New` arm is
+    /// unit-testable against a fake -- mirroring [`Self::resume`]'s own
+    /// disclosed limitation: `tests::FakeHost` has no public
+    /// `SessionHandle` constructor to return from here either, so that fake
+    /// can only ever exercise the call-count/error-propagation half; the
+    /// SUCCESS half is proven at the `App` level, against a real `Conway`
+    /// (see `tui/app/new_session.rs`'s own tests).
+    async fn new_session(&self, spec: conway::SessionSpec) -> conway::Result<SessionHandle>;
     /// Board item `01M1YS4FMJH004D1Y619MTBY7A`: resolves `/resume
     /// <id|name>`'s raw argument exactly the way `--resume` does
     /// (`crate::session_names::resolve`) -- a bare ULID resolves with no
@@ -1702,6 +1806,14 @@ impl Host for LiveHost<'_> {
 
     async fn await_agent(&self, target: AgentId) -> conway::Result<conway::AgentResult> {
         self.handle.await_agent(target).await
+    }
+
+    async fn abort_turn(&self, target: AgentId, reason: String) -> conway::Result<bool> {
+        self.handle.abort_turn(target, &reason).await
+    }
+
+    async fn new_session(&self, spec: conway::SessionSpec) -> conway::Result<SessionHandle> {
+        self.conway.new_session(spec).await
     }
 
     async fn resolve_session_ref(&self, raw: &str) -> conway::Result<SessionId> {
@@ -2321,6 +2433,49 @@ pub async fn apply_model_switch<H: Host>(model: String, state: &mut AppState, ho
     }
 }
 
+/// `/new`'s own [`SessionSpec`] (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`):
+/// mirrors `tui/app/startup.rs::App::session_spec`'s flag-free construction
+/// exactly -- same `keep_alive: true` (a second chat message must run a
+/// turn, not silently no-op -- that field's own doc), same "pure and light"
+/// tool profile (`Except(["report"])`: an interactive chat root has no
+/// parent to `report` to). `cwd`/`agent_def` are left `None`, so `Conway::
+/// new_session` resolves them from its own `ConwayConfig` exactly as the
+/// TUI's very first session did -- the SAME cwd this process is already
+/// running in.
+///
+/// **Role/model come from `state.role_pin`/`state.model_pin`, not from a
+/// live `Event::ModelDecision`-derived value.** Those two fields are
+/// exactly "the pin this session started with" (`App::new`'s own doc: set
+/// from `cli.role_override`/`--model` once, at construction, independent of
+/// any turn ever completing) -- the stable, display-ready source `/model`/
+/// `/role`'s own bare forms already read for the SAME reason: a fresh
+/// session that has not yet run a turn has no `Event::ModelDecision` to
+/// derive a live value from. A malformed `model_pin` string (never expected
+/// in practice -- it round-tripped through the SAME `ModelRef` parser that
+/// validated it when the CURRENT session started) degrades to `None` here
+/// rather than refusing `/new` outright, mirroring `App::new`'s own
+/// `.ok().flatten()` degrade for the identical field.
+fn new_session_spec(state: &AppState) -> SessionSpec {
+    SessionSpec {
+        role: state.role_pin.clone().map(RoleAlias::new),
+        model: state
+            .model_pin
+            .as_deref()
+            .and_then(|m| m.parse::<ModelRef>().ok()),
+        keep_alive: true,
+        tools: Some(ToolSelector::Except(vec!["report".into()])),
+        ..SessionSpec::default()
+    }
+}
+
+// The former `CarriedConfiguration` snapshot/restore pair that used to live
+// here (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`'s first pass) is gone --
+// superseded by the wider, compiler-enforced `AppState::reset_for_new_
+// session` (see that method's own doc for the full CARRY/RESET
+// classification and the review finding that widened it past this
+// hand-picked 12-field allowlist). Both call sites below now share that one
+// funnel instead.
+
 /// Resolves and reattaches to `sid` (a raw id or a `conway.names` name) --
 /// the ONE function `execute`'s `SlashCommand::Resume { sid: Some(_) }` arm
 /// and `app/run.rs`'s `Action::UiFormDecision` dispatch (bare `/resume`'s
@@ -2348,44 +2503,27 @@ pub async fn apply_resume<H: Host>(sid: String, state: &mut AppState, host: &H) 
                 // a NEW mapping, not a reuse of `conway::SessionHandle`'s
                 // `record_to_event`).
                 //
-                // the installed
-                // plugin command list is process-lifetime configuration
-                // (which plugins were installed at startup), not
-                // session-scoped state -- `AppState::new` seeds it empty
-                // (every OTHER field reset here genuinely IS
-                // session-scoped), so it is carried across the reset by
-                // hand, the one field `/resume` intentionally does not
-                // clear.
-                // The installed agent-name store is carried across for the
-                // identical reason (board item `01M0TV5BSE98S16SFYECG9G9WP`):
-                // which plugins this process installed is startup
-                // configuration, not session state, so `/resume` must not
-                // silently strip `/steer <name>` of its ability to resolve.
-                // The NAMES themselves are per-agent and the resumed
-                // session has new agents, so nothing stale carries over --
-                // only the store handle does.
-                //
-                // The plugin status-contribution snapshot is carried across
-                // for the SAME reason as its two siblings above (board item
-                // `01M0XDEDBR5YDF71Q7ZRXYMT85`, closing the third link in
-                // the chain those two items opened): `Conway::
-                // plugin_status_contributions()` is a `Conway`-level,
-                // build-time value -- exactly as process-lifetime as
-                // `plugin_commands`/`agent_names`, not session-scoped state
-                // -- so `AppState::new`'s empty default is the wrong value
-                // to leave it at here. This does NOT make the snapshot
-                // live: it is still the same frozen, typically-empty value
-                // `App::new` copied once at TUI startup (see `AppState::
-                // plugin_status_contributions`'s own doc for the caveat,
-                // restated rather than silently dropped by this
-                // carry-across).
-                let agent_names = state.agent_names.clone();
-                let plugin_commands = state.plugin_commands.clone();
-                let plugin_status_contributions = state.plugin_status_contributions.clone();
-                *state = AppState::new(handle.root());
-                state.plugin_commands = plugin_commands;
-                state.agent_names = agent_names;
-                state.plugin_status_contributions = plugin_status_contributions;
+                // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG` (review finding,
+                // widened past its own original report): this used to be a
+                // hand-rolled carry-across that grew field by field over
+                // several board items (`plugin_commands`/`agent_names`/
+                // `plugin_status_contributions`, then `grants_path`/
+                // `permission_mode`/`permission_paths`/the configured
+                // deny-and-prompt rule mirrors) and still fell behind
+                // `AppState`'s own ~124 fields -- keybindings, `busy_input`,
+                // the status-line config, input history, and a dozen others
+                // configured once at `App::new` and never recomputed were
+                // silently reverted to bare defaults by every `/resume`
+                // before this. `AppState::reset_for_new_session` is the one,
+                // compiler-enforced funnel that replaces every version of
+                // that hand-rolled list -- see its own doc for the full
+                // CARRY/RESET classification, SHARED with `/new`'s own reset
+                // just above. Unlike `/new`, this arm does NOT re-apply
+                // `role_pin`/`model_pin` afterward: a resumed session already
+                // has its own established role/model, re-derived from ITS
+                // OWN `Event::ModelDecision` history once a turn replays, not
+                // from a pin a DIFFERENT prior session set.
+                state.reset_for_new_session(handle.root());
                 // Board item `01M1YS4FMJH004D1Y619MTBY7A`: draw this
                 // session's own history BEFORE the "resumed session" notice
                 // below, so the past reads as the past and the notice reads
@@ -3391,6 +3529,145 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 // is touched at all for this ask.
                 state.ask_started_at = Some(std::time::Instant::now());
                 Effect::RunModalAsk { question }
+            }
+        }
+        // `/new` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`). See
+        // `new_session_spec`'s own doc for why role/model are read off
+        // `state` rather than threaded in some other way, and this
+        // function's own doc for the two refusals (queued messages, a `!`
+        // command in flight) decided here, up front, before anything is
+        // aborted or built.
+        SlashCommand::New => {
+            let pending = state.held_prompts.len() + state.pending_steers.len();
+            if pending > 0 {
+                notice(
+                    state,
+                    format!(
+                        "{pending} queued message(s) pending -- /new refuses to start a fresh \
+                         session until they are delivered or discarded first (let the agent \
+                         finish, or /quit and relaunch if you want to discard them)"
+                    ),
+                );
+                return Effect::None;
+            }
+            if state.shell_in_flight {
+                notice(
+                    state,
+                    "a `!` command is still running -- /new refuses to start a fresh session \
+                     until it finishes"
+                        .to_string(),
+                );
+                return Effect::None;
+            }
+            // Review finding (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`,
+            // SIGNIFICANT): the three checks above never covered a
+            // single-slot async flow still in flight with no queued
+            // message/steer and no `!` command running -- resetting
+            // `AppState` out from under one of these strands its own
+            // `Mode`-opening reply (`apply_distill_done`/the `/ask` and
+            // skill-propose `Done` arms) with nothing left to apply it to,
+            // a `tokio::spawn`ed task still holding a NOW-STALE `self.
+            // handle`/`Conway` clone from the session `/new` is about to
+            // replace. Refused exactly like the two checks above it: a
+            // plain `Notice`, no facade call, before anything is aborted
+            // or built.
+            if state.distill_in_flight {
+                notice(
+                    state,
+                    "a /distill is still running -- /new refuses to start a fresh session \
+                     until it finishes"
+                        .to_string(),
+                );
+                return Effect::None;
+            }
+            if state.ask_in_flight {
+                notice(
+                    state,
+                    "an /ask is still running -- /new refuses to start a fresh session until \
+                     it finishes"
+                        .to_string(),
+                );
+                return Effect::None;
+            }
+            if state.skill_propose_in_flight {
+                notice(
+                    state,
+                    "a skill proposal is still running -- /new refuses to start a fresh \
+                     session until it finishes"
+                        .to_string(),
+                );
+                return Effect::None;
+            }
+            // Board item's own determine-first question: an in-flight turn
+            // is ABORTED (via the same non-terminal `abort_turn` `Ctrl-C`'s
+            // first press uses -- `app/shutdown.rs::handle_ctrl_c`'s own
+            // doc), not refused -- `Ok(false)` ("nothing to abort," the
+            // ordinary idle case) is just as much success as `Ok(true)`.
+            if let Err(e) = host
+                .abort_turn(host.root(), "starting a fresh session (/new)".to_string())
+                .await
+            {
+                notice(
+                    state,
+                    format!("could not abort the current turn before /new: {e}"),
+                );
+                return Effect::None;
+            }
+            let spec = new_session_spec(state);
+            match host.new_session(spec).await {
+                Ok(handle) => {
+                    let old_session = host.session_id();
+                    // One funnel, shared with `apply_resume` -- see
+                    // `AppState::reset_for_new_session`'s own doc for the
+                    // full CARRY/RESET classification and why each field is
+                    // (or deliberately is not) carried.
+                    let role_pin = state.role_pin.clone();
+                    let model_pin = state.model_pin.clone();
+                    state.reset_for_new_session(handle.root());
+                    // The fresh session carries the SAME role/model pin
+                    // forward -- `new_session_spec` already built the
+                    // `SessionSpec` from these same two fields, so this just
+                    // keeps `/model`/`/role`'s own bare-form display
+                    // agreeing with what the fresh session actually started
+                    // with.
+                    state.role_pin = role_pin;
+                    state.model_pin = model_pin;
+                    notice(
+                        state,
+                        format!(
+                            "started a fresh session -- the previous session {old_session} is \
+                             still resumable (`/resume {old_session}` or `conway sessions list`)"
+                        ),
+                    );
+                    Effect::NewSession(handle)
+                }
+                Err(e) => {
+                    notice(state, format!("could not start a fresh session: {e}"));
+                    Effect::None
+                }
+            }
+        }
+        // `/distill [<instructions>]` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`).
+        // See `Effect::RunDistill`'s own doc for why `execute` validates and
+        // hands back the effect rather than forking/awaiting here itself.
+        SlashCommand::Distill { instructions } => {
+            if state.distill_in_flight {
+                notice(
+                    state,
+                    "a /distill is already running -- wait for its briefing",
+                );
+                Effect::None
+            } else {
+                state.distill_in_flight = true;
+                // Review finding (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`,
+                // round 2): a fresh generation for THIS fork -- see
+                // `AppState::distill_generation`'s own doc for why a bare
+                // `bool` could not tell two successive `/distill`s apart.
+                state.distill_generation = state.distill_generation.wrapping_add(1);
+                Effect::RunDistill {
+                    parent: state.focused_agent,
+                    instructions,
+                }
             }
         }
         SlashCommand::Quit { via_exit_alias } => {
@@ -5555,6 +5832,11 @@ mod tests {
         /// test can exercise both the "it stops" success path and ordinary
         /// facade-error propagation.
         cancel_ok: bool,
+        /// Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`: `Host::abort_turn`'s
+        /// scripted response -- `Some(true)`/`Some(false)` succeeds with
+        /// that value (a turn aborted / nothing to abort), `None` fails with
+        /// `fake_error()`. Lets a `/new` test exercise all three.
+        abort_turn_result: Option<bool>,
         /// C2: when `Some`, `classify_agent_intent` succeeds with this
         /// intent; otherwise it fails with `FacadeError::IntentClassification`
         /// -- lets a free-text `/fork`/`/spawn` test exercise both the
@@ -5653,6 +5935,7 @@ mod tests {
                 last_spawn_spec: Mutex::new(None),
                 fate_ok: false,
                 cancel_ok: false,
+                abort_turn_result: None,
                 classify_intent: None,
                 plugin_commands: HashMap::new(),
                 trust_result: None,
@@ -5759,6 +6042,13 @@ mod tests {
         /// Scripts `cancel` to succeed -- see the `cancel_ok` field's own doc.
         fn with_cancel_ok(mut self) -> Self {
             self.cancel_ok = true;
+            self
+        }
+
+        /// Scripts `abort_turn` to succeed with `aborted` -- see the
+        /// `abort_turn_result` field's own doc.
+        fn with_abort_turn_result(mut self, aborted: bool) -> Self {
+            self.abort_turn_result = Some(aborted);
             self
         }
 
@@ -5892,6 +6182,22 @@ mod tests {
             // exercise the call-count and error-propagation half of the
             // `/resume` criterion from outside `conway`, disclosed here
             // rather than silently skipped.
+            Err(fake_error())
+        }
+
+        async fn abort_turn(&self, _target: AgentId, _reason: String) -> conway::Result<bool> {
+            self.calls.lock().unwrap().push("abort_turn");
+            self.abort_turn_result.ok_or_else(fake_error)
+        }
+
+        async fn new_session(&self, _spec: conway::SessionSpec) -> conway::Result<SessionHandle> {
+            self.calls.lock().unwrap().push("new_session");
+            // Mirrors `resume`'s own disclosed limitation immediately
+            // above: no public `SessionHandle` constructor reaches this
+            // fake, so it can only ever exercise `/new`'s call-count/
+            // error-propagation half -- the success half is proven at the
+            // `App` level, against a real `Conway` (see
+            // `tui/app/new_session.rs`'s own tests).
             Err(fake_error())
         }
 
@@ -8568,6 +8874,225 @@ mod tests {
             SlashCommand::Ask {
                 question: "another one?".to_string(),
             },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("already running")
+            )),
+            "{:?}",
+            state.transcript
+        );
+    }
+
+    /// `/new` refuses outright while a message is queued, naming the count
+    /// in the notice: no facade call at all, so an in-flight turn is never
+    /// touched by a `/new` that is about to be refused anyway.
+    #[tokio::test]
+    async fn new_refuses_with_a_nonempty_queue() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.queue_prompt(root, "important".to_string());
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::New, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("queued")
+            )),
+            "{:?}",
+            state.transcript
+        );
+        assert!(
+            host.calls().is_empty(),
+            "a refused /new must make no facade call at all: {:?}",
+            host.calls()
+        );
+    }
+
+    /// `/new` also refuses while a `!` shell command is still running --
+    /// mirrors the queue refusal exactly: a plain `Notice`, no facade call.
+    #[tokio::test]
+    async fn new_refuses_while_a_shell_command_is_in_flight() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.shell_in_flight = true;
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::New, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("running")
+            )),
+            "{:?}",
+            state.transcript
+        );
+        assert!(host.calls().is_empty());
+    }
+
+    /// `/new` also refuses while a `/distill` is in flight -- a review
+    /// finding (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): resetting
+    /// `AppState` out from under it would strand `apply_distill_done`'s
+    /// eventual reply with nowhere to land.
+    #[tokio::test]
+    async fn new_refuses_while_a_distill_is_in_flight() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.distill_in_flight = true;
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::New, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("/distill") && text.contains("running")
+            )),
+            "{:?}",
+            state.transcript
+        );
+        assert!(host.calls().is_empty());
+    }
+
+    /// `/new` also refuses while an `/ask` is in flight -- same reasoning as
+    /// the `/distill` refusal immediately above.
+    #[tokio::test]
+    async fn new_refuses_while_an_ask_is_in_flight() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.ask_in_flight = true;
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::New, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("/ask") && text.contains("running")
+            )),
+            "{:?}",
+            state.transcript
+        );
+        assert!(host.calls().is_empty());
+    }
+
+    /// `/new` also refuses while a skill proposal is in flight -- same
+    /// reasoning as the `/distill` refusal above.
+    #[tokio::test]
+    async fn new_refuses_while_a_skill_proposal_is_in_flight() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.skill_propose_in_flight = true;
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::New, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text }
+                    if text.contains("skill proposal") && text.contains("running")
+            )),
+            "{:?}",
+            state.transcript
+        );
+        assert!(host.calls().is_empty());
+    }
+
+    /// `/new` aborts the root's current turn BEFORE building the fresh
+    /// session, rather than refusing or leaving it running. `FakeHost`
+    /// cannot construct a real `SessionHandle` (mirrors `tests::FakeHost::
+    /// resume`'s own disclosed
+    /// limitation -- see `Host::new_session`'s own doc), so `new_session`
+    /// always fails here; what this test proves is the ORDER and that the
+    /// abort itself is unconditional on the eventual `new_session` outcome,
+    /// not the full success path (covered at the `App` level instead, see
+    /// `tui/app/new_session.rs`'s own tests).
+    #[tokio::test]
+    async fn new_aborts_the_current_turn_before_building_the_fresh_session() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root).with_abort_turn_result(true);
+
+        let effect = execute(SlashCommand::New, &mut state, &host).await;
+
+        assert_eq!(host.calls(), vec!["abort_turn", "new_session"]);
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("could not start a fresh session")
+            )),
+            "{:?}",
+            state.transcript
+        );
+    }
+
+    /// `/distill` sets `distill_in_flight` and hands the caller
+    /// `Effect::RunDistill` naming the FOCUSED agent (not always the root --
+    /// see that effect's own doc) -- it never forks anything itself.
+    #[tokio::test]
+    async fn distill_sets_distill_in_flight_and_returns_run_distill_for_the_focused_agent() {
+        let root = AgentId::new();
+        let focused = AgentId::new();
+        let mut state = AppState::new(root);
+        state.focused_agent = focused;
+        let host = FakeHost::new(root);
+        assert!(!state.distill_in_flight);
+        assert_eq!(state.distill_generation, 0);
+
+        let effect = execute(
+            SlashCommand::Distill {
+                instructions: Some("focus on the failing test".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(state.distill_in_flight);
+        assert_eq!(
+            state.distill_generation, 1,
+            "starting a /distill must bump the generation counter"
+        );
+        match effect {
+            Effect::RunDistill {
+                parent,
+                instructions,
+            } => {
+                assert_eq!(parent, focused);
+                assert_eq!(instructions.as_deref(), Some("focus on the failing test"));
+            }
+            _ => panic!("expected Effect::RunDistill, got a different effect"),
+        }
+        assert!(host.calls().is_empty());
+    }
+
+    /// One distill at a time -- a second `/distill` while one is already in
+    /// flight is a notice, never a second `Effect::RunDistill`.
+    #[tokio::test]
+    async fn distill_while_already_in_flight_is_a_notice_with_no_effect() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.distill_in_flight = true;
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Distill { instructions: None },
             &mut state,
             &host,
         )

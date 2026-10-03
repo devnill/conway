@@ -794,6 +794,9 @@ fn mode_label(mode: &Mode, activity: &Activity) -> String {
         // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): the
         // skill-proposal modal owns the screen.
         Mode::SkillProposal(_) => "skill proposal".to_string(),
+        // `/distill` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): the
+        // distilled-briefing modal owns the screen.
+        Mode::Distill(_) => "distill".to_string(),
     }
 }
 

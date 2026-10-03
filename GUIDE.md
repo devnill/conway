@@ -296,7 +296,15 @@ Knowing these up front saves you looking for them.
 your back. A session that outgrows the model's window gets a loud, typed error
 naming what did not fit — it is never silently trimmed or moved to a bigger
 model. The intended answer is structural: push work into children and keep the
-distillate. A first-party compaction plugin is named in
+distillate. `/distill` is that move, done out loud: it forks the focused agent,
+has the fork write a briefing covering the task, the decisions made, the open
+questions, and the files that matter, shows you that briefing before anything
+else happens, and only on `Enter` spawns a fresh agent with it as its opening
+context — see [`docs/interactive.md`](docs/interactive.md). `/new` is the
+plainer sibling: it ends the current session (still resumable — nothing is
+deleted) and starts a clean one in its place, no briefing involved. Neither
+runs on its own; nothing is ever distilled or restarted without you typing the
+command. A first-party compaction plugin is named in
 [`PHILOSOPHY.md`](PHILOSOPHY.md) as a thing you would install, and **does not
 exist yet**.
 

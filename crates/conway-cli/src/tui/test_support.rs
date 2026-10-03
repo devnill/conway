@@ -223,7 +223,17 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // terminal-free harness has, so all three are applied in
         // `app/run.rs`'s run loop only; a test asserts on the ACTION alone.
         | Action::SkillProposalFate(_)
-        | Action::SkillProposalEdit => {}
+        | Action::SkillProposalEdit
+        // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`: `Spawn` needs a real
+        // `Conway::new_session` call plus swapping `self.handle`/`events`,
+        // and `Discard` needs `AppState::close_distill`; `Edit` needs a live
+        // `Terminal`/child-process suspend-resume exactly like
+        // `Action::OpenExternalEditor` above -- none of which this
+        // terminal-free harness has, so all three are applied in
+        // `app/run.rs`'s run loop only, mirroring `SkillProposalFate`/
+        // `SkillProposalEdit` immediately above exactly.
+        | Action::DistillFate(_)
+        | Action::DistillEdit => {}
     }
     action
 }

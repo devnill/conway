@@ -29,7 +29,7 @@ use crate::tui::gate::GateReceiver;
 use crate::tui::input::{self, Action};
 use crate::tui::session_picker;
 use crate::tui::state::{
-    should_animate, AskModal, Entry, SkillProposalFate, MODEL_DECISION_HISTORY_CAP,
+    should_animate, AskModal, DistillFate, Entry, SkillProposalFate, MODEL_DECISION_HISTORY_CAP,
 };
 use crate::tui::view;
 
@@ -156,6 +156,12 @@ impl App {
             .skill_propose_rx
             .take()
             .expect("skill_propose_rx is set in App::new and taken exactly once, here");
+        // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`: mirrors `skill_propose_rx`
+        // exactly, same reasoning -- see `app/distill.rs`'s own module doc.
+        let mut distill_rx = self
+            .distill_rx
+            .take()
+            .expect("distill_rx is set in App::new and taken exactly once, here");
 
         loop {
             tokio::select! {
@@ -460,6 +466,17 @@ impl App {
                 maybe_skill_propose = skill_propose_rx.recv() => {
                     if let Some(done) = maybe_skill_propose {
                         self.apply_skill_propose_done(done);
+                        dirty = true;
+                    }
+                }
+                // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`: the reply side of
+                // `Effect::RunDistill`'s spawned task (`App::spawn_distill`)
+                // -- mirrors `skill_propose_rx.recv()` immediately above in
+                // every structural respect, including being drained
+                // unconditionally.
+                maybe_distill = distill_rx.recv() => {
+                    if let Some(done) = maybe_distill {
+                        self.apply_distill_done(done);
                         dirty = true;
                     }
                 }
@@ -1302,6 +1319,39 @@ impl App {
                                     let editor_command = editor::resolve_editor_command();
                                     self.apply_skill_proposal_edit_action(terminal, &editor_command);
                                 }
+                                // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`: the
+                                // `/distill` modal's decision. `Spawn` starts
+                                // a fresh agent and (on success) swaps the
+                                // app loop onto it -- see `App::
+                                // spawn_from_distill`'s own doc for why this
+                                // is a plain `App` method rather than
+                                // another `commands::Effect` arm, and for
+                                // the `bool` return this arm reads to decide
+                                // whether `events` needs resubscribing.
+                                // `Discard` is a plain mode close, since the
+                                // ephemeral fork child that produced this
+                                // briefing is ALREADY purged (see
+                                // `app/distill.rs`'s own doc).
+                                Action::DistillFate(fate) => match fate {
+                                    DistillFate::Spawn => {
+                                        if self.spawn_from_distill().await {
+                                            events = self.handle.events();
+                                        }
+                                    }
+                                    DistillFate::Discard => {
+                                        self.state.close_distill();
+                                        self.state.transcript.push(Entry::Notice {
+                                            text: "distill discarded".to_string(),
+                                        });
+                                    }
+                                },
+                                // `e` on the `/distill` modal -- needs a live
+                                // terminal, exactly like
+                                // `Action::SkillProposalEdit` above.
+                                Action::DistillEdit => {
+                                    let editor_command = editor::resolve_editor_command();
+                                    self.apply_distill_edit_action(terminal, &editor_command);
+                                }
                                 // Board item `01M19NH39AE2D5AMJK0RZRQY86`: the
                                 // `ask_question` modal's decision (`up`/`down`
                                 // choose, `enter` answer, `esc` cancel).
@@ -1408,6 +1458,16 @@ impl App {
                                                 self.handle = handle;
                                                 events = self.handle.events();
                                             }
+                                            // Structurally unreachable from
+                                            // `apply_model_switch`, same
+                                            // reason as `Resumed`'s own
+                                            // sibling arms below it. Handled
+                                            // correctly anyway, mirroring
+                                            // `Resumed` exactly.
+                                            Effect::NewSession(handle) => {
+                                                self.handle = handle;
+                                                events = self.handle.events();
+                                            }
                                             Effect::RunPluginCommand(invocation) => {
                                                 self.spawn_plugin_command(invocation);
                                             }
@@ -1430,6 +1490,14 @@ impl App {
                                             // mirroring it exactly.
                                             Effect::RunSkillPropose { root } => {
                                                 self.spawn_skill_propose(root);
+                                            }
+                                            // Structurally unreachable from
+                                            // `apply_model_switch`, same
+                                            // reason as `RunSkillPropose`
+                                            // above. Handled correctly
+                                            // anyway, mirroring it exactly.
+                                            Effect::RunDistill { parent, instructions } => {
+                                                self.spawn_distill(parent, instructions);
                                             }
                                             Effect::RunMarketplaceInstall {
                                                 marketplace_url,
@@ -1505,6 +1573,10 @@ impl App {
                                                     self.handle = handle;
                                                     events = self.handle.events();
                                                 }
+                                                Effect::NewSession(handle) => {
+                                                    self.handle = handle;
+                                                    events = self.handle.events();
+                                                }
                                                 // Every other `Effect` variant
                                                 // is structurally unreachable
                                                 // from `apply_resume` (it only
@@ -1551,6 +1623,9 @@ impl App {
                                                 }
                                                 Effect::RunSkillPropose { root } => {
                                                     self.spawn_skill_propose(root);
+                                                }
+                                                Effect::RunDistill { parent, instructions } => {
+                                                    self.spawn_distill(parent, instructions);
                                                 }
                                                 Effect::RunMarketplaceInstall {
                                                     marketplace_url,
@@ -1634,6 +1709,15 @@ impl App {
                                             self.handle = handle;
                                             events = self.handle.events();
                                         }
+                                        // Structurally unreachable from THIS
+                                        // call site for the same reason
+                                        // `Resumed`'s own sibling arms below
+                                        // it are. Handled correctly anyway,
+                                        // mirroring `Resumed` exactly.
+                                        Effect::NewSession(handle) => {
+                                            self.handle = handle;
+                                            events = self.handle.events();
+                                        }
                                         Effect::FocusNewSession {
                                             child,
                                             parent,
@@ -1708,6 +1792,13 @@ impl App {
                                         // anyway, mirroring them exactly.
                                         Effect::RunSkillPropose { root } => {
                                             self.spawn_skill_propose(root);
+                                        }
+                                        // Structurally unreachable from THIS
+                                        // call site, same reason as the arms
+                                        // just above. Handled correctly
+                                        // anyway, mirroring them exactly.
+                                        Effect::RunDistill { parent, instructions } => {
+                                            self.spawn_distill(parent, instructions);
                                         }
                                         // Structurally unreachable from THIS
                                         // call site for the same reason

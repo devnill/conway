@@ -30,7 +30,8 @@ use conway::config::schema::BackendEntry;
 use conway::plugin::PluginStatusContribution;
 use conway::{
     AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq, ModelRef, PermissionDecisionKind,
-    PermissionMode, ResultStatus, RoleAlias, RoutingReason, SegmentId, SubagentMode, Usage,
+    PermissionMode, ResultStatus, RoleAlias, RoutingReason, SegmentId, SessionId, SubagentMode,
+    Usage,
 };
 
 use super::config::StatusLineConfig;
@@ -55,8 +56,9 @@ pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use mentions::MentionScanRequest;
 pub use modal::{
     AddProviderContextWindowState, AddProviderCredentialState, AskFate, AskModal,
-    DenyFeedbackState, Mode, SettingsPreviewSection, SkillProposalFate, SkillProposalModal,
-    TrustDecision, TrustPreviewCard, UiFormDecision, UiFormState, DEFAULT_DENY_FEEDBACK,
+    DenyFeedbackState, DistillFate, DistillModal, Mode, SettingsPreviewSection, SkillProposalFate,
+    SkillProposalModal, TrustDecision, TrustPreviewCard, UiFormDecision, UiFormState,
+    DEFAULT_DENY_FEEDBACK,
 };
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
 pub use transcript::{backfill_entries, clamp_tool_preview_lines, Entry, ToolStatus};
@@ -802,6 +804,49 @@ pub struct AppState {
     /// (or the automatic trigger's own call site), cleared when
     /// `SkillProposeDone` arrives.
     pub skill_propose_in_flight: bool,
+    /// `/distill` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): a briefing
+    /// parked behind another modal-bearing surface -- mirrors
+    /// `pending_skill_proposal` exactly. `tui/app/distill.rs`'s own
+    /// `DistillDone` arm calls [`Self::offer_distill`], which parks here
+    /// whenever `mode` is not `Normal`. Drained in the SAME fixed priority
+    /// order [`Self::promote_next_surface`] already documents (queued
+    /// prompt, ask, intent card, trust preview, ui form, skill proposal,
+    /// then this -- lowest priority of all eight).
+    pending_distill: Option<DistillModal>,
+    /// Whether `/distill`'s ephemeral fork is currently in flight -- mirrors
+    /// `skill_propose_in_flight` exactly: while set, a second `/distill` is
+    /// refused with a `Notice` rather than competing for the one
+    /// [`Mode::Distill`] slot. Set by `commands::execute`'s
+    /// `SlashCommand::Distill` arm, cleared when `DistillDone` arrives.
+    pub distill_in_flight: bool,
+    /// Board item `01M1YVKQ6ABQDWYSA7CEF20WKG` (review finding, round 2):
+    /// the generation of the ONE `/distill` fork whose eventual
+    /// `DistillDone` reply (`tui::app::distill`, private to that module) is
+    /// actually wanted. **Replaces a former `distill_abandoned: bool`**,
+    /// which a second
+    /// `/distill` started right after a `Ctrl-C` abandon could not
+    /// distinguish from the first: resetting the bare flag at the second
+    /// `/distill`'s own start would have let the FIRST fork's late reply
+    /// (arriving after the second one started, but before it finishes) open
+    /// as though it were current, while leaving it set would have dropped
+    /// the SECOND fork's own genuine reply.
+    ///
+    /// `commands::execute`'s `SlashCommand::Distill` arm increments this
+    /// (`wrapping_add(1)`) the moment it starts a fork, alongside setting
+    /// `distill_in_flight`; `App::spawn_distill` reads the value at spawn
+    /// time and threads it through to `DistillDone::generation`;
+    /// `App::abandon_distill` ALSO increments it (so an abandoned fork's
+    /// eventual reply is stale even if the operator never starts a second
+    /// `/distill` at all); `App::apply_distill_done` compares `done.
+    /// generation` against the CURRENT value of this field FIRST, before
+    /// touching `distill_in_flight` or anything else -- a mismatch means a
+    /// newer `/distill` (or an abandon) has already moved past the fork that
+    /// produced this reply, so it is dropped silently, leaving whatever the
+    /// current generation's own in-flight/modal state already is untouched.
+    /// `wrapping_add` rather than a checked increment: this is a monotonic
+    /// tag compared only for equality, never ordered, so wraparound after
+    /// `u64::MAX` abandons in one process is harmless.
+    pub distill_generation: u64,
     /// Whether an `/ask` child's single turn is currently in flight (B5).
     /// Set by `app.rs` when it spawns the ask task, cleared when the result
     /// arrives -- while set, a second `/ask` is refused with a `Notice`
@@ -2020,6 +2065,9 @@ impl AppState {
             pending_ui_form: None,
             pending_skill_proposal: None,
             skill_propose_in_flight: false,
+            pending_distill: None,
+            distill_in_flight: false,
+            distill_generation: 0,
             spinner_frame: 0,
             turn_started_at: None,
             awaiting_permission_since: None,
@@ -2102,6 +2150,234 @@ impl AppState {
             mention_scan_in_flight: None,
             mention_via_paste: false,
         }
+    }
+
+    /// Board item `01M1YVKQ6ABQDWYSA7CEF20WKG` (review finding, round 2,
+    /// widened past the original report): the ONE funnel `/new`
+    /// (`commands::execute`'s `SlashCommand::New` arm) and `/resume`
+    /// (`commands::apply_resume`) both use to reset this struct for a fresh
+    /// root agent -- replacing the former `CarriedConfiguration` snapshot/
+    /// restore pair, whose own hand-picked 12-field allowlist had quietly
+    /// fallen behind this struct's own ~124 fields: every one configured at
+    /// startup (`app/startup.rs`) and never recomputed thereafter --
+    /// keybindings, `busy_input`, the status-line config, input history, the
+    /// `project_config_ignored` security marker, `cwd_display`,
+    /// `mention_scan_root`, the three `model_max_context*` maps, `git_branch`,
+    /// `plugin_browser`, and the `subprocess_plugins`/`mcp_plugins`/
+    /// `claude_compat_plugins` config mirrors -- was silently dropped by
+    /// EVERY `/new`/`/resume` before this existed, with no error and no
+    /// notice, reverting each to whatever bare `AppState::new` happens to
+    /// default to.
+    ///
+    /// **The classification rule, applied field by field below** (an
+    /// EXHAUSTIVE destructure with no `..` rest pattern, so a field added to
+    /// this struct without being sorted into one arm or the other is a
+    /// compile error, never a silent, unclassified thirteenth gap):
+    ///
+    /// - **CARRY** (written back onto `self` after the reset): process/
+    ///   config-lifetime data -- set once from config, `Conway`, the CLI, or
+    ///   the environment at `App::new` time, and never thereafter
+    ///   recomputed from the OLD session's own conversation. The test for
+    ///   "does this belong here" is "would a genuinely fresh TUI process,
+    ///   launched against the SAME config/CLI/environment, show this same
+    ///   value" -- if yes, losing it to a reset is pure data loss with no
+    ///   session-identity meaning attached.
+    /// - **RESET** (bound to `_`, left at whatever the fresh `AppState::new`
+    ///   value already is): everything that belongs to the OLD session or
+    ///   its conversation -- transcript, tree, modes, queues, in-flight
+    ///   flags, focus, turn/activity clocks, per-call bookkeeping, and the
+    ///   THREE revocable session-scoped permission-grant mirrors
+    ///   (`permission_grants`/`structured_allow_rules`/
+    ///   `shell_prefix_grants` -- a standing ruling, restated below at their
+    ///   own arms).
+    ///
+    /// **`role_pin`/`model_pin` are RESET here, on purpose, even though
+    /// `/new` carries them forward.** The two call sites disagree (`/new`
+    /// carries them, `/resume` does not -- a resumed session already has its
+    /// own established role/model, re-derived from ITS OWN `Event::
+    /// ModelDecision` history rather than a pin a DIFFERENT prior session
+    /// set), so this shared funnel cannot pick one answer for both. `/new`'s
+    /// own arm captures both fields BEFORE calling this method and writes
+    /// them back onto `self` AFTER it returns -- the exact same two-line
+    /// shape it already used before this funnel existed, now the only
+    /// hand-rolled carry-across left in either call site.
+    ///
+    /// **What is NOT carried, on purpose: [`Self::permission_grants`]/
+    /// [`Self::structured_allow_rules`]/[`Self::shell_prefix_grants`].**
+    /// Each is the REVOCABLE allow-side mirror of a blend of file-configured
+    /// rules and whatever `PermissionScope::Session` grants the OLD session
+    /// itself accrued, with no way to tell the two apart once flattened by
+    /// `Conway::active_permission_patterns`/`active_structured_allow_rules`/
+    /// `active_shell_prefix_grants`. A session-scoped grant belongs to the
+    /// conversation that earned it, not to whatever fresh session replaces
+    /// it. Nothing is lost by resetting them: the very next `/settings` open
+    /// repopulates all three LIVE from `Conway`'s own broker/dispatcher
+    /// regardless of what this struct carried across, so any rule that is
+    /// still genuinely configured (as opposed to merely having been granted
+    /// for the old session) reappears there on its own.
+    pub fn reset_for_new_session(&mut self, root: AgentId) {
+        let fresh = AppState::new(root);
+        let AppState {
+            transcript: _,
+            tree: _,
+            model_decision_history: _,
+            input: _,
+            cursor: _,
+            mode: _,
+            permission_mode,
+            default_permission_mode,
+            permission_paths,
+            grants_path,
+            project_config_ignored,
+            permission_grants: _,
+            structured_allow_rules: _,
+            permission_denies,
+            permission_prompts,
+            structured_deny_rules,
+            structured_prompt_rules,
+            shell_prefix_grants: _,
+            hook_rules,
+            plugin_browser,
+            subprocess_plugins,
+            mcp_plugins,
+            claude_compat_plugins,
+            plugins_open: _,
+            plugins_selected: _,
+            permission_grant_scope: _,
+            scroll: _,
+            follow_tail: _,
+            queued_prompts: _,
+            agent_view_open: _,
+            palette_selected: _,
+            palette_stem: _,
+            agent_selected: _,
+            agent_visibility: _,
+            focused_agent: _,
+            activity: _,
+            focused_agent_usage: _,
+            session_head_seq: _,
+            pending_ask_modal: _,
+            pending_intent_confirm: _,
+            pending_trust_preview: _,
+            pending_ui_form: _,
+            pending_skill_proposal: _,
+            skill_propose_in_flight: _,
+            pending_distill: _,
+            distill_in_flight: _,
+            distill_generation: _,
+            ask_in_flight: _,
+            ask_child: _,
+            ask_started_at: _,
+            ask_abandoned: _,
+            awaiting_agents: _,
+            shell_in_flight: _,
+            last_shell_command: _,
+            budget_warned_agents: _,
+            switch_lineage: _,
+            pending_focus_notice: _,
+            pending_exit_word: _,
+            spawn_role_or_model: _,
+            modal_scroll: _,
+            spinner_frame: _,
+            turn_started_at: _,
+            awaiting_permission_since: _,
+            running_tool_since: _,
+            turn_running_tokens: _,
+            turn_transcript_start: _,
+            focused_model: _,
+            focused_model_max_context: _,
+            focused_model_max_context_source: _,
+            focused_model_cache_reporting: _,
+            focused_ctx_tokens: _,
+            focused_seen_segments: _,
+            git_branch,
+            cwd_display,
+            status_line_config,
+            tool_preview_lines,
+            model_max_context,
+            model_max_context_source,
+            model_cache_reporting,
+            show_reasoning,
+            show_timestamps,
+            busy_input,
+            held_prompts: _,
+            pending_steers: _,
+            history,
+            history_cap,
+            history_index: _,
+            history_draft: _,
+            help_open: _,
+            settings_open: _,
+            settings_selected: _,
+            settings_collapsed_groups: _,
+            provider_entries: _,
+            provider_status: _,
+            provider_status_loading: _,
+            default_role_snapshot: _,
+            default_model_snapshot: _,
+            known_role_names: _,
+            configured_models: _,
+            // RESET here on purpose -- see this method's own doc for why
+            // `/new`/`/resume` disagree and where each one's own
+            // carry-across actually lives.
+            model_pin: _,
+            role_pin: _,
+            configured_backend_ids: _,
+            role_listing: _,
+            model_picker_active: _,
+            session_picker_active: _,
+            plugin_commands,
+            agent_names,
+            plugin_status_contributions,
+            permission_decision_pending: _,
+            keybindings,
+            diff_track: _,
+            diff_baseline: _,
+            tool_diffs: _,
+            mention_scan_root,
+            mention_anchor: _,
+            mention_mode: _,
+            mention_candidates: _,
+            mention_capped: _,
+            mention_selected: _,
+            mention_dismissed_for: _,
+            mention_scan_cache: _,
+            pending_mention_scan_request: _,
+            mention_scan_in_flight: _,
+            mention_via_paste: _,
+        } = std::mem::replace(self, fresh);
+
+        self.permission_mode = permission_mode;
+        self.default_permission_mode = default_permission_mode;
+        self.permission_paths = permission_paths;
+        self.grants_path = grants_path;
+        self.project_config_ignored = project_config_ignored;
+        self.permission_denies = permission_denies;
+        self.permission_prompts = permission_prompts;
+        self.structured_deny_rules = structured_deny_rules;
+        self.structured_prompt_rules = structured_prompt_rules;
+        self.hook_rules = hook_rules;
+        self.plugin_browser = plugin_browser;
+        self.subprocess_plugins = subprocess_plugins;
+        self.mcp_plugins = mcp_plugins;
+        self.claude_compat_plugins = claude_compat_plugins;
+        self.git_branch = git_branch;
+        self.cwd_display = cwd_display;
+        self.status_line_config = status_line_config;
+        self.tool_preview_lines = tool_preview_lines;
+        self.model_max_context = model_max_context;
+        self.model_max_context_source = model_max_context_source;
+        self.model_cache_reporting = model_cache_reporting;
+        self.show_reasoning = show_reasoning;
+        self.show_timestamps = show_timestamps;
+        self.busy_input = busy_input;
+        self.history = history;
+        self.history_cap = history_cap;
+        self.plugin_commands = plugin_commands;
+        self.agent_names = agent_names;
+        self.plugin_status_contributions = plugin_status_contributions;
+        self.keybindings = keybindings;
+        self.mention_scan_root = mention_scan_root;
     }
 
     /// Switches the transcript pane to `agent`'s own conversation.

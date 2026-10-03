@@ -464,6 +464,56 @@ impl SkillProposalModal {
     }
 }
 
+/// `/distill` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): the briefing an
+/// ephemeral fork child wrote, waiting for the operator to spawn a fresh
+/// agent with it, edit it first, or discard it. PHILOSOPHY.md's own
+/// precedent for this move -- "fork -> distill the part that matters ->
+/// spawn a clean child with that briefing" -- is what this modal makes an
+/// explicit, operator-typed verb: the fork and the distillation already
+/// happened (`tui/app/distill.rs::run_distill`) by the time this modal
+/// opens, and `child` is already purged (mirrors [`SkillProposalModal::
+/// child`]'s own "distillate only" doc exactly: this feature never offers a
+/// `[f]`/`[p]` "keep/pull-in" fate over the fork child itself, only over the
+/// BRIEFING it produced).
+///
+/// `briefing` is the fork child's own reply text, verbatim -- `Enter` spawns
+/// a fresh root session and delivers this text as its opening prompt
+/// (`tui/app/distill.rs::App::spawn_from_distill`); `e` opens it in
+/// `$EDITOR` first (mirrors [`SkillProposalModal`]'s own edit path), and the
+/// edited text is what `Enter` then delivers.
+///
+/// `old_session`/`old_context_tokens` are captured at distill time so the
+/// spawn notice can report the cost of the move: the OLD session's id (so
+/// the notice can name it -- the old agent and its session are left
+/// untouched and forkable) and its context size in tokens, compared against
+/// the NEW agent's own `/context` size once it is spawned.
+///
+/// `error` mirrors [`SkillProposalModal::error`] exactly: `Some` only after
+/// a spawn attempt FAILED -- the modal stays open with the error shown,
+/// never silently falling through to a discard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DistillModal {
+    pub child: AgentId,
+    pub briefing: String,
+    pub old_session: SessionId,
+    pub old_context_tokens: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// `Mode::Distill`'s three ways out -- there is no fourth: quitting
+/// (`Ctrl-C`/`Ctrl-D`) discards it, mirroring [`SkillProposalFate`]'s own
+/// quit-path discard exactly (the ephemeral fork child is ALREADY purged by
+/// the time this modal opens, so quitting here spawns nothing and leaves no
+/// residue).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistillFate {
+    /// Spawns a fresh root session with [`DistillModal::briefing`] as its
+    /// opening prompt, and points the TUI at it.
+    Spawn,
+    /// Discards the briefing -- no agent is spawned.
+    Discard,
+}
+
 /// `Mode::SkillProposal`'s three ways out -- there is no fourth: quitting
 /// with the modal open (`Ctrl-C`/`Ctrl-D`) discards it, mirroring `/ask`'s
 /// own quit-path purge (the ephemeral child is ALREADY purged by the time
@@ -637,6 +687,21 @@ pub enum Mode {
     /// modal-bearing surface joining the same never-stack discipline,
     /// lowest priority, checked last in `AppState::promote_next_surface`.
     SkillProposal(SkillProposalModal),
+    /// `/distill` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): the distilled-
+    /// briefing modal -- see [`DistillModal`]'s own doc. While this is the
+    /// mode, the input line is inert and `input.rs::handle_distill_key`
+    /// swallows every key except `Enter` (spawn a fresh agent with the
+    /// briefing), `e` (edit it in `$EDITOR` first), `Esc` (discard), plus the
+    /// quit keys (`Ctrl-C`/`Ctrl-D`, which discard -- the ephemeral fork
+    /// child is already purged by the time this modal opens, so there is
+    /// nothing left to clean up). A permission prompt arriving while this
+    /// modal is open queues in `queued_prompts` exactly as it does behind
+    /// another prompt, and a briefing arriving while any of the other seven
+    /// modal-bearing surfaces is showing parks in `pending_distill` until the
+    /// surface clears -- the EIGHTH modal-bearing surface joining the same
+    /// never-stack discipline, lowest priority, checked last in
+    /// `AppState::promote_next_surface`.
+    Distill(DistillModal),
 }
 
 impl std::fmt::Debug for Mode {
@@ -672,6 +737,7 @@ impl std::fmt::Debug for Mode {
                 write!(f, "EditingDenyFeedback(tool={})", fb.prompt.request.tool)
             }
             Mode::SkillProposal(modal) => write!(f, "SkillProposal(name={})", modal.name),
+            Mode::Distill(modal) => write!(f, "Distill(child={})", modal.child),
         }
     }
 }
@@ -795,11 +861,16 @@ impl AppState {
     /// The shared "what surfaces gets promoted next after a modal/prompt
     /// closes" logic (C2 generalizes B5's two-surface version to three;
     /// a later item generalizes it again to four; board item
-    /// `01M19NH39AE2D5AMJK0RZRQY86` generalizes it once more, to five).
-    /// Called with `mode` already reset to `Mode::Normal` by the caller
-    /// ([`Self::close_ask_modal`], [`Self::close_intent_confirm`],
-    /// [`Self::close_trust_preview`], [`Self::resolve_current_prompt`],
-    /// [`Self::resolve_ui_form`]). Priority order:
+    /// `01M19NH39AE2D5AMJK0RZRQY86` generalizes it once more, to five; slice
+    /// 2 (board item `01M3DTT078W25MD2S4527R0WAV`) adds a sixth, the skill
+    /// proposal; board item `01M1YVKQ6ABQDWYSA7CEF20WKG` adds a seventh, the
+    /// `/distill` briefing -- this doc previously stopped at five, stale
+    /// since the sixth landed). Called with `mode` already reset to
+    /// `Mode::Normal` by the caller ([`Self::close_ask_modal`],
+    /// [`Self::close_intent_confirm`], [`Self::close_trust_preview`],
+    /// [`Self::resolve_current_prompt`], [`Self::resolve_ui_form`],
+    /// [`Self::close_skill_proposal`], [`Self::close_distill`]). Priority
+    /// order:
     /// 1. A queued permission prompt ([`Self::queued_prompts`]) -- the
     ///    gate's pending prompts are always the highest-priority surface
     ///    (a tool call is waiting on a decision).
@@ -812,10 +883,16 @@ impl AppState {
     ///    showing.
     /// 5. A parked `ask_question` card ([`Self::pending_ui_form`]) -- a
     ///    model-raised question that arrived while any of the above was
-    ///    showing. Lowest priority: a question a model is waiting on is
-    ///    still less urgent than a decision already forcing the operator's
-    ///    attention.
-    /// 6. Nothing -- `mode` stays `Normal`.
+    ///    showing.
+    /// 6. A parked skill proposal ([`Self::pending_skill_proposal`]) -- a
+    ///    `/conway.skills.propose` (or the automatic trigger's) proposal
+    ///    that completed while any of the above was showing.
+    /// 7. A parked `/distill` briefing ([`Self::pending_distill`]) -- a
+    ///    `/distill` that completed while any of the above was showing.
+    ///    Lowest priority of all seven: a briefing waiting to be reviewed
+    ///    is still less urgent than a decision already forcing the
+    ///    operator's attention.
+    /// 8. Nothing -- `mode` stays `Normal`.
     ///
     /// Exactly one surface (at most) is promoted per call; the next call
     /// happens when THAT surface closes.
@@ -859,6 +936,11 @@ impl AppState {
         }
         if let Some(modal) = self.pending_skill_proposal.take() {
             self.mode = Mode::SkillProposal(modal);
+            self.modal_scroll = 0;
+            return;
+        }
+        if let Some(modal) = self.pending_distill.take() {
+            self.mode = Mode::Distill(modal);
             self.modal_scroll = 0;
         }
     }
@@ -922,6 +1004,66 @@ impl AppState {
         modal.content = content;
         modal.error = None;
         modal.recompute_diff();
+    }
+
+    /// Opens the `/distill` briefing modal (board item
+    /// `01M1YVKQ6ABQDWYSA7CEF20WKG`), parking it in `pending_distill` instead
+    /// whenever another modal-bearing surface currently owns `mode` --
+    /// mirrors [`Self::offer_skill_proposal`] exactly, the new lowest-
+    /// priority slot in `Self::promote_next_surface`.
+    pub fn offer_distill(&mut self, modal: DistillModal) {
+        if matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::Distill(modal);
+            self.modal_scroll = 0;
+        } else {
+            self.pending_distill = Some(modal);
+        }
+    }
+
+    /// Drains a briefing parked in `pending_distill`. Used by `app.rs`'s
+    /// quit path so a briefing parked behind another surface when the
+    /// operator quits is not silently lost from view -- mirrors
+    /// [`Self::take_pending_skill_proposal`] exactly: the ephemeral fork
+    /// child that produced it is ALREADY purged (see [`DistillModal`]'s own
+    /// doc), so there is nothing left to clean up beyond dropping the value.
+    /// Returns the parked modal if one was waiting, else `None`; either way
+    /// `pending_distill` is cleared.
+    pub fn take_pending_distill(&mut self) -> Option<DistillModal> {
+        self.pending_distill.take()
+    }
+
+    /// Closes the `/distill` modal after a fate that needs no further input
+    /// (a successful spawn, or a discard), promoting the next parked/queued
+    /// surface via `Self::promote_next_surface`. A no-op when no `/distill`
+    /// modal is open.
+    pub fn close_distill(&mut self) {
+        if !matches!(self.mode, Mode::Distill(_)) {
+            return;
+        }
+        self.mode = Mode::Normal;
+        self.promote_next_surface();
+    }
+
+    /// Records a spawn attempt's FAILURE on the open modal -- the modal
+    /// STAYS OPEN with the error shown, mirroring [`Self::fail_skill_proposal`]
+    /// exactly: a failed spawn never silently discards the briefing. A no-op
+    /// when no `/distill` modal is open.
+    pub fn fail_distill(&mut self, error: String) {
+        if let Mode::Distill(modal) = &mut self.mode {
+            modal.error = Some(error);
+        }
+    }
+
+    /// Applies an `e`-edit's result to the open `/distill` modal: replaces
+    /// `briefing` and clears any previous error (a fresh edit is a fresh
+    /// attempt) -- mirrors [`Self::apply_skill_proposal_edit`] exactly. A
+    /// no-op when no `/distill` modal is open.
+    pub fn apply_distill_edit(&mut self, briefing: String) {
+        let Mode::Distill(modal) = &mut self.mode else {
+            return;
+        };
+        modal.briefing = briefing;
+        modal.error = None;
     }
 
     /// Opens `ask_question`'s modal (board item `01M19NH39AE2D5AMJK0RZRQY86`),
@@ -2665,5 +2807,128 @@ mod tests {
         assert!(matches!(state.mode, Mode::Normal));
         state.apply_skill_proposal_edit("anything".to_string());
         assert!(matches!(state.mode, Mode::Normal));
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG` (minor finding 4): `/distill`
+    // never had its own never-stack coverage -- mirrors `offer_ui_form_
+    // parks_behind_a_trust_preview_card_and_opens_once_it_closes`/
+    // `a_permission_prompt_arriving_while_ui_form_is_open_queues_and_is_
+    // promoted_on_answer` exactly, the two shapes every other surface in
+    // this file already proves.
+    // -----------------------------------------------------------------
+
+    fn distill_modal(briefing: &str) -> DistillModal {
+        DistillModal {
+            child: AgentId::new(),
+            briefing: briefing.to_string(),
+            old_session: SessionId::new(),
+            old_context_tokens: None,
+            error: None,
+        }
+    }
+
+    /// `offer_distill` parks behind an open modal (the trust-preview card,
+    /// the same discriminating choice `offer_ui_form`'s own test above
+    /// makes -- `/distill` is now the LOWEST-priority surface of all seven,
+    /// checked after even the skill proposal) and opens once that modal
+    /// closes.
+    #[test]
+    fn offer_distill_parks_behind_an_open_modal_and_opens_once_it_closes() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_trust_preview(trust_card("/repo/.conway/permissions.json"));
+        assert!(matches!(state.mode, Mode::TrustPreview(_)));
+
+        state.offer_distill(distill_modal("parked-behind-trust"));
+
+        assert!(
+            matches!(state.mode, Mode::TrustPreview(_)),
+            "the trust-preview card must keep the floor; the briefing parks, got: {:?}",
+            state.mode
+        );
+
+        state.close_trust_preview();
+
+        assert!(
+            matches!(&state.mode, Mode::Distill(m) if m.briefing == "parked-behind-trust"),
+            "the parked briefing must open once the trust-preview card closes, got: {:?}",
+            state.mode
+        );
+    }
+
+    /// The reverse direction: a `/distill` briefing already open keeps the
+    /// floor, and a LATER permission prompt queues behind it rather than
+    /// stealing it -- mirrors `a_permission_prompt_arriving_while_ui_form_
+    /// is_open_queues_and_is_promoted_on_answer`'s own proof exactly.
+    #[test]
+    fn a_permission_prompt_arriving_while_distill_is_open_queues_and_is_promoted_on_close() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_distill(distill_modal("briefing"));
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(
+            matches!(state.mode, Mode::Distill(_)),
+            "the briefing must keep the floor; the prompt queues, got: {:?}",
+            state.mode
+        );
+
+        state.close_distill();
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "closing the briefing must promote the queued prompt, got: {:?}",
+            state.mode
+        );
+    }
+
+    /// Review finding (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`, finding 2):
+    /// `fail_distill` had zero coverage before this -- mirrors
+    /// `apply_skill_proposal_edit_replaces_content_and_clears_a_prior_error`'s
+    /// own `fail_skill_proposal` half exactly. This is the state-level half
+    /// of "a failed spawn/prompt-delivery never silently discards the
+    /// briefing" -- `App::spawn_from_distill`'s own two `Err` arms both
+    /// bottom out in this one call.
+    #[test]
+    fn fail_distill_keeps_the_modal_open_with_the_error_shown() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_distill(distill_modal("briefing"));
+
+        state.fail_distill("could not start a fresh agent: boom".to_string());
+
+        let Mode::Distill(modal) = &state.mode else {
+            panic!(
+                "a failed spawn must keep the modal open, got: {:?}",
+                state.mode
+            );
+        };
+        assert_eq!(
+            modal.error.as_deref(),
+            Some("could not start a fresh agent: boom")
+        );
+        assert_eq!(
+            modal.briefing, "briefing",
+            "a failed spawn must never alter the briefing text itself"
+        );
+    }
+
+    #[test]
+    fn apply_distill_edit_replaces_briefing_and_clears_a_prior_error() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_distill(distill_modal("original briefing"));
+        state.fail_distill("a prior spawn failed".to_string());
+        let Mode::Distill(modal) = &state.mode else {
+            panic!("modal must be open");
+        };
+        assert_eq!(modal.error.as_deref(), Some("a prior spawn failed"));
+
+        state.apply_distill_edit("edited briefing".to_string());
+
+        let Mode::Distill(modal) = &state.mode else {
+            panic!("modal must still be open");
+        };
+        assert_eq!(modal.briefing, "edited briefing");
+        assert!(
+            modal.error.is_none(),
+            "a fresh edit must clear a previous spawn error"
+        );
     }
 }

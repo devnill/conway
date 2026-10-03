@@ -19,7 +19,9 @@
 //! the test suite, so a field there is a much wider change than a local.
 
 use chrono::Utc;
-use conway_core::agent::{AgentResult, Fact, ResultStatus, DEFAULT_SUMMARY_LIMIT};
+use conway_core::agent::{
+    AgentResult, Fact, ResultStatus, DEFAULT_SUMMARY_LIMIT, NO_OUTPUT_SUMMARY_PREFIX,
+};
 use conway_core::content::{Artifact, ContentBlock};
 use conway_core::error::StoreError;
 use conway_core::ids::{LogSeq, SessionId, ToolName};
@@ -137,7 +139,7 @@ impl ResultBuilder {
         status: &ResultStatus,
     ) -> ResultParts {
         let summary = if trailing.trim().is_empty() {
-            format!("(no output; terminal status: {})", status_label(status))
+            format!("{NO_OUTPUT_SUMMARY_PREFIX}{})", status_label(status))
         } else {
             trailing.to_string()
         };

@@ -952,6 +952,7 @@ impl App {
         let (provider_status_tx, provider_status_rx) = mpsc::unbounded_channel();
         let (await_tx, await_rx) = mpsc::unbounded_channel();
         let (skill_propose_tx, skill_propose_rx) = mpsc::unbounded_channel();
+        let (distill_tx, distill_rx) = mpsc::unbounded_channel();
         let (mention_scan_tx, mention_scan_rx) = mpsc::unbounded_channel();
         let (shell_tx, shell_rx) = mpsc::unbounded_channel();
         Ok(Self {
@@ -968,6 +969,8 @@ impl App {
             await_rx: Some(await_rx),
             skill_propose_tx,
             skill_propose_rx: Some(skill_propose_rx),
+            distill_tx,
+            distill_rx: Some(distill_rx),
             provider_status_tx,
             provider_status_rx: Some(provider_status_rx),
             mention_scan_tx,
