@@ -13,11 +13,14 @@
 use conway::{AgentId, PermissionDecision, PermissionScope};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::config::EditorMode;
 use super::keybindings::Context;
 use super::state::{
     AppState, AskFate, DistillFate, IntentChoice, Mode, SkillProposalFate, TrustDecision,
     UiFormDecision,
 };
+
+pub mod vim;
 
 /// What a keypress means for the app loop to carry out.
 #[derive(Debug, Clone, PartialEq)]
@@ -576,6 +579,11 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 // TIMESTAMPS` immediately above -- session-only, no broker/
                 // config write, so no `Action` round trip is needed.
                 state.cycle_busy_input();
+            } else if id == super::view::settings::LEAF_EDITOR_MODE {
+                // Board item `01M1YVJNS575YN5DCQG9BKZR4E`: mirrors
+                // `LEAF_BUSY_INPUT` immediately above -- session-only, no
+                // broker/config write.
+                state.toggle_editor_mode();
             } else if id == super::view::settings::LEAF_PERMISSION_MODE {
                 // V2b: cycles the DISPLAY mirror only. The app loop sees
                 // the returned action and writes the broker, which is the
@@ -1761,8 +1769,53 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
     // text-editing/scroll chain below, exactly as if the key had never
     // matched anything.
     if let Some(action) = resolve_keymap_action(state, key) {
+        // Board item `01M1YVJNS575YN5DCQG9BKZR4E` review round: a rebindable
+        // action can rewrite `state.input`/`state.cursor` out from under an
+        // in-flight vim command (`d` pending, then `Ctrl-P` recalls a wholly
+        // different line into the buffer) -- see `VimState::cancel_pending`'s
+        // own doc for the funnel this and the fixed-chain fallthrough below
+        // both go through. Harmless (a no-op) in `emacs` mode or whenever
+        // nothing was pending.
+        state.vim.cancel_pending();
         return action;
     }
+
+    // Board item `01M1YVJNS575YN5DCQG9BKZR4E`: `tui.editor_mode = vim`
+    // layers modal (INSERT/NORMAL/Visual/Search) editing on top of this
+    // SAME fixed chain -- checked only after `resolve_keymap_action` above
+    // (so every Ctrl-bound action keeps resolving exactly as it does in
+    // `emacs` mode, in both vim submodes -- see `vim`'s own module doc,
+    // "Precedence") and only for the narrow set of keys `vim::wants_key`
+    // actually claims (plain letters/digits, `Esc`, `Ctrl-R`, and
+    // `Enter`/`Backspace` while composing a `/` search) -- everything else
+    // (arrows, `Backspace` outside search, `Enter` outside search, `Home`/
+    // `End`, ...) falls through to the exact same arms below, unchanged, in
+    // both editor modes.
+    //
+    // `Esc` gets ONE more carve-out ahead of that: the fixed `KeyCode::Esc`
+    // arm just below gives `Esc` two higher-priority, non-input meanings
+    // while `Mode::Normal` -- closing the `/agents` panel, and returning
+    // focus to the root -- and those are not "the input widget" at all, so
+    // vim's own `Esc` (leave INSERT, or cancel a partial NORMAL command)
+    // must never pre-empt them. `esc_has_existing_meaning` is true in
+    // EXACTLY the two states that arm's own doc names; everywhere else
+    // (panel closed, root already focused) that arm is a pure no-op in
+    // `emacs` mode today, which is precisely the gap vim's own `Esc`
+    // fills.
+    let esc_has_existing_meaning =
+        matches!(key.code, KeyCode::Esc) && (state.agent_view_open || !state.is_root_focused());
+    if matches!(state.editor_mode, EditorMode::Vim)
+        && !esc_has_existing_meaning
+        && handle_vim_key(state, key)
+    {
+        return Action::None;
+    }
+
+    // The other half of the funnel above: every key reaching the fixed
+    // chain below (an unclaimed Ctrl/Alt chord, an arrow, `Backspace`/
+    // `Enter` outside a search, ...) also bypassed the vim engine --
+    // see `VimState::cancel_pending`'s own doc.
+    state.vim.cancel_pending();
 
     match key.code {
         // T8: Alt-Enter AND Shift-Enter both insert `\n` -- deliberately
@@ -1998,6 +2051,34 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         }
         _ => Action::None,
     }
+}
+
+/// `tui.editor_mode = vim`'s own dispatch: returns `true` once [`vim::
+/// wants_key`] says this key is the engine's to handle at all, having
+/// already run it through [`vim::handle_key`] against `state.input`/
+/// `state.cursor` -- `false` (no mutation, nothing consumed) for every
+/// other key, which `handle_normal_key` then runs through its own fixed
+/// chain exactly as `emacs` mode always has. The temporary `std::mem::take`
+/// is what lets the vim engine stay a pure `(text, cursor)` state machine
+/// with no `AppState` dependency at all (that module's own doc, "A pure
+/// state machine") while still operating on the SAME buffer every other
+/// arm in this file reads and writes -- there is only ever one `state.
+/// input`/`state.cursor`, just sometimes mutated through this seam and
+/// sometimes through the ordinary arms below. `sync_palette_stem` runs
+/// after every vim-handled key, mirroring the ordinary `Char`/`Backspace`
+/// arms' own call, so the `/` command palette and `@`-mention completion
+/// stay honest while composing in vim mode too.
+fn handle_vim_key(state: &mut AppState, key: KeyEvent) -> bool {
+    if !vim::wants_key(&state.vim, key) {
+        return false;
+    }
+    let mut input = std::mem::take(&mut state.input);
+    let mut cursor = state.cursor;
+    vim::handle_key(&mut state.vim, &mut input, &mut cursor, key);
+    state.input = input;
+    state.cursor = cursor;
+    state.sync_palette_stem();
+    true
 }
 
 /// Resolves `key` against the rebindable keymap (board item
@@ -2612,6 +2693,196 @@ mod tests {
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    // ---- Board item `01M1YVJNS575YN5DCQG9BKZR4E`: vim editor mode ----
+    //
+    // The vim engine's own motion/operator/text-object/undo/search behavior
+    // is unit-tested directly against `(text, cursor)` in `vim`'s own test
+    // module (no `AppState` at all -- that module's own doc, "A pure state
+    // machine"). The tests below instead drive the REAL `handle_key` router
+    // this crate's TUI actually calls, proving the integration: the
+    // dispatch wiring, the Ctrl-bound actions that must keep working
+    // unchanged in vim mode, and the one safety property worth restating at
+    // this layer -- `Esc` in INSERT is never, under any state, the same key
+    // as `Ctrl-C`.
+
+    /// Acceptance: "Esc in INSERT never interrupts the agent." `NodeStatus::
+    /// Running` is this crate's own UI-visible signal that a turn is in
+    /// flight (`AppState::tree`, `view/agents.rs`'s own rendering of it) --
+    /// driven directly here (no `SessionHandle`) since `input::handle_key`
+    /// itself never reaches past `AppState`.
+    #[test]
+    fn esc_in_insert_while_a_turn_is_running_does_not_cancel_it() {
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.editor_mode = EditorMode::Vim;
+        state.tree.nodes[0].status = crate::tui::state::NodeStatus::Running;
+        state.input = "hello".to_string();
+        state.cursor = 5;
+        assert_eq!(state.vim.mode_label(), "INSERT", "precondition");
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(
+            action,
+            Action::None,
+            "Esc in INSERT must never produce CtrlC or any other turn-affecting action"
+        );
+        assert_eq!(state.vim.mode_label(), "NORMAL");
+        assert_eq!(
+            state.tree.nodes[0].status,
+            crate::tui::state::NodeStatus::Running,
+            "the running turn itself must be completely untouched"
+        );
+    }
+
+    /// The wiring, end to end, through the real router -- not just the
+    /// pure engine's own unit tests.
+    #[test]
+    fn vim_mode_dd_deletes_the_current_line_through_the_real_key_router() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = EditorMode::Vim;
+        state.input = "first\nsecond".to_string();
+        state.cursor = 6;
+
+        handle_key(&mut state, key(KeyCode::Esc)); // INSERT -> NORMAL
+        handle_key(&mut state, key(KeyCode::Char('d')));
+        handle_key(&mut state, key(KeyCode::Char('d')));
+
+        assert_eq!(state.input, "first");
+    }
+
+    /// Spec point 2: `Ctrl-G` (the external-editor key) keeps working in
+    /// vim mode, resolved by `resolve_keymap_action` BEFORE the vim engine
+    /// ever sees the key -- see `handle_normal_key`'s own doc on the
+    /// ordering.
+    #[test]
+    fn ctrl_g_external_editor_still_works_in_vim_mode() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = EditorMode::Vim;
+        state.input = "hello".to_string();
+
+        let action = handle_key(&mut state, ctrl_key(KeyCode::Char('g')));
+
+        assert_eq!(action, Action::OpenExternalEditor);
+        assert_eq!(
+            state.input, "hello",
+            "the vim engine must never see this key at all"
+        );
+    }
+
+    /// Spec point 2: `Ctrl-P` history recall keeps working in vim mode too,
+    /// for the identical reason.
+    #[test]
+    fn ctrl_p_history_recall_still_works_in_vim_mode() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = EditorMode::Vim;
+        state.history = std::collections::VecDeque::from(vec!["an old entry".to_string()]);
+        state.input.clear();
+
+        let action = handle_key(&mut state, ctrl_key(KeyCode::Char('p')));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(state.input, "an old entry");
+    }
+
+    /// Precedence (spec requirement: "Esc's existing meanings elsewhere
+    /// are unchanged"): with the `/agents` panel open, `Esc` still closes
+    /// it -- vim's own `Esc` (leave INSERT) never pre-empts that, and the
+    /// vim engine never even sees the keystroke (its own INSERT/NORMAL
+    /// mode is untouched).
+    #[test]
+    fn esc_still_closes_the_agents_panel_first_in_vim_mode() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = EditorMode::Vim;
+        state.agent_view_open = true;
+        assert_eq!(state.vim.mode_label(), "INSERT", "precondition");
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(action, Action::None);
+        assert!(!state.agent_view_open, "the panel must close");
+        assert_eq!(
+            state.vim.mode_label(),
+            "INSERT",
+            "the vim engine must never have seen this Esc at all"
+        );
+    }
+
+    /// The agent panel's sibling Esc meaning: once it is closed, `Esc`
+    /// returns focus to the root -- also unaffected by vim mode.
+    #[test]
+    fn esc_still_returns_focus_to_root_in_vim_mode() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = EditorMode::Vim;
+        let other = AgentId::new();
+        state.focus_agent(other);
+        assert!(!state.is_root_focused(), "precondition");
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(action, Action::FocusAgent(state.root_agent()));
+        assert_eq!(
+            state.vim.mode_label(),
+            "INSERT",
+            "the vim engine must never have seen this Esc at all"
+        );
+    }
+
+    /// Regression: the emacs default is byte-for-byte unaffected by this
+    /// feature existing at all -- vim-shaped letters just type, exactly as
+    /// every other test in this file (none of which set `editor_mode`)
+    /// already proves by passing.
+    #[test]
+    fn emacs_mode_types_vim_shaped_letters_as_ordinary_text() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(state.editor_mode, EditorMode::Emacs, "precondition");
+
+        for c in ['h', 'i', 'x', 'd', 'w'] {
+            handle_key(&mut state, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(state.input, "hixdw");
+    }
+
+    /// Review round regression: `resolve_keymap_action` (history recall,
+    /// kill/yank, Tab completion, `@`-mention accept, ...) runs BEFORE the
+    /// vim engine ever sees a key, and can rewrite `state.input`/`state.
+    /// cursor` out from under a pending vim command. `d` (pending `Delete`)
+    /// then `Ctrl-P` (recalls a WHOLLY different line into the buffer,
+    /// cursor landing at its end) used to leave the pending operator
+    /// alive, so the next motion completed a `d`-prefixed delete against
+    /// the just-recalled text instead of being cancelled -- see
+    /// `VimState::cancel_pending`'s own doc for the fix. Uses `b` (word
+    /// backward), not the finding's own literal `w`: history recall always
+    /// lands the cursor at the END of the recalled line, where a bare `w`
+    /// motion has nowhere left to go (a boundary `resolve_motion` returns
+    /// the SAME position), which would pass even with the bug present --
+    /// `b` actually moves, and so actually exercises the defect.
+    #[test]
+    fn ctrl_p_history_recall_cancels_a_pending_vim_operator() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = EditorMode::Vim;
+        state.history = std::collections::VecDeque::from(vec!["an old entry".to_string()]);
+        state.input.clear();
+
+        handle_key(&mut state, key(KeyCode::Esc)); // INSERT -> NORMAL
+        handle_key(&mut state, key(KeyCode::Char('d'))); // pending Delete operator
+
+        let action = handle_key(&mut state, ctrl_key(KeyCode::Char('p')));
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            state.input, "an old entry",
+            "Ctrl-P must still recall history in vim mode"
+        );
+
+        handle_key(&mut state, key(KeyCode::Char('b')));
+
+        assert_eq!(
+            state.input, "an old entry",
+            "the stale pending `d` must not complete `db` against the recalled text"
+        );
     }
 
     /// T8 (worker-flagged gap): moving between lines of DIFFERENT lengths.
@@ -5745,10 +6016,12 @@ mod tests {
         // this test already walked past ("default role" leaf; "default
         // model" is `MenuNode::Static` and Down skips it); board item
         // `01M1YVHKTQVXJRDSRYT3TCRXFX` added a third row ("busy input") to
-        // "display" itself: defaults group (0), default role (1), display
-        // group (2), reasoning (3), timestamps (4), busy input (5), tool
-        // output group (6), tool preview lines (7).
-        for _ in 0..7 {
+        // "display" itself, and board item `01M1YVJNS575YN5DCQG9BKZR4E`
+        // added a fourth ("editor mode"), right after it: defaults group
+        // (0), default role (1), display group (2), reasoning (3),
+        // timestamps (4), busy input (5), editor mode (6), tool output
+        // group (7), tool preview lines (8).
+        for _ in 0..8 {
             handle_key(&mut state, key(KeyCode::Down));
         }
         assert!(

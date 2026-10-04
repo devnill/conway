@@ -87,7 +87,25 @@ fn input_box_chrome(state: &AppState, disabled: bool, theme: &Theme) -> (String,
     } else {
         ("input", theme.border_normal)
     };
-    (queued_strip_title(state, base), style)
+    let base = vim_mode_suffix(state, base);
+    (queued_strip_title(state, &base), style)
+}
+
+/// Board item `01M1YVJNS575YN5DCQG9BKZR4E`: the vim mode indicator the
+/// spec asks for in "the input tray" -- appended to the SAME border-title
+/// string the shell-mode/paused chrome above already computes, so showing
+/// it needs no layout change, mirroring how the queued strip
+/// ([`queued_strip_title`]) already piggybacks on this one title string.
+/// A no-op (returns `base` verbatim) whenever [`AppState::editor_mode`]
+/// is `emacs` -- the indicator only exists for the mode it describes.
+fn vim_mode_suffix(state: &AppState, base: &str) -> String {
+    if !matches!(state.editor_mode, crate::tui::config::EditorMode::Vim) {
+        return base.to_string();
+    }
+    match &state.vim.mode {
+        crate::tui::input::vim::VimMode::Search { query } => format!("{base} [/{query}]"),
+        _ => format!("{base} [{}]", state.vim.mode_label()),
+    }
 }
 
 /// Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: the queued strip itself --
@@ -240,6 +258,53 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
+    }
+
+    /// Board item `01M1YVJNS575YN5DCQG9BKZR4E`, acceptance: "the tray shows
+    /// the mode."
+    #[test]
+    fn vim_mode_shows_in_the_border_title() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = crate::tui::config::EditorMode::Vim;
+        state.input = "hello".to_string();
+        state.cursor = 0;
+        crate::tui::input::handle_key(
+            &mut state,
+            ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Esc,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("NORMAL"),
+            "the input tray must show the vim mode: {text}"
+        );
+    }
+
+    /// The emacs default shows no mode indicator at all -- it has no mode
+    /// to show.
+    #[test]
+    fn emacs_mode_shows_no_mode_indicator() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello".to_string();
+        state.cursor = 5;
+
+        let (title, _) = input_box_chrome(&state, false, &Theme::default());
+        assert_eq!(title, "input");
     }
 
     #[test]

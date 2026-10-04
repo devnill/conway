@@ -465,6 +465,10 @@ impl App {
         // session-only posture `tool_preview_lines` already has (`state::
         // busy_input`'s own module doc).
         state.busy_input = tui_config.busy_input;
+        // Board item `01M1YVJNS575YN5DCQG9BKZR4E`: `[tui.editor_mode]`
+        // (default `emacs`) seeds the session's STARTING value, the same
+        // session-only posture `busy_input` immediately above already has.
+        state.editor_mode = tui_config.editor_mode;
         let history_path = conway::config::discovery::history_file_path(
             &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
         );

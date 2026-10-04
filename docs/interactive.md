@@ -133,6 +133,70 @@ A Ctrl or Alt chord that is not bound to anything is ignored rather than
 typed as its bare letter — pressing an unbound `Ctrl-X`, for instance,
 does nothing, instead of inserting an `x`.
 
+### Vim editing mode
+
+`tui.editor_mode = "vim"` in `settings.json` (default `"emacs"`, today's
+readline-shaped keys above, unchanged) turns on a modal editor for the
+input box only — the transcript, the agent panel, every modal, and
+`/settings` itself never gain vim keys, regardless of this setting. It is
+also a `/settings` → "display" toggle (`Enter` flips it for the rest of the
+session). The input box's own border title always names the current
+submode (`input [INSERT]`, `input [NORMAL]`, `input [VISUAL]`, `input
+[VISUAL LINE]`, or `input [/pattern]` while composing a search) so it is
+never ambiguous which one you're in.
+
+**Every Ctrl-bound action above (`Ctrl-A`/`Ctrl-E`/`Ctrl-U`/`Ctrl-K`,
+`Ctrl-P`/`Ctrl-N` history, `Ctrl-O`, `Ctrl-G`, `Tab`, `F2`) keeps working
+exactly as it does in `emacs` mode, in BOTH vim submodes.** Vim mode is a
+modal layer on top of the input box, never a second, competing keymap —
+see "Keybindings" below. The one new chord it adds is `Ctrl-R` (redo),
+since nothing above already claims it.
+
+Starts in INSERT (ordinary typing, exactly like `emacs` mode) so turning
+this on mid-session never interrupts what you were typing. The supported
+subset, stated in full — nothing beyond this list is implemented:
+
+- `Esc` leaves INSERT for NORMAL. **`Esc` in INSERT never submits and
+  never interrupts the agent** — `Ctrl-C` remains the only interrupt key,
+  in both submodes.
+- `i` `a` `I` `A` `o` `O` enter INSERT (before/after the cursor, at the
+  start/end of the line, on a new line below/above).
+- Motions, with counts (`3w`, `2j`, ...): `h j k l` (left/down/up/right —
+  `j`/`k` move between lines of a multi-line draft, same as `Up`/`Down`
+  already do), `w b e` (word forward/backward/to word-end), `0 ^ $`
+  (start/first-non-blank/end of the current line), `gg G` (first/last
+  line, or `{count}gg`/`{count}G` for an exact line number — the count
+  here is an absolute target, never a multiplier), `f F t T` + a
+  character (find/till, forward/backward, on the current line only). Any
+  count — a bare count or either half of an operator+motion pair like
+  `9999d9999w` — is capped at **9999**; digits typed past that ceiling are
+  dropped rather than accumulated, so an implausibly large count (a typo,
+  or a stray paste) can never allocate or loop far beyond what the input
+  box could ever show.
+- Operators `d` (delete) `c` (change) `y` (yank) compose with any motion
+  above (`dw`, `c$`, `y0`, ...), plus the linewise doubled forms `dd cc
+  yy` and the to-end-of-line forms `D C`. `cw` is vim's own special case:
+  with the cursor on a non-blank it changes through the end of the
+  current word (like `ce`), leaving trailing whitespace alone, rather
+  than consuming it the way `dw`/`yw` do; on a blank it behaves like a
+  bare `w`.
+- Text objects, ONLY `iw aw i" a" i( a(` — reachable right after an
+  operator (`ciw`, `daw`, `yi"`, `di(`, ...), never as a bare motion and
+  never inside Visual mode.
+- `x X` (delete the char under/before the cursor), `p P` (put the one
+  unnamed register after/before the cursor or line).
+- `u` / `Ctrl-R` (undo/redo).
+- `.` repeats the last text-changing command, replayed against wherever
+  the cursor is NOW — not a saved range.
+- `v` / `V` (characterwise/linewise Visual) + `d y c`.
+- `/pattern` + `Enter`: a literal (non-regex) forward search WITHIN the
+  input text, wrapping around; `Esc` cancels.
+
+**Not built, on purpose:** no `:` command line, no named registers (the
+one unnamed register only — no macros either), no other text objects
+(sentences, paragraphs, `ib`/`it`, ...), no `;`/`,` find-repeat. This is a
+documented subset, not an emulation of vim itself.
+
 ### Typing while the agent works
 
 Submitting a message while an agent's turn is still running has always
@@ -1458,8 +1522,11 @@ scroll) and the two safety chords `Ctrl-C` (interrupt) and `Ctrl-D` (quit
 on empty input) stay fixed. So do the ask-modal/intent-confirm/
 trust-preview decision keys and the agent panel's own `Esc` (close panel,
 then return to root) — none of those live in the six rebindable contexts
-above. No vim mode and no chords/leader keys either — a separate item owns
-vim mode; this is scoped to single-key rebinding only.
+above. No chords/leader keys here either: this table is single-key
+rebinding only. `tui.editor_mode = "vim"` (see "Vim editing mode," above)
+is a SEPARATE modal layer over the input box, not an entry in this table —
+it never rebinds any action above, and every Ctrl-bound action here keeps
+its exact meaning in both vim submodes.
 
 ## Ending a session
 

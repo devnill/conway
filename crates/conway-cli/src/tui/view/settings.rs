@@ -304,6 +304,9 @@ pub(crate) const LEAF_SHOW_TIMESTAMPS: &str = "show_timestamps";
 /// `Enter` cycles `queue -> steer -> interrupt -> queue` --
 /// `AppState::cycle_busy_input`'s own doc.
 pub(crate) const LEAF_BUSY_INPUT: &str = "busy_input";
+/// Board item `01M1YVJNS575YN5DCQG9BKZR4E`: `Enter` flips `emacs <-> vim`
+/// -- `AppState::toggle_editor_mode`'s own doc.
+pub(crate) const LEAF_EDITOR_MODE: &str = "editor_mode";
 pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
 /// V2b: cycles `prompt` -> `plan` -> `AUTO-ALLOW` -> `prompt`.
 pub(crate) const LEAF_PERMISSION_MODE: &str = "permission_mode";
@@ -509,6 +512,7 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                     LEAF_SHOW_TIMESTAMPS,
                 ),
                 MenuNode::leaf(busy_input_label(state.busy_input), LEAF_BUSY_INPUT),
+                MenuNode::leaf(editor_mode_label(state.editor_mode), LEAF_EDITOR_MODE),
             ],
         ),
         group_node(
@@ -877,6 +881,31 @@ fn busy_input_label(mode: crate::tui::state::BusyInputMode) -> String {
     format!("busy input -- {name} ({detail}; Enter to cycle; [tui.busy_input])")
 }
 
+/// Board item `01M1YVJNS575YN5DCQG9BKZR4E`: the `editor mode` row's own
+/// label, mirroring [`busy_input_label`]'s shape immediately above.
+fn editor_mode_label(mode: crate::tui::state::EditorMode) -> String {
+    use crate::tui::state::EditorMode;
+    let (name, detail) = match mode {
+        // Deliberately never spells "readline" here -- a prior wording did,
+        // and its own substring collided with an unrelated existing test's
+        // `label.contains("read")` search for a `read:*` PERMISSION grant
+        // row elsewhere in this same tree (`tui::input::tests::enter_on_a_
+        // grant_row_resolves_to_the_exact_rule_and_origin_selected`),
+        // silently matching THIS row first since it renders earlier in
+        // document order. A cautionary instance of why a settings label's
+        // wording is not merely cosmetic.
+        EditorMode::Emacs => (
+            "emacs",
+            "today's default keymap (Ctrl-A/E/U/K/P/N, ...), unchanged",
+        ),
+        EditorMode::Vim => (
+            "vim",
+            "modal INSERT/NORMAL editing -- see docs/interactive.md",
+        ),
+    };
+    format!("editor mode -- {name} ({detail}; Enter to toggle; [tui.editor_mode])")
+}
+
 /// Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: the `/settings` footer's key
 /// hint, built from `Context::Settings`'s CURRENT effective bindings
 /// (`keymap.keys_for`) rather than the hardcoded `[Up/Down] move  [Enter]
@@ -1135,7 +1164,14 @@ mod tests {
     #[test]
     fn draw_renders_bottom_anchored_and_content_sized() {
         let state = AppState::new(AgentId::new());
-        let text = render(&state, 80, 24);
+        // Board item `01M1YVJNS575YN5DCQG9BKZR4E`: 24 -> 40 -- the new
+        // "editor mode" row in "display" pushes "tool output" (checked
+        // below) one row further down; the modal's own height is capped at
+        // `transcript_area.height / CAP_DENOMINATOR` (currently 2), so one
+        // extra content row can need more than one extra terminal row to
+        // actually buy back a visible slot -- a generous bump, not a
+        // minimal one, so this does not need re-tuning on the next such row.
+        let text = render(&state, 80, 40);
         assert!(text.contains("SETTINGS"), "{text}");
         assert!(text.contains("display"), "{text}");
         assert!(text.contains("tool output"), "{text}");

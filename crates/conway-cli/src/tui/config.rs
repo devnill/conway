@@ -139,6 +139,30 @@ pub struct TuiSection {
     /// back).
     #[serde(default)]
     pub busy_input: BusyInputMode,
+    /// `[tui.editor_mode]` (board item `01M1YVJNS575YN5DCQG9BKZR4E`, opt-in
+    /// vim prompt editing): `emacs` (the default -- today's readline-shaped
+    /// keymap, unchanged) or `vim`, which layers INSERT/NORMAL modal editing
+    /// on top of the SAME input widget -- see [`crate::tui::input::vim`]'s
+    /// own module doc for the supported subset. Seeded here as the
+    /// session's STARTING value; the `/settings` menu's "display" group
+    /// toggles it for the rest of THIS session only, the same session-only
+    /// posture [`Self::busy_input`] already has.
+    #[serde(default)]
+    pub editor_mode: EditorMode,
+}
+
+/// `[tui.editor_mode]`'s two values -- see [`TuiSection::editor_mode`]'s own
+/// doc. `vim` never rebinds a single entry of [`crate::tui::keybindings::
+/// ACTIONS`] -- it is a modal layer the input widget consults BEFORE its
+/// ordinary text-editing fallback, not a second keymap (see
+/// `crate::tui::input::vim`'s own module doc for the full mechanism and
+/// precedence).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditorMode {
+    #[default]
+    Emacs,
+    Vim,
 }
 
 /// `[tui.busy_input]`'s three modes -- see [`TuiSection::busy_input`]'s own
@@ -617,6 +641,44 @@ mod tests {
         let tui = load_from_options(options).expect("load must succeed");
 
         assert_eq!(tui.busy_input, BusyInputMode::Steer);
+    }
+
+    /// Board item `01M1YVJNS575YN5DCQG9BKZR4E`: `tui.editor_mode = "vim"`
+    /// loads as a real, supported value -- mirrors `an_ordinary_busy_input_
+    /// value_loads` immediately above. A missing key defaults to `emacs`
+    /// (`EditorMode::default()`), covered by `TuiSection::default()` having
+    /// no dedicated test of its own, the same way every other `#[serde(default)]`
+    /// slot in this struct is only exercised indirectly.
+    #[test]
+    fn editor_mode_vim_loads() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}},
+                "tui": {"editor_mode": "vim"}
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("a supported value must load");
+
+        assert_eq!(tui.editor_mode, EditorMode::Vim);
     }
 
     /// The `CONWAY_TUI__STATUS_LINE__FIELDS` env override reaches this

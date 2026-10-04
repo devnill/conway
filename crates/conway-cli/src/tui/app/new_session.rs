@@ -192,6 +192,7 @@ mod tests {
         app.state.keybindings = crate::tui::keybindings::Keymap::load(&keybindings_path)
             .expect("the hand-written keybindings.json must parse");
         app.state.busy_input = crate::tui::config::BusyInputMode::Steer;
+        app.state.editor_mode = crate::tui::config::EditorMode::Vim;
         app.state.history =
             std::collections::VecDeque::from(vec!["an old-session history entry".to_string()]);
         app.state.status_line_config.fields = vec!["cwd".to_string()];
@@ -237,6 +238,11 @@ mod tests {
             app.state.busy_input,
             crate::tui::config::BusyInputMode::Steer,
             "the busy_input display preference must survive /new"
+        );
+        assert_eq!(
+            app.state.editor_mode,
+            crate::tui::config::EditorMode::Vim,
+            "the editor_mode display preference must survive /new"
         );
         assert!(
             app.state

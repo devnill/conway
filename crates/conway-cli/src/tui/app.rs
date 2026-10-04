@@ -1075,6 +1075,7 @@ mod tests {
         app.state.keybindings = crate::tui::keybindings::Keymap::load(&keybindings_path)
             .expect("the hand-written keybindings.json must parse");
         app.state.busy_input = crate::tui::config::BusyInputMode::Steer;
+        app.state.editor_mode = crate::tui::config::EditorMode::Vim;
         app.state.history =
             std::collections::VecDeque::from(vec!["an old-session history entry".to_string()]);
         app.state.status_line_config.fields = vec!["cwd".to_string()];
@@ -1120,6 +1121,11 @@ mod tests {
             app.state.busy_input,
             crate::tui::config::BusyInputMode::Steer,
             "the busy_input display preference must survive /resume"
+        );
+        assert_eq!(
+            app.state.editor_mode,
+            crate::tui::config::EditorMode::Vim,
+            "the editor_mode display preference must survive /resume"
         );
         assert!(
             app.state
@@ -2047,7 +2053,14 @@ mod tests {
         // `untrusted_file_deny_and_prompt_rules_are_visible_in_settings`'s
         // own comment gives -- the new "shell prefixes" section pushes the
         // `hooks` section (further down still) past the old viewport.
-        let text = crate::tui::test_support::render_text(&app.state, 200, 56);
+        // Board item `01M1YVJNS575YN5DCQG9BKZR4E` bumps it once more, 56 to
+        // 80, for the identical reason again -- the new "editor mode" row
+        // in "display" pushes every section below it down by one, and the
+        // modal's own height is capped at `transcript_area.height /
+        // CAP_DENOMINATOR` (currently 2), so one extra content row can need
+        // more than one extra terminal row to buy back a visible slot. A
+        // generous bump, not a minimal one.
+        let text = crate::tui::test_support::render_text(&app.state, 200, 80);
         assert!(text.contains("hooks"), "{text}");
         assert!(text.contains("deny-writes"), "{text}");
     }

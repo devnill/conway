@@ -41,6 +41,7 @@ use super::gate::PendingPrompt;
 mod agent_panel;
 mod agent_tree;
 mod busy_input;
+mod editor_mode;
 mod input_line;
 mod mentions;
 mod modal;
@@ -52,6 +53,7 @@ mod turn_summary;
 pub use agent_panel::AgentVisibility;
 pub use agent_tree::{AgentTreeView, NodeStatus, SpawnRoleOrModel, TreeNode};
 pub use busy_input::BusyInputMode;
+pub use editor_mode::EditorMode;
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use mentions::MentionScanRequest;
 pub use modal::{
@@ -465,6 +467,15 @@ pub struct AppState {
     /// Always in `0..=input.chars().count()`.
     pub cursor: usize,
     pub mode: Mode,
+    /// Board item `01M1YVJNS575YN5DCQG9BKZR4E`: the vim prompt-editing
+    /// engine's own transient state (current submode, pending operator/
+    /// count, the undo stack, the unnamed register, ...) -- live only while
+    /// [`Self::editor_mode`] is [`EditorMode::Vim`]; `emacs` mode never
+    /// reads or mutates this field at all. See `crate::tui::input::vim`'s
+    /// own module doc for the engine itself, and `state::editor_mode`'s for
+    /// why this is RESET (never carried) across `/new`/`/resume` while
+    /// `editor_mode` itself is carried.
+    pub vim: crate::tui::input::vim::VimState,
     /// V2: the active permission mode, mirrored from the runtime broker so
     /// the status line can render it every frame without reaching across
     /// the facade per draw. Updated when `/settings` changes it.
@@ -1379,6 +1390,15 @@ pub struct AppState {
     /// own module doc). See `state::busy_input`'s own module doc for the
     /// full mechanism.
     pub busy_input: BusyInputMode,
+    /// Board item `01M1YVJNS575YN5DCQG9BKZR4E`: `emacs` (default, today's
+    /// readline-shaped keymap unchanged) or `vim` (a modal editing layer,
+    /// `crate::tui::input::vim`). Seeded at `App::new` from `[tui.
+    /// editor_mode]`; the `/settings` menu's "display" group toggles it for
+    /// the rest of THIS session only, the same session-only posture
+    /// [`Self::busy_input`] immediately above already has. See `state::
+    /// editor_mode`'s own module doc for the full CARRY/RESET split against
+    /// [`Self::vim`].
+    pub editor_mode: EditorMode,
     /// `busy_input = queue`'s own withheld-message FIFO, tagged with the
     /// `AgentId` each entry was queued FOR -- review round 1's CRITICAL
     /// fix: a bare `String` queue implicitly assumed delivery would always
@@ -2006,6 +2026,7 @@ impl AppState {
             input: String::new(),
             cursor: 0,
             mode: Mode::Normal,
+            vim: crate::tui::input::vim::VimState::default(),
             permission_mode: PermissionMode::default(),
             default_permission_mode: PermissionMode::default(),
             permission_paths: Vec::new(),
@@ -2090,6 +2111,7 @@ impl AppState {
             show_reasoning: true,
             show_timestamps: false,
             busy_input: BusyInputMode::default(),
+            editor_mode: EditorMode::default(),
             held_prompts: VecDeque::new(),
             pending_steers: VecDeque::new(),
             history: VecDeque::new(),
@@ -2224,6 +2246,12 @@ impl AppState {
             input: _,
             cursor: _,
             mode: _,
+            // RESET: a partially-typed vim command (pending operator, open
+            // Visual selection, undo/redo stacks, the unnamed register)
+            // belongs to the OLD session's own in-progress editing -- see
+            // `state::editor_mode`'s own doc. `editor_mode` itself (the
+            // `emacs`/`vim` session preference) is CARRIED, below.
+            vim: _,
             permission_mode,
             default_permission_mode,
             permission_paths,
@@ -2300,6 +2328,7 @@ impl AppState {
             show_reasoning,
             show_timestamps,
             busy_input,
+            editor_mode,
             held_prompts: _,
             pending_steers: _,
             history,
@@ -2371,6 +2400,7 @@ impl AppState {
         self.show_reasoning = show_reasoning;
         self.show_timestamps = show_timestamps;
         self.busy_input = busy_input;
+        self.editor_mode = editor_mode;
         self.history = history;
         self.history_cap = history_cap;
         self.plugin_commands = plugin_commands;

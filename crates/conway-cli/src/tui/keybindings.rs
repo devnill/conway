@@ -53,9 +53,13 @@
 //! transcript/multi-line-draft priority chain) and the two safety chords
 //! `Ctrl-C`/`Ctrl-D` stay fixed, as do the ask-modal/intent-confirm/
 //! trust-preview decision keys and the agent panel's own `Esc` -- none of
-//! those live in the six contexts [`Context`] enumerates. No vim mode, no
-//! chords/leader keys either -- a separate board item owns vim mode; noted
-//! as a follow-up here, not attempted. See `docs/interactive.md`'s own
+//! those live in the six contexts [`Context`] enumerates. No chords/leader
+//! keys here either -- this table is single-key rebinding only.
+//! `tui.editor_mode = "vim"` (board item `01M1YVJNS575YN5DCQG9BKZR4E`,
+//! `crate::tui::input::vim`) is a SEPARATE modal layer over the input box,
+//! never an entry in this table -- it rebinds nothing here, and every
+//! Ctrl-bound action stays reachable unchanged in both vim submodes (see
+//! that module's own "Precedence" doc). See `docs/interactive.md`'s own
 //! "Fixed, not remappable" section, which this module's own
 //! `docs_interactive_md_documents_every_action` test keeps honest
 //! against [`ACTIONS`] for the part that IS rebindable.
