@@ -274,6 +274,58 @@ mod tests {
         );
     }
 
+    /// Dogfood round 4 finding (B4a ruling), widening the test above to the
+    /// one thing it could NOT catch: `app.state.permission_grants.is_
+    /// empty()` only ever proved the TUI's own MIRROR was cleared --
+    /// `AppState::reset_for_new_session` always did that correctly. The real
+    /// defect lived one layer down: THIS `Conway`'s own `PermissionBroker`
+    /// is shared across every session it ever starts, for the lifetime of
+    /// the process, and kept honoring a grant the OLD session earned
+    /// interactively, for the NEW session too, until `Conway::
+    /// revoke_all_session_scoped_grants` started being called at `/new`'s
+    /// own swap point. This test drives the grant through the REAL
+    /// production entry point an operator's own "always" answer to a shell
+    /// prefix prompt uses (`Conway::grant_session_shell_prefix`, the exact
+    /// call `app/run.rs`'s own `[p]`-answer arm makes) and asserts on the
+    /// BROKER's own review surface (`Conway::active_shell_prefix_grants`),
+    /// never the mirror -- the one assertion shape that can actually tell
+    /// this fix apart from the mirror-only "fix" that preceded it.
+    #[tokio::test]
+    async fn new_revokes_a_session_scoped_shell_prefix_grant_the_old_session_earned() {
+        let (conway, _store) = echo_conway_and_store();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let old_root = app.handle.root();
+
+        let installed = app.conway.grant_session_shell_prefix(
+            "git status".to_string(),
+            conway::PermissionScope::Session,
+            old_root,
+        );
+        assert!(
+            installed,
+            "grant_session_shell_prefix must install the grant"
+        );
+        assert_eq!(
+            app.conway.active_shell_prefix_grants(),
+            vec![("git status".to_string(), conway::GrantScope::Session)],
+            "sanity: the grant must actually be live on the broker before /new"
+        );
+
+        app.submit("/new".to_string())
+            .await
+            .expect("submit should not error");
+
+        assert_eq!(
+            app.conway.active_shell_prefix_grants(),
+            Vec::new(),
+            "a session-scoped grant the OLD session earned must not survive /new on \
+             THIS Conway's own shared PermissionBroker -- not merely in the TUI's mirror"
+        );
+    }
+
     /// `/new` aborts a genuinely in-flight turn FIRST, rather than refusing
     /// or leaving it to run on orphaned -- driven against a REAL tool call
     /// in flight, mirroring `app/busy_input.rs`'s own `HeldTool` fixture.

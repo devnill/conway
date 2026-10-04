@@ -2188,6 +2188,69 @@ impl PermissionBroker {
             .clear();
     }
 
+    /// Drops every grant scoped `GrantScope::Session` across the three
+    /// interactively-earned grant classes this broker holds -- the
+    /// `AllowAlways` cache, `patterns`' own `PatternOrigin::Interactive`
+    /// rows, and `shell_prefix_grants` -- and nothing else. The narrower
+    /// sibling [`Self::revoke_all_grants`] deliberately will not do for this:
+    /// that method clears `patterns` UNCONDITIONALLY, including rules loaded
+    /// from a trusted file at startup (durable config, not something any one
+    /// session earned), and `cache` in full, including an `Agent`/`Subtree`-
+    /// scoped entry that still names a specific, possibly still-running
+    /// agent from elsewhere in the SAME tree -- using it at a session
+    /// boundary would be a strictly worse trade than the leak it is meant to
+    /// close.
+    ///
+    /// **Why this exists at all (a dogfood finding): one `PermissionBroker`
+    /// is shared across every session a single `Conway`/`Runtime` ever
+    /// starts, for the lifetime of the process** -- `Runtime::new` builds
+    /// ONE broker (this struct's own doc, "one broker instance is shared
+    /// across an agent tree," predates `/new`/`/resume`/`/distill` ever
+    /// replacing `self.handle` onto a FRESH session against the SAME
+    /// `Conway`/`Runtime`), and `GrantScope::Session` carries no `SessionId`
+    /// of its own -- it was built to mean "every requester in the session,"
+    /// back when a session's lifetime and the broker's own were the same
+    /// thing. Neither holds once a second session shares the broker: a
+    /// `GrantScope::Session` grant the OLD session earned (interactively, an
+    /// operator's own "always allow") silently covers the NEW session's
+    /// every requester too, with no way to tell the two apart by scope
+    /// alone -- exactly the leak a dogfood round caught `/distill`
+    /// reproducing (board item naming this fix's own report), and which
+    /// `/new`/`/resume` already shared just as much, silently, before this
+    /// method existed to call.
+    ///
+    /// **Still an approximation, disclosed:** a true per-session fix would
+    /// thread a `SessionId` through `GrantScope::Session` itself -- a
+    /// structural change to this type (and its facade mirror,
+    /// `conway_core::agent::GrantScope`) touching every store's own tuple
+    /// shape, `covers()`, and the existing test suite's own `GrantScope::
+    /// Session` assertions throughout this file, assessed as too wide a
+    /// change to bundle into this fix. This method is the contained
+    /// alternative: callable at every point `conway-cli` already swaps onto
+    /// a fresh session, it drops precisely the one grant SHAPE the ruling
+    /// named ("a session-scoped grant belongs to the session that earned
+    /// it") without touching a single Agent/Subtree-scoped or file/plugin-
+    /// origin row.
+    pub fn revoke_all_session_scoped_grants(&self) {
+        self.cache
+            .write()
+            .expect("permission cache poisoned")
+            .retain(|_, scopes| {
+                scopes.retain(|scope| *scope != GrantScope::Session);
+                !scopes.is_empty()
+            });
+        self.patterns
+            .write()
+            .expect("permission patterns poisoned")
+            .retain(|(_, _, scope, origin)| {
+                !(*scope == GrantScope::Session && matches!(origin, PatternOrigin::Interactive))
+            });
+        self.shell_prefix_grants
+            .write()
+            .expect("shell prefix grants poisoned")
+            .retain(|(_, scope)| *scope != GrantScope::Session);
+    }
+
     /// Revokes exactly ONE installed pattern ALLOW grant, addressed by the
     /// value it renders as -- `(rule, origin)` -- rather than by position
     /// in `active_patterns()`.
@@ -5796,6 +5859,261 @@ mod tests {
                 1,
                 "a revoked grant must never resurrect -- the identical command must prompt \
                  again"
+            );
+        }
+
+        /// Dogfood round 4 finding (B4a ruling: "a session-scoped grant
+        /// belongs to the session that earned it"): [`PermissionBroker::
+        /// revoke_all_session_scoped_grants`] must drop every
+        /// `GrantScope::Session` row across the three interactively-earned
+        /// grant classes -- the `AllowAlways` cache, `patterns`' own
+        /// `PatternOrigin::Interactive` rows, and `shell_prefix_grants` --
+        /// and touch NOTHING else: not an `Agent`-scoped cache entry, not a
+        /// FILE-origin pattern rule even when it happens to ALSO be
+        /// `Session`-scoped (durable config, never earned by any one
+        /// session), not an `Agent`-scoped shell-prefix grant. Driven
+        /// entirely through `decide()`/the broker's own public grant-install
+        /// methods (P-15: the cache in particular has no direct
+        /// constructor -- `remember` is private, reachable only through a
+        /// real `AllowAlways` decision), never a hand-built `GrantScope`
+        /// poked into a private field. Every "survives" assertion below
+        /// re-decides the identical call and checks the gate was NOT
+        /// reached again -- the same "a revoked grant must never
+        /// resurrect"/"an untouched grant must never re-prompt" idiom the
+        /// existing shell-prefix tests above already use.
+        #[tokio::test]
+        async fn revoke_all_session_scoped_grants_drops_only_interactively_earned_session_scoped_rows(
+        ) {
+            /// Branches an `AllowAlways` answer by scope on the rendered
+            /// text (otherwise grants a plain `AllowOnce`) -- lets this one
+            /// broker/gate pair drive the cache-population half of this
+            /// test AND the pattern-rule half, which must never reach this
+            /// gate at all before the revoke.
+            struct ScriptedScopeGate {
+                calls: Mutex<Vec<String>>,
+            }
+            impl ScriptedScopeGate {
+                fn new() -> Arc<Self> {
+                    Arc::new(Self {
+                        calls: Mutex::new(Vec::new()),
+                    })
+                }
+                fn call_count(&self) -> usize {
+                    self.calls.lock().unwrap().len()
+                }
+            }
+            #[async_trait]
+            impl PermissionGate for ScriptedScopeGate {
+                async fn check(&self, req: PermissionRequest) -> PermissionDecision {
+                    self.calls.lock().unwrap().push(req.rendered.clone());
+                    if req.rendered.contains("session-scoped") {
+                        PermissionDecision::AllowAlways {
+                            scope: PermissionScope::Session,
+                        }
+                    } else if req.rendered.contains("agent-scoped") {
+                        PermissionDecision::AllowAlways {
+                            scope: PermissionScope::Agent,
+                        }
+                    } else {
+                        PermissionDecision::AllowOnce
+                    }
+                }
+            }
+
+            let gate = ScriptedScopeGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let agent = AgentId::new();
+            let ctx = test_ctx(agent, SessionId::new());
+
+            // --- The AllowAlways cache: one Session-scoped entry, one
+            // Agent-scoped entry. ---
+            assert_eq!(
+                broker
+                    .decide(&ctx, &bash_call("c1", "echo session-scoped"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                broker
+                    .decide(&ctx, &bash_call("c2", "echo agent-scoped"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                gate.call_count(),
+                2,
+                "sanity: both calls must reach the gate once each, to populate the cache"
+            );
+            // Sanity: both are now served from cache, with no further gate
+            // calls -- establishes the ABSENT-then-present shape P-15 asks
+            // for, before the revoke this test is actually about.
+            assert_eq!(
+                broker
+                    .decide(&ctx, &bash_call("c1b", "echo session-scoped"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                broker
+                    .decide(&ctx, &bash_call("c2b", "echo agent-scoped"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                gate.call_count(),
+                2,
+                "sanity: the cache must serve both without reaching the gate again"
+            );
+
+            // --- patterns: one interactively-earned Session-scoped rule,
+            // one FILE-origin rule that happens to ALSO be Session-scoped,
+            // one interactively-earned Agent-scoped rule. All three for
+            // non-bash tools -- a pattern allow never covers a
+            // `ShellCommand` call at all (`PatternRule::matches_render`'s
+            // own doc), which is irrelevant to what this test is proving.
+            broker.remember_pattern(
+                PatternRule::parse("sessiontool:*").expect("valid rule"),
+                PermissionScope::Session,
+                agent,
+                PatternOrigin::Interactive,
+            );
+            broker.remember_pattern(
+                PatternRule::parse("filetool:*").expect("valid rule"),
+                PermissionScope::Session,
+                agent,
+                PatternOrigin::File(PathBuf::from("/tmp/permissions.toml")),
+            );
+            broker.remember_pattern(
+                PatternRule::parse("agenttool:*").expect("valid rule"),
+                PermissionScope::Agent,
+                agent,
+                PatternOrigin::Interactive,
+            );
+            // Sanity: all three currently short-circuit the gate.
+            for tool in ["sessiontool", "filetool", "agenttool"] {
+                assert_eq!(
+                    broker.decide(&ctx, &call_for_tool("pre", tool)).await,
+                    PermissionOutcome::Allow
+                );
+            }
+            assert_eq!(
+                gate.call_count(),
+                2,
+                "sanity: none of the three pattern rules may have reached the gate"
+            );
+
+            // --- shell_prefix_grants: one Session-scoped, one Agent-scoped. ---
+            broker.remember_shell_prefix_grant(
+                "git status".into(),
+                PermissionScope::Session,
+                agent,
+            );
+            broker.remember_shell_prefix_grant("cargo build".into(), PermissionScope::Agent, agent);
+            assert_eq!(
+                broker
+                    .decide(&ctx, &bash_call("pre-git", "git status --short"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                broker
+                    .decide(&ctx, &bash_call("pre-cargo", "cargo build --release"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                gate.call_count(),
+                2,
+                "sanity: neither shell-prefix grant may have reached the gate"
+            );
+
+            // --- The revoke under test. ---
+            broker.revoke_all_session_scoped_grants();
+
+            // The AllowAlways cache: the Session-scoped entry is gone (the
+            // identical command reaches the gate again); the Agent-scoped
+            // one survives (still served from cache).
+            assert_eq!(
+                broker
+                    .decide(&ctx, &bash_call("c1c", "echo session-scoped"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                gate.call_count(),
+                3,
+                "the Session-scoped cache entry must be gone -- this command must reach \
+                 the gate again"
+            );
+            assert_eq!(
+                broker
+                    .decide(&ctx, &bash_call("c2c", "echo agent-scoped"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                gate.call_count(),
+                3,
+                "the Agent-scoped cache entry must survive -- still served from cache"
+            );
+
+            // patterns: the interactive Session-scoped rule is gone; the
+            // file-origin Session-scoped rule and the interactive
+            // Agent-scoped rule both survive.
+            assert_eq!(
+                broker
+                    .decide(&ctx, &call_for_tool("post1", "sessiontool"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                gate.call_count(),
+                4,
+                "the interactively-earned Session-scoped pattern rule must be gone"
+            );
+            assert_eq!(
+                broker
+                    .decide(&ctx, &call_for_tool("post2", "filetool"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                gate.call_count(),
+                4,
+                "a file-origin rule must survive even though it is ALSO Session-scoped -- \
+                 it was never earned by any one session"
+            );
+            assert_eq!(
+                broker
+                    .decide(&ctx, &call_for_tool("post3", "agenttool"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                gate.call_count(),
+                4,
+                "an Agent-scoped rule must survive regardless of origin"
+            );
+
+            // shell_prefix_grants: the Session-scoped one is gone, the
+            // Agent-scoped one survives -- mirrors the existing revoke-all
+            // test's own direct-getter assertion immediately above.
+            assert_eq!(
+                broker.active_shell_prefix_grants(),
+                vec![("cargo build".to_string(), GrantScope::Agent(agent))],
+                "only the Agent-scoped shell-prefix grant may survive"
+            );
+            assert_eq!(
+                broker
+                    .decide(&ctx, &bash_call("post-git", "git status --short"))
+                    .await,
+                PermissionOutcome::Allow
+            );
+            assert_eq!(
+                gate.call_count(),
+                5,
+                "the Session-scoped shell-prefix grant must be gone -- this command must \
+                 reach the gate again"
             );
         }
     }

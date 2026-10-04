@@ -1006,6 +1006,69 @@ mod tests {
         );
     }
 
+    /// Dogfood round 4 finding (B4a ruling: "a session-scoped grant belongs
+    /// to the session that earned it ... must not carry into a fresh
+    /// session via /new, /resume or /distill"). THIS `Conway`'s own
+    /// `PermissionBroker` is shared across every session it ever starts,
+    /// for the lifetime of the process -- `apply_resume` swapping `self.
+    /// handle` onto a DIFFERENT, already-existing session must not keep
+    /// honoring whatever the session being LEFT earned interactively.
+    /// Drives the grant through the REAL production entry point an
+    /// operator's own "always" answer to a shell-prefix prompt uses
+    /// (`Conway::grant_session_shell_prefix`, the same call `app/run.rs`'s
+    /// own `[p]`-answer arm makes) and asserts on the BROKER's own review
+    /// surface (`Conway::active_shell_prefix_grants`), not a TUI-side
+    /// mirror -- the one assertion shape `/new`'s own pre-existing test
+    /// (`new_carries_grants_path_and_configured_permission_rules_forward`)
+    /// did NOT use, and which a mirror-only "fix" would still pass.
+    #[tokio::test]
+    async fn resume_revokes_a_session_scoped_shell_prefix_grant_the_old_session_earned() {
+        let (conway, store) = echo_conway_and_store();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let old_root = app.handle.root();
+
+        // A second, already-existing session to resume INTO -- same
+        // "simulated restart" shape `resuming_a_session_refreshes_its_own_
+        // head_seq` just above uses, and for the identical reason.
+        let other_sid = {
+            let other_conway = echo_conway_over(store);
+            let other = other_conway
+                .new_session(conway::SessionSpec::default())
+                .await
+                .expect("new_session should succeed");
+            other.id()
+        };
+
+        let installed = app.conway.grant_session_shell_prefix(
+            "git status".to_string(),
+            conway::PermissionScope::Session,
+            old_root,
+        );
+        assert!(
+            installed,
+            "grant_session_shell_prefix must install the grant"
+        );
+        assert_eq!(
+            app.conway.active_shell_prefix_grants(),
+            vec![("git status".to_string(), conway::GrantScope::Session)],
+            "sanity: the grant must actually be live on the broker before /resume"
+        );
+
+        app.submit(format!("/resume {other_sid}"))
+            .await
+            .expect("submit should not error");
+
+        assert_eq!(
+            app.conway.active_shell_prefix_grants(),
+            Vec::new(),
+            "a session-scoped grant the OLD session earned must not survive /resume on \
+             THIS Conway's own shared PermissionBroker"
+        );
+    }
+
     /// Review finding (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`, finding 6):
     /// `/resume`'s own hand-rolled carry-across used to be
     /// `agent_names`/`plugin_commands`/`plugin_status_contributions` only,

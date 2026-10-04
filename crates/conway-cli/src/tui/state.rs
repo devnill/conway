@@ -435,6 +435,20 @@ pub struct RoleListingEntry {
     pub builtin: bool,
 }
 
+/// Drops every session-scoped permission grant held by the process's one
+/// shared `PermissionBroker`. Required by [`AppState::reset_for_new_session`]
+/// so adopting a different session cannot reset the TUI's mirrors of those
+/// grants while leaving the live grants in force.
+pub trait RevokeSessionGrants {
+    fn revoke_all_session_scoped_grants(&self);
+}
+
+impl RevokeSessionGrants for conway::Conway {
+    fn revoke_all_session_scoped_grants(&self) {
+        conway::Conway::revoke_all_session_scoped_grants(self);
+    }
+}
+
 /// The TUI's whole render model. Every mutation goes through [`Self::apply`]
 /// (event-driven) or the app loop's direct field writes for input-driven
 /// state (`input`, `mode`, `scroll`) -- see `input.rs`/`app.rs`.
@@ -2237,7 +2251,20 @@ impl AppState {
     /// regardless of what this struct carried across, so any rule that is
     /// still genuinely configured (as opposed to merely having been granted
     /// for the old session) reappears there on its own.
-    pub fn reset_for_new_session(&mut self, root: AgentId) {
+    ///
+    /// **Session-scoped grants in the live broker are dropped here too.**
+    /// `grants` is required, not optional: resetting the TUI's mirrors while
+    /// leaving the shared `PermissionBroker`'s own session-scoped rows in
+    /// place is exactly the leak DOGFOOD 4 found (`/new`, `/resume` and
+    /// `/distill` all carried an "always allow" into the next session), so
+    /// the one funnel that adopts a session takes the revoker as an argument
+    /// rather than trusting every caller to pair two calls.
+    pub fn reset_for_new_session(
+        &mut self,
+        root: AgentId,
+        grants: &(impl RevokeSessionGrants + ?Sized),
+    ) {
+        grants.revoke_all_session_scoped_grants();
         let fresh = AppState::new(root);
         let AppState {
             transcript: _,

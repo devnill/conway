@@ -43,12 +43,10 @@
 //! value instead of through `Effect` (this fate never goes through
 //! `commands::execute` at all).
 
-use conway::{
-    AgentId, AgentResult, Budget, Conway, ForkSpec, ModelRef, RoleAlias, SessionHandle, SessionId,
-    SessionSpec, ToolSelector,
-};
+use conway::{AgentId, AgentResult, Budget, Conway, ForkSpec, SessionHandle, SessionId};
 
 use super::App;
+use crate::tui::commands;
 use crate::tui::state::{DistillModal, Entry, Mode};
 
 /// **180 seconds.** Mirrors `conway_plugin_skills::PROPOSAL_DEADLINE_SECS`
@@ -188,21 +186,39 @@ pub(super) async fn run_distill(
 const CONTEXT_POLL_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 const CONTEXT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
-/// Polls `handle.context_report(agent)` until it succeeds or
-/// [`CONTEXT_POLL_BOUND`] elapses -- needed because a BRAND NEW agent (no
-/// turn has ever been persisted for it) has no fallback for `context_report_
-/// current` to fall back to (`SessionHandle::context_report_current`'s own
-/// doc: it falls back to the most recently PERSISTED report, and a fresh
-/// agent has none yet), so the plain, live-only `context_report` is read
-/// instead, retried until the agent loop has actually assembled its first
-/// turn's context -- which happens before any backend call, not after.
-/// Returns `None` on a genuine timeout (degrades the notice, never fails the
-/// spawn that already succeeded).
+/// Polls `handle.context_report(agent)` until it reports a genuinely
+/// ASSEMBLED context or [`CONTEXT_POLL_BOUND`] elapses -- needed because a
+/// BRAND NEW agent (no turn has ever been persisted for it) has no fallback
+/// for `context_report_current` to fall back to (`SessionHandle::
+/// context_report_current`'s own doc: it falls back to the most recently
+/// PERSISTED report, and a fresh agent has none yet), so the plain,
+/// live-only `context_report` is read instead, retried until the agent
+/// loop has actually assembled its first turn's context -- which happens
+/// before any backend call, not after. Returns `None` on a genuine timeout
+/// (degrades the notice, never fails the spawn that already succeeded).
+///
+/// **A dogfood finding caught this returning `Ok` on its very first poll,
+/// every time, reading back `0` for a context that in fact held the whole
+/// briefing.** `Runtime::context_report` (`conway-runtime`'s own doc)
+/// returns `Ok` immediately, with a PLACEHOLDER empty report (zero
+/// segments, `total_tokens_est: 0`), for any agent that has been started
+/// but has not yet had a turn's context assembled into its report slot --
+/// which is exactly the state a just-`new_session`'d agent is in the
+/// instant this function's very first poll runs, before the agent loop's
+/// own background task has had a scheduling turn at all. Treating that
+/// `Ok` as "assembled" is the bug: it is indistinguishable from a REAL
+/// assembled report by its `Result` alone. `report.segments.is_empty()` is
+/// the one field that tells the two apart -- a genuinely assembled first
+/// turn always carries at least the preamble, where the placeholder never
+/// carries anything -- so this now keeps polling past that placeholder
+/// until a non-empty one lands, or the bound above gives up.
 async fn wait_for_context_tokens(handle: &SessionHandle, agent: AgentId) -> Option<u64> {
     tokio::time::timeout(CONTEXT_POLL_BOUND, async {
         loop {
             if let Ok(report) = handle.context_report(agent).await {
-                return u64::from(report.total_tokens_est);
+                if !report.segments.is_empty() {
+                    return u64::from(report.total_tokens_est);
+                }
             }
             tokio::time::sleep(CONTEXT_POLL_INTERVAL).await;
         }
@@ -375,12 +391,29 @@ impl App {
 
     /// `Enter` on the `/distill` modal: starts a fresh root session (same
     /// "pure and light" tool profile and `keep_alive` shape `/new`'s own
-    /// `new_session_spec` uses, carrying the SAME role/model pin forward),
-    /// delivers [`DistillModal::briefing`] as its opening prompt, and --
-    /// only on success -- swaps the app loop onto it and closes the modal.
-    /// A failed spawn/delivery keeps the modal OPEN with the error shown
-    /// (`AppState::fail_distill`), mirroring `commands::apply_ask_fate`'s
-    /// own "a failed fate never silently vanishes" rule.
+    /// [`commands::new_session_spec`] uses, carrying the SAME role/model pin
+    /// forward), delivers [`DistillModal::briefing`] as its opening prompt,
+    /// and -- only on success -- swaps the app loop onto it, resets
+    /// `AppState` to that fresh session (closing the modal as a side effect),
+    /// and refreshes the session head. A failed spawn/delivery keeps the
+    /// modal OPEN with the error shown (`AppState::fail_distill`), mirroring
+    /// `commands::apply_ask_fate`'s own "a failed fate never silently
+    /// vanishes" rule.
+    ///
+    /// **Dogfood finding (round 4): this used to swap `self.handle` alone,
+    /// never resetting `AppState`.** The status bar kept showing the OLD
+    /// session id and `ctx`, `/context` reported the OLD agent's context,
+    /// and the old transcript stayed on screen with the new agent's output
+    /// merely appended below it -- `/distill`'s own `Enter` was the ONE
+    /// caller of `AppState::reset_for_new_session` that forgot to call it,
+    /// unlike `/new` (`commands::execute`'s `SlashCommand::New` arm) and
+    /// `/resume` (`commands::apply_resume`). Now goes through the exact same
+    /// funnel those two already share -- see that method's own doc for the
+    /// full CARRY/RESET classification (clean transcript, `focused_agent`
+    /// pointed at the new root, every session-scoped permission mirror
+    /// dropped) -- and carries `role_pin`/`model_pin` forward exactly like
+    /// `/new`'s own arm does (the `SessionSpec` above already started this
+    /// fresh agent from those same two pins).
     ///
     /// Returns `true` when `self.handle` was actually swapped -- the
     /// caller (`run.rs`'s own `Action::DistillFate` arm) uses this to know
@@ -396,17 +429,10 @@ impl App {
         let briefing = modal.briefing.clone();
         let old_session = modal.old_session;
         let old_context_tokens = modal.old_context_tokens;
-        let spec = SessionSpec {
-            role: self.state.role_pin.clone().map(RoleAlias::new),
-            model: self
-                .state
-                .model_pin
-                .as_deref()
-                .and_then(|m| m.parse::<ModelRef>().ok()),
-            keep_alive: true,
-            tools: Some(ToolSelector::Except(vec!["report".into()])),
-            ..SessionSpec::default()
-        };
+        // One funnel, shared with `/new` -- see `commands::new_session_
+        // spec`'s own doc for why a second, independently hand-rolled copy
+        // of this exact shape is exactly the drift a dogfood round caught.
+        let spec = commands::new_session_spec(&self.state);
         let new_handle = match self.conway.new_session(spec).await {
             Ok(handle) => handle,
             Err(e) => {
@@ -423,7 +449,17 @@ impl App {
         }
         let new_context_tokens = wait_for_context_tokens(&new_handle, new_root).await;
         self.handle = new_handle;
-        self.state.close_distill();
+        // See this method's own doc, "this used to swap `self.handle`
+        // alone." `role_pin`/`model_pin` are captured before the reset
+        // (which otherwise drops them -- `AppState::reset_for_new_session`'s
+        // own doc on why that shared funnel cannot pick one answer for both
+        // `/new` and `/resume`) and written back after, mirroring `/new`'s
+        // own arm exactly.
+        let role_pin = self.state.role_pin.clone();
+        let model_pin = self.state.model_pin.clone();
+        self.state.reset_for_new_session(new_root, &self.conway);
+        self.state.role_pin = role_pin;
+        self.state.model_pin = model_pin;
         self.refresh_session_head().await;
         self.state.transcript.push(Entry::Notice {
             text: format!(
@@ -567,6 +603,21 @@ mod tests {
     /// session's own transcript (acceptance criterion 2), swaps the app loop
     /// onto it, and leaves a notice reporting old-vs-new context size
     /// (acceptance criterion 3).
+    ///
+    /// **Dogfood round 4 widened this to the TUI STATE itself, not just the
+    /// child's own request/session log.** The original version of this test
+    /// only ever checked the latter -- which is exactly why a round of
+    /// dogfooding was needed to catch `App::spawn_from_distill` swapping
+    /// `self.handle` alone: the status bar, `/context`, and the transcript
+    /// all kept showing the OLD session, and the cost notice's own new-side
+    /// figure read 0, while this test's old assertions were already green.
+    /// The assertions below pin all four: `state.focused_agent`/
+    /// `self.handle.id()` genuinely follow the swap, the old session's
+    /// planted message is gone from `state.transcript` (not merely absent
+    /// from the new agent's own opening REQUEST, which the pre-existing
+    /// assertion below already covers), `/context`'s own default target
+    /// (`state.focused_agent`) resolves to the new agent, and the cost
+    /// notice's new-side figure is genuinely non-zero.
     #[tokio::test]
     async fn distill_then_enter_spawns_a_fresh_agent_with_only_the_briefing() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -576,6 +627,7 @@ mod tests {
             .await
             .expect("App::new should succeed");
         let old_root = app.handle.root();
+        let old_session_id = app.handle.id();
 
         // Plant a distinguishing message in the OLD session before
         // distilling, so "nothing of the old transcript" is a genuine,
@@ -618,6 +670,47 @@ mod tests {
             app.state.mode
         );
 
+        // Dogfood round 4 (SIGNIFICANT): `AppState` itself must follow the
+        // swap, not just `self.handle`. `focused_agent` is what the status
+        // bar, `/context`'s bare form, and every other focused-agent read
+        // in this crate actually consult.
+        assert_eq!(
+            app.state.focused_agent,
+            app.handle.root(),
+            "state.focused_agent must be the NEW root -- the status bar must \
+             never keep showing a focus left over from the old session"
+        );
+        assert_ne!(
+            app.handle.id(),
+            old_session_id,
+            "self.handle must be pointed at a genuinely different SESSION, \
+             not merely a different root agent id"
+        );
+        assert!(
+            !app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::User(text) if text.contains("SECRET_OLD_MESSAGE")
+            )),
+            "the old session's planted message must not survive in \
+             state.transcript after the swap: {:?}",
+            app.state.transcript
+        );
+
+        // `/context`'s own default target (`state.focused_agent`, read by
+        // `commands::execute`'s bare `SlashCommand::Context` arm) must
+        // resolve to the NEW agent -- never a stale focus left over from
+        // the old session.
+        let context_report = app
+            .handle
+            .context_report(app.state.focused_agent)
+            .await
+            .expect("context_report for the newly focused agent must succeed");
+        assert_eq!(
+            context_report.agent_id,
+            app.handle.root(),
+            "/context's own default target must be the new agent"
+        );
+
         // LOAD-BEARING (acceptance criterion 2): the new agent's own first
         // assembled request contains the briefing, and NOTHING of the old
         // transcript.
@@ -627,15 +720,94 @@ mod tests {
             "the new agent's opening context must carry nothing of the old transcript: {texts:?}"
         );
 
-        // Acceptance criterion 3: the notice reports the cost of the move.
+        // Acceptance criterion 3: the notice reports the cost of the move,
+        // with a genuinely non-zero new-side figure (dogfood round 4: this
+        // used to read 0 for a context that in fact held the whole
+        // briefing -- see `wait_for_context_tokens`'s own doc).
+        let cost_entry = app
+            .state
+            .transcript
+            .iter()
+            .find_map(|e| match e {
+                Entry::Notice { text } if text.contains("spawned a fresh agent") => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "the notice must report old-vs-new context size: {:?}",
+                    app.state.transcript
+                )
+            });
         assert!(
-            app.state.transcript.iter().any(|e| matches!(
-                e,
-                crate::tui::state::Entry::Notice { text }
-                    if text.contains("context") && text.contains("token")
-            )),
-            "the notice must report old-vs-new context size: {:?}",
-            app.state.transcript
+            cost_entry.contains("token"),
+            "expected a token figure in the cost notice: {cost_entry}"
+        );
+        assert!(
+            !cost_entry.contains("-> 0 tokens"),
+            "the cost notice's new-context figure must never read 0 for a context that \
+             holds the whole briefing: {cost_entry}"
+        );
+    }
+
+    /// Dogfood round 4 finding (B4a ruling: "a session-scoped grant belongs
+    /// to the session that earned it ... must not carry into a fresh
+    /// session via /new, /resume or /distill"). THIS `Conway`'s own
+    /// `PermissionBroker` is shared across every session it ever starts,
+    /// for the lifetime of the process -- `App::spawn_from_distill` swapping
+    /// `self.handle` onto the freshly spawned agent must not keep honoring
+    /// whatever the OLD (soon-to-be-left) session earned interactively.
+    /// Drives the grant through the REAL production entry point an
+    /// operator's own "always" answer to a shell-prefix prompt uses
+    /// (`Conway::grant_session_shell_prefix`, the same call `app/run.rs`'s
+    /// own `[p]`-answer arm makes) and asserts on the BROKER's own review
+    /// surface (`Conway::active_shell_prefix_grants`), not a TUI-side
+    /// mirror -- the exact shape dogfood finding 3 reported (`01M42SYT`
+    /// inheriting `01M42SK5`'s own `python3 -m pytest -q` grant).
+    #[tokio::test]
+    async fn distill_then_enter_revokes_a_session_scoped_shell_prefix_grant_the_old_session_earned()
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (conway, _backend) = conway_with_fixed_briefing(dir.path());
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let old_root = app.handle.root();
+
+        let installed = app.conway.grant_session_shell_prefix(
+            "python3 -m pytest -q".to_string(),
+            conway::PermissionScope::Session,
+            old_root,
+        );
+        assert!(
+            installed,
+            "grant_session_shell_prefix must install the grant"
+        );
+        assert_eq!(
+            app.conway.active_shell_prefix_grants(),
+            vec![(
+                "python3 -m pytest -q".to_string(),
+                conway::GrantScope::Session
+            )],
+            "sanity: the grant must actually be live on the broker before /distill"
+        );
+
+        app.submit("/distill".to_string())
+            .await
+            .expect("submit should not error");
+        let done = recv_done(&mut app).await;
+        app.apply_distill_done(done);
+
+        let spawned = app.spawn_from_distill().await;
+        assert!(spawned, "the spawn must succeed against a working fixture");
+
+        assert_eq!(
+            app.conway.active_shell_prefix_grants(),
+            Vec::new(),
+            "a session-scoped grant the OLD session earned must not survive /distill's own \
+             Enter on THIS Conway's shared PermissionBroker"
         );
     }
 

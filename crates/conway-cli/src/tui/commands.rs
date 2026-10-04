@@ -1562,6 +1562,19 @@ pub trait Host {
     /// SUCCESS half is proven at the `App` level, against a real `Conway`
     /// (see `tui/app/new_session.rs`'s own tests).
     async fn new_session(&self, spec: conway::SessionSpec) -> conway::Result<SessionHandle>;
+    /// A thin, synchronous passthrough to `Conway::
+    /// revoke_all_session_scoped_grants` -- see that method's own doc for
+    /// exactly what it drops and why a session boundary needs it. Called
+    /// from `execute`'s `SlashCommand::New` arm, `apply_resume`, and
+    /// `tui/app/distill.rs::App::spawn_from_distill`, each right where
+    /// `self.handle` is about to be (or already was) swapped onto a session
+    /// that did not earn whatever the OLD one's own interactive "always
+    /// allow" answers left behind in this process's ONE shared
+    /// `PermissionBroker`. Routed through `Host` like every other facade
+    /// call in this trait, so each of those three call sites' own "did I
+    /// remember to clear it" half is unit-testable against `tests::
+    /// FakeHost`'s call counter, not just proven once at the `App` level.
+    fn revoke_all_session_scoped_grants(&self);
     /// Board item `01M1YS4FMJH004D1Y619MTBY7A`: resolves `/resume
     /// <id|name>`'s raw argument exactly the way `--resume` does
     /// (`crate::session_names::resolve`) -- a bare ULID resolves with no
@@ -1750,6 +1763,15 @@ pub struct LiveHost<'a> {
     pub commands: &'a CommandRegistry,
 }
 
+/// Every `Host` can satisfy [`AppState::reset_for_new_session`]'s required
+/// grant revoker, so `/new` and `/resume` hand it `host` and `tests::FakeHost`
+/// still records the call.
+impl<T: Host + ?Sized> super::state::RevokeSessionGrants for T {
+    fn revoke_all_session_scoped_grants(&self) {
+        Host::revoke_all_session_scoped_grants(self);
+    }
+}
+
 #[async_trait::async_trait]
 impl Host for LiveHost<'_> {
     fn root(&self) -> AgentId {
@@ -1814,6 +1836,10 @@ impl Host for LiveHost<'_> {
 
     async fn new_session(&self, spec: conway::SessionSpec) -> conway::Result<SessionHandle> {
         self.conway.new_session(spec).await
+    }
+
+    fn revoke_all_session_scoped_grants(&self) {
+        self.conway.revoke_all_session_scoped_grants();
     }
 
     async fn resolve_session_ref(&self, raw: &str) -> conway::Result<SessionId> {
@@ -2433,8 +2459,12 @@ pub async fn apply_model_switch<H: Host>(model: String, state: &mut AppState, ho
     }
 }
 
-/// `/new`'s own [`SessionSpec`] (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`):
-/// mirrors `tui/app/startup.rs::App::session_spec`'s flag-free construction
+/// `/new`'s own [`SessionSpec`] (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`),
+/// now also `App::spawn_from_distill`'s (`tui/app/distill.rs`): a dogfood
+/// finding caught `/distill`'s own `Enter` building a second, independently
+/// hand-rolled copy of this exact shape -- `pub(crate)` so that module can
+/// call this SAME function rather than drift from it again. Mirrors
+/// `tui/app/startup.rs::App::session_spec`'s flag-free construction
 /// exactly -- same `keep_alive: true` (a second chat message must run a
 /// turn, not silently no-op -- that field's own doc), same "pure and light"
 /// tool profile (`Except(["report"])`: an interactive chat root has no
@@ -2455,7 +2485,7 @@ pub async fn apply_model_switch<H: Host>(model: String, state: &mut AppState, ho
 /// validated it when the CURRENT session started) degrades to `None` here
 /// rather than refusing `/new` outright, mirroring `App::new`'s own
 /// `.ok().flatten()` degrade for the identical field.
-fn new_session_spec(state: &AppState) -> SessionSpec {
+pub(crate) fn new_session_spec(state: &AppState) -> SessionSpec {
     SessionSpec {
         role: state.role_pin.clone().map(RoleAlias::new),
         model: state
@@ -2523,7 +2553,7 @@ pub async fn apply_resume<H: Host>(sid: String, state: &mut AppState, host: &H) 
                 // has its own established role/model, re-derived from ITS
                 // OWN `Event::ModelDecision` history once a turn replays, not
                 // from a pin a DIFFERENT prior session set.
-                state.reset_for_new_session(handle.root());
+                state.reset_for_new_session(handle.root(), host);
                 // Board item `01M1YS4FMJH004D1Y619MTBY7A`: draw this
                 // session's own history BEFORE the "resumed session" notice
                 // below, so the past reads as the past and the notice reads
@@ -3623,7 +3653,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                     // (or deliberately is not) carried.
                     let role_pin = state.role_pin.clone();
                     let model_pin = state.model_pin.clone();
-                    state.reset_for_new_session(handle.root());
+                    state.reset_for_new_session(handle.root(), host);
                     // The fresh session carries the SAME role/model pin
                     // forward -- `new_session_spec` already built the
                     // `SessionSpec` from these same two fields, so this just
@@ -6199,6 +6229,13 @@ mod tests {
             // `App` level, against a real `Conway` (see
             // `tui/app/new_session.rs`'s own tests).
             Err(fake_error())
+        }
+
+        fn revoke_all_session_scoped_grants(&self) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push("revoke_all_session_scoped_grants");
         }
 
         async fn resumable_sessions(

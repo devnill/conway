@@ -1042,6 +1042,27 @@ impl Conway {
         self.rt.permission_broker().revoke_all_shell_prefix_grants();
     }
 
+    /// Drops every `GrantScope::Session`-scoped, interactively-earned
+    /// permission grant this `Conway`'s own `PermissionBroker` currently
+    /// holds -- see `PermissionBroker::revoke_all_session_scoped_grants`'s
+    /// own doc for exactly which three stores that covers and why a
+    /// session boundary needs a NARROWER revoke than
+    /// [`Self::revoke_permission_grants`]'s own "everything" shape.
+    ///
+    /// **`conway-cli`'s own call sites:** `/new`, `/resume`, and `/distill`'s
+    /// `Enter` -- every point this process's own TUI swaps `self.handle`
+    /// onto a session that did not earn whatever is currently granted,
+    /// against the SAME `Conway`/`PermissionBroker` the OLD session was
+    /// using (this facade is never recreated mid-process). A dogfood
+    /// finding caught none of the three calling this -- a `python3 -m
+    /// pytest -q` "always allow" the OLD session earned silently covered
+    /// the brand new session `/distill` had just spawned.
+    pub fn revoke_all_session_scoped_grants(&self) {
+        self.rt
+            .permission_broker()
+            .revoke_all_session_scoped_grants();
+    }
+
     /// Loads permissions files project-first then global
     /// (`crate::config::discovery::permission_file_paths`) and installs
     /// their rules -- **the real production startup seam**
