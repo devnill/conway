@@ -61,8 +61,12 @@ fn default_await() -> bool {
     true
 }
 
-/// A resource ceiling passed to a subagent call. Shared by `conway_fork`,
-/// `conway_spawn`, and `conway_ask`.
+// A resource ceiling passed to a subagent call. Shared by `conway_fork`,
+// `conway_spawn`, and `conway_ask`. Deliberately no doc comments on this
+// struct or its fields -- every field name is self-explanatory, and
+// `schema_for!` embeds its own copy of this definition into EACH of those
+// three tools' own schema, so a doc comment here is paid three times over
+// (board item 01M41BC4KJAE8J1X3GAA36ZW6Y).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BudgetArg {
@@ -72,80 +76,60 @@ pub(super) struct BudgetArg {
     pub(super) deadline_secs: Option<u64>,
     #[schemars(range(min = 1))]
     pub(super) max_tokens: Option<u32>,
-    /// Ceiling on tool calls dispatched. Absent means no ceiling unless
-    /// `subagent.max_tool_calls` is configured.
     #[schemars(range(min = 1))]
     pub(super) max_tool_calls: Option<u32>,
 }
 
-/// `conway_fork`'s arguments: the child inherits this agent's full context,
-/// so `prompt` is a directive, not a task restated from nothing.
+// `conway_fork`'s arguments: the child inherits this agent's full context,
+// so `prompt` is a directive, not a task restated from nothing. Doc
+// comments below are the model-facing contract only -- the fan-out/caching
+// rationale `await_flag` used to carry at length lives in docs/agents.md
+// instead (board item 01M41BC4KJAE8J1X3GAA36ZW6Y).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ForkArgs {
-    /// Directive for a child that already holds this agent's full context.
-    /// Not a task description -- the child needs no briefing, only what to
-    /// do next.
+    /// Directive for what the child should do next.
     prompt: String,
-    /// Agent definition name. Optional: omitting it means the child
-    /// inherits this agent's own role/model.
+    /// Omit to inherit this agent's role/model.
     #[serde(default)]
     agent_def: Option<String>,
-    /// Role alias for routing
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
     budget: Option<BudgetArg>,
-    /// Select the tools announced to the child by name
     #[serde(default)]
     tools: Option<Vec<String>>,
     /// JSON Schema the child's structured result must satisfy
     #[serde(default)]
     result_contract: Option<serde_json::Value>,
-    /// `false` returns the agent_id immediately for fan-out. Forks issued
-    /// in the SAME reply, as several tool calls in one turn, inherit a
-    /// byte-identical context and cost far less together, since a provider
-    /// serves the shared portion from cache; forking one at a time across
-    /// separate replies does not get this discount -- each pays close to
-    /// full price, since the context has moved on by the time the next
-    /// fork reads it. To fan out cheaply, request every sibling fork
-    /// together, in one reply, rather than one per reply.
+    /// `false` returns the agent_id immediately for fan-out.
     #[serde(default = "default_await", rename = "await")]
     await_flag: bool,
 }
 
-/// `conway_spawn`'s arguments: the child starts with none of this agent's
-/// context, so `prompt` must be a complete statement of the task.
+// `conway_spawn`'s arguments: the child starts with none of this agent's
+// context, so `prompt` must be a complete statement of the task. Doc
+// comments below are the model-facing contract only (board item
+// 01M41BC4KJAE8J1X3GAA36ZW6Y) -- `ForkArgs::await_flag`'s own fan-out/
+// caching caveat does not apply here, since a spawn shares no inherited
+// prefix for same-reply batching to affect.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SpawnArgs {
-    /// Complete statement of the task for a child that starts with no
-    /// context of its own. Everything the child needs to do the work must be
-    /// in this prompt -- it inherits nothing from this agent's conversation.
+    /// Complete statement of the task.
     prompt: String,
-    /// Agent definition name. Optional: omitting it means the child
-    /// inherits this agent's own role/model.
+    /// Omit to inherit this agent's role/model.
     #[serde(default)]
     agent_def: Option<String>,
-    /// Role alias for routing
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
     budget: Option<BudgetArg>,
-    /// Set the tools announced to the child by name
     #[serde(default)]
     tools: Option<Vec<String>>,
     /// JSON Schema the child's structured result must satisfy
     #[serde(default)]
     result_contract: Option<serde_json::Value>,
-    // Deliberately UNCHANGED from `ForkArgs::await_flag`'s pre-existing
-    // wording (board 01KZHDZKQXNYJME2CA3K52RNNY): a spawn's context "has no
-    // inherited prefix at all, by design" (`conway-runtime::subagent`'s own
-    // module doc), so a spawned child's request never carries any of the
-    // parent's transcript for turn-boundary timing to affect -- the
-    // same-reply-vs-separate-replies caveat added to `ForkArgs::await_flag`
-    // above is specific to `conway_fork`'s inherited context and does not
-    // apply here.
     /// False returns the agent_id immediately for fan-out
     #[serde(default = "default_await", rename = "await")]
     await_flag: bool,
@@ -465,7 +449,7 @@ impl Tool for ForkTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_fork"),
-            description: "Fork this agent: start a new child continuing from this agent's full context, plus a directive for what it should do next. `agent_def` is optional: name one to set the child's system prompt/tools/model, or omit it to inherit this agent's role and model.".into(),
+            description: "Fork this agent: start a child continuing its full context, plus a directive for what to do next.".into(),
             schema: schemars::schema_for!(ForkArgs),
             category: ToolCategory::Delegate,
             // Starting a child grants it the capability to itself perform
@@ -513,7 +497,7 @@ impl Tool for SpawnTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_spawn"),
-            description: "Spawn a new, independent child agent with none of this agent's context, plus a complete statement of its task. `agent_def` is optional: name one to set the child's system prompt/tools/model, or omit it to inherit this agent's role and model.".into(),
+            description: "Spawn an independent child with none of this agent's context, plus a complete statement of its task.".into(),
             schema: schemars::schema_for!(SpawnArgs),
             category: ToolCategory::Delegate,
             // Starting a child grants it the capability to itself perform

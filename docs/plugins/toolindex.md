@@ -57,32 +57,46 @@ characters if that sentence itself runs long).
 ## The fixed per-request floor: conway's own subagent tools
 
 DOGFOOD 3's other finding: conway's own `conway_fork`/`conway_ask`/
-`conway_cancel`/`conway_spawn`/`conway_steer` tools are never deferred by
-this plugin (`always_announced_names`, above) and are installed by default
-(`conway-tools`' `SubagentPlugin`), so their combined wire cost is a floor
-every session pays on every request, with or without `conway.toolindex`
-installed, and regardless of how many MCP tools an operator adds on top.
-Measured (`crates/conway-tools/tests/subagent_wire_cost.rs`, the exact
-`{"type":"function","function":{"name":...,"description":...,
-"parameters":...}}` wire shape `OpenAiCompatBackend` sends, pinned so a
-drift here is a build failure, not a stale doc):
+`conway_cancel`/`conway_spawn`/`conway_steer`/`conway_await` tools are
+never deferred by this plugin (`always_announced_names`, above) and are
+installed by default (`conway-tools`' `SubagentPlugin`), so their combined
+wire cost is a floor every session pays on every request, with or without
+`conway.toolindex` installed, and regardless of how many MCP tools an
+operator adds on top. Measured (`crates/conway-tools/tests/
+subagent_wire_cost.rs`, the exact `{"type":"function","function":
+{"name":...,"description":...,"parameters":...}}` wire shape
+`OpenAiCompatBackend` sends, bounded by budget rather than pinned to an
+exact figure so a drift here is still a build failure, but shrinking
+further is never one):
 
-| Tool            | Wire JSON chars |
-|-----------------|-----------------|
-| `conway_fork`   | 2,602           |
-| `conway_ask`    | 2,544           |
-| `conway_cancel` | 2,380           |
-| `conway_spawn`  | 2,188           |
-| `conway_steer`  | 840             |
-| **Total**       | **10,554**      |
+| Tool            | Before (chars) | After (chars) |
+|-----------------|---------------:|--------------:|
+| `conway_fork`   |          2,602 |          1,336 |
+| `conway_ask`    |          2,544 |          1,053 |
+| `conway_cancel` |          2,380 |            750 |
+| `conway_spawn`  |          2,188 |          1,325 |
+| `conway_steer`  |            840 |            443 |
+| `conway_await`  |            825 |            457 |
+| **Total**       |     **11,379** |      **5,364** |
 
-Roughly 2,600 estimated tokens (`heuristic-chars4`) on every single
+Before: roughly 2,845 estimated tokens (`heuristic-chars4`) on every single
 request, before any MCP/subprocess/first-party-plugin tool is counted at
-all. **Whether these five should themselves be shortened or made
-deferrable is a design question this item deliberately leaves to the
-operator** — `always_announced_names`' own "mechanical, not a guess" rule
-above exists precisely because membership in that set is a fixed, disclosed
-list, not something this plugin should start quietly trimming on its own
+all. **Board item `01M41BC4KJAE8J1X3GAA36ZW6Y` (operator ruling,
+2026-10-03) resolved this in favor of shortening, not deferring**: these
+six tools stay fully announced -- deferring them was never on the table,
+since `always_announced_names`' own "mechanical, not a guess" rule above
+keeps every built-in always announced, and deferring would also have
+routed every subagent call through `describe_tool`'s first-use friction
+(board item `01M3TEK20AERQNZRVY7G5F50VJ`) for tools used on essentially
+every turn. Instead, each tool's description and JSON-schema field docs
+were cut to the model-facing contract alone, moving rationale and
+caching-mechanics prose that does not change how a tool is called into
+`docs/agents.md`/`docs/tools.md` instead. After: roughly 1,341 estimated
+tokens -- a drop of about 1,500 tokens (6,015 wire chars), clearing the
+item's own >=1,500-token target. `always_announced_names`' own
+"mechanical, not a guess" rule above exists precisely because membership in
+that set is a fixed, disclosed list, not something this plugin should
+start quietly trimming on its own
 opinion of which built-in tools "matter less."
 
 ## What installing it costs
