@@ -941,9 +941,25 @@ impl AgentLoop {
     /// before returning it -- the agent is terminating either way (this
     /// error propagates through `run_inner`'s `try_rt!` into
     /// `finish_error`), so the caller's own error path is unaffected.
-    async fn drain_inbox(&mut self) -> Result<(), RuntimeError> {
+    ///
+    /// ## Return value: did a `Steer` land this call (board item `01M44PK089DF2M9TM3C4P5CKMZ`)
+    ///
+    /// `true` exactly when at least one drained message classified as
+    /// [`mailbox::DrainEffect::Persist`] carrying a `LogRecord::ParentSteer`
+    /// was successfully persisted THIS call -- `run_inner`'s own
+    /// `resume_gate.awaiting_prompt` check (immediately after its call to
+    /// this method) is the single funnel that decides what to do with that
+    /// fact: a steer that lands exactly as (or after) a `keep_alive` turn
+    /// ends, before the gate's own `notify` wakes it for an unrelated
+    /// reason, must not sit in the log unconsumed until the operator's next
+    /// explicit prompt -- see that check's own doc for the other half of
+    /// the mechanism (the gate's `notify` itself, woken directly by
+    /// `subagent.rs`'s `steer` when it finds the target already parked
+    /// there).
+    async fn drain_inbox(&mut self) -> Result<bool, RuntimeError> {
         let mut persist_err: Option<RuntimeError> = None;
         let mut lost_records = 0usize;
+        let mut steer_persisted = false;
 
         for msg in self.inbox.drain() {
             match mailbox::classify(msg) {
@@ -952,6 +968,7 @@ impl AgentLoop {
                         lost_records += 1;
                         continue;
                     }
+                    let is_steer = matches!(record, LogRecord::ParentSteer { .. });
                     // `record` already carries `mailbox::classify`'s
                     // disposable placeholder seq; `Self::persist` overwrites
                     // it with a real one on the way through `append` (see
@@ -960,6 +977,8 @@ impl AgentLoop {
                     if let Err(err) = self.persist(|_seq| record).await {
                         persist_err = Some(err);
                         lost_records += 1;
+                    } else if is_steer {
+                        steer_persisted = true;
                     }
                 }
                 mailbox::DrainEffect::SoftCancel { reason } => {
@@ -980,7 +999,7 @@ impl AgentLoop {
             );
             return Err(err);
         }
-        Ok(())
+        Ok(steer_persisted)
     }
 
     /// Routes and attempts the given (already `ContextHook::before_request`-
@@ -1446,7 +1465,7 @@ impl AgentLoop {
         };
 
         loop {
-            try_rt!(state, self.drain_inbox().await);
+            let steer_landed_this_pass = try_rt!(state, self.drain_inbox().await);
 
             if let Some(reason) = self.pending_cancel.take() {
                 return Ok(self
@@ -1527,7 +1546,39 @@ impl AgentLoop {
             // now open, so this branch is not re-entered until (for
             // `keep_alive`) the NEXT turn also completes with no pending
             // work.
-            if self.resume_gate.awaiting_prompt {
+            //
+            // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: `steer_landed_this_
+            // pass` (this iteration's own `drain_inbox` call, immediately
+            // above the top of this loop) is `true` exactly when a `Steer`
+            // was persisted to THIS agent's log in the same pass that found
+            // the gate shut -- the steer arrived at (or after) the exact
+            // moment the turn ended, before the operator ever sent another
+            // explicit prompt. Treating that as already satisfying the gate
+            // (clearing it without ever touching `notify`) is what makes
+            // such a steer start a genuine new turn on its own, carrying its
+            // own text as that turn's content once `resolve_default_path`'s
+            // fresh read below picks up the `ParentSteer` record `drain_
+            // inbox` just persisted -- rather than sitting there, already
+            // durable, until SOME LATER prompt happens to read it along with
+            // whatever else that prompt was about (the gap DOGFOOD 4 finding
+            // 15 named: `.conway/dogfood/round4-20261004/notes.md`). The
+            // OTHER half of this fix is `notify` itself: `subagent.rs`'s
+            // `steer` wakes it directly when it finds the target already
+            // PARKED in the `notify.notified()` selects below -- this branch
+            // alone only covers a steer that wins the race against THIS
+            // loop reaching the gate check, not one that arrives after the
+            // task is already asleep inside the `select!`. Neither path can
+            // double-deliver: both ultimately reduce to "the gate is clear,
+            // proceed" exactly once per steer, backed by the SAME
+            // already-persisted `ParentSteer` record either way -- a steer
+            // that instead lands mid-turn (this flag then `false`, since the
+            // gate was never shut) is already delivered by the pre-existing
+            // per-step `drain_inbox` polling alone and never reaches this
+            // branch at all.
+            if self.resume_gate.awaiting_prompt && steer_landed_this_pass {
+                self.resume_gate.awaiting_prompt = false;
+                self.deps.tree.mark_awaiting_prompt(self.agent_id, false);
+            } else if self.resume_gate.awaiting_prompt {
                 match self.spec.budget.deadline {
                     Some(deadline) => {
                         let remaining = (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO);

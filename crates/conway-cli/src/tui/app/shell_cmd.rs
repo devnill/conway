@@ -10,11 +10,15 @@
 //!   `LogRecord::OperatorShellRecord` -- see that variant's own doc for why
 //!   a new record kind, not a `SystemNote`) WITHOUT ever admitting it to
 //!   context: zero token cost, by design.
-//! - **`!> command`** runs `command` and sends its output to the model as
-//!   an ordinary prompt (`SessionHandle::prompt_agent`) -- already durable,
-//!   already context-admitted, through the SAME path a typed message
-//!   already takes. No new record kind for this form; see `Conway::
-//!   record_operator_shell`'s own doc for the division of labor.
+//! - **`!> command`** runs `command` and adds its output to the model's
+//!   context -- durable, context-admitted, the SAME `LogRecord::UserTurn`
+//!   shape an ordinary typed message produces -- WITHOUT starting a model
+//!   turn (`SessionHandle::prompt_agent_silent`, board item
+//!   `01M44PK089DF2M9TM3C4P5CKMZ`, operator ruling): the agent reads it the
+//!   next time it actually runs a turn, on the operator's own next
+//!   message, never as a side effect of running the command itself. No new
+//!   record kind for this form; see `Conway::record_operator_shell`'s own
+//!   doc for the division of labor with the bare `!` form above.
 //! - **`!` alone, or `!>` alone** (nothing left after trimming): runs
 //!   nothing.
 //! - **`!!`** re-runs `AppState::last_shell_command`, in whichever form
@@ -321,14 +325,14 @@ impl App {
     /// (by now stale either way) cancellation sender, pushes the
     /// [`Entry::Shell`] transcript entry, and -- for the `!>` form only --
     /// returns the formatted block `App::run`'s own `shell_rx.recv()` arm
-    /// must still send to the model via `SessionHandle::prompt_agent`
-    /// (awaited THERE, not here: this method stays synchronous, mirroring
-    /// every other `apply_*_done` in this crate, and awaiting it here
-    /// would also get the ORDERING wrong -- see this module's own doc:
-    /// the `!>` command's OWN entry must render before the live
-    /// `Event::UserTurn` the prompt produces, which only holds if the
-    /// transcript push below happens before `prompt_agent` is even
-    /// called).
+    /// must still add to the model's context via `SessionHandle::
+    /// prompt_agent_silent` (awaited THERE, not here: this method stays
+    /// synchronous, mirroring every other `apply_*_done` in this crate, and
+    /// awaiting it here would also get the ORDERING wrong -- see this
+    /// module's own doc: the `!>` command's OWN entry must render before
+    /// the live `Event::UserTurn` the append produces, which only holds if
+    /// the transcript push below happens before `prompt_agent_silent` is
+    /// even called).
     pub(super) fn apply_shell_done(&mut self, done: ShellDone) -> Option<String> {
         self.state.shell_in_flight = false;
         self.shell_cancel_tx = None;
@@ -774,15 +778,17 @@ mod tests {
         assert!(!entry.3);
     }
 
-    /// Acceptance 2: `!> echo hi` sends the output to the model. Proved
-    /// here as far as `apply_shell_done`'s own return value (the block
-    /// `App::run`'s `shell_rx` arm would hand to `prompt_agent`) -- the
-    /// "the next assembled request contains it" half is a property of
-    /// `prompt_agent`/`UserTurn`/`ContextBuilder`, already covered by this
-    /// crate's and `conway-runtime`'s own existing prompt/context tests
-    /// (an ordinary `UserTurn` is unconditionally context-admitted; no new
-    /// mechanism was introduced for this form at all -- see this module's
-    /// own doc).
+    /// Acceptance 2: `!> echo hi` adds the output to the model's context.
+    /// Proved here as far as `apply_shell_done`'s own return value (the
+    /// block `App::run`'s `shell_rx` arm would hand to `prompt_agent_
+    /// silent`) -- the "the next assembled request contains it, with no
+    /// model turn spent just adding it" half is a property of `prompt_
+    /// agent_silent`/`UserTurn`/`ContextBuilder`, covered by `conway-
+    /// runtime`'s own `prompt_silent_persists_without_waking_a_keep_alive_
+    /// agent_at_its_gate` (an ordinary `UserTurn` is unconditionally
+    /// context-admitted regardless of which `prompt*` entry point appended
+    /// it; `prompt_silent` only ever changes whether the APPEND also wakes
+    /// the agent -- see this module's own doc).
     #[tokio::test]
     async fn arrow_bang_runs_and_returns_a_block_for_the_model() {
         let conway = echo_conway();

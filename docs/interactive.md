@@ -216,10 +216,17 @@ each agent that actually has something queued, independent of focus.
 FOCUSED agent appears in the input box's own border title (`"input — 2
 queued: fix the bug..."`) and, at the same time, in the transcript in a dim
 `queued>` style distinct from an ordinary sent message — until it is
-actually delivered. A message queued for a DIFFERENT, non-focused agent
-shows only as a bare count (`"input — 1 queued (other agents)"`) — never its
-text — since you are not looking at that conversation; switch focus to that
-agent to see it in full. The count survives a focus change even though the
+actually delivered. A message held under `busy_input = steer` instead reads
+`steer>` (and the strip says `"— 1 steer: ..."`) — it already left for the
+model the instant you sent it, so it deserves a different word than a
+message that is still waiting here, client-side, to be sent at all. A
+message queued for a DIFFERENT, non-focused agent shows only as a bare count
+(`"input — 1 queued (other agents)"`) — never its text — since you are not
+looking at that conversation; switch focus to that agent to see it in full.
+The strip also keeps showing while a permission prompt is on screen (the
+title reads `"input (paused) — 1 queued: ..."`) — a message typed mid-turn
+never reads as lost just because a DIFFERENT surface is asking you something
+else right now. The count survives a focus change even though the
 transcript row does not (switching away clears the whole transcript, the
 same way it always has, and switching back rebuilds it from the persisted
 log only — a message that was never sent was never persisted either, so it
@@ -244,20 +251,27 @@ and keeps its existing meanings unconditionally.
 "display" group (`Enter` cycles it, the same way the permission mode row
 cycles its own three states):
 
-- `queue` (the default) — withholds the message entirely until the agent it
-  was typed for is no longer generating a reply, then sends it, exactly
-  like every other prompt. An agent that finishes outright (rather than
-  simply going idle) before a queued message can be sent never receives
-  it — a notice lists every message that could not be delivered, and the
-  newest is restored to the input box if you are still looking at that
-  same, now-finished agent and have not started typing something else.
-- `steer` — delivers the message at the running turn's own next tool-loop
-  step, via the same steer primitive `/steer <agent> <text>` already uses for
-  a child agent (steer is bidirectional, Claude-Code-style, so steering the
-  very agent you are talking to works the same way). **Steer never lands
-  mid-generation** — it is folded into context no sooner than the model's
-  next inference step within the current turn's tool loop, never while a
-  model call is actually in flight.
+- `steer` (the default) — delivers the message at the running turn's own
+  next tool-loop step, via the same steer primitive `/steer <agent> <text>`
+  already uses for a child agent (steer is bidirectional, Claude-Code-style,
+  so steering the very agent you are talking to works the same way).
+  **Steer never lands mid-generation** — it is folded into context no sooner
+  than the model's next inference step within the current turn's tool loop,
+  never while a model call is actually in flight. A message steered AFTER
+  the agent's turn has already ended — it finished answering and is idling,
+  waiting for you — is not left sitting unread until some later, unrelated
+  message happens to remind it: it starts a fresh turn of its own,
+  automatically, carrying exactly that text. (`queue` was the default
+  through an earlier dogfood round; a message held under it had no visible
+  difference from one that was simply lost until it was actually sent, which
+  is the failure `steer` as the default closes.)
+- `queue` — withholds the message entirely until the agent it was typed for
+  is no longer generating a reply, then sends it, exactly like every other
+  prompt. An agent that finishes outright (rather than simply going idle)
+  before a queued message can be sent never receives it — a notice lists
+  every message that could not be delivered, and the newest is restored to
+  the input box if you are still looking at that same, now-finished agent
+  and have not started typing something else.
 - `interrupt` — aborts the focused agent's current turn (killing any tool it
   was mid-way through running, process group and all) and sends your new
   message into the SAME agent the instant it reports idle — the "cancel this
@@ -266,7 +280,12 @@ cycles its own three states):
   than the session as a whole. `prompt.send_now` (default `F2`, see
   "Keybindings" below) is the per-message, one-off version of this — press it
   on any message, in any `busy_input` mode, to abort-and-send just that one
-  message without changing your configured mode.
+  message without changing your configured mode. Unlike a bare `Ctrl-C`, F2
+  (and `busy_input = interrupt`) always resends your message once the abort
+  completes, so the notice it leaves says so plainly ("sent now — the reply
+  in progress was stopped") rather than the generic "type to continue" a
+  budget- or operator-triggered abort with nothing queued behind it still
+  uses.
 
 A `!`/`!>` shell command or a `/`-prefixed slash command is never affected by
 `busy_input` — neither is "a prompt" in the sense this setting governs, and
@@ -403,10 +422,16 @@ line — use `!>` instead of `!`:
 !> cargo test -p conway-core
 ```
 
-This runs the command exactly the same way, but then sends its output to
-the model as an ordinary message, as if you had typed `cargo test -p
+This runs the command exactly the same way, and adds its output to the
+model's context as an ordinary message, as if you had typed `cargo test -p
 conway-core`'s output yourself. (It does cost tokens, same as any other
-message — that is the whole point of the `>`.)
+message — that is the whole point of the `>`.) **It does not, by itself,
+spend a model turn.** The output becomes part of the conversation
+immediately — it is there, durable, the instant the command finishes — but
+the agent only actually reads and answers it the next time it runs a real
+turn, which is your own next message (or steer). Running a command and
+folding its result into context is not, on its own, something you asked the
+model to respond to right now.
 
 A bare `!` (or `!>`) with nothing after it runs nothing. `!!` repeats the
 most recently run `!`/`!>` command, in whichever form it ran.
@@ -640,12 +665,32 @@ Your options:
 | Key | Effect |
 | --- | --- |
 | `y` | Allow this one call. |
-| `a` | Allow this call, and remember the decision for the rest of the session. |
+| `a` | Arms a confirmation — see "`a` needs a deliberate second keystroke," below. |
 | `p` (structured tool) | Opens a field editor over the call's structured arguments — every field starts wildcard; `space` pins the selected field to its exact value, `↑`/`↓`/`tab` move, `s` cycles the grant scope, `Enter` installs an allow rule covering future calls whose pinned fields match (unpinned fields stay wildcard) and allows this call, `Esc` cancels back to this prompt. Granting with nothing pinned is the broadest offer — any call to that tool. |
 | `p` (shell command) | Opens a free-text editor seeded with a narrow, two-token default (e.g. `git status` from `git status --short`, never the bare `git`) — type to widen or narrow it, `Ctrl-S` cycles the grant scope, `Enter` grants a **session-scoped, in-memory-only** prefix covering future shell commands sharing it and allows this call, `Esc` cancels back to this prompt. See "The shell-prefix grant" below. |
 | `n` | Deny this call. |
 | `Esc` | Deny this call, and tell the model to try a different approach. |
 | `PageUp` / `PageDown` | Scroll a long command's own display. |
+
+**`a` needs a deliberate second keystroke.** The first `[a]` does not grant
+anything yet — it arms a confirmation, and the prompt's own hint line
+changes to say so plainly (`CONFIRM allow always? [a] or [Enter] confirms
+[Esc] cancels`). Press `a` again, or `Enter`, to actually commit the
+broader-than-once grant at whichever scope the prompt shows; `Esc` backs out
+to the ordinary prompt with no decision made at all, as if `a` had never
+been pressed. Any OTHER key disarms it too and takes its own normal
+meaning — a stray `a` immediately followed by a deliberate `n` still denies.
+No single keystroke can ever grant more than "allow once" by itself.
+
+**Typed input never answers a permission prompt.** A prompt interrupting you
+mid-sentence used to risk a keystroke you were still typing landing as a
+decision instead — `a` from "also tell me…" granting "always" session-wide
+being the sharpest version of this. A key arriving within about a second of
+the prompt appearing, or while the input box already held a draft at that
+instant, is treated as ongoing typing and goes into the draft instead —
+never into a decision — for a window that widens automatically if you were
+already mid-draft when the prompt interrupted you. `y`/`n`/`a`/`p`/`s` all
+answer normally again, as single keys, once that window closes.
 
 `[p]`'s field editor, project-file trust, and how grants persist and get
 revoked are covered in full in [`permissions.md`](permissions.md) — this
@@ -1206,7 +1251,7 @@ expands/collapses a group, revokes a selected grant/hook row, or opens
 `/plugin`, `Left`/`Right` step the numeric tool-preview setting, `Esc`
 closes. The display settings (including busy input), the permission-mode
 cycle, and every revoke action apply to this session only — `busy input`
-starts from `[tui.busy_input]` in `settings.json` (default `queue`) but,
+starts from `[tui.busy_input]` in `settings.json` (default `steer`) but,
 like the other two display rows, cycling it here never writes that file
 back; the tool-preview line count persists to `[tui.tool_preview_lines]`
 when you step it. Permission-mode and grant details are covered in

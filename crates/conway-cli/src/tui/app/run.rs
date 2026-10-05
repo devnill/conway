@@ -417,27 +417,34 @@ impl App {
                 // sync, mirroring every other `apply_*_done` in this
                 // crate), and happens AFTER the push above so the
                 // operator's own `!>` entry always renders before the
-                // live `Event::UserTurn` the prompt produces (see
+                // live `Event::UserTurn` the append produces (see
                 // `app/shell_cmd.rs`'s own module doc).
+                //
+                // Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator
+                // ruling): `!>` folds its output into context WITHOUT
+                // starting a model turn -- `prompt_agent_silent`, not
+                // `prompt_agent`, so a `keep_alive` agent idling at its own
+                // resume gate stays idle (no `notify` wake) and `activity`
+                // stays whatever it already was, never forced to
+                // `Thinking` for a turn that was never actually started.
+                // The agent reads this text the same way it reads any
+                // other `UserTurn` the next time it actually runs -- "the
+                // agent sees it with the operator's next message," the
+                // ruling's own words.
                 maybe_shell = shell_rx.recv() => {
                     if let Some(done) = maybe_shell {
                         if let Some(block) = self.apply_shell_done(done) {
-                            match self
+                            if let Err(e) = self
                                 .handle
-                                .prompt_agent(self.state.focused_agent, block)
+                                .prompt_agent_silent(self.state.focused_agent, block)
                                 .await
                             {
-                                Ok(_) => {
-                                    self.state.activity = crate::tui::state::Activity::Thinking;
-                                }
-                                Err(e) => {
-                                    self.state.transcript.push(Entry::Notice {
-                                        text: format!(
-                                            "could not send the `!>` command's output to the \
-                                             model: {e}"
-                                        ),
-                                    });
-                                }
+                                self.state.transcript.push(Entry::Notice {
+                                    text: format!(
+                                        "could not add the `!>` command's output to the \
+                                         model's context: {e}"
+                                    ),
+                                });
                             }
                         }
                         dirty = true;

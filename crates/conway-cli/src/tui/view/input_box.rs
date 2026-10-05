@@ -73,12 +73,23 @@ fn truncate_with_ellipsis(text: &str, budget: usize) -> String {
 /// and the escape agree by construction, not by two call sites kept in
 /// step by hand).
 ///
-/// `disabled` (a modal/form surface covering the input) wins outright --
+/// `disabled` (a modal/form surface covering the input, including a live
+/// permission prompt) wins outright over the shell-mode chrome below --
 /// mirrors the pre-existing "input (paused)" precedence over anything else
-/// this box could show.
+/// this box could show. It does NOT win over the queued-strip summary
+/// ([`queued_strip_title`]): board item `01M44PK089DF2M9TM3C4P5CKMZ` found a
+/// message queued or steered while a permission prompt is up read as lost --
+/// the title bailed out to the bare `"input (paused)"` word before the
+/// strip ever got a chance to append its own `— N queued: ...`/`— N steer:
+/// ...` summary, even though the underlying queue was intact the whole
+/// time. Appending the SAME summary here that the enabled branch below
+/// already shows keeps "paused" honest about what else is true right now.
 fn input_box_chrome(state: &AppState, disabled: bool, theme: &Theme) -> (String, Style) {
     if disabled {
-        return ("input (paused)".to_string(), theme.border_normal);
+        return (
+            queued_strip_title(state, "input (paused)"),
+            theme.border_normal,
+        );
     }
     let (base, style) = if state.input.starts_with("!>") {
         ("shell → model", theme.border_accent)
@@ -114,24 +125,31 @@ fn vim_mode_suffix(state: &AppState, base: &str) -> String {
 /// needed to show it.
 ///
 /// Review round 1, CRITICAL fix stated as a choice: `AppState::
-/// queued_strip_summary` returns `(focused_count, first_line, other_
-/// count)`, scoped to the FOCUSED agent -- a DIFFERENT, non-focused
-/// agent's own queue is folded into `other_count` alone, shown as a bare
-/// number with no text (`state::busy_input`'s own module doc states the
-/// reasoning: naming a background agent's in-progress draft in the
-/// currently-focused conversation would leak a different agent's business
-/// into this one). `(0, None, 0)` (nothing queued anywhere, the
-/// overwhelmingly common case) leaves `base` untouched.
+/// queued_strip_summary` returns `(focused_count, first_line,
+/// first_is_steer, other_count)`, scoped to the FOCUSED agent -- a
+/// DIFFERENT, non-focused agent's own queue is folded into `other_count`
+/// alone, shown as a bare number with no text (`state::busy_input`'s own
+/// module doc states the reasoning: naming a background agent's
+/// in-progress draft in the currently-focused conversation would leak a
+/// different agent's business into this one). `(0, None, false, 0)`
+/// (nothing queued anywhere, the overwhelmingly common case) leaves `base`
+/// untouched.
+///
+/// Board item `01M44PK089DF2M9TM3C4P5CKMZ`: the word itself is `"steer"`,
+/// not `"queued"`, when `first_is_steer` says the NEXT message to show is
+/// already-sent-but-pending rather than withheld -- see `Entry::
+/// QueuedUser`'s own doc for why the distinction matters to an operator.
 fn queued_strip_title(state: &AppState, base: &str) -> String {
-    let (focused_count, first_line, other_count) = state.queued_strip_summary();
+    let (focused_count, first_line, first_is_steer, other_count) = state.queued_strip_summary();
     if focused_count == 0 && other_count == 0 {
         return base.to_string();
     }
     let mut title = if focused_count > 0 {
         let first_line = first_line.unwrap_or_default();
         let first_line = first_line.lines().next().unwrap_or(first_line);
+        let word = if first_is_steer { "steer" } else { "queued" };
         format!(
-            "{base} — {focused_count} queued: {}",
+            "{base} — {focused_count} {word}: {}",
             truncate_with_ellipsis(first_line, QUEUED_STRIP_PREVIEW_CHARS)
         )
     } else {

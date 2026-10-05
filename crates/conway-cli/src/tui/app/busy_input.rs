@@ -807,10 +807,13 @@ mod tool_execution {
     }
 
     /// Review round 2, CRITICAL, acceptance test: a message queued
-    /// (`busy_input = queue`, the default) WHILE a tool call is genuinely
-    /// in flight is NOT delivered until the turn actually ends -- `flush_
-    /// ready_queues` must not mistake "the model round-trip already
-    /// finished" (`turn_in_progress == false`) for "the turn is over."
+    /// (`busy_input = queue`; drives `AppState::queue_prompt` directly, so
+    /// this is unaffected by which mode a session actually starts in --
+    /// `steer`, board item `01M44PK089DF2M9TM3C4P5CKMZ`) WHILE a tool call
+    /// is genuinely in flight is NOT delivered until the turn actually ends
+    /// -- `flush_ready_queues` must not mistake "the model round-trip
+    /// already finished" (`turn_in_progress == false`) for "the turn is
+    /// over."
     #[tokio::test]
     async fn queued_message_is_not_delivered_until_the_tool_call_and_turn_genuinely_end() {
         let (conway, gate) = conway_with_held_tool();

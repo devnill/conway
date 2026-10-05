@@ -382,6 +382,103 @@ async fn prompt_appends_user_turn_before_returning_and_errors_for_unknown_agent(
     assert!(matches!(err, RuntimeError::AgentNotFound { agent } if agent == unknown));
 }
 
+/// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling, `!>`):
+/// `prompt_silent` durably appends the SAME `LogRecord::UserTurn` shape
+/// `prompt` does, context-admitted, but does NOT wake a `keep_alive` agent
+/// idling at its own resume gate -- no turn starts until a LATER, genuinely
+/// waking call (`prompt`) arrives, and that next turn is what finally reads
+/// the silently-appended text back.
+#[tokio::test]
+async fn prompt_silent_persists_without_waking_a_keep_alive_agent_at_its_gate() {
+    let (runtime, store) = build_runtime(
+        Arc::new(ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("first")),
+            ScriptedTurn::Respond(text_response("second")),
+        ])),
+        vec![],
+    );
+    let mut spec = root_spec("go");
+    spec.knobs.keep_alive = true;
+    let agent_id = runtime.start_root(spec).await.unwrap();
+    let session = session_of(&runtime, agent_id);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.awaiting_prompt(agent_id) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the first turn must reach genuine idle");
+
+    runtime
+        .prompt_silent(
+            agent_id,
+            "silently added context".to_string(),
+            Provenance::UserPrompt,
+        )
+        .await
+        .unwrap();
+
+    let records = store
+        .read(&session, conway_core::ids::SeqRange::full())
+        .await
+        .unwrap();
+    assert!(
+        records.iter().any(|r| matches!(
+            r,
+            LogRecord::UserTurn { text, prov, .. }
+                if text == "silently added context" && *prov == Provenance::UserPrompt
+        )),
+        "prompt_silent must append an ordinary, context-admitted UserTurn: {records:?}"
+    );
+
+    // A real window for an (incorrect) wake to fire before asserting it
+    // never did: still genuinely idle, no second Assistant reply yet.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        runtime.awaiting_prompt(agent_id),
+        "prompt_silent must never wake an idling keep_alive agent into a turn"
+    );
+    let records = store
+        .read(&session, conway_core::ids::SeqRange::full())
+        .await
+        .unwrap();
+    let assistant_count = records
+        .iter()
+        .filter(|r| matches!(r, LogRecord::Assistant { .. }))
+        .count();
+    assert_eq!(
+        assistant_count, 1,
+        "only the original turn's reply must exist -- prompt_silent must not have started one: \
+         {records:?}"
+    );
+
+    // A genuinely WAKING prompt now picks up both the silent text and its
+    // own, in the very next turn.
+    runtime
+        .prompt(agent_id, "continue".to_string())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let records = store
+                .read(&session, conway_core::ids::SeqRange::full())
+                .await
+                .unwrap();
+            let assistant_count = records
+                .iter()
+                .filter(|r| matches!(r, LogRecord::Assistant { .. }))
+                .count();
+            if assistant_count >= 2 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the operator's own next prompt must start the turn the silent text was waiting for");
+}
+
 #[tokio::test]
 async fn cancel_trips_token_and_agent_finishes_cancelled() {
     let tool: Arc<dyn Tool> = Arc::new(DelayTool {

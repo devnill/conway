@@ -671,6 +671,32 @@ pub struct AppState {
     /// chosen for one call must never silently carry over to the next,
     /// exactly the same reason `modal_scroll` resets per surface.
     pub permission_grant_scope: conway::PermissionScope,
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling, typeahead):
+    /// when the CURRENTLY shown permission prompt first became visible, and
+    /// whether [`Self::input`] already held a draft at that exact instant --
+    /// armed by [`Self::offer_prompt`]/`Self::promote_next_surface` the
+    /// moment a NEW prompt is promoted (never re-armed by a round trip
+    /// through the pattern/shell-prefix editor back to the SAME prompt --
+    /// those are not a fresh ambush). `input.rs`'s `handle_permission_key`
+    /// is the one reader: a key arriving while still inside the window this
+    /// pair defines is typing, not a decision -- see that function's own
+    /// doc for the exact window widths and why a mid-draft arrival gets a
+    /// longer one. `None` is not meaningfully distinct from "the window has
+    /// long since closed" to that reader, so nothing besides a fresh arm
+    /// ever needs to clear it back to `None`.
+    pub permission_prompt_armed_at: Option<(std::time::Instant, bool)>,
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling, "no single
+    /// stray key can grant beyond once"): `true` while the FIRST press of
+    /// the prompt's `allow_always` key is waiting for a deliberate
+    /// confirming second keystroke (the same key again, or `Enter`) before
+    /// the broader-than-once grant actually commits -- `input.rs`'s
+    /// `handle_permission_key` is the one reader/writer; `view/mod.rs`'s
+    /// `draw_permission_overlay` renders the confirm prompt while this is
+    /// `true`. Reset to `false` whenever a NEW prompt is armed
+    /// ([`Self::offer_prompt`]/`Self::promote_next_surface`) -- an armed
+    /// confirm belongs to the specific prompt that armed it, never carries
+    /// to a different one.
+    pub permission_confirm_always: bool,
     /// The transcript's scroll offset (wrapped lines from the top), only
     /// meaningful while `follow_tail` is `false` -- see that field's own
     /// doc. Mutated by [`Self::scroll_page_up`]/[`Self::scroll_page_down`]
@@ -2065,6 +2091,8 @@ impl AppState {
             // `AppState::new` caller other than `tui::run` wants.
             agent_names: None,
             permission_grant_scope: conway::PermissionScope::Session,
+            permission_prompt_armed_at: None,
+            permission_confirm_always: false,
             scroll: 0,
             follow_tail: true,
             queued_prompts: std::collections::VecDeque::new(),
@@ -2299,6 +2327,8 @@ impl AppState {
             plugins_open: _,
             plugins_selected: _,
             permission_grant_scope: _,
+            permission_prompt_armed_at: _,
+            permission_confirm_always: _,
             scroll: _,
             follow_tail: _,
             queued_prompts: _,
@@ -3428,10 +3458,27 @@ impl AppState {
             // this gets its own wording naming the operator's own reason
             // rather than reusing "reached" (a budget-dimension word that
             // would misdescribe an operator abort).
+            //
+            // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: a bare `Ctrl-C` (the
+            // ONLY caller that stamps a reason other than
+            // [`INTERRUPT_RESEND_REASON`], today always `"user cancel"`)
+            // genuinely leaves the operator with nothing queued -- "type to
+            // continue" is accurate there. `App::interrupt_and_send`'s two
+            // callers (`busy_input = "interrupt"` and `F2`/`send_now`) both
+            // immediately resend the very message that triggered the abort
+            // once the agent reports idle again (`app.rs`'s own doc on that
+            // method), so telling the operator to "type to continue" after
+            // THAT abort describes a step that already happened on its own
+            // -- see that reason constant's own doc for why a literal
+            // string match, not a new `Event` field, is the chosen seam
+            // here.
             Event::TurnAbortedByUser { reason, .. } => {
-                self.transcript.push(Entry::Notice {
-                    text: format!("turn aborted ({reason}); type to continue"),
-                });
+                let text = if reason == super::app::INTERRUPT_RESEND_REASON {
+                    "sent now -- the reply in progress was stopped".to_string()
+                } else {
+                    format!("turn aborted ({reason}); type to continue")
+                };
+                self.transcript.push(Entry::Notice { text });
             }
             // Board item A5.6: a child (or the root) crossed 80% of one of
             // its own budget dimensions -- the model-facing wrap-up notice

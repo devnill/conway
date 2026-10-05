@@ -364,6 +364,21 @@ impl App {
                 self.state.transcript.push(Entry::Notice {
                     text: exit_guard::HINT.to_string(),
                 });
+                // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: `HINT` promises
+                // "press Enter again to send the word to the model", but
+                // `input.rs`'s own `Enter` handling already took the text
+                // out of the box (`std::mem::take(&mut state.input)`,
+                // `input.rs`'s own `KeyCode::Enter` arm) before `submit` was
+                // ever called -- a SECOND bare `Enter` on the now-empty box
+                // hit the `state.input.is_empty()` early return just above
+                // that same arm and did nothing at all, making the hint's
+                // own instruction false. Restoring the exact word (not a
+                // fresh, possibly-differently-cased copy) makes the SAME
+                // word available for `exit_guard::check`'s own
+                // case-insensitive-but-content-preserving repeat match on
+                // the next submission.
+                self.state.input = text;
+                self.state.cursor = self.state.input.chars().count();
                 return Ok(SubmitOutcome::Continue);
             }
             exit_guard::Decision::Send => {
@@ -877,7 +892,7 @@ impl App {
             });
             return;
         }
-        if let Err(e) = self.handle.abort_turn(agent, "busy_input=interrupt").await {
+        if let Err(e) = self.handle.abort_turn(agent, INTERRUPT_RESEND_REASON).await {
             self.state.transcript.push(Entry::Notice {
                 text: format!("interrupt failed: {e}"),
             });
@@ -909,6 +924,22 @@ impl App {
 /// enough that a genuinely stuck abort does not freeze the TUI's render loop
 /// for long.
 const INTERRUPT_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The `reason` [`App::interrupt_and_send`] stamps on every
+/// [`conway::SessionHandle::abort_turn`] call it makes -- both its callers
+/// (`busy_input = "interrupt"` and `F2`/`send_now`) immediately resend the
+/// very message that triggered the abort once the agent reports idle again
+/// (see that method's own doc), unlike a bare `Ctrl-C` (`app/shutdown.rs`,
+/// reason `"user cancel"`), which leaves the operator with nothing queued.
+/// `crate::tui::state`'s `Event::TurnAbortedByUser` handler matches on this
+/// EXACT literal -- a plain string equality check rather than a new
+/// `Event`/`LogRecord` field, since this reason is TUI-internal prose
+/// already free to change shape (unlike `Event::TurnAbortedByUser`'s own
+/// public `reason: String`, which has other readers: `render/text.rs`'s
+/// `conway -p` diagnostic, and any embedder watching the bare
+/// `EventStream`) -- unifying the constant here is what keeps that match
+/// from silently drifting out of sync with the text actually sent.
+pub(super) const INTERRUPT_RESEND_REASON: &str = "operator interrupt (message resent)";
 
 #[cfg(test)]
 mod tests {
@@ -1566,9 +1597,14 @@ mod tests {
     // this crate's echo backend resolves a real turn synchronously, so
     // there is no way to observe a GENUINELY in-flight one from a test. ----
 
-    /// Acceptance 1/constraint: `queue` (the default) withholds the message
-    /// entirely -- no `UserTurn` reaches the real session log -- and shows
-    /// it in `AppState::held_prompts`/the transcript instead.
+    /// Acceptance 1/constraint: `queue` withholds the message entirely --
+    /// no `UserTurn` reaches the real session log -- and shows it in
+    /// `AppState::held_prompts`/the transcript instead.
+    ///
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ`: `queue` is no longer the
+    /// DEFAULT (`steer` is -- see `BusyInputMode`'s own doc), so this test
+    /// now sets it explicitly; its own subject is `queue` mode specifically,
+    /// not whatever the default happens to be.
     #[tokio::test]
     async fn busy_queue_mode_withholds_the_message_instead_of_sending_it() {
         let conway = echo_conway();
@@ -1577,6 +1613,7 @@ mod tests {
             .await
             .expect("App::new should succeed");
         let root = app.handle.root();
+        app.state.busy_input = crate::tui::config::BusyInputMode::Queue;
         app.state.activity = Activity::Thinking;
 
         let outcome = app
@@ -1591,10 +1628,9 @@ mod tests {
             "queue mode must withhold the message client-side, tagged with its own agent"
         );
         assert!(
-            app.state
-                .transcript
-                .iter()
-                .any(|e| matches!(e, Entry::QueuedUser(t) if t == "second message")),
+            app.state.transcript.iter().any(
+                |e| matches!(e, Entry::QueuedUser { text, steer: false } if text == "second message")
+            ),
             "the withheld message must render in the pending style: {:?}",
             app.state.transcript
         );
@@ -1696,11 +1732,10 @@ mod tests {
             vec![(root, "steer me".to_string())]
         );
         assert!(
-            app.state
-                .transcript
-                .iter()
-                .any(|e| matches!(e, Entry::QueuedUser(t) if t == "steer me")),
-            "a pending steer must render in the pending style: {:?}",
+            app.state.transcript.iter().any(
+                |e| matches!(e, Entry::QueuedUser { text, steer: true } if text == "steer me")
+            ),
+            "a pending steer must render with the `steer>` label: {:?}",
             app.state.transcript
         );
         assert!(

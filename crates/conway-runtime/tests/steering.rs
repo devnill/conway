@@ -644,9 +644,20 @@ async fn steer_lands_only_at_the_next_turn_boundary_as_a_parent_steer_segment() 
 /// `resolve_default_path` (D1-3d-wire; runs its own fresh `SessionStore::
 /// read` internally, replacing the transitional `path_from_legacy` +
 /// `all_records` shape this test used to pin), never from anything
-/// `drain_inbox` returns directly (`drain_inbox` returns `()`, not records --
-/// see `mailbox::DrainEffect::Persist`'s own doc on why a steer becomes
-/// visible only by first becoming a stored record).
+/// `drain_inbox` returns directly -- see `mailbox::DrainEffect::Persist`'s
+/// own doc on why a steer becomes visible only by first becoming a stored
+/// record.
+///
+/// Board item `01M44PK089DF2M9TM3C4P5CKMZ` widened `drain_inbox`'s return
+/// type from `Result<(), RuntimeError>` to `Result<bool, RuntimeError>` --
+/// the `bool` is a same-call-only FLAG ("did a `Steer` land this pass"),
+/// consumed by `run_inner`'s own resume-gate check to decide whether to
+/// wait or proceed, never a record and never read by anything that builds
+/// a `ContextInput`. The invariant this test protects -- no record ever
+/// reaches a context except via a fresh store read -- is unchanged, so the
+/// assertion now checks for that STRUCTURAL shape (a `bool`, categorically
+/// not `LogRecord`/`Vec<LogRecord>`/anything else capable of carrying
+/// record content) rather than pinning the exact pre-item signature text.
 #[test]
 fn context_own_is_only_ever_populated_from_a_fresh_store_read() {
     let src = include_str!("../src/agent_loop.rs");
@@ -662,8 +673,9 @@ fn context_own_is_only_ever_populated_from_a_fresh_store_read() {
         "path must be derived from resolve_default_path over this session's own store/resolver/path_store"
     );
     assert!(
-        src.contains("async fn drain_inbox(&mut self) -> Result<(), RuntimeError>"),
-        "drain_inbox must not return records for direct injection into a context"
+        src.contains("async fn drain_inbox(&mut self) -> Result<bool, RuntimeError>"),
+        "drain_inbox must return only a same-pass bool flag, never a record, for direct \
+         injection into a context"
     );
 }
 

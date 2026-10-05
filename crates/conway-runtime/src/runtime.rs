@@ -861,6 +861,41 @@ impl Runtime {
             .clone())
     }
 
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ`: `agent`'s own
+    /// [`AgentHandle::prompt_notify`] -- the SAME `Arc<Notify>` as its
+    /// `AgentLoop::resume_gate.notify` (that field's own doc). `subagent.
+    /// rs`'s `steer` uses this to wake a target that is ALREADY parked at
+    /// its resume gate the instant a steer lands, rather than leaving it to
+    /// sit in the mailbox, undelivered, until the operator's next explicit
+    /// prompt happens to call [`Self::prompt_with_images`] (the only OTHER
+    /// caller of this same `Notify`). An unknown `agent` is simply not
+    /// notified (`Ok` with nothing to wake) -- unlike [`Self::
+    /// agent_mailbox`], a caller already holding a target it could not
+    /// resolve has nothing more useful to do with this failure than skip
+    /// the wake, since the steer itself (enqueued separately, before this
+    /// is ever called) is already durable-or-not on its own terms.
+    pub(crate) fn agent_prompt_notify(&self, agent: AgentId) -> Option<Arc<tokio::sync::Notify>> {
+        let agents = self.agents.read().expect("agents lock poisoned");
+        agents
+            .get(&agent)
+            .map(|handle| handle.prompt_notify.clone())
+    }
+
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ`: whether `agent` is, RIGHT
+    /// NOW, genuinely parked at its own `AgentLoop::resume_gate` -- a thin
+    /// pass-through to [`crate::tree::AgentTree::awaiting_prompt`] (that
+    /// method's own doc has the full mirroring mechanism). `subagent.rs`'s
+    /// `steer` checks this BEFORE waking [`Self::agent_prompt_notify`]'s
+    /// `Notify`, so a steer that arrives while `agent` is still genuinely
+    /// mid-turn (delivered at that turn's own next step boundary by the
+    /// pre-existing per-iteration `drain_inbox` polling alone, see
+    /// `AgentLoop::run_inner`'s own doc) never stores a stray wake permit
+    /// that some LATER, unrelated gate-arrival could consume -- the
+    /// double-delivery hazard this item's own ruling named.
+    pub(crate) fn agent_awaiting_prompt(&self, agent: AgentId) -> bool {
+        self.tree.awaiting_prompt(agent)
+    }
+
     /// Attaches `node` to the tree, spawns `agent_loop`'s task under the
     /// supervisor, and registers its handle. The shared tail of both
     /// `start_root` (root agents, unchanged, still inlines its own copy of
@@ -1187,6 +1222,28 @@ impl Runtime {
         images: Vec<AttachedImage>,
         prov: Provenance,
     ) -> Result<(), RuntimeError> {
+        self.prompt_with_images_inner(agent, text, images, prov, true)
+            .await
+    }
+
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling, `!>`):
+    /// [`Self::prompt_with_images`]'s own body, generalized over whether the
+    /// durable append should also WAKE `agent` -- every pre-existing public
+    /// entry point (`prompt`/`prompt_with_provenance`/`prompt_with_images`
+    /// itself) calls this with `notify: true`, preserving their exact prior
+    /// behavior byte-for-byte; [`Self::prompt_silent`] is the one caller
+    /// that passes `false`. See that method's own doc for why a waking and
+    /// a non-waking append need to share every OTHER step (persist-before-
+    /// act, the live `Event::UserTurn` twin, the `prompt_submitted`
+    /// deny-only hook) rather than drifting into two half-maintained copies.
+    async fn prompt_with_images_inner(
+        &self,
+        agent: AgentId,
+        text: String,
+        images: Vec<AttachedImage>,
+        prov: Provenance,
+        notify: bool,
+    ) -> Result<(), RuntimeError> {
         let (session, prompt_notify) = {
             let agents = self.agents.read().expect("agents lock poisoned");
             let handle = agents
@@ -1243,8 +1300,36 @@ impl Runtime {
         }
         self.bus
             .emit(session, agent, Event::UserTurn { text, prov });
-        prompt_notify.notify_one();
+        if notify {
+            prompt_notify.notify_one();
+        }
         Ok(())
+    }
+
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling, `!>`):
+    /// durably appends `text` as an ordinary, context-admitted
+    /// `LogRecord::UserTurn` -- byte-for-byte the same record [`Self::
+    /// prompt_with_provenance`] would append, read back by `agent`'s own
+    /// NEXT turn exactly like any other `UserTurn` -- WITHOUT waking
+    /// `agent` into starting that turn now. A `keep_alive` agent idling at
+    /// its own resume gate stays idle; a mid-turn agent's own in-progress
+    /// round is completely unaffected either way (this is `prompt_with_
+    /// images_inner`'s identical persist-before-act path, just without the
+    /// final `prompt_notify.notify_one()`). The appended text becomes part
+    /// of the conversation the operator's OWN next real prompt/steer
+    /// resumes into -- "the agent sees it with the operator's next
+    /// message," the ruling's own words for the `!>` shell form this
+    /// method exists for (`tui::app::shell_cmd`'s own module doc): running
+    /// a command and folding its output into context should not, by
+    /// itself, spend a model turn the operator never asked for.
+    pub async fn prompt_silent(
+        &self,
+        agent: AgentId,
+        text: String,
+        prov: Provenance,
+    ) -> Result<(), RuntimeError> {
+        self.prompt_with_images_inner(agent, text, Vec::new(), prov, false)
+            .await
     }
 
     /// Trips `agent`'s `CancellationToken` via `AgentTree::cancel`.

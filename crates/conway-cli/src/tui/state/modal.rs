@@ -908,6 +908,7 @@ impl AppState {
             // A scope chosen for the PREVIOUS prompt must not leak into
             // this one -- see `Self::permission_grant_scope`'s own doc.
             self.permission_grant_scope = conway::PermissionScope::Session;
+            self.arm_permission_typeahead_guard();
             return;
         }
         if let Some(modal) = self.pending_ask_modal.take() {
@@ -1281,9 +1282,28 @@ impl AppState {
             // for an earlier, unrelated prompt must not silently apply to
             // this one (see `Self::permission_grant_scope`'s own doc).
             self.permission_grant_scope = conway::PermissionScope::Session;
+            self.arm_permission_typeahead_guard();
         } else {
             self.queued_prompts.push_back(prompt);
         }
+    }
+
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ`: stamps [`Self::
+    /// permission_prompt_armed_at`] the instant a prompt actually BECOMES
+    /// the one on screen (never when it is merely queued -- an operator
+    /// cannot be ambushed by a prompt they cannot see yet) and clears any
+    /// confirm left armed from a DIFFERENT, now-resolved prompt. Shared by
+    /// [`Self::offer_prompt`] (a prompt arriving with nothing else showing)
+    /// and [`Self::promote_next_surface`] (a QUEUED prompt taking the
+    /// screen once the previous one resolves) -- both are "this prompt just
+    /// became visible" moments; the pattern/shell-prefix editor's own
+    /// round trip back to `Mode::AwaitingPermission` (`AppState::
+    /// cancel_editing_pattern` and friends) is deliberately NOT one of
+    /// these two call sites, since that is the SAME prompt the operator was
+    /// already looking at, not a fresh ambush.
+    pub(super) fn arm_permission_typeahead_guard(&mut self) {
+        self.permission_prompt_armed_at = Some((std::time::Instant::now(), !self.input.is_empty()));
+        self.permission_confirm_always = false;
     }
 
     /// Cycles the scope the prompt's remembered-grant keys (`a`/`p`) grant
@@ -1685,6 +1705,55 @@ mod tests {
                 render_kind: conway::RenderKind::ShellCommand,
             });
         prompt
+    }
+
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (typeahead): a prompt that
+    /// becomes visible with nothing else showing arms the guard, stamping
+    /// whether the draft was ALREADY non-empty at that exact instant.
+    #[test]
+    fn offer_prompt_arms_the_typeahead_guard_with_the_draft_state_at_arrival() {
+        let mut empty_draft = AppState::new(AgentId::new());
+        empty_draft.offer_prompt(permission_prompt("bash: ls"));
+        let (_, draft_was_nonempty) = empty_draft
+            .permission_prompt_armed_at
+            .expect("a freshly promoted prompt must arm the guard");
+        assert!(!draft_was_nonempty);
+
+        let mut mid_draft = AppState::new(AgentId::new());
+        mid_draft.input = "already typing".to_string();
+        mid_draft.offer_prompt(permission_prompt("bash: ls"));
+        let (_, draft_was_nonempty) = mid_draft
+            .permission_prompt_armed_at
+            .expect("a freshly promoted prompt must arm the guard");
+        assert!(draft_was_nonempty, "the draft was non-empty at arrival");
+    }
+
+    /// A SECOND prompt, queued behind the first, is invisible to the
+    /// operator until the first resolves -- `promote_next_surface` is what
+    /// actually shows it, so THAT is the call that must arm the guard, not
+    /// `offer_prompt`'s own queue-push branch (which cannot have armed it:
+    /// the operator never saw this prompt at that instant at all).
+    #[test]
+    fn promote_next_surface_arms_the_guard_for_a_newly_promoted_queued_prompt() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_prompt(permission_prompt("first"));
+        state.offer_prompt(permission_prompt("second"));
+        let armed_for_first = state.permission_prompt_armed_at;
+        assert!(armed_for_first.is_some());
+
+        // Resolving the first promotes the second -- a DIFFERENT prompt the
+        // operator has not seen until this instant.
+        state.resolve_current_prompt(conway::PermissionDecision::AllowOnce);
+
+        assert!(
+            matches!(&state.mode, Mode::AwaitingPermission(p) if p.request.rendered == "second"),
+            "the second prompt must now be showing: {:?}",
+            state.mode
+        );
+        assert!(
+            state.permission_prompt_armed_at.is_some(),
+            "the newly-promoted prompt must arm its own guard"
+        );
     }
 
     #[test]

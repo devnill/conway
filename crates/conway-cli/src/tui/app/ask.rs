@@ -463,6 +463,14 @@ mod tests {
                              Normal (ask in flight, no modal open yet), got: {:?}",
                             app.state.mode
                         );
+                        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: this test's
+                        // own subject is the ask/gate mode-stacking handoff,
+                        // not the typeahead guard -- clear the just-armed
+                        // window so the immediate, synchronous `y` below (a
+                        // real operator's own deliberate keystroke, just not
+                        // separated from `offer_prompt` by any real elapsed
+                        // time in this harness) is evaluated as a decision.
+                        app.state.permission_prompt_armed_at = None;
                         let action = input::handle_key(
                             &mut app.state,
                             key(ratatui::crossterm::event::KeyCode::Char('y')),

@@ -1558,7 +1558,71 @@ fn adjust_modal_scroll(state: &mut AppState, direction: i8) {
     };
 }
 
+/// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling, typeahead): how
+/// long after a permission prompt first becomes visible a bare `Char`
+/// keystroke is still treated as ongoing typing rather than a decision --
+/// DOGFOOD 4 finding 2 (`.conway/dogfood/round4-20261004/notes.md`): a bash
+/// permission prompt appeared mid-sentence, and the `a` the operator was
+/// already mid-keystroke on (typing "also tell me...") answered "always"
+/// 1019ms later. "~1s" is the ruling's own figure.
+const PERMISSION_TYPEAHEAD_WINDOW: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// The WIDER window used when the draft already held text the INSTANT the
+/// prompt appeared (`AppState::permission_prompt_armed_at`'s own `bool`) --
+/// the ruling's second condition ("while the operator was mid-draft"). A
+/// mid-sentence interruption can run longer than one second before the
+/// operator notices the prompt at all; this is still a BOUNDED grace
+/// period, not an indefinite one, so the prompt always becomes answerable
+/// again on its own once typing genuinely pauses -- matching the single `~1s`
+/// figure the ruling gives for "no draft yet" while covering the
+/// longer-running case the ruling names separately, without ever leaving the
+/// operator permanently unable to decide via a plain keystroke.
+const PERMISSION_TYPEAHEAD_WINDOW_MID_DRAFT: std::time::Duration =
+    std::time::Duration::from_millis(3000);
+
+/// Pure predicate behind the typeahead guard (board item
+/// `01M44PK089DF2M9TM3C4P5CKMZ`): `true` when `key` must be routed to the
+/// draft rather than evaluated as a permission decision at all. Scoped to a
+/// bare (`key.modifiers.is_empty()`) `KeyCode::Char` -- the only shape an
+/// ordinary sentence the operator is typing can ever produce; a scroll key,
+/// a chord, `Enter`, `Backspace`, or an arrow is never ambiguous with
+/// "mid-sentence" typing the same way a bare letter colliding with `y`/`a`/
+/// `p`/`n`/`s` is, so none of those are touched by this guard at all.
+fn permission_typeahead_intercepts(
+    elapsed: std::time::Duration,
+    draft_was_nonempty: bool,
+    key: KeyEvent,
+) -> bool {
+    if !key.modifiers.is_empty() || !matches!(key.code, KeyCode::Char(_)) {
+        return false;
+    }
+    let window = if draft_was_nonempty {
+        PERMISSION_TYPEAHEAD_WINDOW_MID_DRAFT
+    } else {
+        PERMISSION_TYPEAHEAD_WINDOW
+    };
+    elapsed < window
+}
+
 fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
+    // Board item `01M44PK089DF2M9TM3C4P5CKMZ`, checked FIRST, ahead of even
+    // the scroll keys: "typed input never answers a permission prompt" is
+    // unconditional for the duration of the window -- see
+    // `permission_typeahead_intercepts`'s own doc. The intercepted
+    // character still goes somewhere real: inserted into the draft at the
+    // cursor, exactly as `handle_normal_key`'s own `KeyCode::Char` arm
+    // would have, so the operator's sentence keeps assembling underneath
+    // the prompt rather than being silently swallowed.
+    if let Some((shown_at, draft_was_nonempty)) = state.permission_prompt_armed_at {
+        if permission_typeahead_intercepts(shown_at.elapsed(), draft_was_nonempty, key) {
+            if let KeyCode::Char(c) = key.code {
+                let idx = byte_index(&state.input, state.cursor);
+                state.input.insert(idx, c);
+                state.cursor += 1;
+            }
+            return Action::None;
+        }
+    }
     // Bug fix: a long command's argument
     // used to clip the decision keys off-screen with no way to see the
     // rest of it. `permission_prompt.scroll_up`/`scroll_down` (default
@@ -1597,6 +1661,35 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
         return Action::None;
     }
 
+    // Board item `01M44PK089DF2M9TM3C4P5CKMZ` ("no single stray key can
+    // grant beyond once"): the FIRST press of `allow_always` (immediately
+    // below) only ARMS `permission_confirm_always`; committing the actual
+    // grant needs a second, deliberate keystroke -- the SAME key again, or
+    // `Enter` -- while it is armed (checked here, before `allow_always`'s
+    // own arm-only match, so the second press never re-arms instead of
+    // confirming). `Esc` backs out to the ordinary, unarmed prompt without
+    // denying the call -- an operator who presses `a` by accident has not
+    // thereby decided anything at all yet. Any OTHER key disarms too (the
+    // confirm window was not a trap: a stray `a` followed by a deliberate
+    // `n` still denies) and falls through to that key's own ordinary
+    // meaning below.
+    if state.permission_confirm_always {
+        let confirmed = state
+            .keybindings
+            .matches(Context::Permission, "allow_always", key)
+            || key.code == KeyCode::Enter;
+        if confirmed {
+            state.permission_confirm_always = false;
+            return Action::PermissionDecision(PermissionDecision::AllowAlways {
+                scope: state.permission_grant_scope,
+            });
+        }
+        state.permission_confirm_always = false;
+        if key.code == KeyCode::Esc {
+            return Action::None;
+        }
+    }
+
     if state
         .keybindings
         .matches(Context::Permission, "allow_once", key)
@@ -1607,11 +1700,10 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
         .keybindings
         .matches(Context::Permission, "allow_always", key)
     {
-        return Action::PermissionDecision(PermissionDecision::AllowAlways {
-            // The scope the prompt's `cycle_grant_scope` key cycled to --
-            // `Session` unless the operator deliberately narrowed it.
-            scope: state.permission_grant_scope,
-        });
+        // Arm, don't grant -- see the `permission_confirm_always` check
+        // above for the confirming second keystroke this is waiting for.
+        state.permission_confirm_always = true;
+        return Action::None;
     }
     // The remembered-grant scope key: cycles Session -> this agent ->
     // this agent's subtree, applying to BOTH remembered-grant keys
@@ -4021,6 +4113,16 @@ mod tests {
             handle_permission_key(&mut state, key(KeyCode::Char('y'))),
             Action::PermissionDecision(PermissionDecision::AllowOnce)
         );
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: `a` no longer grants on
+        // the first press -- it arms the confirm (see
+        // `allow_always_requires_a_second_confirming_keystroke` below for
+        // that arm/confirm/cancel shape exercised directly); the SAME key
+        // again is the deliberate confirm.
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::Char('a'))),
+            Action::None,
+            "the first `a` only arms the confirm"
+        );
         assert_eq!(
             handle_permission_key(&mut state, key(KeyCode::Char('a'))),
             Action::PermissionDecision(PermissionDecision::AllowAlways {
@@ -4032,6 +4134,50 @@ mod tests {
             Action::PermissionDecision(PermissionDecision::Deny {
                 reason: "user denied".to_string()
             })
+        );
+    }
+
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ`, operator ruling ("no single
+    /// stray key can grant beyond once"): the full arm/confirm/cancel
+    /// shape, each checked in isolation.
+    #[test]
+    fn allow_always_requires_a_second_confirming_keystroke() {
+        // A single `a` never grants.
+        let mut armed_then_confirmed = AppState::new(AgentId::new());
+        assert_eq!(
+            handle_permission_key(&mut armed_then_confirmed, key(KeyCode::Char('a'))),
+            Action::None
+        );
+        assert!(armed_then_confirmed.permission_confirm_always);
+        // `Enter` is an equally valid confirm, not just a second `a`.
+        assert_eq!(
+            handle_permission_key(&mut armed_then_confirmed, key(KeyCode::Enter)),
+            Action::PermissionDecision(PermissionDecision::AllowAlways {
+                scope: PermissionScope::Session
+            })
+        );
+
+        // `Esc` backs out without denying -- the prompt is still live,
+        // unresolved, exactly as if `a` had never been pressed.
+        let mut armed_then_escaped = AppState::new(AgentId::new());
+        handle_permission_key(&mut armed_then_escaped, key(KeyCode::Char('a')));
+        assert_eq!(
+            handle_permission_key(&mut armed_then_escaped, key(KeyCode::Esc)),
+            Action::None,
+            "Esc cancels the confirm, it does not deny the call"
+        );
+        assert!(!armed_then_escaped.permission_confirm_always);
+
+        // Any OTHER key disarms AND falls through to its own ordinary
+        // meaning -- a stray `a` followed by a deliberate `n` still denies.
+        let mut armed_then_denied = AppState::new(AgentId::new());
+        handle_permission_key(&mut armed_then_denied, key(KeyCode::Char('a')));
+        assert_eq!(
+            handle_permission_key(&mut armed_then_denied, key(KeyCode::Char('n'))),
+            Action::PermissionDecision(PermissionDecision::Deny {
+                reason: "user denied".to_string()
+            }),
+            "a key other than the confirm must disarm and still take its own ordinary action"
         );
     }
 
@@ -4131,6 +4277,86 @@ mod tests {
         );
     }
 
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling, typeahead):
+    /// a key arriving inside the window must land in the draft, not the
+    /// decision -- the exact DOGFOOD 4 shape (typing "also tell me..." when
+    /// the `a` of "also" would otherwise have answered "always").
+    #[test]
+    fn typeahead_during_the_window_lands_in_the_draft_not_the_decision() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "also tell me ".to_string();
+        state.cursor = state.input.chars().count();
+        state.permission_prompt_armed_at = Some((std::time::Instant::now(), true));
+
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::Char('a'))),
+            Action::None,
+            "a key arriving inside the typeahead window must never be a decision"
+        );
+        assert_eq!(state.input, "also tell me a");
+        assert!(
+            !state.permission_confirm_always,
+            "a typeahead key must not even arm the confirm"
+        );
+    }
+
+    /// A key arriving AFTER the (no-draft) window has closed is answered
+    /// normally -- the guard is bounded, not permanent.
+    #[test]
+    fn typeahead_after_the_window_closes_answers_normally() {
+        let mut state = AppState::new(AgentId::new());
+        state.permission_prompt_armed_at = Some((
+            std::time::Instant::now()
+                - PERMISSION_TYPEAHEAD_WINDOW
+                - std::time::Duration::from_millis(1),
+            false,
+        ));
+
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::Char('y'))),
+            Action::PermissionDecision(PermissionDecision::AllowOnce)
+        );
+    }
+
+    /// The mid-draft window is WIDER than the no-draft one (a mid-sentence
+    /// interruption can run longer before the operator notices the prompt),
+    /// but it is still a BOUND, not forever.
+    #[test]
+    fn typeahead_mid_draft_window_is_wider_but_still_bounded() {
+        let mut still_guarded = AppState::new(AgentId::new());
+        still_guarded.input = "typing".to_string();
+        still_guarded.cursor = still_guarded.input.chars().count();
+        // Past the shorter no-draft window, but still inside the wider
+        // mid-draft one.
+        still_guarded.permission_prompt_armed_at = Some((
+            std::time::Instant::now()
+                - PERMISSION_TYPEAHEAD_WINDOW
+                - std::time::Duration::from_millis(500),
+            true,
+        ));
+        assert_eq!(
+            handle_permission_key(&mut still_guarded, key(KeyCode::Char('a'))),
+            Action::None,
+            "mid-draft keeps guarding past the shorter no-draft window"
+        );
+        assert_eq!(still_guarded.input, "typinga");
+
+        let mut window_closed = AppState::new(AgentId::new());
+        window_closed.permission_prompt_armed_at = Some((
+            std::time::Instant::now()
+                - PERMISSION_TYPEAHEAD_WINDOW_MID_DRAFT
+                - std::time::Duration::from_millis(1),
+            true,
+        ));
+        assert_eq!(
+            handle_permission_key(&mut window_closed, key(KeyCode::Char('n'))),
+            Action::PermissionDecision(PermissionDecision::Deny {
+                reason: "user denied".to_string()
+            }),
+            "even the wider mid-draft window must eventually close"
+        );
+    }
+
     /// Axis B: the prompt can produce
     /// a per-agent and a per-subtree grant. The `s` key cycles the scope
     /// and BOTH remembered-grant keys honor it -- `a` through the gate
@@ -4162,8 +4388,10 @@ mod tests {
         );
         assert_eq!(state.permission_grant_scope, PermissionScope::Session);
 
-        // `a` grants at the cycled scope...
+        // `a` grants at the cycled scope (arm, then the confirming second
+        // press -- board item `01M44PK089DF2M9TM3C4P5CKMZ`)...
         handle_permission_key(&mut state, key(KeyCode::Char('s')));
+        handle_permission_key(&mut state, key(KeyCode::Char('a')));
         assert_eq!(
             handle_permission_key(&mut state, key(KeyCode::Char('a'))),
             Action::PermissionDecision(PermissionDecision::AllowAlways {
@@ -4172,6 +4400,7 @@ mod tests {
             "an `a` pressed after `s` must carry the narrowed scope, not Session"
         );
         handle_permission_key(&mut state, key(KeyCode::Char('s')));
+        handle_permission_key(&mut state, key(KeyCode::Char('a')));
         assert_eq!(
             handle_permission_key(&mut state, key(KeyCode::Char('a'))),
             Action::PermissionDecision(PermissionDecision::AllowAlways {
@@ -4645,6 +4874,10 @@ mod tests {
                 render_kind: conway::RenderKind::ShellCommand,
             });
         state.offer_prompt(first);
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: this test's own subject
+        // is the per-prompt scope reset, not the typeahead guard -- clear
+        // the just-armed window.
+        state.permission_prompt_armed_at = None;
         handle_permission_key(&mut state, key(KeyCode::Char('s')));
         assert_eq!(state.permission_grant_scope, PermissionScope::Agent);
 
@@ -4692,6 +4925,10 @@ mod tests {
                 render_kind: conway::RenderKind::ShellCommand,
             });
         state.offer_prompt(prompt);
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: this test's own subject
+        // is the modifier-chord guard, not the typeahead guard -- clear the
+        // just-armed window.
+        state.permission_prompt_armed_at = None;
 
         for code in ['y', 'a', 's', 'p', 'n'] {
             let chord = KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL);
@@ -6126,6 +6363,11 @@ mod tests {
     #[test]
     fn enter_on_the_busy_input_row_cycles_the_mode() {
         let mut state = AppState::new(AgentId::new());
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: `AppState::new` now
+        // starts in `steer` (the new default), not `queue` -- set the
+        // KNOWN starting value this test actually exercises explicitly,
+        // rather than depending on whatever the default happens to be.
+        state.busy_input = crate::tui::state::BusyInputMode::Queue;
         state.open_settings();
         assert_eq!(state.busy_input, crate::tui::state::BusyInputMode::Queue);
 

@@ -119,10 +119,11 @@ pub struct TuiSection {
     pub history_size: Option<u32>,
     /// `[tui.busy_input]` (board item `01M1YVHKTQVXJRDSRYT3TCRXFX`,
     /// "Typing while the agent works"): what submitting a message while the
-    /// focused agent's turn is still running does. `Queue` (the default)
-    /// withholds the message until the turn boundary; `Steer` delivers it
-    /// at the running turn's own next tool-loop step via the existing
-    /// steer primitive; `Interrupt` (board item
+    /// focused agent's turn is still running does. `Steer` (the default --
+    /// board item `01M44PK089DF2M9TM3C4P5CKMZ`) delivers it at the running
+    /// turn's own next tool-loop step via the existing steer primitive;
+    /// `Queue` withholds the message until the turn boundary instead;
+    /// `Interrupt` (board item
     /// `01M3XGPGT5W7GABVTC7F2NA0C9`) aborts the focused agent's current
     /// turn, waits for it to report idle, then sends the message into the
     /// same live agent. See [`crate::tui::state::BusyInputMode`]'s own doc
@@ -190,11 +191,31 @@ pub enum EditorMode {
 /// window this value was removed (`"interrupt"`, silently normalized to
 /// `"queue"` with a startup warning) now simply loads as `Interrupt` again,
 /// like any other valid value -- no special-casing left.
+///
+/// **`Steer` is the default (board item `01M44PK089DF2M9TM3C4P5CKMZ`,
+/// operator ruling), not `Queue`.** DOGFOOD 4 (finding 15,
+/// `.conway/dogfood/round4-20261004/notes.md`) found `queue`'s own failure
+/// mode worse than `steer`'s: a message typed while the agent was busy sat
+/// silently in `AppState::held_prompts` until the NEXT turn boundary, with
+/// no way for the operator to tell, from the transcript alone, whether it
+/// had been seen at all -- indistinguishable, on screen, from a message
+/// that was simply lost. `steer` delivers into the mailbox the instant it
+/// is submitted (`conway_runtime::mailbox`'s own doc: "landing at `target`'s
+/// next turn boundary", already durable the moment `SessionHandle::steer`
+/// returns), and (closing the gap that same finding named) a steer that
+/// arrives after the running turn's own last delivery opportunity now
+/// starts a fresh turn on its own rather than sitting unconsumed until the
+/// operator's next message -- see `conway_runtime::agent_loop`'s own
+/// `ResumeGate` doc for the mechanism. A `settings.json` that never named
+/// `[tui.busy_input]` at all (the overwhelming majority, since this key
+/// predates this ruling) now starts a session in `steer`, not `queue` --
+/// this is a deliberate behavior change, not a migration concern: there is
+/// no stored value to migrate away from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BusyInputMode {
-    #[default]
     Queue,
+    #[default]
     Steer,
     Interrupt,
 }
@@ -639,6 +660,46 @@ mod tests {
             model_metadata_refresh: false,
         };
         let tui = load_from_options(options).expect("load must succeed");
+
+        assert_eq!(tui.busy_input, BusyInputMode::Steer);
+    }
+
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling): a
+    /// `settings.json` that never names `[tui.busy_input]` at all now starts
+    /// a session in `steer`, not `queue` -- `#[serde(default)]` on
+    /// [`TuiSection::busy_input`] falls through to [`BusyInputMode::
+    /// default()`], and this proves it is wired to the NEW default, not the
+    /// pre-ruling one (a stale `#[default] Queue` left on the enum would
+    /// pass `an_ordinary_busy_input_value_loads`/`busy_input_interrupt_
+    /// loads_as_a_real_value_not_a_fallback` above -- neither names a
+    /// missing key -- without ever catching this regression).
+    #[test]
+    fn busy_input_defaults_to_steer_when_the_key_is_absent() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}}
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("load must succeed with no `[tui]` at all");
 
         assert_eq!(tui.busy_input, BusyInputMode::Steer);
     }

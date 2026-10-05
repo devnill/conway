@@ -253,7 +253,20 @@ pub enum Entry {
     /// that has NOT (yet, or ever, in the recalled/discarded case) taken
     /// that path -- conflating the two would let a withheld message look
     /// exactly like a sent one.
-    QueuedUser(String),
+    ///
+    /// `steer`: `false` for a withheld (`busy_input = "queue"`) message,
+    /// `true` for an already-sent-but-pending (`busy_input = "steer"`) one
+    /// -- board item `01M44PK089DF2M9TM3C4P5CKMZ`'s own ruling: the two
+    /// read as the SAME thing to an operator ("a message sitting in front
+    /// of the agent, not yet in its own turn") only until they ask "wait,
+    /// did that already reach the model?" -- a withheld message has not; a
+    /// steered one went out through the mailbox the instant it was typed
+    /// (`state::busy_input`'s own module doc). `view/transcript.rs`'s
+    /// rendering picks the `queued> `/`steer> ` prefix from this flag.
+    QueuedUser {
+        text: String,
+        steer: bool,
+    },
 }
 
 /// A tool call's lifecycle, as reflected in one [`Entry::Tool`].

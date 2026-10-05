@@ -1230,6 +1230,22 @@ impl SubagentHost for Runtime {
             text,
             at_parent_seq,
         });
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: `target` genuinely
+        // parked at its own resume gate RIGHT NOW (checked AFTER the
+        // enqueue above, so the steer this call just sent is always the one
+        // `target`'s own next `drain_inbox` will find) gets woken directly,
+        // rather than left to sit in the mailbox until the operator's next
+        // explicit prompt -- see `Runtime::agent_awaiting_prompt`'s own doc
+        // for why this check is what keeps a mid-turn steer (delivered
+        // already, by the pre-existing per-step polling alone) from ever
+        // reaching this wake at all, and `Runtime::agent_prompt_notify`'s
+        // own doc for the `Notify` this shares with an ordinary prompt's
+        // own wake.
+        if self.agent_awaiting_prompt(target) {
+            if let Some(notify) = self.agent_prompt_notify(target) {
+                notify.notify_one();
+            }
+        }
         Ok(())
     }
 

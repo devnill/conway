@@ -162,6 +162,7 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
             &pending.request,
             state.permission_grant_scope,
             state.modal_scroll,
+            state.permission_confirm_always,
             theme,
         );
     }
@@ -564,6 +565,7 @@ fn draw_permission_overlay(
     req: &conway::PermissionRequest,
     grant_scope: conway::PermissionScope,
     scroll: u16,
+    confirm_always: bool,
     theme: &Theme,
 ) {
     let agent_path = if req.agent_path.is_empty() {
@@ -632,7 +634,14 @@ fn draw_permission_overlay(
     // decision the operator may want. So the keys go on their own line and
     // the scroll hint, which is an affordance rather than a decision, goes
     // on the offer line's tail when there is room.
-    let hint = if offered.is_some() {
+    let hint = if confirm_always {
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: the first `[a]` press
+        // only ARMS this -- see `input.rs::handle_permission_key`'s own
+        // doc. This line replaces the ordinary decision-key hint entirely
+        // while armed, so "what will be granted" is the most prominent
+        // thing on screen rather than one line among several.
+        "CONFIRM allow always?  [a] or [Enter] confirms   [Esc] cancels"
+    } else if offered.is_some() {
         "[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback"
     } else if shell_prefix_offered {
         "[y] once  [a] always  [p] prefix  [n] deny  [Esc] deny w/ feedback"
@@ -656,9 +665,15 @@ fn draw_permission_overlay(
         // scope honestly rather than guessing at its breadth.
         _ => "a custom scope",
     };
-    footer_lines.push(Line::from(format!(
-        "  [a]/[p] remember for: {scope_words}  ([s] cycles)"
-    )));
+    if confirm_always {
+        footer_lines.push(Line::from(format!(
+            "  would allow EVERY future call like this for: {scope_words}"
+        )));
+    } else {
+        footer_lines.push(Line::from(format!(
+            "  [a]/[p] remember for: {scope_words}  ([s] cycles)"
+        )));
+    }
     if body_max_scroll > 0 {
         footer_lines.push(Line::from("  [PageUp/PageDown] scroll command"));
     }

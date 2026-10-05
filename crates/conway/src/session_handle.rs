@@ -208,6 +208,22 @@ impl SessionHandle {
         Ok(TurnHandle::new(self.rt.clone(), session, agent, stream))
     }
 
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling, `!>`): the
+    /// facade twin of [`Self::prompt_agent`] that does NOT start a turn --
+    /// see `conway_runtime::runtime::Runtime::prompt_silent`'s own doc for
+    /// the full mechanism (same durable, context-admitted `UserTurn`
+    /// append; no `prompt_notify` wake) and the `!>` shell form this exists
+    /// for. Returns `()`, not a [`TurnHandle`]: there is no turn this call
+    /// itself starts to hand a handle to -- `agent`'s own NEXT real
+    /// prompt/steer is what actually turns this appended text into a
+    /// reply.
+    pub async fn prompt_agent_silent(&self, agent: AgentId, text: impl Into<String>) -> Result<()> {
+        self.rt
+            .prompt_silent(agent, text.into(), Provenance::UserPrompt)
+            .await
+            .map_err(FacadeError::Runtime)
+    }
+
     /// [`Self::prompt_agent`], widened to carry one or more [`AttachedImage`]s
     /// alongside `text` (terminal image attachment) -- the `--image`/Ctrl-V/
     /// `@`-path attach routes' one entry point into a live turn. `images`

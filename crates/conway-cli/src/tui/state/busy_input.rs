@@ -143,7 +143,8 @@ impl AppState {
     /// so the push is always onto the conversation currently on screen.
     pub fn queue_prompt(&mut self, agent: AgentId, text: String) {
         self.held_prompts.push_back((agent, text.clone()));
-        self.transcript.push(Entry::QueuedUser(text));
+        self.transcript
+            .push(Entry::QueuedUser { text, steer: false });
     }
 
     /// `Up` on an empty input line (`input.rs`'s fixed key-handling chain,
@@ -226,7 +227,8 @@ impl AppState {
     /// generation and calls [`Self::clear_pending_steers_for`].
     pub fn mark_steer_pending(&mut self, agent: AgentId, text: String) {
         self.pending_steers.push_back((agent, text.clone()));
-        self.transcript.push(Entry::QueuedUser(text));
+        self.transcript
+            .push(Entry::QueuedUser { text, steer: true });
     }
 
     /// Clears every pending-steer VISIBILITY entry for `agent` -- called
@@ -274,17 +276,22 @@ impl AppState {
     }
 
     /// The queued strip's own summary (`view/input_box.rs`):
-    /// `(focused_count, first_line, other_count)` -- see this module's own
-    /// doc, "the queued strip is scoped to the focused agent," for why a
-    /// non-focused agent's own queue is folded into a bare `other_count`
-    /// rather than shown by name or content. `focused_count`/`first_line`
-    /// cover BOTH withheld (`queue` mode) and already-sent-but-pending
-    /// (`steer` mode) messages belonging to [`AppState::focused_agent`];
-    /// `first_line` prefers the oldest WITHHELD message when one exists (it
-    /// is the next thing that will actually be sent), else the oldest
-    /// pending steer. `first_line` is `None` exactly when `focused_count`
-    /// is `0`.
-    pub fn queued_strip_summary(&self) -> (usize, Option<&str>, usize) {
+    /// `(focused_count, first_line, first_is_steer, other_count)` -- see
+    /// this module's own doc, "the queued strip is scoped to the focused
+    /// agent," for why a non-focused agent's own queue is folded into a
+    /// bare `other_count` rather than shown by name or content.
+    /// `focused_count`/`first_line` cover BOTH withheld (`queue` mode) and
+    /// already-sent-but-pending (`steer` mode) messages belonging to
+    /// [`AppState::focused_agent`]; `first_line` prefers the oldest
+    /// WITHHELD message when one exists (it is the next thing that will
+    /// actually be sent), else the oldest pending steer. `first_line` is
+    /// `None` exactly when `focused_count` is `0`. `first_is_steer` --
+    /// board item `01M44PK089DF2M9TM3C4P5CKMZ` -- says which queue
+    /// `first_line` came from, so `view::input_box`'s own title can say
+    /// "steer" rather than "queued" when that is what is actually about to
+    /// be delivered; meaningless (always `false`) when `first_line` is
+    /// `None`.
+    pub fn queued_strip_summary(&self) -> (usize, Option<&str>, bool, usize) {
         let focused = self.focused_agent;
         let focused_held = self
             .held_prompts
@@ -299,28 +306,33 @@ impl AppState {
         let focused_count = focused_held + focused_steers;
         let total = self.held_prompts.len() + self.pending_steers.len();
         let other_count = total - focused_count;
-        let first_line = self
+        let first_held = self
             .held_prompts
             .iter()
-            .find(|(agent, _)| *agent == focused)
-            .or_else(|| {
+            .find(|(agent, _)| *agent == focused);
+        let (first_line, first_is_steer) = match first_held {
+            Some((_, text)) => (Some(text.as_str()), false),
+            None => (
                 self.pending_steers
                     .iter()
                     .find(|(agent, _)| *agent == focused)
-            })
-            .map(|(_, text)| text.as_str());
-        (focused_count, first_line, other_count)
+                    .map(|(_, text)| text.as_str()),
+                true,
+            ),
+        };
+        let first_is_steer = first_line.is_some() && first_is_steer;
+        (focused_count, first_line, first_is_steer, other_count)
     }
 
     /// Shared by [`Self::recall_last_queued`]: removes the LAST transcript
-    /// entry carrying `Entry::QueuedUser(text)` -- see that method's own
-    /// doc for why scanning backward for an exact-text match always finds
-    /// the right one.
+    /// entry carrying `Entry::QueuedUser { text, .. }` -- see that method's
+    /// own doc for why scanning backward for an exact-text match always
+    /// finds the right one.
     fn remove_last_queued_user_entry(&mut self, text: &str) {
         if let Some(pos) = self
             .transcript
             .iter()
-            .rposition(|e| matches!(e, Entry::QueuedUser(t) if t == text))
+            .rposition(|e| matches!(e, Entry::QueuedUser { text: t, .. } if t == text))
         {
             self.transcript.remove(pos);
         }
@@ -328,14 +340,14 @@ impl AppState {
 
     /// Shared by [`Self::take_held_prompts_for`]/[`Self::
     /// clear_pending_steers_for`]: removes the FIRST (oldest) transcript
-    /// entry carrying `Entry::QueuedUser(text)` -- forward scan, pairing
-    /// correctly with the FIFO order both callers drain their own queue
-    /// in, even when duplicate text is queued twice.
+    /// entry carrying `Entry::QueuedUser { text, .. }` -- forward scan,
+    /// pairing correctly with the FIFO order both callers drain their own
+    /// queue in, even when duplicate text is queued twice.
     fn remove_first_queued_user_entry(&mut self, text: &str) {
         if let Some(pos) = self
             .transcript
             .iter()
-            .position(|e| matches!(e, Entry::QueuedUser(t) if t == text))
+            .position(|e| matches!(e, Entry::QueuedUser { text: t, .. } if t == text))
         {
             self.transcript.remove(pos);
         }
@@ -349,9 +361,14 @@ mod tests {
 
     /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the cycle is now three-wide
     /// (`Interrupt` reinstated) -- `queue -> steer -> interrupt -> queue`.
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` changed [`AppState::new`]'s
+    /// own starting value to `steer` (not `queue`) -- this test's subject is
+    /// the CYCLE ORDER, unaffected by that, so it sets a known starting
+    /// point explicitly rather than depending on the default.
     #[test]
     fn cycle_busy_input_wraps_queue_steer_interrupt_queue() {
         let mut state = AppState::new(AgentId::new());
+        state.busy_input = BusyInputMode::Queue;
         assert_eq!(state.busy_input, BusyInputMode::Queue);
 
         state.cycle_busy_input();
@@ -373,7 +390,7 @@ mod tests {
         assert_eq!(state.held_prompts, vec![(agent, "first".to_string())]);
         assert!(matches!(
             state.transcript.last(),
-            Some(Entry::QueuedUser(t)) if t == "first"
+            Some(Entry::QueuedUser { text, steer: false }) if text == "first"
         ));
     }
 
@@ -385,7 +402,7 @@ mod tests {
         state.queue_prompt(agent, "first".to_string());
         state.queue_prompt(agent, "second".to_string());
 
-        let (count, first, other) = state.queued_strip_summary();
+        let (count, first, first_is_steer, other) = state.queued_strip_summary();
         assert_eq!(count, 2);
         assert_eq!(other, 0);
         assert_eq!(
@@ -393,12 +410,13 @@ mod tests {
             Some("first"),
             "the strip shows the NEXT message to send"
         );
+        assert!(!first_is_steer, "a withheld message is never a steer");
     }
 
     #[test]
     fn queued_strip_summary_is_zero_when_nothing_is_queued() {
         let state = AppState::new(AgentId::new());
-        assert_eq!(state.queued_strip_summary(), (0, None, 0));
+        assert_eq!(state.queued_strip_summary(), (0, None, false, 0));
     }
 
     /// Review round 1, CRITICAL: a message queued for agent A must never
@@ -412,7 +430,8 @@ mod tests {
         state.queue_prompt(a, "for a".to_string());
         state.focus_agent(b);
 
-        let (focused_count, first_line, other_count) = state.queued_strip_summary();
+        let (focused_count, first_line, _first_is_steer, other_count) =
+            state.queued_strip_summary();
         assert_eq!(focused_count, 0);
         assert_eq!(first_line, None, "must never leak another agent's text");
         assert_eq!(other_count, 1);
@@ -441,7 +460,7 @@ mod tests {
             !state
                 .transcript
                 .iter()
-                .any(|e| matches!(e, Entry::QueuedUser(t) if t == "second")),
+                .any(|e| matches!(e, Entry::QueuedUser { text, .. } if text == "second")),
             "the recalled entry's own transcript row must be removed: {:?}",
             state.transcript
         );
@@ -449,7 +468,7 @@ mod tests {
             state
                 .transcript
                 .iter()
-                .any(|e| matches!(e, Entry::QueuedUser(t) if t == "first")),
+                .any(|e| matches!(e, Entry::QueuedUser { text, .. } if text == "first")),
             "the still-queued entry must remain: {:?}",
             state.transcript
         );
@@ -491,12 +510,12 @@ mod tests {
         let delivered = state.take_held_prompts_for(agent);
         assert_eq!(delivered, vec!["first".to_string(), "second".to_string()]);
         assert!(state.held_prompts.is_empty());
-        assert_eq!(state.queued_strip_summary(), (0, None, 0));
+        assert_eq!(state.queued_strip_summary(), (0, None, false, 0));
         assert!(
             !state
                 .transcript
                 .iter()
-                .any(|e| matches!(e, Entry::QueuedUser(_))),
+                .any(|e| matches!(e, Entry::QueuedUser { .. })),
             "every queued entry must be removed once delivered: {:?}",
             state.transcript
         );
@@ -525,10 +544,11 @@ mod tests {
         state.mark_steer_pending(agent, "steered".to_string());
 
         assert!(state.held_prompts.is_empty());
-        let (count, first, other) = state.queued_strip_summary();
+        let (count, first, first_is_steer, other) = state.queued_strip_summary();
         assert_eq!(count, 1);
         assert_eq!(other, 0);
         assert_eq!(first, Some("steered"));
+        assert!(first_is_steer, "a pending steer must be labelled as one");
         // A pending steer is never recallable (it is already sent) --
         // `Up` must see nothing to act on.
         assert!(!state.recall_last_queued());
@@ -543,11 +563,11 @@ mod tests {
         state.clear_pending_steers_for(agent);
 
         assert!(state.pending_steers.is_empty());
-        assert_eq!(state.queued_strip_summary(), (0, None, 0));
+        assert_eq!(state.queued_strip_summary(), (0, None, false, 0));
         assert!(!state
             .transcript
             .iter()
-            .any(|e| matches!(e, Entry::QueuedUser(_))));
+            .any(|e| matches!(e, Entry::QueuedUser { .. })));
     }
 
     /// Clearing one agent's pending steers must never touch another

@@ -24,17 +24,21 @@ use conway_core::capabilities::{
     ToolCallSupport,
 };
 use conway_core::config::AgentDef;
-use conway_core::content::{ContentBlock, Role, StopReason, Usage};
+use conway_core::content::{
+    ContentBlock, PermissionClass, Role, StopReason, ToolCall, ToolCategory, ToolSpec,
+    TruncationPolicy, Usage,
+};
 use conway_core::error::{BackendError, RuntimeError, SubagentError, ToolError};
 use conway_core::event::Event;
 use conway_core::ids::{
-    AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId,
+    AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId, ToolName,
 };
 use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta};
 use conway_core::path::RecordRef;
 use conway_core::ports::{
     Backend, BoxStream, ContextHook, ContextHookCtx, ContextPayload, GenerateRequest,
-    GenerateResponse, LiveOwner, Router, SessionStore, StreamChunk, SubagentHandle, SubagentHost,
+    GenerateResponse, LiveOwner, Plugin, PluginManifest, Router, SessionStore, StreamChunk,
+    SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{MinimalRouter, RoleConfig, RoutingConfig};
@@ -1575,6 +1579,286 @@ async fn steer_attribution_derives_from_the_caller_not_the_targets_own_parent() 
         "steer attribution must derive from the CALLER (root), never target's own tree \
          parent (`a`) -- deriving it from the target is what let a forged steer look \
          authentic"
+    );
+}
+
+/// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (operator ruling, steer
+/// fallback): a steer landing once the target is GENUINELY idle at its own
+/// resume gate -- the turn ended, no operator prompt has been sent since --
+/// starts a fresh turn carrying it ENTIRELY ON ITS OWN, with no
+/// `Runtime::prompt` call anywhere in this test. DOGFOOD 4 finding 15
+/// (`.conway/dogfood/round4-20261004/notes.md`): the operator's steer,
+/// typed right after a text-only final reply, sat durable in the log but
+/// produced no turn until the operator's own NEXT message, several
+/// questions later -- this is the acceptance test for the fix (`Runtime::
+/// agent_awaiting_prompt`/`agent_prompt_notify`'s own doc has the
+/// mechanism). Also proves the "not re-sent" half: settled at exactly one
+/// follow-up turn, never a spurious extra one.
+#[tokio::test]
+async fn a_steer_delivered_once_genuinely_idle_at_the_gate_starts_exactly_one_follow_up_turn() {
+    let (runtime, store) = build_runtime(2, HashMap::new());
+    let mut spec = root_spec("go");
+    spec.knobs.keep_alive = true;
+    let root = runtime.start_root(spec).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.awaiting_prompt(root) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the first turn must reach genuine idle before this test ever steers it");
+
+    SubagentHost::steer(
+        &*runtime,
+        root,
+        root,
+        "focus on the auth module".to_string(),
+    )
+    .await
+    .unwrap();
+
+    let root_session = session_of(&runtime, root);
+    // No `Runtime::prompt` call anywhere in this test: the steer call above
+    // must be enough, on its own, to start the second turn.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let records = store.read(&root_session, SeqRange::full()).await.unwrap();
+            let steer_landed = records.iter().any(
+                |r| matches!(r, LogRecord::ParentSteer { text, .. } if text == "focus on the auth module"),
+            );
+            let assistant_count = records
+                .iter()
+                .filter(|r| matches!(r, LogRecord::Assistant { .. }))
+                .count();
+            if steer_landed && assistant_count >= 2 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the steer must start a genuine second turn entirely on its own");
+
+    // Settle back at idle, then give any (incorrect) further wake a real
+    // window to fire before asserting it never did.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.awaiting_prompt(root) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the second turn must itself end at a genuine idle, not hang");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let records = store.read(&root_session, SeqRange::full()).await.unwrap();
+    let assistant_count = records
+        .iter()
+        .filter(|r| matches!(r, LogRecord::Assistant { .. }))
+        .count();
+    let steer_count = records
+        .iter()
+        .filter(|r| matches!(r, LogRecord::ParentSteer { .. }))
+        .count();
+    assert_eq!(
+        assistant_count, 2,
+        "exactly one follow-up turn must run -- never a spurious extra one: {records:?}"
+    );
+    assert_eq!(
+        steer_count, 1,
+        "the steer itself must be persisted exactly once: {records:?}"
+    );
+}
+
+/// A tool whose `invoke` blocks for a fixed delay -- lets a test hold a REAL
+/// tool call open long enough to steer the agent WHILE it is genuinely
+/// mid-turn (`Runtime::awaiting_prompt` reading `false`), the exact window
+/// `a_steer_delivered_mid_turn_is_not_re_sent_once_the_agent_later_idles`
+/// needs. Mirrors `conway-cli`'s own `HeldTool`/`DelayTool` fixtures (same
+/// shape, this crate's own copy -- a plain fixed delay needs no cross-crate
+/// gate/notify plumbing).
+struct DelayTool {
+    delay: Duration,
+}
+
+#[async_trait]
+impl Tool for DelayTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new("wait"),
+            description: "test-only tool that sleeps before returning".into(),
+            schema: serde_json::from_value(serde_json::json!({"type": "object"})).unwrap(),
+            category: ToolCategory::Read,
+            permission: PermissionClass::Safe,
+        }
+    }
+
+    async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        tokio::time::sleep(self.delay).await;
+        Ok(ToolOutput {
+            blocks: vec![ContentBlock::Text {
+                text: "done".into(),
+            }],
+            is_error: false,
+            truncation: TruncationPolicy::None,
+            artifacts: vec![],
+        })
+    }
+}
+
+struct DelayPlugin {
+    delay: Duration,
+}
+
+impl Plugin for DelayPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "test.delay".to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![ToolName::new("wait")],
+            required_host_caps: vec![],
+            optional_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![Arc::new(DelayTool { delay: self.delay })]
+    }
+}
+
+fn wait_tool_call_response(call_id: &str) -> GenerateResponse {
+    GenerateResponse {
+        content: vec![],
+        tool_calls: vec![ToolCall {
+            call_id: call_id.to_string(),
+            name: ToolName::new("wait"),
+            arguments: serde_json::json!({}),
+        }],
+        stop: StopReason::ToolUse,
+        usage: Usage::default(),
+    }
+}
+
+/// [`build_runtime`]'s own twin, widened with a `DelayTool` plugin so a test
+/// can hold a real tool call open -- `build_runtime` itself has 38 other
+/// call sites and stays untouched; this is a standalone, self-contained
+/// builder for the one test that needs it.
+fn build_runtime_with_delay_tool(
+    script: Vec<ScriptedTurn>,
+    delay: Duration,
+) -> (Arc<Runtime>, Arc<CountingStore>) {
+    let fake = Arc::new(FakeStore::new());
+    let store = Arc::new(CountingStore::new(fake));
+    let store_dyn: Arc<dyn SessionStore> = store.clone();
+
+    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("b")));
+    let model = ModelRef {
+        backend: backend.id(),
+        model: ModelId::new("m"),
+    };
+    let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(backend.id(), backend);
+
+    let runtime = Runtime::new(RuntimeDeps {
+        store: store_dyn,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![Arc::new(DelayPlugin { delay })],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs: HashMap::new(),
+        instructions: Vec::new(),
+        skills: Default::default(),
+        event_bus: EventBus::with_default_capacity(),
+        headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
+    });
+    (runtime, store)
+}
+
+/// Board item `01M44PK089DF2M9TM3C4P5CKMZ`: the "not re-sent" half -- a
+/// steer sent while the target is genuinely MID-TURN (a tool call in
+/// flight, `Runtime::awaiting_prompt` reading `false`) must be delivered
+/// EXACTLY ONCE, at that turn's own next boundary (the pre-existing
+/// mechanism, `tests/steering.rs`'s own `steer_lands_only_at_the_next_
+/// turn_boundary_as_a_parent_steer_segment`), and this item's new
+/// gate-wake (`Runtime::agent_awaiting_prompt`'s own check in `subagent.
+/// rs`'s `steer`) must stay silent for it: sending while `awaiting_prompt`
+/// reads `false` must never arm a stray wake that fires LATER, once the
+/// agent genuinely idles, as a pointless extra turn.
+#[tokio::test]
+async fn a_steer_delivered_mid_turn_is_not_re_sent_once_the_agent_later_idles() {
+    let (runtime, store) = build_runtime_with_delay_tool(
+        vec![
+            ScriptedTurn::Respond(wait_tool_call_response("tc_1")),
+            ScriptedTurn::Respond(text_response("second")),
+        ],
+        Duration::from_millis(150),
+    );
+    let mut spec = root_spec("go");
+    spec.knobs.keep_alive = true;
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(spec).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let envelope = stream.next().await.expect("stream open");
+            if envelope.agent == root && matches!(envelope.event, Event::ToolCallStarted { .. }) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the tool call must start");
+
+    assert!(
+        !runtime.awaiting_prompt(root),
+        "sanity: the agent must be genuinely mid-turn, not idle, right now"
+    );
+    SubagentHost::steer(
+        &*runtime,
+        root,
+        root,
+        "focus on the auth module".to_string(),
+    )
+    .await
+    .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.awaiting_prompt(root) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the turn the steer landed in must itself reach genuine idle");
+    // A real window for an (incorrect) stray wake to fire before asserting
+    // it never did.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let root_session = session_of(&runtime, root);
+    let records = store.read(&root_session, SeqRange::full()).await.unwrap();
+    let assistant_count = records
+        .iter()
+        .filter(|r| matches!(r, LogRecord::Assistant { .. }))
+        .count();
+    let steer_count = records
+        .iter()
+        .filter(|r| matches!(r, LogRecord::ParentSteer { .. }))
+        .count();
+    assert_eq!(
+        assistant_count, 2,
+        "the mid-turn steer must not trigger any extra, spurious turn once the agent \
+         later idles: {records:?}"
+    );
+    assert_eq!(
+        steer_count, 1,
+        "the steer itself must be persisted exactly once: {records:?}"
     );
 }
 

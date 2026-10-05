@@ -496,23 +496,33 @@ pub fn entry_lines(
             lines
         }
         // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: a withheld/pending
-        // message, dim + a `queued> ` prefix distinct from `Entry::User`'s
-        // `theme.user`-styled `you> ` -- a message that has not (yet, or
-        // ever) reached the model must never read like one that has.
-        Entry::QueuedUser(text) => text
-            .split('\n')
-            .enumerate()
-            .map(|(i, line)| {
-                if i == 0 {
-                    Line::from(vec![
-                        Span::styled("queued> ", theme.dim),
-                        Span::styled(line.to_string(), theme.dim),
-                    ])
-                } else {
-                    Line::from(Span::styled(line.to_string(), theme.dim))
-                }
-            })
-            .collect(),
+        // message, dim + a `queued> `/`steer> ` prefix distinct from
+        // `Entry::User`'s `theme.user`-styled `you> ` -- a message that has
+        // not (yet, or ever) reached the model must never read like one
+        // that has.
+        //
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: `steer: true` gets its
+        // own `steer> ` prefix rather than sharing `queued> ` -- the two
+        // modes differ in exactly the fact an operator asking "did that
+        // already reach the model?" cares about (a withheld message has
+        // not; a steered one already left through the mailbox -- see
+        // `Entry::QueuedUser`'s own doc).
+        Entry::QueuedUser { text, steer } => {
+            let prefix = if *steer { "steer> " } else { "queued> " };
+            text.split('\n')
+                .enumerate()
+                .map(|(i, line)| {
+                    if i == 0 {
+                        Line::from(vec![
+                            Span::styled(prefix, theme.dim),
+                            Span::styled(line.to_string(), theme.dim),
+                        ])
+                    } else {
+                        Line::from(Span::styled(line.to_string(), theme.dim))
+                    }
+                })
+                .collect()
+        }
     }
 }
 
@@ -540,15 +550,34 @@ fn shell_lines(
     // downloaded file, ...) can therefore never reach a rendered `Span`
     // even if some future caller ever constructs an `Entry::Shell` by a
     // path that skips `apply_shell_done`.
+    //
+    // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: `sanitize_control_chars`
+    // treats EVERY `Cc` control char identically (that function's own doc:
+    // "every Unicode control character ... is rewritten to [the
+    // placeholder]"), and a real newline (`\n`) IS a `Cc` control
+    // character. Sanitizing the whole multi-line `output` BEFORE splitting
+    // it (the pre-item ordering, still correct for `command`, which is
+    // always one line) replaced every line break with the SAME placeholder
+    // it uses for an embedded ANSI escape, so `.split('\n')` below found
+    // nothing left to split on -- the entire block rendered as one line
+    // with a stray `�` glyph standing in for each lost line break (`!` and
+    // `!>` alike; both reach this function identically -- see this
+    // function's own doc). Splitting the RAW `output` on its real `\n`s
+    // FIRST, then sanitizing each resulting line independently, keeps the
+    // line break as a real line break while still replacing every OTHER
+    // control character (a stray `\r`, an ANSI escape mid-line, ...) with
+    // the same evidence-preserving placeholder as before.
     let command = conway::sanitize_control_chars(command);
-    let output = conway::sanitize_control_chars(output);
     let prefix = if to_model { "!> " } else { "! " };
     let mut lines = vec![Line::from(vec![
         Span::styled(prefix.to_string(), theme.emphasized),
         Span::styled(command, theme.emphasized),
     ])];
     for line in output.split('\n') {
-        lines.push(Line::from(Span::styled(line.to_string(), theme.dim)));
+        lines.push(Line::from(Span::styled(
+            conway::sanitize_control_chars(line),
+            theme.dim,
+        )));
     }
     if truncated {
         lines.push(Line::from(Span::styled(
@@ -1105,6 +1134,52 @@ mod tests {
         assert!(text.contains("echo hi"), "{text:?}");
         assert!(text.contains("before"), "{text:?}");
         assert!(text.contains("after"), "{text:?}");
+    }
+
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ`: a bare `!` (and an `!>`)
+    /// command's own multi-line `stdout:\n...\n\nstderr:\n...` output must
+    /// render as one `Line` per real line break, exactly like `Entry::
+    /// Notice`/`Entry::Error` already do (`entry_lines`'s own `split('\n')`
+    /// arms immediately above `shell_lines`) -- not collapsed onto a single
+    /// line with a `\u{FFFD}` standing in for each lost break, the
+    /// regression `sanitize_control_chars`-before-`split` produced (see
+    /// `shell_lines`'s own doc for the root cause). Named after the exact
+    /// dogfood shape (`git status --short`'s own `" M src/calc.py"` line).
+    #[test]
+    fn entry_shell_renders_multiline_output_as_separate_lines_not_one_garbled_line() {
+        for to_model in [false, true] {
+            let entry = Entry::Shell {
+                command: "git status --short".to_string(),
+                output: "stdout:\n M src/calc.py\n\nstderr:\n(empty)".to_string(),
+                exit_code: Some(0),
+                truncated: false,
+                to_model,
+                ts: None,
+            };
+
+            let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
+            let rendered: Vec<String> = lines.iter().map(plain_text).collect();
+
+            assert!(
+                !rendered.iter().any(|line| line.contains('\u{FFFD}')),
+                "a real line break must never become a \\u{{FFFD}} placeholder: {rendered:?}"
+            );
+            // command line + 5 output lines ("stdout:", " M src/calc.py",
+            // "", "stderr:", "(empty)") + the trailing "exit 0" status line.
+            assert_eq!(
+                rendered,
+                vec![
+                    format!("{} git status --short", if to_model { "!>" } else { "!" }),
+                    "stdout:".to_string(),
+                    " M src/calc.py".to_string(),
+                    String::new(),
+                    "stderr:".to_string(),
+                    "(empty)".to_string(),
+                    "exit 0".to_string(),
+                ],
+                "to_model={to_model}"
+            );
+        }
     }
 
     #[test]
