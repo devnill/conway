@@ -668,7 +668,7 @@ default. Dynamic routing, context compaction, memory, skills, MCP support. You
 get them by choosing them.
 
 > **Where the tree is today.** Dynamic routing, memory (`conway.memory`), and
-> skills (`conway.skills`) are all built and installable, as are nine
+> skills (`conway.skills`) are all built and installable, as are ten
 > members this list does not name by capability — the provider adapters, a
 > session-rewind command, repeated-step detection (`conway.stepguard`, which
 > §6 below is about), the out-of-process subprocess plugin host,
@@ -680,8 +680,12 @@ get them by choosing them.
 > (`conway.trim` — omits tool call/result pairs older than a configurable
 > turn window), operator-chosen, renameable agent names
 > (`conway.names` — three commands over a small store the TUI reads
-> directly), and a prepended instruction fragment (`conway.idiom` — what
-> makes a bare interactive session carry any harness orientation at all).
+> directly), a prepended instruction fragment (`conway.idiom` — what
+> makes a bare interactive session carry any harness orientation at all),
+> and the ephemeral compaction hook itself (`conway.compaction` — folds old
+> tool results into one labeled, non-persistent summary segment; see
+> `docs/plugins/compaction.md`'s own caveat, repeated later in this section,
+> before reaching for it).
 > Three more things are built but do not name a plugin id the way those
 > do. MCP support: an operator lists an external MCP server under
 > `[plugins].mcp` and its tools attach directly, the same shape as the
@@ -692,8 +696,7 @@ get them by choosing them.
 > pointing at a directory by hand (`conway-plugin-marketplace` — fetches
 > over HTTP into the same plugin store the reader above already uses) are
 > both libraries the CLI consumes rather than plugins an operator installs;
-> the plugins they produce are the ordinary kind. Compaction is the one
-> member of this list not written yet.
+> the plugins they produce are the ordinary kind.
 
 This tier is permanent rather than a staging area for things on their way into
 the core, for three reasons.
@@ -772,9 +775,12 @@ seam with one operator-facing number rather than leaving it a hypothetical;
 about the BUNDLE side of this: it is "a worked example, not a commitment to
 any of its members individually," a statement about which plugins ship,
 which remains a separate question from what you may configure inside one
-you did choose to install. This is file configuration only, so far — no
-TUI editor renders a plugin's settings, no `/settings` row exists for one
-yet, and no other first-party plugin has adopted the mechanism for its own
+you did choose to install. `conway.compaction`'s `fold_after_turns` (how
+many of the most recent tool results stay verbatim before the rest fold
+into one ephemeral summary) is the second real setting to adopt it. This is
+file configuration only, so far — no TUI editor renders a plugin's
+settings, no `/settings` row exists for one yet, and most other
+first-party plugins have not adopted the mechanism for their own
 constants — but the config-file half already works exactly as
 `settings.json` itself does. The DIFFERENT mechanism below this tier,
 `conway_core::ports::PluginConfig` narrowed down a subagent tree via
@@ -798,8 +804,14 @@ older than K turns, keep the diff and discard the exploration that produced it.
 Which of those is right depends entirely on what you are doing.
 
 > **Where the tree is today.** The `ContextHook` port this rests on is built
-> and does everything described here. The first-party compaction plugin is
-> not written, so today you write the hook yourself rather than forking one.
+> and does everything described here, and the first-party compaction plugin
+> is now written: `conway.compaction` (`crates/conway-plugin-compaction`,
+> `docs/plugins/compaction.md`) packages the "drop tool results older than K
+> turns" example above as an installable, off-by-default hook. It is
+> deliberately the weakest form of what "compaction" usually means — nothing
+> persists the fold, no user/assistant text is summarized, no model call is
+> involved — see that page's own caveat before reaching for it instead of
+> forking the hook yourself.
 
 **Where a turn should go.** The core resolves a role to a model and stops. It
 cannot see prompt text to do it, and it holds no view on what should happen when

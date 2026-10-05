@@ -1,6 +1,7 @@
 //! The `sessions`/`routes` read-only subcommands (fills these in;
 //! only establishes the flag surface and stub dispatch).
 
+pub mod doctor;
 pub mod fmt;
 pub mod memory;
 pub mod plugin;

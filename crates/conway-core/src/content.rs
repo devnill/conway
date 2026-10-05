@@ -304,6 +304,178 @@ impl AddAssign for Usage {
     }
 }
 
+/// Per-model price, USD-per-million-tokens, by token kind -- the
+/// `price` sub-object an operator may add to one entry of `models.json`
+/// (`conway::config::model_metadata::ModelMetadataEntry::price`). **No
+/// bundled defaults ship with conway, for any model**: a price is only ever
+/// what an operator configured, never a guess this crate makes on their
+/// behalf -- see [`turn_cost`]'s own doc for what an absent price means for
+/// a given [`Usage`].
+///
+/// `cache_read_per_mtok`/`cache_write_per_mtok` are optional even when
+/// `input_per_mtok`/`output_per_mtok` are set: a provider that reports cache
+/// tokens at all usually prices a cache READ below, and a cache WRITE above,
+/// its ordinary input rate, but an operator who has not looked up those two
+/// numbers yet can still price the ordinary dimensions -- see [`turn_cost`]
+/// for what happens to a cache-relevant token when its own rate is unknown.
+///
+/// **Only `"USD"` is understood today** (board item `01M1YVRS0K284H9QB32ZZW6D5G`
+/// scoped this to one currency, deliberately -- no currency conversion, no
+/// budget cap, see that item's own "NOT" list). [`turn_cost`] and
+/// [`Price::estimate_input_cost`] both return `None`/produce no figure for
+/// any other `currency` value rather than rendering a `$` sign in front of a
+/// number that is not actually dollars.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Price {
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+    #[serde(default)]
+    pub cache_read_per_mtok: Option<f64>,
+    #[serde(default)]
+    pub cache_write_per_mtok: Option<f64>,
+    #[serde(default = "default_price_currency")]
+    pub currency: String,
+}
+
+fn default_price_currency() -> String {
+    "USD".to_string()
+}
+
+/// The only currency [`turn_cost`]/[`Price::estimate_input_cost`] will ever
+/// compute a figure for today -- see [`Price`]'s own doc.
+pub const SUPPORTED_CURRENCY: &str = "USD";
+
+/// One computed cost figure: an amount in [`Price::currency`]
+/// (always `"USD"` today -- see [`Price`]'s own doc), and whether it is
+/// exact or an honest over-estimate.
+///
+/// `approximate` is `true` whenever this figure could not apply a real
+/// discount it had reason to believe exists -- see [`turn_cost`]'s own doc
+/// for the two cases that set it. It is never `true` merely because the
+/// NUMBER is small; a tiny but fully-priced turn is `approximate: false`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cost {
+    pub amount: f64,
+    pub approximate: bool,
+}
+
+impl Cost {
+    /// Formats this figure as a `$`-prefixed USD string, prefixed with `≈`
+    /// when [`Self::approximate`] is set.
+    ///
+    /// **Precision rule (stated, not incidental): `>= $0.01` renders 3
+    /// decimal places (`$0.012`); below that, 4 decimal places
+    /// (`$0.0012`).** A flat 2-decimal rule (ordinary retail-price
+    /// formatting) would round a genuinely sub-cent per-turn cost to
+    /// `$0.00`, which is indistinguishable from "free" and from "unknown" --
+    /// exactly the two things a cost figure exists to tell apart. The extra
+    /// decimal below one cent keeps a small-but-real figure visibly nonzero
+    /// without carrying that same precision up into the common case, where
+    /// a fourth decimal digit is mostly noise.
+    pub fn format(&self) -> String {
+        let body = if self.amount >= 0.01 {
+            format!("${:.3}", self.amount)
+        } else {
+            format!("${:.4}", self.amount)
+        };
+        if self.approximate {
+            format!("≈{body}")
+        } else {
+            body
+        }
+    }
+}
+
+impl Price {
+    /// Estimates the cost of a NEXT request's input alone (`tokens` priced
+    /// at [`Self::input_per_mtok`]) -- the `/context` header's "what would
+    /// the next turn cost" figure, computed before any request is sent and
+    /// therefore always approximate: it is a prediction over the CURRENT
+    /// context size, not an observation of what a backend actually billed.
+    /// Always [`Cost::approximate`], and `None` for any `currency` other
+    /// than [`SUPPORTED_CURRENCY`] -- see [`Price`]'s own doc.
+    pub fn estimate_input_cost(&self, tokens: u64) -> Option<Cost> {
+        if self.currency != SUPPORTED_CURRENCY {
+            return None;
+        }
+        Some(Cost {
+            amount: (tokens as f64) * self.input_per_mtok / 1_000_000.0,
+            approximate: true,
+        })
+    }
+}
+
+/// **The one pricing computation** (board item `01M1YVRS0K284H9QB32ZZW6D5G`
+/// -- a single, shared cost-arithmetic implementation): the TUI turn
+/// summary, `conway sessions show --cost`, and one-shot `--output-format
+/// json` all call this function rather than each re-deriving token-rate
+/// arithmetic of their own. `None` when `price`'s `currency` is not
+/// [`SUPPORTED_CURRENCY`] -- never a `$`-prefixed figure for a currency this
+/// crate does not actually understand.
+///
+/// `output_per_mtok` prices both `usage.output_tokens` and
+/// `usage.reasoning_tokens`: every backend this crate talks to bills a
+/// reasoning/thinking token as an output token, and `Price` carries no
+/// separate reasoning rate.
+///
+/// **The decision on cache tokens whose exact rate is unknown, stated here
+/// rather than left implicit (two cases, same resolution): cost is shown
+/// only when a price is configured and a real discount can be applied,
+/// otherwise the figure is marked approximate rather than withheld or
+/// guessed.**
+///
+/// 1. `usage.cache_accounting` is [`CacheAccounting::NotReported`]. The
+///    backend's wire format carries no cache field at all, so
+///    `cache_read_tokens`/`cache_write_tokens` are zero-filled placeholders,
+///    not observations (see [`CacheAccounting`]'s own doc) -- there is
+///    nothing to discount in the arithmetic below. But the backend may still
+///    have applied a REAL cache discount to what it actually billed, this
+///    computation simply has no way to know: charging every input token at
+///    the full rate could overstate the true cost. The figure is still
+///    computed (never withheld), marked [`Cost::approximate`].
+/// 2. `usage.cache_accounting` is [`CacheAccounting::Reported`], genuine
+///    cache tokens were processed, but `price` sets no
+///    `cache_read_per_mtok`/`cache_write_per_mtok` of its own. Those tokens
+///    are priced at the ordinary `input_per_mtok` rate instead (a
+///    conservative, never-lower-than-reality substitute: a cache rate is
+///    never priced ABOVE the ordinary input rate it discounts -- see
+///    [`Price`]'s own doc), and the figure is marked approximate.
+///
+/// Every other combination -- a price with no cache rates at all and a
+/// `Usage` with no cache-relevant tokens, or a price that names both cache
+/// rates and a `Usage` that reports them -- produces an EXACT figure.
+pub fn turn_cost(usage: &Usage, price: &Price) -> Option<Cost> {
+    if price.currency != SUPPORTED_CURRENCY {
+        return None;
+    }
+    const MTOK: f64 = 1_000_000.0;
+    let mut approximate = matches!(usage.cache_accounting, CacheAccounting::NotReported);
+    let output_like_tokens = f64::from(usage.output_tokens) + f64::from(usage.reasoning_tokens);
+    let mut amount = f64::from(usage.input_tokens) * price.input_per_mtok / MTOK
+        + output_like_tokens * price.output_per_mtok / MTOK;
+    if usage.cache_read_tokens > 0 {
+        let rate = match price.cache_read_per_mtok {
+            Some(rate) => rate,
+            None => {
+                approximate = true;
+                price.input_per_mtok
+            }
+        };
+        amount += f64::from(usage.cache_read_tokens) * rate / MTOK;
+    }
+    if usage.cache_write_tokens > 0 {
+        let rate = match price.cache_write_per_mtok {
+            Some(rate) => rate,
+            None => {
+                approximate = true;
+                price.input_per_mtok
+            }
+        };
+        amount += f64::from(usage.cache_write_tokens) * rate / MTOK;
+    }
+    Some(Cost { amount, approximate })
+}
+
 /// Why the model stopped generating.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -434,5 +606,161 @@ mod tests {
     fn sampling_params_default_is_empty() {
         let p = SamplingParams::default();
         assert!(p.temperature.is_none() && p.stop.is_empty() && p.extra.is_empty());
+    }
+
+    fn priced(
+        input: f64,
+        output: f64,
+        cache_read: Option<f64>,
+        cache_write: Option<f64>,
+    ) -> Price {
+        Price {
+            input_per_mtok: input,
+            output_per_mtok: output,
+            cache_read_per_mtok: cache_read,
+            cache_write_per_mtok: cache_write,
+            currency: SUPPORTED_CURRENCY.to_string(),
+        }
+    }
+
+    /// The exact case: every dimension `usage` reports has a configured
+    /// rate, including the cache-read discount -- the figure must be exact
+    /// arithmetic, not approximate.
+    #[test]
+    fn turn_cost_applies_the_cache_read_discount_when_reported_and_priced() {
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 500_000,
+            cache_read_tokens: 2_000_000,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            cache_accounting: CacheAccounting::Reported,
+        };
+        let price = priced(3.0, 15.0, Some(0.3), Some(3.75));
+        let cost = turn_cost(&usage, &price).expect("priced model must compute a cost");
+        // 1M in @ $3/Mtok = $3.00; 500k out @ $15/Mtok = $7.50;
+        // 2M cache-read @ $0.30/Mtok = $0.60. Total $11.10.
+        assert!(
+            (cost.amount - 11.10).abs() < 1e-9,
+            "expected 11.10, got {}",
+            cost.amount
+        );
+        assert!(!cost.approximate, "every dimension was priced: must be exact");
+    }
+
+    /// Reasoning tokens are billed at the OUTPUT rate (no separate price
+    /// field for them).
+    #[test]
+    fn turn_cost_bills_reasoning_tokens_at_the_output_rate() {
+        let usage = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 1_000_000,
+            cache_accounting: CacheAccounting::Reported,
+        };
+        let price = priced(1.0, 20.0, None, None);
+        let cost = turn_cost(&usage, &price).unwrap();
+        assert!((cost.amount - 20.0).abs() < 1e-9);
+        assert!(!cost.approximate);
+    }
+
+    /// Case 1 of the cache-discount decision on `turn_cost`'s own doc:
+    /// `CacheAccounting::NotReported` zero-fills the cache
+    /// fields, so there is nothing to discount in the arithmetic -- but the
+    /// figure must still be marked approximate, since a real discount this
+    /// computation cannot see may already be baked into what the backend
+    /// actually billed.
+    #[test]
+    fn turn_cost_marks_not_reported_cache_accounting_as_approximate() {
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            cache_accounting: CacheAccounting::NotReported,
+        };
+        let price = priced(3.0, 15.0, Some(0.3), Some(3.75));
+        let cost = turn_cost(&usage, &price).unwrap();
+        assert!((cost.amount - 3.0).abs() < 1e-9);
+        assert!(
+            cost.approximate,
+            "NotReported must mark the figure approximate even with nothing to discount"
+        );
+    }
+
+    /// Case 2 of that same decision: `Reported` cache tokens with NO configured cache
+    /// rate fall back to the ordinary input rate, and the figure is marked
+    /// approximate (the backend's real cache discount is unknown).
+    #[test]
+    fn turn_cost_falls_back_to_input_rate_for_unpriced_reported_cache_tokens() {
+        let usage = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 1_000_000,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            cache_accounting: CacheAccounting::Reported,
+        };
+        let price = priced(3.0, 15.0, None, None);
+        let cost = turn_cost(&usage, &price).unwrap();
+        assert!((cost.amount - 3.0).abs() < 1e-9, "priced at the input rate");
+        assert!(cost.approximate);
+    }
+
+    #[test]
+    fn turn_cost_is_none_for_an_unsupported_currency() {
+        let usage = Usage {
+            input_tokens: 100,
+            ..Default::default()
+        };
+        let mut price = priced(3.0, 15.0, None, None);
+        price.currency = "EUR".to_string();
+        assert!(turn_cost(&usage, &price).is_none());
+    }
+
+    #[test]
+    fn cost_format_uses_three_decimals_at_or_above_one_cent_and_four_below() {
+        assert_eq!(
+            Cost {
+                amount: 0.012,
+                approximate: false
+            }
+            .format(),
+            "$0.012"
+        );
+        assert_eq!(
+            Cost {
+                amount: 0.0012,
+                approximate: false
+            }
+            .format(),
+            "$0.0012"
+        );
+        assert_eq!(
+            Cost {
+                amount: 0.012,
+                approximate: true
+            }
+            .format(),
+            "≈$0.012"
+        );
+    }
+
+    #[test]
+    fn price_estimate_input_cost_is_always_approximate() {
+        let price = priced(3.0, 15.0, None, None);
+        let cost = price.estimate_input_cost(2_000_000).unwrap();
+        assert!((cost.amount - 6.0).abs() < 1e-9);
+        assert!(cost.approximate);
+    }
+
+    #[test]
+    fn price_estimate_input_cost_is_none_for_an_unsupported_currency() {
+        let mut price = priced(3.0, 15.0, None, None);
+        price.currency = "EUR".to_string();
+        assert!(price.estimate_input_cost(1_000).is_none());
     }
 }

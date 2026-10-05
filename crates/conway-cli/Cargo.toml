@@ -236,8 +236,34 @@ conway-plugin-web = { path = "../conway-plugin-web" }
 # `conway-plugin-toolindex/src/lib.rs`'s own "Default set or opt-in" section
 # for the full reasoning.
 conway-plugin-toolindex = { path = "../conway-plugin-toolindex" }
+# Board item 01M1YVMTDJYEFC5PKSQHDRASJX: `conway.compaction`, an ephemeral
+# ContextHook that folds old tool results into one labeled summary segment,
+# recomputed every turn -- packages `docs/plugins/cookbook.md` example 2 as
+# an installable plugin. Resolved through the SAME
+# `[plugins].install`/`src/first_party_plugins.rs` choke point every other
+# tool-contributing entry above uses; NOT installed by default and NOT in
+# `DEFAULT_OPINION_SET` -- see this crate's own `first_party_plugins.rs`
+# bundle doc and `conway-plugin-compaction/src/lib.rs`'s own module doc for
+# the "weakest form of compaction" caveat this entry carries.
+conway-plugin-compaction = { path = "../conway-plugin-compaction" }
+# `conway.todo`: an opt-in task list the model writes and ticks off
+# (`todo_write`/`todo_read`), a compact context segment near the end of the
+# request, a `todo` status-line entry, and `/conway.todo.list`. Resolved
+# through the SAME `[plugins].install`/`src/first_party_plugins.rs` choke
+# point every other tool-contributing entry above uses; NOT installed by
+# default and NOT in `DEFAULT_OPINION_SET` -- see this crate's own
+# `first_party_plugins.rs` bundle doc and
+# `conway-plugin-todo/src/lib.rs`'s own module doc for the opt-in reasoning.
+conway-plugin-todo = { path = "../conway-plugin-todo" }
 clap = { workspace = true, features = ["derive", "env"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+# "io-std"/"io-util" (board item 01M1YVWPXWTPZT73R9AK1TVG1M): `oneshot::
+# run_driven`'s `--input-format jsonl` reads stdin line-by-line, async,
+# alongside the event-stream select loop (`tokio::io::{stdin, BufReader,
+# AsyncBufReadExt}`) -- not a new dependency (C-04), just two more Cargo
+# features on the `tokio` line already here; `tests/common/mock_backend.rs`
+# already enables both as dev-dependency-only features (below), this makes
+# them real shipped-binary features too.
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "io-std", "io-util"] }
 async-trait = { workspace = true }
 futures = { workspace = true }
 # `unstable-rendered-line-info`: `Paragraph::line_count(width)`, used by

@@ -31,7 +31,7 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -1561,5 +1561,262 @@ async fn verbose_reveals_the_routine_tool_lifecycle() {
     assert!(
         !stderr.contains("warning: tool call proposed"),
         "even under --verbose, routine progress is not a warning: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// `--input-format jsonl` (board item `01M1YVWPXWTPZT73R9AK1TVG1M`): the
+// persistent, stdin-driven half of one-shot mode. See `docs/scripting.md`'s
+// "Driving conway as a persistent process" section for the protocol these
+// tests pin down against the real compiled binary.
+// ---------------------------------------------------------------------
+
+/// Spawns the real `conway` binary with `-p --input-format jsonl
+/// --output-format jsonl` plus `extra_args`, a REAL OS pipe on stdin
+/// carrying `stdin_bytes` (closed after the write, so the child observes a
+/// real EOF), and waits up to `bound` for it to exit -- draining stdout/
+/// stderr concurrently on their own threads throughout. Mirrors
+/// `stdin_pipe.rs`'s own `run_piped` (not reused directly: that helper is
+/// private to its own file, and `common::command`'s default
+/// `Stdio::null()` stdin is exactly what every other test in THIS file
+/// relies on) -- see that function's own doc for why each piece here is
+/// shaped the way it is.
+fn run_driven_piped(
+    extra_args: &[&str],
+    fixture: &Fixture,
+    stdin_bytes: &[u8],
+    bound: Duration,
+) -> Option<std::process::Output> {
+    // `-p` is placed LAST in this fixed prefix (not first) so it is never
+    // immediately followed by another `--flag` token in the argv clap
+    // actually sees -- `--print`'s `num_args(0..=1)` correctly treats a
+    // following token that looks like a flag as "no value given" rather
+    // than consuming it, but putting `-p` last sidesteps relying on that
+    // disambiguation at all.
+    let mut args: Vec<&str> = vec!["--input-format", "jsonl", "--output-format", "jsonl", "-p"];
+    args.extend_from_slice(extra_args);
+    let mut cmd = command(&args, fixture);
+    cmd.stdin(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn conway");
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+
+    let payload = stdin_bytes.to_vec();
+    let writer = std::thread::spawn(move || {
+        // A write/close failure here (the child already exited) is not
+        // this helper's problem -- the timeout/kill path below and the
+        // caller's own assertions on the returned `Output` are what a test
+        // actually checks.
+        let _ = stdin.write_all(&payload);
+        // `stdin` drops here, closing the pipe's write end -- the child's
+        // `next_line()` sees EOF.
+    });
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+
+    let deadline = Instant::now() + bound;
+    let status = loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            break Some(status);
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    writer.join().expect("stdin writer thread joins");
+    let stdout = stdout_reader.join().expect("stdout reader thread joins");
+    let stderr = stderr_reader.join().expect("stderr reader thread joins");
+
+    status.map(|status| std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// Two `"prompt"` lines, written up front, drive two separate turns in the
+/// SAME process -- this item's own acceptance criterion: two
+/// `agent_finished` results, with a strictly increasing `seq` (the
+/// session's own live event counter keeps climbing across turns rather than
+/// resetting), and two distinct `/chat/completions` requests against the
+/// mock backend (proof the second prompt genuinely ran a second turn, not a
+/// no-op against a non-`keep_alive` handle).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oneshot_input_jsonl_drives_two_prompts_in_one_process_with_increasing_seq() {
+    let mock = MockBackend::start(Script(vec![
+        vec![Chunk::Text("first"), Chunk::Finish("stop")],
+        vec![Chunk::Text("second"), Chunk::Finish("stop")],
+    ]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+
+    let stdin = concat!(
+        r#"{"type":"prompt","text":"one"}"#,
+        "\n",
+        r#"{"type":"prompt","text":"two"}"#,
+        "\n",
+        r#"{"type":"end"}"#,
+        "\n",
+    );
+
+    let out = run_driven_piped(&[], &fixture, stdin.as_bytes(), Duration::from_secs(20))
+        .expect("conway must exit within the bound, driving two prompts in one process");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lines = jsonl_lines(&out.stdout);
+    let finishes: Vec<&Value> = lines
+        .iter()
+        .filter(|v| v["event"] == "agent_finished")
+        .collect();
+    assert_eq!(
+        finishes.len(),
+        2,
+        "two prompts in one process must produce two agent_finished results: {lines:?}"
+    );
+    for finish in &finishes {
+        assert_eq!(finish["result"]["status"]["status"], "completed");
+    }
+    let seq0 = finishes[0]["seq"].as_u64().expect("seq is a number");
+    let seq1 = finishes[1]["seq"].as_u64().expect("seq is a number");
+    assert!(
+        seq1 > seq0,
+        "seq must keep climbing across turns in the SAME process: {seq0} then {seq1}"
+    );
+
+    let requests = mock.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "exactly two /chat/completions requests, one per driven prompt"
+    );
+}
+
+/// A malformed stdin line (not JSON at all) must yield a driver `error`
+/// line on stdout and NEVER stop the driver -- the next, well-formed prompt
+/// still runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oneshot_input_jsonl_malformed_line_emits_error_and_next_prompt_still_runs() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("ok"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let stdin = concat!(
+        "this is not json\n",
+        r#"{"type":"prompt","text":"hi"}"#,
+        "\n",
+        r#"{"type":"end"}"#,
+        "\n",
+    );
+
+    let out = run_driven_piped(&[], &fixture, stdin.as_bytes(), Duration::from_secs(20))
+        .expect("conway must exit within the bound");
+
+    assert!(
+        out.status.success(),
+        "a malformed line must not abort the driver: stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lines = jsonl_lines(&out.stdout);
+    assert!(
+        lines.iter().any(|v| v["type"] == "error"),
+        "a malformed line must yield a driver error line on stdout: {lines:?}"
+    );
+    let finishes: Vec<&Value> = lines
+        .iter()
+        .filter(|v| v["event"] == "agent_finished")
+        .collect();
+    assert_eq!(
+        finishes.len(),
+        1,
+        "the next, well-formed prompt must still run after a malformed line: {lines:?}"
+    );
+    assert_eq!(finishes[0]["result"]["status"]["status"], "completed");
+}
+
+/// `{"type":"end"}` after a turn completes exits 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oneshot_input_jsonl_end_exits_zero() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("ok"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let stdin = concat!(
+        r#"{"type":"prompt","text":"hi"}"#,
+        "\n",
+        r#"{"type":"end"}"#,
+        "\n",
+    );
+
+    let out = run_driven_piped(&[], &fixture, stdin.as_bytes(), Duration::from_secs(20))
+        .expect("conway must exit within the bound");
+
+    assert!(
+        out.status.success(),
+        "an explicit end after a completed turn must exit 0: stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(0));
+}
+
+/// Closing stdin without ever writing `{"type":"end"}` must behave exactly
+/// like an explicit end, not hang and not fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oneshot_input_jsonl_eof_without_end_behaves_as_end() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("ok"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    // No `{"type":"end"}` line at all -- `run_driven_piped` always closes
+    // the pipe's write end after writing, which is a real EOF from the
+    // child's point of view.
+    let stdin = concat!(r#"{"type":"prompt","text":"hi"}"#, "\n");
+
+    let out = run_driven_piped(&[], &fixture, stdin.as_bytes(), Duration::from_secs(20))
+        .expect("conway must exit within the bound even with no explicit end");
+
+    assert!(
+        out.status.success(),
+        "EOF without an explicit end must behave exactly like end: stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `--input-format jsonl` without `--output-format jsonl` is a usage error
+/// (exit 2), caught before a backend is ever reached.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oneshot_input_jsonl_requires_jsonl_output_format() {
+    let mock = MockBackend::start(Script(vec![])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = run_conway(&["-p", "hi", "--input-format", "jsonl"], &fixture);
+
+    assert!(
+        !out.status.success(),
+        "--input-format jsonl without --output-format jsonl must be a usage error: stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        mock.requests().is_empty(),
+        "a usage error must be caught before ever reaching a backend"
     );
 }

@@ -1,0 +1,41 @@
+[package]
+name = "conway-plugin-todo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin: conway.todo, a small task list the model writes and ticks off (todo_write/todo_read), surfaced near the end of context and on the status line -- opt-in, not in the default opinion set"
+
+# Versioned WITH the workspace, like every other first-party plugin -- see
+# `conway-plugin-skeleton`/`conway-plugin-compaction`'s own Cargo.toml doc
+# comments for the full reasoning, restated here rather than re-derived:
+# this crate carries none of `conway-core`'s strict-semver discipline, since
+# that discipline exists for the crate third-party plugins depend on, and
+# this is, from `conway`'s own point of view, just another consumer of the
+# public `conway`/`conway::plugin` surface.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets. `Plugin`, `Tool`,
+# `ContextHook`, `ToolObserver`, `Command` and `PluginStatusContribution` are
+# all reachable through `conway::plugin` alone.
+conway = { path = "../conway" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Tool argument schemas (`TodoWriteArgs`) -- the same footing
+# `conway-plugin-skills`/`conway-plugin-memory`/`conway-plugin-stepguard`
+# already depend on it on.
+schemars = { workspace = true }
+# Mints a stable id for a `todo_write` item the model submitted with none --
+# already a pinned workspace dependency (`conway-core`'s own id newtypes use
+# it), reused rather than hand-rolling a second id scheme.
+ulid = { workspace = true }
+
+[dev-dependencies]
+# `ToolCtx::for_test` is unconditional (no feature gate) -- these tests need
+# only doubles for its `SubagentHost`/`EventSink` arguments, which is what
+# `conway-testkit` (already a pinned workspace dependency) provides.
+conway-testkit = { path = "../conway-testkit" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

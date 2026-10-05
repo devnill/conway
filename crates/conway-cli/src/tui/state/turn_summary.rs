@@ -36,6 +36,7 @@ impl AppState {
             usage,
             self.focused_model.as_deref(),
             self.focused_model_cache_reporting,
+            self.focused_model_price.as_ref(),
         );
         // Clamp defensively: a `TurnFinished` with no preceding `TurnStarted`
         // (or a transcript cleared mid-turn) must never index out of range.
@@ -99,6 +100,7 @@ fn format_turn_summary(
     usage: &Usage,
     focused_model: Option<&str>,
     cache_reporting: Option<conway::CacheReporting>,
+    price: Option<&conway::Price>,
 ) -> String {
     let elapsed = if elapsed_secs >= 60 {
         let m = elapsed_secs / 60;
@@ -118,7 +120,17 @@ fn format_turn_summary(
         }
         conway::CacheAccounting::NotReported => String::new(),
     };
-    format!("{elapsed} · {} tok{suffix}", compact_tokens(total))
+    // Board item `01M1YVRS0K284H9QB32ZZW6D5G`: appended only when a price is
+    // actually configured for the focused model -- `conway::turn_cost` is
+    // the one shared computation `conway sessions show --cost` and one-shot
+    // `--output-format json` also call, so this line can never disagree with
+    // either about what a turn cost. No figure at all (never a placeholder)
+    // when no price is configured -- GP-14.
+    let cost_suffix = price
+        .and_then(|p| conway::turn_cost(usage, p))
+        .map(|cost| format!(" · {}", cost.format()))
+        .unwrap_or_default();
+    format!("{elapsed} · {} tok{suffix}{cost_suffix}", compact_tokens(total))
 }
 
 #[cfg(test)]
@@ -368,11 +380,11 @@ mod tests {
         };
         // 800 / (100+800+100) = 80%.
         assert_eq!(
-            format_turn_summary(66, &with_cache, None, None),
+            format_turn_summary(66, &with_cache, None, None, None),
             "1m 6s · 1.4k tok (80% cached)"
         );
         assert_eq!(
-            format_turn_summary(5, &with_cache, None, None),
+            format_turn_summary(5, &with_cache, None, None, None),
             "5s · 1.4k tok (80% cached)"
         );
 
@@ -385,7 +397,7 @@ mod tests {
             ..Usage::default()
         };
         assert_eq!(
-            format_turn_summary(5, &zero_cache_reported, None, None),
+            format_turn_summary(5, &zero_cache_reported, None, None, None),
             "5s · 500 tok (0% cached)"
         );
 
@@ -401,7 +413,7 @@ mod tests {
         // absence, nor a named backend changes this -- `NotReported`'s
         // whole family is suppressed on the per-turn line.
         assert_eq!(
-            format_turn_summary(5, &not_reported, None, Some(CacheReporting::Reported)),
+            format_turn_summary(5, &not_reported, None, Some(CacheReporting::Reported), None),
             "5s · 500 tok"
         );
         assert_eq!(
@@ -410,6 +422,7 @@ mod tests {
                 &not_reported,
                 Some("ollama/gemma4:e4b"),
                 Some(CacheReporting::Reported),
+                None,
             ),
             "5s · 500 tok"
         );
@@ -419,12 +432,63 @@ mod tests {
                 &not_reported,
                 Some("ollama/gemma4:e4b"),
                 Some(CacheReporting::NotReported),
+                None,
             ),
             "5s · 500 tok"
         );
         assert_eq!(
-            format_turn_summary(5, &not_reported, Some("ollama/gemma4:e4b"), None),
+            format_turn_summary(5, &not_reported, Some("ollama/gemma4:e4b"), None, None),
             "5s · 500 tok"
+        );
+    }
+
+    fn test_price() -> conway::Price {
+        conway::Price {
+            input_per_mtok: 3.0,
+            output_per_mtok: 15.0,
+            cache_read_per_mtok: Some(0.3),
+            cache_write_per_mtok: None,
+            currency: "USD".to_string(),
+        }
+    }
+
+    /// The turn summary's own cost figure, board item
+    /// `01M1YVRS0K284H9QB32ZZW6D5G`: appended as `· $...` only when a price is
+    /// known, computed from a fixture `Usage` through the SAME shared
+    /// `conway::turn_cost` sessions/one-shot also call, including the
+    /// cache-read discount when the backend reported cache tokens.
+    #[test]
+    fn format_turn_summary_appends_cost_when_a_price_is_known_including_the_cache_discount() {
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 500_000,
+            cache_read_tokens: 2_000_000,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            cache_accounting: CacheAccounting::Reported,
+        };
+        // 1M in @ $3 = $3.00; 500k out @ $15 = $7.50; 2M cache-read @ $0.30
+        // = $0.60. Total $11.10 -- exact, no cache dimension was unpriced.
+        let text = format_turn_summary(5, &usage, None, None, Some(&test_price()));
+        assert!(
+            text.ends_with(" · $11.100"),
+            "expected the exact cost figure appended, got: {text}"
+        );
+    }
+
+    /// No price configured for the focused model -- no cost figure at all,
+    /// not even a placeholder (GP-14).
+    #[test]
+    fn format_turn_summary_has_no_cost_figure_without_a_price() {
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 500_000,
+            ..Usage::default()
+        };
+        let text = format_turn_summary(5, &usage, None, None, None);
+        assert!(
+            !text.contains('$'),
+            "no price configured must mean no cost figure at all, got: {text}"
         );
     }
 

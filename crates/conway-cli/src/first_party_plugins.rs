@@ -51,15 +51,17 @@
 //! below, not this list), and so is MCP client support -- through a
 //! separate mechanism entirely, `[plugins].mcp` wired by this crate's own
 //! `mcp_plugins` module, never through `bundle` here (see that module's own
-//! doc). Context compaction is the one first-party-plugin-tier capability
-//! still unbuilt (`scripts/board-claims.md`'s `absent: conway\.compaction`
-//! predicate pins this so the claim goes stale loudly, not silently, the
-//! moment that changes) -- it adds its own entry here when it lands,
-//! through `ConwayBuilder::with_plugin`, `with_backend_factory`, or
-//! `with_router_factory`, whichever channel fits it, since nothing about
-//! `[plugins].install` itself is tool-specific -- `router_bundle` and
-//! `backend_bundle` below are exactly the other two of those three
-//! channels.
+//! doc). Context compaction is now built too (board item
+//! `01M1YVMTDJYEFC5PKSQHDRASJX`): `conway-plugin-compaction`'s
+//! `CompactionPlugin` (`conway.compaction`) packages
+//! `docs/plugins/cookbook.md` example 2's ephemeral tool-result-folding
+//! hook, through the SAME `with_plugin` channel every leaf-consumer entry
+//! above uses -- see `bundle`'s own doc and `conway_plugin_compaction`'s
+//! own module doc for the "weakest form of compaction" caveat this entry
+//! carries. `scripts/board-claims.md`'s claim over this fact was inverted
+//! from `absent: conway\.compaction` to a `present` guard the same change
+//! this comment landed in, the same "caught stale, not silently" mechanism
+//! that predicate names for itself.
 //!
 //! Resolution below matches an id against each candidate's own identity.
 //! `Backend` carries an `id()` of its own (`conway_core::ports::backend`),
@@ -497,6 +499,36 @@ fn bundle(
         // reason. See `conway_plugin_toolindex`'s own module doc, "Default
         // set or opt-in", for the full reasoning.
         Arc::new(conway_plugin_toolindex::ToolIndexPlugin::new()),
+        // `conway.compaction` (board item `01M1YVMTDJYEFC5PKSQHDRASJX`) --
+        // packages `docs/plugins/cookbook.md` example 2's
+        // `CompactOldToolResultsHook` as an installable `ContextHook`:
+        // folds every `ToolResult` segment beyond the most recent
+        // `fold_after_turns` into one labeled, ephemeral summary segment,
+        // recomputed from scratch on every single turn -- nothing
+        // persists it, no user/assistant text is ever folded, and no model
+        // call is involved. Needs no constructor argument -- the same bare
+        // footing `conway.trim`/`conway.web`/`conway.toolindex` immediately
+        // above already take. Opt-in, deliberately NOT in
+        // `DEFAULT_OPINION_SET`: this is explicitly the WEAKEST form of
+        // what "compaction" usually means (see
+        // `conway_plugin_compaction`'s own module doc and
+        // `docs/plugins/compaction.md`'s caveat, copied verbatim from
+        // `docs/vision/CATALOGUE.md`), so a fresh operator never gets it
+        // unprompted.
+        Arc::new(conway_plugin_compaction::CompactionPlugin::new()),
+        // `conway.todo` -- an opt-in task list the model writes and ticks off:
+        // `todo_write` (whole-list replace) and `todo_read`, a compact
+        // `ContextHook` segment near the end of a request whenever the list
+        // is non-empty, a `todo` status-line contribution, and
+        // `/conway.todo.list` for the operator. Needs no constructor
+        // argument -- the same bare footing `conway.trim`/`conway.web`/
+        // `conway.toolindex`/`conway.compaction` immediately above already
+        // take. Opt-in, deliberately NOT in `DEFAULT_OPINION_SET`: a
+        // model-authored plan is a genuine opinion about how an agent should
+        // work, not every task benefits from one, and an operator who never
+        // asked for a visible todo list should not get a new context segment
+        // on every turn unasked -- see `conway_plugin_todo`'s own module doc.
+        Arc::new(conway_plugin_todo::TodoPlugin::new()),
     ]
 }
 

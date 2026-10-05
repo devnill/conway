@@ -538,12 +538,35 @@ closed by default: with `--allowed-tools` empty, every tool call is
 denied and you get an answer-only response with no side effects. List the
 tools you want to allow explicitly, as above.
 
+## Diagnosing problems: `conway doctor`
+
+Most first-week problems are diagnosable in advance: a model with an unknown
+context window, a plugin server that couldn't start, a tool missing from
+`PATH`, a settings key that does nothing. `conway doctor` runs the same
+checks a live session would otherwise fail (or silently warn) on and
+reports each as pass/warn/fail with a one-line fix:
+
+```console
+$ conway doctor
+[PASS] config.loads: settings.json (and every layer above it) parsed cleanly
+[FAIL] backends.ollama.reachable: ollama: nothing is listening at http://127.0.0.1:11434/v1
+       fix: start the server listening at http://127.0.0.1:11434/v1, or fix backends.ollama.base_url
+...
+2 passed, 0 warned, 1 failed
+```
+
+Add `--json` for a script-friendly report. See
+[`scripting.md`](scripting.md#conway-doctor) for the full check list and the
+`--json` schema.
+
 ## Next steps
 
 - [`interactive.md`](interactive.md) — driving the TUI: keys, slash
   commands, the status line, and what you see during a turn.
 - [`permissions.md`](permissions.md) — permission modes, pattern grants,
   and project-file trust.
+- [`scripting.md`](scripting.md#conway-doctor) — `conway doctor`'s full
+  check list and `--json` schema.
 - [`dogfooding.md`](dogfooding.md) — if you're using conway to work on
   conway itself, this is where friction you hit turns into a board item in
   one command instead of getting shrugged off.

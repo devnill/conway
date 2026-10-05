@@ -16,7 +16,7 @@ use conway::Conway;
 use conway_testkit::FakeStore;
 use futures::Stream as _;
 
-use crate::cli::{Cli, OutputFormat};
+use crate::cli::{Cli, InputFormat, OutputFormat};
 use crate::tui::state::AppState;
 
 /// An echoing, fully in-memory `Conway`: its backend replies with
@@ -39,6 +39,7 @@ pub(super) fn minimal_cli() -> Cli {
         print: None,
         image: Vec::new(),
         output_format: OutputFormat::Text,
+        input_format: InputFormat::Text,
         allowed_tools: Vec::new(),
         deny_tools: Vec::new(),
         permission_mode: crate::cli::OneShotPermissionMode::Allowlist,

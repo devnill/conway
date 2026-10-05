@@ -98,11 +98,11 @@ present: rule\.event == "pre_tool_use"
 -->
 
 <!-- claim-check
-why: PHILOSOPHY.md §6 names a first-party compaction plugin as a thing you would install; this predicate fails the moment one lands so that note gets updated in the same change
-note: narrowed 2026-08-20 from the five-capability claim this block used to be. That wider claim ("four of five unbuilt") went stale when memory and skills shipped as installable plugins (`conway_plugin_skills::SkillsPlugin`/`conway_plugin_memory::MemoryPlugin` in `first_party_plugins.rs`) and MCP client support shipped as `[plugins].mcp` (`conway_plugin_mcp`, wired by `mcp_plugins.rs`) -- the checker caught it on the next run, which is the mechanism working, not a defect. Compaction alone remains genuinely unwritten (`PHILOSOPHY.md` §6's own "Where the tree is today" note still says so); the sibling present-guard immediately below pins the three that shipped against silent regression.
-claim: compaction is the one first-party-plugin-tier capability still unbuilt, so nothing installs conway.compaction
-paths: crates/conway-cli/src crates/conway/src
-absent: conway\.compaction
+why: regression guard: compaction was the one first-party-plugin-tier capability named as unbuilt until board item 01M1YVMTDJYEFC5PKSQHDRASJX shipped it; an unwiring of it would make PHILOSOPHY.md's first-party-tier note false again in the same understating direction the earlier absent form existed to catch
+note: inverted from absent to present when 01M1YVMTDJYEFC5PKSQHDRASJX landed `conway-plugin-compaction` -- the same shape as the two 2026-08-13 inversions and the 2026-08-20 memory/skills/MCP inversion elsewhere in this file (search this file for "inverted from absent to present"). The prior absent form's own `why` ("this predicate fails the moment one lands so that note gets updated in the same change") did exactly that: it failed the moment `CompactionPlugin::new` landed in `first_party_plugins.rs::bundle`, naming the claim rather than letting it rot. Pinned to the actual call site, not a comment or an id string, so removing the wiring -- not merely renaming a doc comment -- is what trips this.
+claim: conway.compaction is built and installed through first_party_plugins.rs's bundle(), not merely named as intent -- the weakest, off-by-default, non-persistent form of compaction PHILOSOPHY.md §6 and docs/plugins/compaction.md both disclose
+paths: crates/conway-cli/src
+present: conway_plugin_compaction::CompactionPlugin::new
 -->
 
 <!-- claim-check

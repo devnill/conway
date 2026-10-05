@@ -4278,6 +4278,7 @@ mod models_overrides_tests {
             tool_calling: "streaming".to_string(),
             reasoning: true,
             reliability_tier: "verified".to_string(),
+            price: None,
         }
     }
 
@@ -4354,6 +4355,7 @@ mod models_overrides_tests {
                 tool_calling: "non_streaming".to_string(),
                 reasoning: false,
                 reliability_tier: "community".to_string(),
+                price: None,
             },
         );
 

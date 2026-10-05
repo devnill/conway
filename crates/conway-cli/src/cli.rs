@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
+use crate::commands::doctor::DoctorArgs;
 use crate::commands::memory::MemoryArgs;
 use crate::commands::plugin::PluginArgs;
 use crate::commands::routes::RoutesArgs;
@@ -63,6 +64,22 @@ pub struct Cli {
     /// happens. Ignored by the TUI.
     #[arg(long, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
+
+    /// `text` (the default): read one prompt (`--print`'s value and/or
+    /// piped stdin -- see `--print`'s own doc) and exit after one turn,
+    /// exactly as `-p` has always behaved. `jsonl` turns `-p` into a
+    /// persistent driver instead: stdin is read line by line, each line a
+    /// newline-delimited JSON object (`{"type":"prompt","text":...}` runs a
+    /// turn; `"steer"`/`"cancel"`/`"await"` map to the matching
+    /// `SessionHandle` operator actions; `{"type":"end"}` or EOF ends the
+    /// session) -- see `docs/scripting.md`'s "Driving conway as a
+    /// persistent process" section for the full protocol. Requires
+    /// `--output-format jsonl` (a usage error otherwise): the driver's
+    /// per-turn envelopes, including a `seq` that keeps climbing across
+    /// turns, only make sense paired with the full per-event stream back.
+    /// Ignored by the TUI.
+    #[arg(long, value_enum, default_value = "text")]
+    pub input_format: InputFormat,
 
     /// Tools the agent may call, by exact name, comma-separated. One-shot
     /// mode cannot ask an operator for permission, so it fails closed:
@@ -330,6 +347,24 @@ pub enum Command {
     /// ordinary dispatch point would make this command unreachable in the
     /// one situation it exists for.
     Trust(TrustArgs),
+    /// `conway doctor [--json]` (board item `01M1YVXNPTBNH18ZEWFM18F00T`):
+    /// runs the checks a first-week operator would otherwise diagnose by
+    /// hand one error message at a time -- config loads, every configured
+    /// backend is reachable, every routing chain's context window resolves
+    /// with known provenance, every installed plugin (including MCP/
+    /// subprocess startup) actually constructs, required binaries are on
+    /// `PATH` -- and reports each as `pass`/`warn`/`fail` with a one-line
+    /// fix. See `commands::doctor`'s own module doc for the full check
+    /// list and which real code path each one reuses.
+    ///
+    /// **Dispatched BEFORE `build_conway`, on the identical footing as
+    /// `Command::Trust` immediately above** -- doctor's whole point is
+    /// diagnosing a configuration `build_conway` would otherwise fail (or
+    /// silently warn) on, so it must stay reachable exactly when that call
+    /// would refuse to build a `Conway` at all. See `commands::doctor::run`'s
+    /// own doc for why it takes `env`/`--config`/`--root` directly rather
+    /// than a built `Conway`.
+    Doctor(DoctorArgs),
     /// Anything that is not one of the built-in subcommands above falls
     /// through here instead of failing to parse -- clap's own
     /// `external_subcommand` idiom (the same shape `cargo` uses to dispatch
@@ -352,6 +387,16 @@ pub enum Command {
 pub enum OutputFormat {
     Text,
     Json,
+    Jsonl,
+}
+
+/// `--input-format`: whether `-p` reads one prompt and exits (`Text`, the
+/// default) or becomes a persistent, stdin-driven session (`Jsonl`) -- see
+/// `Cli::input_format`'s own doc for the protocol and `oneshot::run_driven`
+/// for the implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum InputFormat {
+    Text,
     Jsonl,
 }
 

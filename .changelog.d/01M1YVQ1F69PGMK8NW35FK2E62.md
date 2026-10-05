@@ -1,0 +1,3 @@
+### Added
+
+- **`conway.todo`, an opt-in task list the model writes and ticks off** — board item `01M1YVQ1F69PGMK8NW35FK2E62`. `todo_write` replaces the whole list (stable ids; omit one on a new item and it mints one) and `todo_read` reads it back; a `ContextHook` appends the current list as one compact segment near the end of a request whenever it is non-empty, without disturbing any earlier segment; a `todo` status-line contribution and `/conway.todo.list` surface it to the operator. State is kept per agent and persisted as a system-note log record on every `todo_write`, so it survives a `--resume`. Not installed by default — see `docs/plugins/todo.md`.

@@ -40,6 +40,18 @@ pub trait Renderer: Send {
     /// (which now also reaches the stream). Called once, before the first
     /// `on_event`. Default: ignore it.
     fn set_root(&mut self, _root: AgentId) {}
+
+    /// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: the final result's cost, when
+    /// a price is configured for the model that actually served the run --
+    /// computed by `oneshot::run` (the one place with both the finished
+    /// `Usage` and the chosen model's `"backend/model"` string) through the
+    /// SAME shared `conway::turn_cost` the TUI turn summary and `conway
+    /// sessions show --cost` also call. Called once, after the run loop
+    /// ends and before [`Renderer::finish`] -- a renderer that cares (only
+    /// [`json::JsonRenderer`] does, today) folds it into its own output
+    /// there. Default: ignore it, matching [`Renderer::set_root`]'s own
+    /// precedent for a renderer that has no use for this.
+    fn set_cost(&mut self, _cost: Option<conway::Cost>) {}
 }
 
 /// Selects the `Renderer` for `format`, writing through `out`.

@@ -2011,6 +2011,84 @@ talks to a real provider does the identical `Backend`/`BackendFactory`/
 bodies differ, the same way `conway-plugin-backends`'s two shipped
 factories differ from this one.
 
+## Per-model pricing
+
+A `.conway/models.json` entry may carry a fifth, optional field alongside
+the four [`getting-started.md`](getting-started.md) describes
+(`max_context_tokens`/`tool_calling`/`reasoning`/`reliability_tier`):
+
+```json
+// .conway/models.json
+{
+  "models": {
+    "anthropic/claude-sonnet-5": {
+      "max_context_tokens": 200000,
+      "tool_calling": "yes",
+      "reasoning": true,
+      "reliability_tier": "verified",
+      "price": {
+        "input_per_mtok": 3.0,
+        "output_per_mtok": 15.0,
+        "cache_read_per_mtok": 0.3,
+        "cache_write_per_mtok": 3.75,
+        "currency": "USD"
+      }
+    }
+  }
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `input_per_mtok` | yes | USD per million input tokens. |
+| `output_per_mtok` | yes | USD per million output tokens — also what a reasoning/thinking token is billed at; there is no separate reasoning rate. |
+| `cache_read_per_mtok` | no | USD per million cache-read tokens. Omit it and a cache-read token still gets priced, at the ordinary `input_per_mtok` rate, with the resulting figure marked `≈` — see below. |
+| `cache_write_per_mtok` | no | USD per million cache-write tokens. Same fallback as `cache_read_per_mtok` when omitted. |
+| `currency` | no (default `"USD"`) | **Only `"USD"` is understood today.** Any other value makes every cost computation for this pair return nothing at all — never a `$`-prefixed figure for a currency conway does not actually convert. |
+
+**No bundled prices ship with conway, for any model.** A missing `price`
+means a cost figure is never shown for that pair — on the TUI's turn
+summary, its optional `cost` status-line field (`docs/interactive.md`), `/context`'s
+next-request estimate, `conway sessions show --cost`
+(`docs/sessions.md`), or one-shot `--output-format json`'s `usage.cost` — on
+any of them. conway never guesses a price on your behalf.
+
+**Where a figure is marked `≈` (approximate), and why.** A cost figure is
+computed from a `Usage` record (tokens actually spent) and this `price`.
+Two situations mean the arithmetic cannot be exact, and both mark the
+result rather than silently rendering a possibly-wrong exact-looking
+number:
+
+1. The backend's wire format carries no cache field at all for this turn
+   (`Usage`'s own `cache_accounting: not_reported` — see
+   ["Prompt caching"](routing.md#prompt-caching-economics-not-correctness)).
+   There is nothing to discount in that case, but the backend may still
+   have applied a real cache discount this computation has no way to see,
+   so the figure could understate what you were actually billed less than
+   — or overstate it, if no discount applied at all. Either way it is
+   marked approximate.
+2. Genuine cache tokens WERE reported, but `price` sets no
+   `cache_read_per_mtok`/`cache_write_per_mtok` of its own — those tokens
+   are priced at the ordinary `input_per_mtok` rate instead (never a
+   fabricated "cache" rate), and the figure is marked approximate.
+
+`/context`'s own cost line is marked `≈` unconditionally, for a third,
+unrelated reason: it estimates what the NEXT request would cost (built
+context size × input price), before that request exists — a prediction,
+never an observation of a completed one.
+
+**Currency formatting.** A figure at or above one cent renders 3 decimal
+places (`$0.012`); below one cent, 4 (`$0.0012`) — a flat 2-decimal rule
+would round a real, nonzero, sub-cent-per-turn cost down to `$0.00`,
+indistinguishable from both "free" and "unknown."
+
+**The one shared computation.** The TUI's turn summary, its `cost`
+status-line field, `/context`'s estimate, `conway sessions show --cost`,
+and one-shot `--output-format json` all compute a cost figure through the
+identical function (next to `Usage` in the core content types) — none of
+them derives its own token-rate arithmetic, so they can never disagree
+about what a turn cost.
+
 ## How it fits together
 
 A backend entry alone doesn't make a model routable. Every `(backend,

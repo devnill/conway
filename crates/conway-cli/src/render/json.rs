@@ -23,11 +23,15 @@ use crate::diag;
 
 pub struct JsonRenderer {
     out: Box<dyn Write + Send>,
+    /// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: set via [`Renderer::set_cost`]
+    /// before [`Renderer::finish`]; `None` when no price was configured for
+    /// the model that served this run.
+    cost: Option<conway::Cost>,
 }
 
 impl JsonRenderer {
     pub fn new(out: Box<dyn Write + Send>) -> Self {
-        Self { out }
+        Self { out, cost: None }
     }
 }
 
@@ -66,11 +70,46 @@ impl Renderer for JsonRenderer {
         let Some(result) = result else {
             return Ok(());
         };
-        let json = serde_json::to_string(result)
+        let mut json = serde_json::to_string(result)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        // Board item `01M1YVRS0K284H9QB32ZZW6D5G`: `cost` is appended into the
+        // `usage` object's own JSON text, by string splice, rather than via
+        // a round trip through `serde_json::Value` -- this crate links no
+        // `preserve_order` feature, so `Value`'s `Map` is key-sorted, and a
+        // round trip would silently re-order every OTHER field of this
+        // object alphabetically too (`docs/scripting.md`'s own worked
+        // example documents a specific, non-alphabetical field order).
+        // Splicing the typed `usage` serialization's own exact text (found
+        // verbatim inside `json`, since both came from the identical
+        // serializer a moment apart) changes nothing else in the document.
+        // Neither `conway_core::agent::AgentResult` nor `Usage` itself gains
+        // a `cost` field: neither type has any notion of price, and giving
+        // `Usage` one would mean every OTHER reader of it (the TUI, the
+        // session log codec) carries a field only this renderer ever
+        // populates.
+        if let Some(cost) = self.cost {
+            let usage_json = serde_json::to_string(&result.usage)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if let Some(pos) = json.find(&usage_json) {
+                let cost_json = serde_json::json!({
+                    "amount": cost.amount,
+                    "currency": conway::SUPPORTED_CURRENCY,
+                    "approximate": cost.approximate,
+                });
+                let spliced = format!(
+                    "{},\"cost\":{cost_json}}}",
+                    &usage_json[..usage_json.len() - 1]
+                );
+                json.replace_range(pos..pos + usage_json.len(), &spliced);
+            }
+        }
         self.out.write_all(json.as_bytes())?;
         self.out.write_all(b"\n")?;
         self.out.flush()
+    }
+
+    fn set_cost(&mut self, cost: Option<conway::Cost>) {
+        self.cost = cost;
     }
 }
 
@@ -142,5 +181,55 @@ mod tests {
         let mut renderer = JsonRenderer::new(Box::new(writer.clone()));
         renderer.finish(None).unwrap();
         assert_eq!(writer.contents(), b"");
+    }
+
+    // ---- `cost` in `usage` (board item `01M1YVRS0K284H9QB32ZZW6D5G`) ----
+
+    #[test]
+    fn finish_includes_cost_in_usage_when_set_cost_was_called() {
+        let writer = RecordingWriter::default();
+        let mut renderer = JsonRenderer::new(Box::new(writer.clone()));
+        let agent = AgentId::new();
+        let session = SessionId::new();
+        let mut result = AgentResult::new(agent, session, ResultStatus::Completed, "done");
+        result.usage = conway::Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            ..Default::default()
+        };
+
+        renderer.set_cost(Some(conway::Cost {
+            amount: 3.0,
+            approximate: false,
+        }));
+        renderer.finish(Some(&result)).unwrap();
+
+        let contents = writer.contents();
+        let text = String::from_utf8(contents).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.trim_end()).unwrap();
+        assert_eq!(value["usage"]["cost"]["amount"], 3.0);
+        assert_eq!(value["usage"]["cost"]["currency"], "USD");
+        assert_eq!(value["usage"]["cost"]["approximate"], false);
+        // Every pre-existing `usage` field must still be there, unchanged.
+        assert_eq!(value["usage"]["input_tokens"], 1_000_000);
+    }
+
+    /// No `set_cost` call at all (the default one-shot path, or a run with
+    /// no price configured) -- `usage` carries no `cost` field, never a
+    /// placeholder (GP-14).
+    #[test]
+    fn finish_omits_cost_when_set_cost_was_never_called() {
+        let writer = RecordingWriter::default();
+        let mut renderer = JsonRenderer::new(Box::new(writer.clone()));
+        let agent = AgentId::new();
+        let session = SessionId::new();
+        let result = AgentResult::new(agent, session, ResultStatus::Completed, "done");
+
+        renderer.finish(Some(&result)).unwrap();
+
+        let contents = writer.contents();
+        let text = String::from_utf8(contents).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.trim_end()).unwrap();
+        assert!(value["usage"].get("cost").is_none());
     }
 }

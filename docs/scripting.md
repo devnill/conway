@@ -121,7 +121,7 @@ entry point.
 | 1 | AgentFailed | The catch-all: a `Failed` terminal status whose cause is not a routing rejection, a `Rejected` or `Cancelled`-without-SIGINT status, or a `FacadeError::Io`/`Backend`/`Store` (or any other unclassified) error. |
 | 2 | Usage | A malformed or conflicting flag, an empty/unreadable prompt, an unknown `--session`/`--resume` id, a malformed `--model`/`--fork-from` reference, or any `FacadeError::Config`/`AgentDef`/`Build`/`UnsupportedFeature`. |
 | 4 | NoHealthyBackend | Routing could not supply any model for the turn: the role is unknown (e.g. `--role-override` naming a role the config does not define), no candidate in the role's chain was admissible (an unregistered `backend/model` pair, a health-open breaker, every fallback entry exhausted against a live backend), or the assembled context exceeds every candidate's window (`RoutingError::ContextTooLarge` — no truncation or escalation is performed). |
-| 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). A `-p`/scripted run is never a keep-alive session (`SessionSpec::keep_alive` is an opt-in only the interactive/library facade sets), so every dimension here is session-lifetime and `limit` always reads `"max_steps=40 (this session)"` (the whole run) — see `json`'s `steps_taken`/`steps_this_turn` fields, immediately below, for the two counters this scope label distinguishes. A **keep-alive** session (the TUI) behaves differently for two of these four dimensions: `max_steps`/`max_tool_calls` are per-turn runaway-loop guards there, so tripping one ends only the current turn (`Event::TurnAborted`, no exit code involved — the process is still running), never the session; only `max_tokens`/`deadline` can still end a keep-alive session outright, and produce this same exit code when they do. See [`interactive.md`](interactive.md#when-a-turn-is-cut-off) for the keep-alive behavior. |
+| 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). A plain `-p "<prompt>"` run is never a keep-alive session (`SessionSpec::keep_alive` is an opt-in the interactive/library facade sets, and — see "Driving conway as a persistent process" below — `--input-format jsonl` too), so every dimension here is session-lifetime and `limit` always reads `"max_steps=40 (this session)"` (the whole run) — see `json`'s `steps_taken`/`steps_this_turn` fields, immediately below, for the two counters this scope label distinguishes. A **keep-alive** session (the TUI, or `--input-format jsonl`) behaves differently for two of these four dimensions: `max_steps`/`max_tool_calls` are per-turn runaway-loop guards there, so tripping one ends only the current turn (`Event::TurnAborted`, no exit code involved — the process is still running), never the session; only `max_tokens`/`deadline` can still end a keep-alive session outright, and produce this same exit code when they do. See [`interactive.md`](interactive.md#when-a-turn-is-cut-off) for the keep-alive behavior. |
 | 129 | TerminatedBySighup | A `SIGHUP` was observed and the run's terminal status is `Cancelled { reason: "signal: SIGHUP" }` — `128 + 1`, the same POSIX "terminated by signal N" convention `130`/`143` already follow. |
 | 130 | Interrupted | A SIGINT was observed (once, or twice for an immediate hard exit) and the run's terminal status is `Cancelled`. |
 | 143 | TerminatedBySigterm | A `SIGTERM` was observed and the run's terminal status is `Cancelled { reason: "signal: SIGTERM" }` — `128 + 15`. See [`agents.md`](agents.md#what-a-parent-sees-when-a-child-dies-board-item-a53) for why this signal is the one a backgrounded `conway -p ... &` child is most likely to receive from something else's timeout/cancellation handling, and why catching it (rather than dying with no record at all) is this exit code's whole point. |
@@ -340,6 +340,149 @@ the real one, should use `--output-format json` instead** — it withholds
 everything until the terminal `AgentResult`, so a same-candidate retry
 during the run is invisible to it: only the final, successful attempt's
 text ever reaches that object.
+
+## Driving conway as a persistent process: `--input-format jsonl`
+
+Everything above drives `-p` as a filter: one prompt in, one answer out,
+process exits. `--input-format jsonl` is the other half — keep the process
+open and feed it prompts (and a few operator actions) as newline-delimited
+JSON on stdin, reading the identical `jsonl` event stream back on stdout for
+as long as the process stays up. This is for editor plugins, test harnesses,
+and bots that would otherwise pay a fresh process-start cost (and lose
+`--resume`-free continuity) for every turn.
+
+Requires `--output-format jsonl` — a usage error (exit 2) otherwise, caught
+before a session is even created:
+
+```console
+$ conway -p --input-format jsonl --output-format text
+conway: error: --input-format jsonl requires --output-format jsonl: the driver's per-turn
+envelopes, including a seq that keeps climbing across turns, only make sense paired with the
+full per-event jsonl stream back
+```
+
+### Input vocabulary
+
+Each stdin line is one JSON object with a `"type"` field:
+
+| `"type"` | Fields | Effect |
+| --- | --- | --- |
+| `"prompt"` | `text` | Runs a turn on the session's ROOT agent — there is no `"agent"` field; this driver only ever prompts the root directly. |
+| `"steer"` | `agent`, `text` | Wakes a PARKED agent (named by id) for a follow-up turn, with `text` appended to its own conversation — the operator action behind the TUI's own steer. |
+| `"cancel"` | `agent`, `reason` (optional) | Ends `agent` outright (the same `SessionHandle::cancel` an operator-driven cancel uses). `reason` defaults to a generic driver-attributed string when omitted. |
+| `"await"` | `agent` | Waits (in the background — never stalling the event stream) until `agent` reaches a terminal result. Its own completion is never re-emitted as a separate line: the awaited agent's `agent_finished` already reaches this stream on its own (every agent's lifecycle events bypass the session filter, same as the "Streaming" junction above) — `"await"` only ever reports a problem, as a driver `error` line, if `agent` is not a valid id. |
+| `"end"` | — | Finishes the session with its terminal result and the documented exit code (same table as above). |
+
+`agent` fields name an agent by its id — the ids the stream itself reports
+in every envelope's `agent` field, and in `agent_spawned`/`agent_finished`
+lines for any subagent the root forks or spawns mid-run.
+
+**A malformed line never stops the driver.** Bad JSON, an unrecognized or
+missing `"type"`, or a missing field for the type it named all produce one
+line on stdout —
+
+```json
+{"type":"error","message":"invalid JSON: ..."}
+```
+
+— and reading continues with the next line regardless. This `error` line is
+NOT an `Envelope`: it carries no `seq`/`session`/`agent`, because it isn't
+tied to any turn — it's the driver reporting a problem with its own input.
+
+**EOF behaves exactly like an explicit `{"type":"end"}`.** A script that
+simply closes its write end of the pipe when it's done never needs to write
+the `end` line at all.
+
+### Ordering guarantees
+
+- **A `"prompt"` line that arrives while a turn is already running is
+  QUEUED, not rejected and not run concurrently.** `SessionHandle::prompt`
+  only ever drives one turn at a time per agent — a second call racing an
+  in-flight turn would just coalesce into the SAME turn, not start a
+  distinct second one. conway holds any `"prompt"` that arrives before the
+  current turn's own result lands, and dispatches it the moment that result
+  arrives. A script may therefore write every prompt it has up front and
+  read answers as they come back, or wait for each turn's own
+  `agent_finished` before sending the next — both work against the same
+  queue.
+- **`seq` keeps climbing across turns, in the SAME process.** It is the
+  session's own live event counter (see "Streaming" above for its full
+  per-session contract) — it is never reset between turns, so a consumer
+  tracking "have I seen this envelope already" across the whole driven
+  session can keep using one running high-water mark the entire time the
+  process stays up.
+- **Budgets (`--max-turns`/`--max-tokens`/`--max-seconds`) apply across the
+  WHOLE driven session, not per turn.** A turn-scoped limit
+  (`max_steps`/`max_tool_calls`) tripping mid-turn ends only that turn
+  (`turn_aborted`, visible as its own `jsonl` line) and the session keeps
+  running, ready for the next `"prompt"` — the same "ends the turn, not the
+  session" behavior a `keep_alive` TUI session already has (see the exit
+  code table's own `BudgetExceeded` row). `max_tokens`/`--max-seconds`
+  ending the whole session is still reported through the documented exit
+  code on the FINAL `"end"`/EOF.
+- **Not supported yet: `--session`/`--resume`/`--fork-from`.** Each
+  resolves to a session that is not driveable multi-turn today; combining
+  any of them with `--input-format jsonl` is a usage error rather than a
+  silent single-turn-then-stuck session.
+
+### Permissions
+
+Exactly the same as every other one-shot invocation — fails closed on
+`--allowed-tools`/`--permission-mode` (see "Permissions with no human
+present" below). There is no interactive-permission wire protocol in this
+input format yet; `--permission-prompts jsonl` (a protocol for a driver
+script to answer a permission request itself) is a named, not-yet-built
+follow-up.
+
+### A worked example: Python, subprocess, stdin/stdout pipes
+
+```python
+import json
+import subprocess
+
+proc = subprocess.Popen(
+    ["conway", "-p", "--input-format", "jsonl", "--output-format", "jsonl",
+     "--allowed-tools", "read,grep"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    text=True,
+    bufsize=1,  # line-buffered
+)
+
+def send(obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+def read_until_result():
+    """Reads lines until the root's own `agent_finished`, printing text
+    deltas as they arrive and returning the final result."""
+    for line in proc.stdout:
+        event = json.loads(line)
+        kind = event.get("event") or event.get("type")
+        if kind == "text_delta":
+            print(event["text"], end="", flush=True)
+        elif kind == "error":
+            print(f"\n[driver error] {event['message']}")
+        elif kind == "agent_finished":
+            print()
+            return event["result"]
+
+send({"type": "prompt", "text": "what's in this directory?"})
+result = read_until_result()
+print("status:", result["status"]["status"])
+
+send({"type": "prompt", "text": "now summarize just the .py files"})
+result = read_until_result()
+print("status:", result["status"]["status"])
+
+send({"type": "end"})
+proc.wait()
+```
+
+Two prompts, one process, one running `seq` count across both turns — the
+second prompt never pays a fresh startup cost, and (unlike two separate
+`conway -p` invocations joined by `--resume`) never re-reads the persisted
+transcript from disk between them either.
 
 ## Being something other than a coding agent
 
@@ -696,6 +839,69 @@ Run `conway plugin install --defaults`, or set `plugins.install` to `[]`
 by hand (or via `conway plugin install`/`remove` on any single id, which
 records SOME opinion either way), to silence it.
 
+## `conway doctor`
+
+`conway doctor` runs the checks a first-week operator would otherwise
+diagnose by hand, one error message at a time: does `settings.json` (and
+every layer above it) actually parse, is each configured backend reachable,
+does every routing chain's context window resolve with known provenance,
+does every installed plugin — including an MCP/subprocess plugin's own
+startup handshake — actually construct, are the binaries a configured
+feature needs (`git` for the plugin marketplace, the OS sandbox primitive
+for `conway.confine`) on `PATH`, and where do sessions and board data for
+this directory resolve from. Every check reuses the real feature's own code
+path — never a parallel probe that could drift from what a live session
+actually does.
+
+```console
+$ conway doctor
+[PASS] config.loads: settings.json (and every layer above it) parsed cleanly
+[PASS] routing.chain_windows: every role's chain entries resolve a context window from known model metadata (no chain-entry-unknown or headroom warning at config-load time)
+[FAIL] backends.ollama.reachable: ollama: nothing is listening at http://127.0.0.1:11434/v1
+       fix: start the server listening at http://127.0.0.1:11434/v1, or fix backends.ollama.base_url
+[PASS] backends.ollama.inert_keys: backends.ollama carries no unrecognized keys
+[PASS] agents.parse: 2 agent definition(s) parsed from /home/dan/project/.conway/agents
+[PASS] session.project_key: project key `-home-dan-project`; sessions and board data resolve under /home/dan/.conway/sessions/-home-dan-project
+[PASS] tools.git: git is on PATH (the plugin marketplace's git-sourced installs need it)
+[WARN] tools.confine: conway.confine: the OS containment primitive '/usr/bin/sandbox-exec' does not exist...
+       fix: install the sandbox primitive named above before adding "conway.confine" to plugins.install
+[PASS] plugins.build: every configured plugin and backend constructed, and every MCP/subprocess plugin completed its handshake within its configured startup budget
+
+6 passed, 1 warned, 1 failed
+```
+
+`--json` prints one object instead of the line-per-check report above — a
+stable schema an operator can script against:
+
+```json
+{
+  "checks": [
+    { "id": "config.loads", "status": "pass", "summary": "...", "fix": null },
+    { "id": "backends.ollama.reachable", "status": "fail", "summary": "...", "fix": "..." }
+  ],
+  "summary": { "pass": 6, "warn": 1, "fail": 1 }
+}
+```
+
+`status` is one of `"pass"`, `"warn"`, or `"fail"`; `fix` is `null` for a
+`pass` check and a string (the exact edit or command that would resolve it)
+for every `warn`/`fail` check — there is no `--fix` flag that performs that
+edit on your behalf, by design, matching the rest of this binary's "name the
+remedy, never apply it unasked" posture.
+
+| Code | When |
+| --- | --- |
+| 0 | Every check is `pass` or `warn`. |
+| 1 | At least one check is `fail`. |
+
+`conway doctor` never needs a working provider, never needs a successfully
+loaded config either — a config that fails to parse is itself reported as
+the one `fail` check named `config.loads`, with the real error (naming the
+exact file and key) as its summary, rather than doctor itself refusing to
+run. It dials only the backends already configured in `settings.json` —
+never a provider you have not named, and never anything beyond that for
+telemetry.
+
 ## Plugin-contributed subcommands
 
 A plugin can add a slash command to the interactive TUI (see
@@ -855,6 +1061,7 @@ naming both flags rather than a silently dropped one.
 | --- | --- |
 | `-p, --print [PROMPT]` | Run one prompt and exit. With a value and no piped stdin, that value is the prompt; with none, the prompt is read from stdin instead; with both a value AND piped (non-terminal) stdin, they're joined — `PROMPT` as the directive, the piped text as the data, directive first. See "Invocation and input" above. Absent entirely → interactive TUI. |
 | `--output-format <text\|json\|jsonl>` | Selects the renderer (default `text`). See "Output formats" above. |
+| `--input-format <text\|jsonl>` | `text` (default): read one prompt and exit. `jsonl`: a persistent, stdin-driven session — requires `--output-format jsonl`. See "Driving conway as a persistent process" above. |
 | `--allowed-tools <name[,name…]>` | Comma-separated tool names to allow, consulted when `--permission-mode` is `allowlist` (the default). Each entry is a bare tool name or `tool_name(arg_glob)` to scope the grant to matching arguments (see "Scoping an entry to specific arguments" above). When non-empty, also narrows the tool set announced to the model to exactly this list (intersected with `--agent`'s own `tools:` selector, if any) — see "Permissions with no human present" above. Empty (the default) denies every tool call but leaves the announced set alone. Unsure which names to put here? `conway tools list` prints every name this process registered — see [`tools.md`](tools.md#which-tools-are-actually-registered). |
 | `--deny-tools <name[,name…]>` | Comma-separated tool names to deny even when `--allowed-tools` lists them; also accepts `tool_name(arg_glob)` entries; also consulted only in `allowlist` mode. A bare entry is also dropped from the announced set; a scoped (`tool(arg_glob)`) entry is not. |
 | `--permission-mode <allowlist\|deny>` | See "Permissions with no human present" above. |
@@ -891,3 +1098,5 @@ follows that same restriction with `--resume` only — it now composes with
   subprocess.
 - [`permissions.md`](permissions.md) — permission modes, pattern grants,
   and project-file trust (interactive mode only).
+- [`conway doctor`](#conway-doctor) above — run it first when anything in
+  this file doesn't behave the way it's documented to.

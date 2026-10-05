@@ -793,7 +793,13 @@ impl App {
         // visit inserts the identical already-resolved value, so this is
         // idempotent, not a second source of truth.
         let mut model_cache_reporting = std::collections::HashMap::new();
-        for key in conway.model_metadata().models.keys() {
+        // Board item `01M1YVRS0K284H9QB32ZZW6D5G` (session cost): unlike the
+        // two maps above, this reads `ModelMetadataEntry::price` directly --
+        // a price is not a routing capability, so there is no
+        // `capability_index` resolution to layer over it the way
+        // `max_context_tokens` gets one.
+        let mut model_prices = std::collections::HashMap::new();
+        for (key, entry) in &conway.model_metadata().models {
             let Ok(model_ref) = key.parse::<ModelRef>() else {
                 continue;
             };
@@ -806,10 +812,14 @@ impl App {
             if let Some(reporting) = capability_index.cache_reporting(&model_ref.backend) {
                 model_cache_reporting.insert(model_ref.backend.to_string(), reporting);
             }
+            if let Some(price) = entry.price.clone() {
+                model_prices.insert(key.clone(), price);
+            }
         }
         state.model_max_context = model_max_context;
         state.model_max_context_source = model_max_context_source;
         state.model_cache_reporting = model_cache_reporting;
+        state.model_prices = model_prices;
         // T3: read the current git branch once at startup (best-effort,
         // no polling). On any failure (not a repo, git absent, non-UTF8
         // output) -> `None`, and the status line's `git` field is omitted.

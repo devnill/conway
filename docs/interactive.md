@@ -1030,7 +1030,15 @@ largest:
   ...
 ```
 
-The first line is the total estimate and segment count. The table below it
+The first line is the total estimate and segment count, plus — when the
+focused model's `models.json` entry carries a `price` (see
+[providers.md](providers.md#per-model-pricing)) — an estimated cost for the
+NEXT request at that total, always marked `≈` since it is a prediction, not
+an observation of a request that actually happened: `context: 175,212 tok
+est across 183 segments · ≈$0.526 next request`. Omitted entirely when no
+price is configured — never a guessed figure.
+
+The table below it
 groups every segment by kind — a tool result is further split by which
 *tool* produced it (`tool result: read` and `tool result: bash` are
 separate rows, never merged into one `tool result` row), every other kind
@@ -1499,6 +1507,7 @@ session | lineage | mode | model | ctx | tokens | activity | hint
 | `model` | `anthropic/claude-sonnet-4-6` | The focused agent's serving model. Omitted until its first turn has routed. |
 | `ctx` | `ctx 42%`, or `ctx 12.3k` when the model's context window isn't known | Cumulative context-window occupancy for the focused agent, from the same resolved `(backend, model)` capability index [`conway routes explain`](routing.md#asking-why-a-route-was-chosen) reads. When the window itself is only a `floor (assumed)` — the model's own dialect declares no sourced figure, so this is not a fact about this specific model — the figure carries that same marker: `ctx 31% floor (assumed)`. A `verified` (compiled-in table, or a dialect's own documented per-provider figure), `models.json` (an operator-editable override), or `probed` window never carries it. |
 | `tokens` | `1.4k tok (88% cached)`, or `1.4k tok (cache: not reported by ollama)` | The focused agent's cumulative token spend; the cached-percentage parenthetical is the prompt-cache hit rate — `cache_read / (input + cache_read + cache_write)`. **Declaration honesty**: the percentage shows whenever the backend actually reported cache figures for at least one cache-relevant token — including a genuine `0% cached` — and is omitted only when the denominator itself is 0 (no cache-relevant tokens processed yet). When the backend's wire format carries no cache field at all (e.g. Ollama's native `/api/chat` path, see [providers.md](providers.md)), the field instead shows `cache: not reported by <backend>` — a `0%` here would claim an observation the backend never made. |
+| `cost` | `$0.145` | The focused agent's cumulative session cost, priced from the same cumulative usage `tokens` reads — not part of the default Lean line; add it to your own `fields` list. Omitted entirely — never a placeholder, never a guessed figure — unless the focused model's `models.json` entry carries a `price` (see [providers.md](providers.md#per-model-pricing)). A figure prefixed `≈` means the backend did not report whether prompt caching applied this session (`tokens`' own `cache: not reported`/`not supported` case above): the true cost may be lower than shown. |
 | `activity` | `⠋ thinking… 12s · +45 tok` while active, `⠋ asking… 12s` while an `/ask` is in flight, `idle` otherwise | The working indicator: elapsed time and new context tokens added this turn. An in-flight `/ask` takes this field over outright (its own clock, no token figure — it's a different agent than the one this field otherwise tracks). |
 | `hint` | `Enter submit · Ctrl-O expand · /help · /agents to view` | A persistent reminder of the essentials. The `expand` fragment always names `transcript.toggle_tool_output`'s effective key. Also names the focused agent when you're off-root and `lineage` isn't part of your configured fields. |
 | `git` | the current branch name | Read once at startup; omitted outside a git repo. |
@@ -1506,7 +1515,7 @@ session | lineage | mode | model | ctx | tokens | activity | hint
 
 On a narrow terminal, fields give up space in a fixed order rather than
 being clipped mid-word: ambient chrome (`cwd`, `git`) first, then
-point-in-time telemetry (`model`, `ctx`, `tokens`), then orientation
+point-in-time telemetry (`model`, `ctx`, `tokens`/`cost`), then orientation
 (`session`, `lineage`), then `activity`, then `hint`. `mode` is never
 dropped — its own single degrade step removes the `ready`/`awaiting
 permission` word and keeps only the permission-mode label, so `AUTO-ALLOW`

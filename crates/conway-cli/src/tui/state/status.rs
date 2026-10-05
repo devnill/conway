@@ -811,4 +811,78 @@ mod tests {
             "focus switch resets focused_ctx_tokens"
         );
     }
+
+    fn status_test_price() -> conway::Price {
+        conway::Price {
+            input_per_mtok: 3.0,
+            output_per_mtok: 15.0,
+            cache_read_per_mtok: None,
+            cache_write_per_mtok: None,
+            currency: "USD".to_string(),
+        }
+    }
+
+    /// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: `ModelDecision` resolves
+    /// `focused_model_price` from `model_prices` by the exact
+    /// `"backend/model"` key, mirroring `focused_model_max_context`'s own
+    /// resolution at the same event.
+    #[test]
+    fn model_decision_resolves_focused_model_cost_price_by_exact_key() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state
+            .model_prices
+            .insert("anthropic/claude-sonnet-4-6".to_string(), status_test_price());
+
+        state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
+
+        assert_eq!(state.focused_model_price, Some(status_test_price()));
+    }
+
+    /// The bare-model-id fallback: a `models.json` keyed on the model id
+    /// alone (no backend prefix) still resolves for a chosen
+    /// `"backend/model"` naming that same bare id.
+    #[test]
+    fn model_decision_resolves_focused_model_cost_price_via_the_bare_model_id_fallback() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state
+            .model_prices
+            .insert("glm-5.2".to_string(), status_test_price());
+
+        state.apply(&model_decision_env(root, "ollama/glm-5.2"));
+
+        assert_eq!(state.focused_model_price, Some(status_test_price()));
+    }
+
+    /// No matching entry in `model_prices` at all -- `focused_model_price`
+    /// stays `None`, never a guessed figure.
+    #[test]
+    fn model_decision_leaves_focused_model_cost_price_none_without_a_configured_price() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
+
+        assert!(state.focused_model_price.is_none());
+    }
+
+    #[test]
+    fn focus_agent_resets_focused_model_cost_price() {
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        state
+            .model_prices
+            .insert("anthropic/claude-sonnet-4-6".to_string(), status_test_price());
+        state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
+        assert!(state.focused_model_price.is_some());
+
+        state.focus_agent(child);
+
+        assert!(
+            state.focused_model_price.is_none(),
+            "focus switch resets focused_model_price"
+        );
+    }
 }
