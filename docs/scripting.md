@@ -696,6 +696,69 @@ Run `conway plugin install --defaults`, or set `plugins.install` to `[]`
 by hand (or via `conway plugin install`/`remove` on any single id, which
 records SOME opinion either way), to silence it.
 
+## `conway doctor`
+
+`conway doctor` runs the checks a first-week operator would otherwise
+diagnose by hand, one error message at a time: does `settings.json` (and
+every layer above it) actually parse, is each configured backend reachable,
+does every routing chain's context window resolve with known provenance,
+does every installed plugin — including an MCP/subprocess plugin's own
+startup handshake — actually construct, are the binaries a configured
+feature needs (`git` for the plugin marketplace, the OS sandbox primitive
+for `conway.confine`) on `PATH`, and where do sessions and board data for
+this directory resolve from. Every check reuses the real feature's own code
+path — never a parallel probe that could drift from what a live session
+actually does.
+
+```console
+$ conway doctor
+[PASS] config.loads: settings.json (and every layer above it) parsed cleanly
+[PASS] routing.chain_windows: every role's chain entries resolve a context window from known model metadata (no chain-entry-unknown or headroom warning at config-load time)
+[FAIL] backends.ollama.reachable: ollama: nothing is listening at http://127.0.0.1:11434/v1
+       fix: start the server listening at http://127.0.0.1:11434/v1, or fix backends.ollama.base_url
+[PASS] backends.ollama.inert_keys: backends.ollama carries no unrecognized keys
+[PASS] agents.parse: 2 agent definition(s) parsed from /home/dan/project/.conway/agents
+[PASS] session.project_key: project key `-home-dan-project`; sessions and board data resolve under /home/dan/.conway/sessions/-home-dan-project
+[PASS] tools.git: git is on PATH (the plugin marketplace's git-sourced installs need it)
+[WARN] tools.confine: conway.confine: the OS containment primitive '/usr/bin/sandbox-exec' does not exist...
+       fix: install the sandbox primitive named above before adding "conway.confine" to plugins.install
+[PASS] plugins.build: every configured plugin and backend constructed, and every MCP/subprocess plugin completed its handshake within its configured startup budget
+
+6 passed, 1 warned, 1 failed
+```
+
+`--json` prints one object instead of the line-per-check report above — a
+stable schema an operator can script against:
+
+```json
+{
+  "checks": [
+    { "id": "config.loads", "status": "pass", "summary": "...", "fix": null },
+    { "id": "backends.ollama.reachable", "status": "fail", "summary": "...", "fix": "..." }
+  ],
+  "summary": { "pass": 6, "warn": 1, "fail": 1 }
+}
+```
+
+`status` is one of `"pass"`, `"warn"`, or `"fail"`; `fix` is `null` for a
+`pass` check and a string (the exact edit or command that would resolve it)
+for every `warn`/`fail` check — there is no `--fix` flag that performs that
+edit on your behalf, by design, matching the rest of this binary's "name the
+remedy, never apply it unasked" posture.
+
+| Code | When |
+| --- | --- |
+| 0 | Every check is `pass` or `warn`. |
+| 1 | At least one check is `fail`. |
+
+`conway doctor` never needs a working provider, never needs a successfully
+loaded config either — a config that fails to parse is itself reported as
+the one `fail` check named `config.loads`, with the real error (naming the
+exact file and key) as its summary, rather than doctor itself refusing to
+run. It dials only the backends already configured in `settings.json` —
+never a provider you have not named, and never anything beyond that for
+telemetry.
+
 ## Plugin-contributed subcommands
 
 A plugin can add a slash command to the interactive TUI (see
@@ -891,3 +954,5 @@ follows that same restriction with `--resume` only — it now composes with
   subprocess.
 - [`permissions.md`](permissions.md) — permission modes, pattern grants,
   and project-file trust (interactive mode only).
+- [`conway doctor`](#conway-doctor) above — run it first when anything in
+  this file doesn't behave the way it's documented to.

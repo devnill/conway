@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
+use crate::commands::doctor::DoctorArgs;
 use crate::commands::memory::MemoryArgs;
 use crate::commands::plugin::PluginArgs;
 use crate::commands::routes::RoutesArgs;
@@ -330,6 +331,24 @@ pub enum Command {
     /// ordinary dispatch point would make this command unreachable in the
     /// one situation it exists for.
     Trust(TrustArgs),
+    /// `conway doctor [--json]` (board item `01M1YVXNPTBNH18ZEWFM18F00T`):
+    /// runs the checks a first-week operator would otherwise diagnose by
+    /// hand one error message at a time -- config loads, every configured
+    /// backend is reachable, every routing chain's context window resolves
+    /// with known provenance, every installed plugin (including MCP/
+    /// subprocess startup) actually constructs, required binaries are on
+    /// `PATH` -- and reports each as `pass`/`warn`/`fail` with a one-line
+    /// fix. See `commands::doctor`'s own module doc for the full check
+    /// list and which real code path each one reuses.
+    ///
+    /// **Dispatched BEFORE `build_conway`, on the identical footing as
+    /// `Command::Trust` immediately above** -- doctor's whole point is
+    /// diagnosing a configuration `build_conway` would otherwise fail (or
+    /// silently warn) on, so it must stay reachable exactly when that call
+    /// would refuse to build a `Conway` at all. See `commands::doctor::run`'s
+    /// own doc for why it takes `env`/`--config`/`--root` directly rather
+    /// than a built `Conway`.
+    Doctor(DoctorArgs),
     /// Anything that is not one of the built-in subcommands above falls
     /// through here instead of failing to parse -- clap's own
     /// `external_subcommand` idiom (the same shape `cargo` uses to dispatch

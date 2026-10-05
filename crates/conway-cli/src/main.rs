@@ -90,6 +90,22 @@ async fn main() -> std::process::ExitCode {
         return to_process_code(commands::trust::run(args, &cwd, &env));
     }
 
+    // Board item `01M1YVXNPTBNH18ZEWFM18F00T`: `conway doctor` is dispatched
+    // here too, on the identical footing as `Command::Trust` immediately
+    // above and for the identical reason -- its whole point is diagnosing a
+    // configuration `build_conway` below would otherwise fail (or silently
+    // warn) on, so it must stay reachable exactly when that call would
+    // refuse to build a `Conway` at all. Nothing here needs one: every
+    // check `commands::doctor::run` performs either re-derives its own
+    // `ConwayBuilder` (so a config-load failure becomes a named `fail`
+    // check instead of this binary's own early exit) or needs no config at
+    // all. See that function's own doc for the full check list.
+    if let Some(Command::Doctor(args)) = &cli.command {
+        return to_process_code(
+            commands::doctor::run(args, &env, cli.config.as_deref(), cli.root.as_deref()).await,
+        );
+    }
+
     // **Disclosed reconciliation -- widens this function and
     // `build_conway` beyond `dispatch`'s own match arms, which is the one
     // piece of this shared file each of those items' briefs asked to leave
@@ -862,6 +878,23 @@ async fn dispatch(
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             Ok(commands::trust::run(args, &cwd, env))
         }
+        // Board item `01M1YVXNPTBNH18ZEWFM18F00T`: not reached in practice
+        // -- `main` returns on `Command::Doctor` before `build_conway` ever
+        // runs (see that early return's own comment). Kept as a real arm,
+        // calling the real function, on the identical footing as
+        // `Command::Trust` immediately above and for the identical reason:
+        // a `_` catch-all here would silently swallow the next variant
+        // somebody adds, and this arm still does the right thing (re-derives
+        // its own `ConwayBuilder` rather than reusing the already-built
+        // `conway` this match arm receives -- see `commands::doctor::run`'s
+        // own doc for why) if the early return is ever removed.
+        Some(Command::Doctor(args)) => Ok(commands::doctor::run(
+            args,
+            env,
+            cli.config.as_deref(),
+            cli.root.as_deref(),
+        )
+        .await),
         // **Disclosed reconciliation, out of this arm's own owning
         // item's paths but unavoidable and unclaimed:** dispatching
         // `Command::External` -- the plugin-contributed-subcommand half of
