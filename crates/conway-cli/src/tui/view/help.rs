@@ -301,6 +301,23 @@ pub(super) const MOUSE_NOTE: &str =
                             terminal's native click-drag text selection keeps working. Use \
                             PageUp/PageDown or Home/End instead.";
 
+/// Board item `01M44PK0HNKWBXK86PWTHD6N7C`: `[tui.editor_mode]`'s opt-in
+/// vim prompt editing (`AppState::editor_mode`, `view/settings.rs`'s
+/// `editor mode` row) had no mention anywhere in this overlay -- an
+/// operator who never read `docs/interactive.md` end to end, or never
+/// happened across the `editor mode` row while browsing `/settings`, had
+/// no way to discover it exists at all. A freeform note, like
+/// [`MOUSE_NOTE`] just above: this is a SETTING, not a keybinding
+/// `build_groups`'s keymap-driven rows could ever list (nothing in
+/// `crate::tui::keybindings::ACTIONS` toggles it -- the row lives in
+/// `/settings`, not the keymap), so it gets the same prose-note treatment
+/// rather than a fabricated `Binding`.
+pub(super) const VIM_MODE_NOTE: &str =
+    "note: prefer vim-style modal editing in the prompt? /settings -> \
+                            display -> editor mode toggles emacs/vim (Enter on that row, or \
+                            set [tui.editor_mode] = \"vim\"); see docs/interactive.md's vim \
+                            mode section for the full key reference.";
+
 /// Rows the overlay's footer always reserves: the `[Esc] close` hint.
 const FOOTER_ROWS: u16 = 1;
 
@@ -408,6 +425,7 @@ fn build_body(state: &AppState, theme: &Theme) -> Paragraph<'static> {
     }
     body_lines.push(Line::from(""));
     body_lines.push(Line::from(Span::styled(MOUSE_NOTE, theme.dim)));
+    body_lines.push(Line::from(Span::styled(VIM_MODE_NOTE, theme.dim)));
     Paragraph::new(body_lines).wrap(Wrap { trim: false })
 }
 
@@ -521,6 +539,35 @@ mod tests {
     fn mouse_note_exists_and_mentions_mouse() {
         assert!(MOUSE_NOTE.to_lowercase().contains("mouse"));
         assert!(MOUSE_NOTE.to_lowercase().contains("scrollback"));
+    }
+
+    /// Board item `01M44PK0HNKWBXK86PWTHD6N7C`: `/help` must name
+    /// `[tui.editor_mode]`'s vim prompt-editing mode, how to toggle it
+    /// (`/settings` -> display -> editor mode), and point at
+    /// `docs/interactive.md`'s own vim section -- a prior `/help` had none
+    /// of this, and GUIDE.md's own "discoverability" history (this module's
+    /// top-of-file doc, the COMMANDS section's own origin) is exactly the
+    /// class of gap this closes a second time.
+    #[test]
+    fn vim_mode_note_names_the_setting_the_toggle_path_and_the_docs_section() {
+        let lower = VIM_MODE_NOTE.to_lowercase();
+        assert!(lower.contains("vim"), "{VIM_MODE_NOTE}");
+        assert!(
+            lower.contains("editor mode"),
+            "must name the /settings row by its own label: {VIM_MODE_NOTE}"
+        );
+        assert!(
+            lower.contains("/settings"),
+            "must state how to reach the toggle: {VIM_MODE_NOTE}"
+        );
+        assert!(
+            lower.contains("display"),
+            "must name the display submenu the row lives under: {VIM_MODE_NOTE}"
+        );
+        assert!(
+            VIM_MODE_NOTE.contains("docs/interactive.md"),
+            "must point at the docs page's vim section: {VIM_MODE_NOTE}"
+        );
     }
 
     /// Every default action's default key(s) show up under plain
@@ -697,5 +744,20 @@ mod tests {
             !text.contains("does not list"),
             "the retired disclaimer must not still be rendered: {text}"
         );
+    }
+
+    /// Acceptance, through the real render pass rather than the constant
+    /// alone: the vim-mode note actually reaches the rendered overlay body,
+    /// the same way `help_overlay_shows_the_commands_heading_not_the_old_disclaimer`
+    /// (just above) checks the COMMANDS heading does.
+    #[test]
+    fn help_overlay_mentions_vim_mode_and_the_settings_toggle_path() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+
+        let text = render_help_all_pages(&mut state, 100, 80);
+        assert!(text.to_lowercase().contains("vim"), "{text}");
+        assert!(text.to_lowercase().contains("editor mode"), "{text}");
+        assert!(text.contains("docs/interactive.md"), "{text}");
     }
 }

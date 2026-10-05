@@ -1,8 +1,19 @@
 //! One shared formatting rule for a `Usage`'s cache figures, called from
 //! every TUI renderer that shows a token count alongside a cache
 //! percentage (`tui::state::turn_summary`'s turn-end summary,
-//! `tui::view::status`'s `tokens` status-line field) so the two surfaces
-//! can never drift apart on the rule itself.
+//! `tui::view::status`'s `tokens` status-line field, `tui::commands`'s
+//! `/context` cache line) so none of them can drift apart on the rule
+//! itself.
+//!
+//! **Board item `01M44PK0HNKWBXK86PWTHD6N7C`:** the turn-end summary only
+//! ever calls this for `CacheAccounting::Reported` (a genuinely per-turn
+//! fact, the cache-hit percentage) -- it skips the call entirely for
+//! `NotReported`, rather than rendering this function's `"not reported"`/
+//! `"not supported"`/`"reporting unknown"` wording on every single turn
+//! line down the whole transcript. That wording is a standing fact about
+//! the BACKEND's wire dialect, not a per-turn observation; it still renders
+//! once in the status line and once in `/context`, so it is suppressed from
+//! repetition, never lost.
 //!
 //! Declaration honesty (board item: providers that report no cache
 //! figures were indistinguishable from providers that report a genuine

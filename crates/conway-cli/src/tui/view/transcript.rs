@@ -658,8 +658,14 @@ fn split_lines(text: &str, theme: &Theme) -> Vec<Line<'static>> {
 /// count; `{key}` is `toggle_keys` -- see this function's own parameter
 /// doc). While `expanded` is `true`, the full preview renders. No
 /// box-drawing, no `Block` -- the clean-copy invariant (settled tool
-/// output) is preserved. A settled tool entry (non-empty preview) ends
-/// with a blank line + a dim plain `-` rule as a non-box separator.
+/// output) is preserved. Board item `01M44PK0HNKWBXK86PWTHD6N7C` dropped
+/// the standalone blank-line-plus-dash rule this function used to append
+/// after every settled entry's output: stacked one per tool call down a
+/// transcript of several calls, it read as a wall of orphan `-` lines with
+/// nothing either side of them. No other `Entry` variant (`Notice`,
+/// `Agent`, `Assistant`, …) gets a trailing rule of its own either -- the
+/// next entry's own `[tag] name` header line already marks where it
+/// starts, exactly as it does for every other entry kind.
 ///
 /// **T4 additions:** the `args` and `progress` parameters. `args` is a
 /// compact JSON string (from `Event::ToolCallProposed::args`); it renders
@@ -669,7 +675,10 @@ fn split_lines(text: &str, theme: &Theme) -> Vec<Line<'static>> {
 /// flag (the spec: "both args and output expand together"). `progress` is
 /// the accumulated `Event::ToolProgress` notes (joined with `\n`); each
 /// note renders as a dim `-> {note}` line between the args line and the
-/// output block.
+/// output block **while the call is still running** (board item
+/// `01M44PK0HNKWBXK86PWTHD6N7C`: once `preview` is non-empty the notes are
+/// a verbatim repeat of the settled output just below and are dropped, not
+/// rendered twice).
 ///
 /// **Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`:** `toggle_keys` is
 /// `transcript.toggle_tool_output`'s CURRENT effective key(s) -- see
@@ -745,7 +754,16 @@ fn tool_lines(
     // permanently into SETTLED transcript text that a user copies out --
     // against the spirit of the clean-copy guarantee, and inconsistent with
     // the plain-`[`/`]`/`>` speaker marker used elsewhere.
-    if !progress.is_empty() {
+    //
+    // Board item `01M44PK0HNKWBXK86PWTHD6N7C`: gated on `preview.is_empty()`
+    // -- a settled call's `preview` (e.g. `conway-tools`'s bash runner's
+    // `stdout:\n…\n\nstderr:\n…`) is built from the exact same lines these
+    // notes streamed live, so once a `preview` has landed the notes are a
+    // verbatim repeat of the output block just below, not new information.
+    // While a call is still running (`preview` empty, nothing settled yet)
+    // the notes are the ONLY output on screen and stay visible, which is the
+    // whole reason `ToolProgress` streams them in the first place.
+    if !progress.is_empty() && preview.is_empty() {
         for note in progress.split('\n') {
             if note.is_empty() {
                 continue;
@@ -776,13 +794,6 @@ fn tool_lines(
             )));
         }
     }
-
-    // Clean-copy separator for settled tool output: a blank line + a dim
-    // plain `-` rule (non-box). No `Block`, no box-drawing glyph -- the
-    // clean-copy invariant is preserved (the `entry_lines_never_contain_
-    // box_drawing_glyphs` test covers this).
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("-", theme.dim)));
 
     lines
 }
@@ -1839,7 +1850,8 @@ mod tests {
     /// at most N+1 lines (the cap, plus the `… (+M lines, Ctrl-O to
     /// expand)` affordance) -- NOT all 20. T4 separated the header from the
     /// preview block, so the total is 1 header + cap preview lines + 1
-    /// affordance + 2 (blank + dim `-` separator) = `cap + 4`.
+    /// affordance = `cap + 2` (board item `01M44PK0HNKWBXK86PWTHD6N7C`
+    /// dropped the trailing blank + dim `-` separator this used to add).
     #[test]
     fn collapsed_tool_preview_caps_at_n_plus_affordance() {
         let entry = collapsed_tool_with_n_lines(20);
@@ -1867,12 +1879,11 @@ mod tests {
             );
         }
 
-        // Total line count: 1 header + cap preview + 1 affordance + 2
-        // separator (blank + `-`) = cap + 4.
+        // Total line count: 1 header + cap preview + 1 affordance = cap + 2.
         assert_eq!(
             lines.len(),
-            cap as usize + 4,
-            "collapsed 20-line preview at cap=3 must render cap+4 lines (header + cap + affordance + blank + `-`): {:?}",
+            cap as usize + 2,
+            "collapsed 20-line preview at cap=3 must render cap+2 lines (header + cap + affordance): {:?}",
             lines.iter().map(plain_text).collect::<Vec<_>>()
         );
     }
@@ -1927,8 +1938,8 @@ mod tests {
     }
 
     /// Acceptance: with `expanded: true`, the full 20-line preview renders
-    /// -- no affordance, no capping. The total is 1 header + 20 preview +
-    /// 2 separator = 23.
+    /// -- no affordance, no capping. The total is 1 header + 20 preview =
+    /// 21.
     #[test]
     fn expanded_tool_preview_renders_all_lines() {
         let mut entry = collapsed_tool_with_n_lines(20);
@@ -1956,13 +1967,13 @@ mod tests {
         }
         assert_eq!(
             lines.len(),
-            23,
-            "expanded 20-line preview must render 1 header + 20 preview + 2 separator = 23 lines"
+            21,
+            "expanded 20-line preview must render 1 header + 20 preview = 21 lines"
         );
     }
 
     /// A preview with FEWER physical lines than the cap never collapses --
-    /// no affordance, just the content + separator.
+    /// no affordance, just the header + content.
     #[test]
     fn short_tool_preview_is_not_collapsed() {
         let entry = collapsed_tool_with_n_lines(2);
@@ -1971,8 +1982,8 @@ mod tests {
             !lines.iter().any(|l| affordance_text(l).is_some()),
             "a preview shorter than the cap must not show the affordance"
         );
-        // 1 header + 2 preview + 2 separator = 5.
-        assert_eq!(lines.len(), 5, "2-line preview at cap=3: {lines:?}");
+        // 1 header + 2 preview = 3.
+        assert_eq!(lines.len(), 3, "2-line preview at cap=3: {lines:?}");
     }
 
     /// The cap is honored: at cap=5, a 20-line preview shows 5 content
@@ -1992,8 +2003,7 @@ mod tests {
     }
 
     /// Clean-copy invariant: no box-drawing glyphs in collapsed OR expanded
-    /// tool output (settled). The separator is a plain `-`, never `─` or
-    /// `│`.
+    /// tool output (settled).
     #[test]
     fn tool_output_contains_no_box_drawing_glyphs_collapsed_or_expanded() {
         let collapsed = collapsed_tool_with_n_lines(20);
@@ -2018,36 +2028,32 @@ mod tests {
         }
     }
 
-    /// The separator is a dim plain `-` (one character) on its own line,
-    /// preceded by a blank line -- never a box-drawing rule.
+    /// Board item `01M44PK0HNKWBXK86PWTHD6N7C`: a settled tool entry's
+    /// output is NEVER followed by a standalone separator line (previously
+    /// a blank line + a dim plain `-` rule) -- a transcript of several tool
+    /// calls in a row used to read as a wall of orphan `-` lines between
+    /// them. The next entry's own `[tag] name` header already marks the
+    /// boundary.
     #[test]
-    fn settled_tool_output_ends_with_a_blank_line_and_a_dim_plain_dash() {
+    fn settled_tool_output_has_no_trailing_separator_line() {
         let entry = collapsed_tool_with_n_lines(2);
         let lines = entry_lines(&entry, 3, false, &ctrl_o(), &Theme::default());
-        // The last line is the `-` rule; the second-to-last is blank.
-        let last = plain_text(lines.last().expect("at least the separator"));
-        assert_eq!(
-            last, "-",
-            "the separator must be a single plain `-`: {last:?}"
+        assert!(
+            !lines.iter().any(|l| plain_text(l) == "-"),
+            "no entry gets a standalone `-` separator line: {:?}",
+            lines.iter().map(plain_text).collect::<Vec<_>>()
         );
-        let second_last = plain_text(&lines[lines.len() - 2]);
-        assert_eq!(
-            second_last, "",
-            "a blank line must precede the `-` separator: {second_last:?}"
-        );
-        // The `-` rule is styled with `theme.dim`.
-        assert_eq!(
-            lines.last().unwrap().spans.first().unwrap().style,
-            Theme::default().dim,
-            "the `-` separator must use theme.dim"
+        assert!(
+            !lines.iter().any(|l| plain_text(l).is_empty()),
+            "no trailing blank line either: {:?}",
+            lines.iter().map(plain_text).collect::<Vec<_>>()
         );
     }
 
     /// An empty preview (a tool that has not finished, or finished with no
-    /// output) does NOT get a separator -- only settled (non-empty preview)
-    /// tool output does.
+    /// output) renders just the header line.
     #[test]
-    fn empty_tool_preview_has_no_separator() {
+    fn empty_tool_preview_renders_only_the_header() {
         let entry = Entry::Tool {
             call_id: "c1".to_string(),
             name: "bash".to_string(),
@@ -2064,10 +2070,6 @@ mod tests {
             1,
             "empty preview -> just the header line: {lines:?}"
         );
-        assert!(
-            !lines.iter().any(|l| plain_text(l) == "-"),
-            "no separator for an empty preview"
-        );
     }
 
     /// `cap.max(1)` guard: a cap of 0 (which the config clamp prevents at the
@@ -2077,8 +2079,8 @@ mod tests {
     fn cap_of_zero_degrades_to_one_line() {
         let entry = collapsed_tool_with_n_lines(20);
         let lines = entry_lines(&entry, 0, false, &ctrl_o(), &Theme::default());
-        // cap=1 -> 1 header + 1 content line + affordance + 2 separator = 5.
-        assert_eq!(lines.len(), 5, "cap=0 degrades to cap=1: {lines:?}");
+        // cap=1 -> 1 header + 1 content line + affordance = 3.
+        assert_eq!(lines.len(), 3, "cap=0 degrades to cap=1: {lines:?}");
         let affordance = lines
             .iter()
             .find_map(|l| affordance_text(l))
@@ -2090,13 +2092,12 @@ mod tests {
     }
 
     /// `rendered_line_count` helper sanity: a 20-line collapsed preview at
-    /// cap=3 renders exactly cap+4 lines (header + cap + affordance + 2
-    /// separator).
+    /// cap=N renders exactly cap+2 lines (header + cap + affordance).
     #[test]
     fn rendered_line_count_helper_is_consistent() {
         let entry = collapsed_tool_with_n_lines(20);
-        assert_eq!(rendered_line_count(&entry, 3), 7);
-        assert_eq!(rendered_line_count(&entry, 5), 9);
+        assert_eq!(rendered_line_count(&entry, 3), 5);
+        assert_eq!(rendered_line_count(&entry, 5), 7);
     }
 
     // ---- T4: reasoning variant, speaker markers, tool args/progress,

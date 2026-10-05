@@ -3415,10 +3415,28 @@ impl AppState {
             // `Event::Error`/`Event::AgentProgress`'s own convention just
             // above: a root's turn ending is worth surfacing even if the
             // operator is currently focused elsewhere.
-            Event::TurnAborted { limit, .. } => {
+            Event::TurnAborted {
+                agent_id, limit, ..
+            } => {
                 self.transcript.push(Entry::Notice {
                     text: format!("turn ended: {limit} reached; type to continue"),
                 });
+                // Board item `01M44PK0HNKWBXK86PWTHD6N7C`: this ends the
+                // turn exactly like `Event::TurnFinished` does (same
+                // `end_keep_alive_turn` reset, per this variant's own doc)
+                // but used to fall through without the status-bar reset
+                // `TurnFinished`'s own arm performs, leaving `activity`
+                // wedged at whatever working rung was up (e.g. "thinking…
+                // 31s") until the NEXT turn's first event overwrote it --
+                // visibly idle to the harness, visibly busy to the
+                // operator. Gated on the focused agent, mirroring
+                // `TurnFinished`'s own gate, since `activity` only ever
+                // describes the focused agent.
+                if *agent_id == self.focused_agent {
+                    self.activity = Activity::Idle;
+                    self.clear_turn_state();
+                    self.running_tool_since = None;
+                }
             }
             // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the operator-abort
             // sibling of `Event::TurnAborted` immediately above -- same
@@ -3428,10 +3446,21 @@ impl AppState {
             // this gets its own wording naming the operator's own reason
             // rather than reusing "reached" (a budget-dimension word that
             // would misdescribe an operator abort).
-            Event::TurnAbortedByUser { reason, .. } => {
+            Event::TurnAbortedByUser { agent_id, reason } => {
                 self.transcript.push(Entry::Notice {
                     text: format!("turn aborted ({reason}); type to continue"),
                 });
+                // Board item `01M44PK0HNKWBXK86PWTHD6N7C`: the Ctrl-C abort
+                // case of the same bug fixed on `Event::TurnAborted` just
+                // above -- see that arm's comment. A first Ctrl-C mid-turn
+                // left the status bar reading "running · thinking… 31s"
+                // indefinitely even though the harness was already idle and
+                // accepting the next prompt.
+                if *agent_id == self.focused_agent {
+                    self.activity = Activity::Idle;
+                    self.clear_turn_state();
+                    self.running_tool_since = None;
+                }
             }
             // Board item A5.6: a child (or the root) crossed 80% of one of
             // its own budget dimensions -- the model-facing wrap-up notice
@@ -3454,6 +3483,103 @@ impl AppState {
             }
             _ => {}
         }
+    }
+}
+
+/// Board item `01M44PK0HNKWBXK86PWTHD6N7C`: `Event::TurnAborted` and
+/// `Event::TurnAbortedByUser` both end the current turn exactly like
+/// `Event::TurnFinished` (same `end_keep_alive_turn` reset, per both
+/// variants' own doc), but their `apply` arms used to push only the
+/// transcript notice and never reset `activity`/`turn_started_at` --
+/// leaving the status bar reading "running · thinking… 31s" indefinitely
+/// after a Ctrl-C abort, even though the harness was already idle and
+/// accepting the operator's next prompt.
+#[cfg(test)]
+mod turn_abort_status_reset {
+    use super::fixtures::envelope;
+    use super::*;
+
+    #[test]
+    fn turn_aborted_by_user_resets_activity_to_idle_for_the_focused_agent() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 1 }));
+        state.activity = Activity::Responding;
+        assert!(state.turn_started_at.is_some());
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::TurnAbortedByUser {
+                agent_id: agent,
+                reason: "user cancel".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            state.activity,
+            Activity::Idle,
+            "a Ctrl-C abort must leave the status bar idle, not wedged at the \
+             working rung it interrupted"
+        );
+        assert!(
+            state.turn_started_at.is_none(),
+            "the elapsed clock must stop along with the activity rung"
+        );
+    }
+
+    /// Scoping companion: a background agent's own abort must not touch the
+    /// status the operator is reading for a DIFFERENT focused agent.
+    #[test]
+    fn turn_aborted_by_user_for_a_non_focused_agent_leaves_activity_untouched() {
+        let session = SessionId::new();
+        let focused = AgentId::new();
+        let other = AgentId::new();
+        let mut state = AppState::new(focused);
+        state.activity = Activity::Responding;
+
+        state.apply(&envelope(
+            session,
+            other,
+            Event::TurnAbortedByUser {
+                agent_id: other,
+                reason: "user cancel".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            state.activity,
+            Activity::Responding,
+            "an unrelated agent's abort must not reset the focused agent's activity"
+        );
+    }
+
+    #[test]
+    fn turn_aborted_resets_activity_to_idle_for_the_focused_agent() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 1 }));
+        state.activity = Activity::RunningTool("bash".to_string());
+        assert!(state.turn_started_at.is_some());
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::TurnAborted {
+                agent_id: agent,
+                limit: "max_steps=40".to_string(),
+                steps_this_turn: 40,
+            },
+        ));
+
+        assert_eq!(
+            state.activity,
+            Activity::Idle,
+            "a turn-scoped budget trip must leave the status bar idle"
+        );
+        assert!(state.turn_started_at.is_none());
     }
 }
 

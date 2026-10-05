@@ -67,21 +67,33 @@ fn compact_tokens(n: u64) -> String {
     format!("{k}.{tenths}k")
 }
 
-/// T4: format the turn-end summary line (`1m 6s · 1.4k tok (88% cached)`,
-/// or `1m 6s · 1.4k tok (cache: not reported by openai)`/`(cache: not
-/// supported by ollama)`/`(cache: reporting unknown)` when the turn carried
-/// no cache field) from the elapsed seconds (read from `turn_started_at`
-/// before `clear_turn_state` zeroes it), the turn's `Usage`, the focused
-/// agent's `"backend/model"` string (for naming the backend; `None` renders
-/// each wording's generic form), and the focused backend's declared
+/// T4: format the turn-end summary line (`1m 6s · 1.4k tok (88% cached)`)
+/// from the elapsed seconds (read from `turn_started_at` before
+/// `clear_turn_state` zeroes it), the turn's `Usage`, the focused agent's
+/// `"backend/model"` string (for naming the backend; `None` renders each
+/// wording's generic form), and the focused backend's declared
 /// `CacheReporting` (`AppState::focused_model_cache_reporting`, `None` when
-/// unknown to this state -- board item `01M2NS0996E139VN5R8W4PGD8V`, see
-/// `crate::tui::usage_format::cache_suffix`'s own doc for which of the
-/// three wordings each combination picks). Elapsed is `1m 6s` for >= 60s,
-/// else `{secs}s`. Tokens is the sum of every `Usage` field (matching
-/// `crate::tui::view::status::spent_tokens`); the cache suffix itself is
-/// [`crate::tui::usage_format::cache_suffix`] -- shared with the status
-/// line's `tokens` field so the two can never render this differently.
+/// unknown to this state -- board item `01M2NS0996E139VN5R8W4PGD8V`). Elapsed
+/// is `1m 6s` for >= 60s, else `{secs}s`. Tokens is the sum of every `Usage`
+/// field (matching `crate::tui::view::status::spent_tokens`); the cache
+/// suffix itself is [`crate::tui::usage_format::cache_suffix`] -- shared
+/// with the status line's `tokens` field so the two can never render a
+/// REPORTED percentage differently.
+///
+/// **Board item `01M44PK0HNKWBXK86PWTHD6N7C`:** the suffix only ever
+/// renders here for `CacheAccounting::Reported` (`" (N% cached)"`, a fact
+/// genuinely new every turn). The `NotReported` family -- `"(cache: not
+/// supported by X)"` / `"(cache: not reported by X)"` / `"(cache: reporting
+/// unknown for X)"` -- is a declaration about the BACKEND's own wire
+/// dialect, constant for the rest of the session once known, not a per-turn
+/// observation; appending it to every single turn-end line (previously via
+/// an unconditional `cache_suffix` call) repeated the same sentence down
+/// the whole transcript. It still renders once in the status line
+/// (`crate::tui::view::status::render_status_line`'s own `tokens` field, the
+/// SAME `cache_suffix` call) and once in `/context`
+/// (`crate::tui::commands::render_context_cache_line`), so the fact is never
+/// lost -- only de-duplicated off the one surface that repeated it every
+/// turn.
 fn format_turn_summary(
     elapsed_secs: u64,
     usage: &Usage,
@@ -100,7 +112,12 @@ fn format_turn_summary(
         + u64::from(usage.cache_read_tokens)
         + u64::from(usage.cache_write_tokens)
         + u64::from(usage.reasoning_tokens);
-    let suffix = crate::tui::usage_format::cache_suffix(usage, focused_model, cache_reporting);
+    let suffix = match usage.cache_accounting {
+        conway::CacheAccounting::Reported => {
+            crate::tui::usage_format::cache_suffix(usage, focused_model, cache_reporting)
+        }
+        conway::CacheAccounting::NotReported => String::new(),
+    };
     format!("{elapsed} · {} tok{suffix}", compact_tokens(total))
 }
 
@@ -329,15 +346,16 @@ mod tests {
     }
 
     /// `format_turn_summary` formats elapsed >= 60s as `1m 6s` and < 60s
-    /// as `{n}s`; `Reported` always renders a cache pct (including `0%`),
-    /// `NotReported` renders one of the three `cache: ...` wordings
-    /// `crate::tui::usage_format::cache_suffix` now distinguishes, keyed
-    /// off the `CacheReporting` this function forwards to it unchanged
-    /// (board item `01M2NS0996E139VN5R8W4PGD8V`) -- the exhaustive
-    /// per-wording coverage lives in `usage_format`'s own `mod tests`; this
-    /// test only confirms the elapsed/token shaping AND that this
-    /// function's own new parameter actually reaches `cache_suffix` rather
-    /// than being dropped on the floor.
+    /// as `{n}s`; `Reported` always renders a cache pct (including `0%`).
+    /// `NotReported` renders NO suffix at all here, regardless of
+    /// `CacheReporting` -- board item `01M44PK0HNKWBXK86PWTHD6N7C`: the
+    /// `"cache: not reported"`/`"not supported"`/`"reporting unknown"`
+    /// family is a declaration about the backend, constant for the rest of
+    /// the session, not a per-turn fact, so it no longer repeats on every
+    /// turn-end line (it still renders once in the status line and once in
+    /// `/context` -- see `crate::tui::usage_format::cache_suffix`'s own
+    /// exhaustive per-wording coverage in `usage_format`'s `mod tests` for
+    /// those two surfaces).
     #[test]
     fn format_turn_summary_shapes() {
         let with_cache = Usage {
@@ -379,9 +397,12 @@ mod tests {
             reasoning_tokens: 0,
             cache_accounting: CacheAccounting::NotReported,
         };
+        // No suffix at all: neither `CacheReporting` value, nor its
+        // absence, nor a named backend changes this -- `NotReported`'s
+        // whole family is suppressed on the per-turn line.
         assert_eq!(
             format_turn_summary(5, &not_reported, None, Some(CacheReporting::Reported)),
-            "5s · 500 tok (cache: not reported)"
+            "5s · 500 tok"
         );
         assert_eq!(
             format_turn_summary(
@@ -390,13 +411,8 @@ mod tests {
                 Some("ollama/gemma4:e4b"),
                 Some(CacheReporting::Reported),
             ),
-            "5s · 500 tok (cache: not reported by ollama)"
+            "5s · 500 tok"
         );
-        // The new parameter, forwarded end-to-end: a backend declared
-        // `CacheReporting::NotReported` (structurally incapable) renders
-        // the DISTINCT "not supported" wording, not "not reported" --
-        // proving this function threads its own new argument through
-        // rather than silently dropping it.
         assert_eq!(
             format_turn_summary(
                 5,
@@ -404,13 +420,11 @@ mod tests {
                 Some("ollama/gemma4:e4b"),
                 Some(CacheReporting::NotReported),
             ),
-            "5s · 500 tok (cache: not supported by ollama)"
+            "5s · 500 tok"
         );
-        // And an unresolved capability renders the third wording, distinct
-        // from both.
         assert_eq!(
             format_turn_summary(5, &not_reported, Some("ollama/gemma4:e4b"), None),
-            "5s · 500 tok (cache: reporting unknown for ollama)"
+            "5s · 500 tok"
         );
     }
 
