@@ -509,6 +509,44 @@ async fn sessions_export_writes_to_out_file() {
     }
 }
 
+/// Board item `01M1YVW7JEYZ9VPR5FX3CZN7WQ`: `--format markdown`, end to
+/// end through the real compiled binary -- the golden test in
+/// `conway-cli::session_markdown` already pins the exact rendering shape
+/// against hand-built fixture records; this proves the CLI wiring (flag
+/// parsing, the real one-shot-created session's own records) actually
+/// reaches it, and that the default stays JSONL when `--format` is
+/// omitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_export_markdown_writes_readable_transcript() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = fixture_with_mock(&mock);
+    let created = run_conway(&["-p", "hello there"], &fixture);
+    assert_ran_ok(&created, "setup: conway -p 'hello there'");
+    let id = only_session_id(&fixture);
+
+    let out = run_conway(
+        &["sessions", "export", &id, "--format", "markdown"],
+        &fixture,
+    );
+    assert_ran_ok(&out, "conway sessions export <id> --format markdown");
+    assert_no_esc_byte(&out.stdout);
+
+    let text = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(text.starts_with(&format!("# Session {id}")), "{text}");
+    assert!(text.contains("## User"), "{text}");
+    assert!(text.contains("hello there"), "{text}");
+    assert!(text.contains("## Assistant"), "{text}");
+    assert!(text.contains("hi"), "{text}");
+    // `--format jsonl` is the default and stays unchanged -- a bare
+    // `sessions export <id>` (no `--format`) must still be JSONL.
+    let default_format = run_conway(&["sessions", "export", &id], &fixture);
+    assert_ran_ok(&default_format, "conway sessions export <id> (no --format)");
+    for value in jsonl_lines(&default_format.stdout) {
+        assert!(value.as_object().expect("json object").contains_key("kind"));
+    }
+}
+
 // ---------------------------------------------------------------------
 // routes explain
 // ---------------------------------------------------------------------

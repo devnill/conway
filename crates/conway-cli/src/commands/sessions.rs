@@ -32,13 +32,22 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use conway::{Conway, LogRecord, SessionFilter, SessionId, SessionMeta, SubagentMode};
 
 use crate::commands::fmt;
 use crate::diag;
 use crate::exit::ExitCode;
 use crate::session_names::{self, NamesStore};
+
+/// `sessions export --format`: `Jsonl` is the original, unchanged shape;
+/// `Markdown` is board item `01M1YVW7JEYZ9VPR5FX3CZN7WQ` -- see
+/// [`SessionsAction::Export`]'s own doc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ExportFormat {
+    Jsonl,
+    Markdown,
+}
 
 #[derive(Args, Debug)]
 pub struct SessionsArgs {
@@ -86,11 +95,33 @@ pub enum SessionsAction {
     },
     /// Print a session's fork tree.
     Tree { id: String },
-    /// Export a session's ancestry-resolved transcript as JSONL.
+    /// Export a session's ancestry-resolved transcript. `--format jsonl`
+    /// (the default, unchanged) writes one compact JSON object per record,
+    /// the wire shape the log itself uses. `--format markdown` (board item
+    /// `01M1YVW7JEYZ9VPR5FX3CZN7WQ`) instead renders the SAME transcript
+    /// the TUI pane shows -- a header (session id/name, model(s), token
+    /// totals), then user turns, assistant text, tool calls with their
+    /// output folded under `--tool-lines` (default matching the TUI's own
+    /// `tool_preview_lines` default), and notices -- through
+    /// `crate::session_markdown::render`, the one Markdown renderer this
+    /// crate has (see that module's own doc for why it builds from the
+    /// same `Entry` mapping the TUI's `/resume` backfill uses, not a
+    /// second reading of the record stream). `--tool-lines` is ignored
+    /// under `--format jsonl` (JSONL already carries the full, untruncated
+    /// result). Markdown rendering performs no redaction of sensitive tool
+    /// output -- see `docs/sessions.md`'s own note.
     Export {
         id: String,
         #[arg(long = "out")]
         out: Option<PathBuf>,
+        #[arg(long = "format", value_enum, default_value = "jsonl")]
+        format: ExportFormat,
+        /// Caps a Markdown tool call's output preview to its first N
+        /// lines -- mirrors `[tui.tool_preview_lines]`'s own clamp
+        /// (`1..=200`, default 3) and uses the identical default when
+        /// omitted. Ignored under `--format jsonl`.
+        #[arg(long = "tool-lines")]
+        tool_lines: Option<u32>,
     },
     /// Attach an operator-chosen name to a session, or rename its existing
     /// one. `ID` accepts a session id or an existing name, exactly like
@@ -125,7 +156,12 @@ pub async fn run(args: &SessionsArgs, conway: &Conway) -> conway::Result<ExitCod
         }
         SessionsAction::Show { id, json, diff } => show(conway, id, *json, *diff).await,
         SessionsAction::Tree { id } => tree(conway, id).await,
-        SessionsAction::Export { id, out } => export(conway, id, out.clone()).await,
+        SessionsAction::Export {
+            id,
+            out,
+            format,
+            tool_lines,
+        } => export(conway, id, out.clone(), *format, *tool_lines).await,
         SessionsAction::Name { id, name: new_name } => name(conway, id, new_name).await,
         SessionsAction::Unname { id } => unname(conway, id).await,
         SessionsAction::Label {
@@ -698,7 +734,13 @@ async fn tree(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
     Ok(ExitCode::Completed)
 }
 
-async fn export(conway: &Conway, id: &str, out: Option<PathBuf>) -> conway::Result<ExitCode> {
+async fn export(
+    conway: &Conway,
+    id: &str,
+    out: Option<PathBuf>,
+    format: ExportFormat,
+    tool_lines: Option<u32>,
+) -> conway::Result<ExitCode> {
     let names = match load_names(conway) {
         Ok(names) => names,
         Err(code) => return Ok(code),
@@ -713,11 +755,29 @@ async fn export(conway: &Conway, id: &str, out: Option<PathBuf>) -> conway::Resu
     };
     let records: Vec<LogRecord> = handle.transcript(handle.root()).await?;
 
-    let mut buf = String::new();
-    for record in &records {
-        buf.push_str(&serde_json::to_string(record).expect("log record always serializes"));
-        buf.push('\n');
-    }
+    let buf = match format {
+        ExportFormat::Jsonl => {
+            let mut buf = String::new();
+            for record in &records {
+                let line =
+                    serde_json::to_string(record).expect("log record always serializes");
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+            buf
+        }
+        ExportFormat::Markdown => {
+            let entries = crate::tui::state::backfill_entries(&records);
+            let header = crate::session_markdown::Header {
+                session_id: sid,
+                name: names.name_of(sid).map(|n| n.to_string()),
+                models: crate::session_markdown::models_from_records(&records),
+                usage: crate::session_markdown::usage_from_records(&records),
+            };
+            let cap = crate::tui::state::clamp_tool_preview_lines(tool_lines);
+            crate::session_markdown::render(&entries, &header, cap)
+        }
+    };
 
     match out {
         Some(path) => {

@@ -1,0 +1,4 @@
+### Added
+
+- **`conway sessions export --format markdown`** renders a session's transcript as readable Markdown instead of JSONL — a header (session id/name, model(s), cumulative token spend), then user turns, assistant replies, tool calls (output folded to `--tool-lines` lines, default matching `[tui.tool_preview_lines]`), and notices. `--format jsonl` stays the default, unchanged. Tool output and model text are sanitized and fenced so embedded backticks or control characters can never break the rendered Markdown; redaction of sensitive tool output is out of scope, matching every other session-inspection surface.
+- **`/export [<path>]`** in the TUI writes the current session's Markdown transcript to disk — `conway-<short-id>.md` in the current directory by default, or `<path>` if given. Never overwrites an existing file at the resolved path; a notice names it instead.
