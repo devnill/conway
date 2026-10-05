@@ -593,34 +593,7 @@ impl Theme {
             ThemeSetting::Overrides(cfg) => ("system".to_string(), Some(cfg)),
         };
 
-        let mut warning = None;
-        let mut theme = if let Some(preset) = ThemePreset::parse(&preset_name) {
-            Theme::from_preset(preset)
-        } else {
-            match load_custom_theme_file(env, &preset_name) {
-                Ok(Some(cfg)) => Theme::from_config(&cfg),
-                Ok(None) => {
-                    warning = Some(format!(
-                        "[tui.theme] names unknown preset or theme {preset_name:?} \
-                         (expected one of {} or a file at <config dir>/themes/{preset_name}.json) \
-                         -- using the \"system\" default",
-                        ThemePreset::ALL
-                            .iter()
-                            .map(|p| p.name())
-                            .collect::<Vec<_>>()
-                            .join("/"),
-                    ));
-                    Theme::default()
-                }
-                Err(reason) => {
-                    warning = Some(format!(
-                        "custom theme file for {preset_name:?} failed to load ({reason}) -- \
-                         using the \"system\" default"
-                    ));
-                    Theme::default()
-                }
-            }
-        };
+        let (mut theme, warning) = Self::resolve_by_name(&preset_name, env);
         if let Some(cfg) = legacy_overrides {
             theme = theme.overlay(cfg);
         }
@@ -628,6 +601,73 @@ impl Theme {
 
         let no_color_env = env.get("NO_COLOR").map(|v| !v.is_empty()).unwrap_or(false);
         if no_color_env || tui.color == Some(false) {
+            theme = theme.into_no_color();
+        }
+        (theme, warning)
+    }
+
+    /// The base-theme-by-name half of [`Self::resolve`] (a built-in
+    /// [`ThemePreset`] by name, tried first, falling back to a custom theme
+    /// file loaded from `<config dir>/themes/<name>.json`), factored out so
+    /// [`Self::resolve_named`] -- the `/settings → display → theme` cycle's
+    /// own entry point -- can share it exactly rather than re-deriving the
+    /// same unknown-name/malformed-file warning text a second time.
+    fn resolve_by_name(name: &str, env: &HashMap<String, String>) -> (Theme, Option<String>) {
+        if let Some(preset) = ThemePreset::parse(name) {
+            (Theme::from_preset(preset), None)
+        } else {
+            match load_custom_theme_file(env, name) {
+                Ok(Some(cfg)) => (Theme::from_config(&cfg), None),
+                Ok(None) => (
+                    Theme::default(),
+                    Some(format!(
+                        "[tui.theme] names unknown preset or theme {name:?} \
+                         (expected one of {} or a file at <config dir>/themes/{name}.json) \
+                         -- using the \"system\" default",
+                        ThemePreset::ALL
+                            .iter()
+                            .map(|p| p.name())
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    )),
+                ),
+                Err(reason) => (
+                    Theme::default(),
+                    Some(format!(
+                        "custom theme file for {name:?} failed to load ({reason}) -- \
+                         using the \"system\" default"
+                    )),
+                ),
+            }
+        }
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: the `/settings →
+    /// display → theme` row's own entry point (`app/run.rs`'s
+    /// `Action::CycleThemePreset` arm) -- rebuilds a `Theme` for `name`
+    /// (already resolved by [`next_theme_name`]) the same way [`Self::
+    /// resolve`] does for the one `[tui.theme]` names at startup, MINUS the
+    /// legacy object-shape overlay (there is no second, independent
+    /// `[tui.theme]` object to re-apply once the operator has cycled away
+    /// from whatever `[tui.theme]` named at startup -- `overrides` is
+    /// `App::theme_overrides`, seeded once from `[tui.theme_overrides]` and
+    /// otherwise unchanged by cycling, so a `theme_overrides` top-up
+    /// configured at startup still applies to every preset cycled through,
+    /// exactly as it would if the operator had set `tui.theme` to that name
+    /// directly). `force_no_color` is the session's fixed `NO_COLOR`/
+    /// `tui.color` verdict (`App` reads it once, from the theme `App::new`
+    /// already resolved, rather than re-reading the environment on every
+    /// cycle) -- cycling changes the active NAME, never whether color itself
+    /// is allowed.
+    pub fn resolve_named(
+        name: &str,
+        overrides: &ThemeConfig,
+        force_no_color: bool,
+        env: &HashMap<String, String>,
+    ) -> (Theme, Option<String>) {
+        let (mut theme, warning) = Self::resolve_by_name(name, env);
+        theme = theme.overlay(overrides);
+        if force_no_color {
             theme = theme.into_no_color();
         }
         (theme, warning)
@@ -848,11 +888,74 @@ fn palette_for(preset: ThemePreset) -> Palette {
 /// identical shape). `None` only when that function is (no resolvable home
 /// directory and `CONWAY_CONFIG_DIR` unset).
 pub fn custom_theme_path(env: &HashMap<String, String>, name: &str) -> Option<PathBuf> {
-    conway::config::discovery::user_config_path(env).and_then(|settings| {
-        settings
-            .parent()
-            .map(|dir| dir.join("themes").join(format!("{name}.json")))
-    })
+    themes_dir(env).map(|dir| dir.join(format!("{name}.json")))
+}
+
+/// The `<config dir>/themes/` directory itself -- the same directory
+/// [`custom_theme_path`] joins `<name>.json` onto, factored out so
+/// [`custom_theme_names`] can list it without restating the
+/// `user_config_path` resolution.
+fn themes_dir(env: &HashMap<String, String>) -> Option<PathBuf> {
+    conway::config::discovery::user_config_path(env)
+        .and_then(|settings| settings.parent().map(|dir| dir.join("themes")))
+}
+
+/// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: every custom theme
+/// name currently sitting in `<config dir>/themes/` (a `*.json` file's own
+/// stem), sorted alphabetically -- [`next_theme_name`]'s own source for the
+/// `/settings → display → theme` cycle's tail end, after
+/// [`ThemePreset::ALL`]'s six built-ins. A name already claimed by a
+/// built-in preset is skipped: [`Theme::resolve`]/[`Theme::resolve_named`]
+/// both try [`ThemePreset::parse`] FIRST (see that function's own doc), so a
+/// same-named file could never be reached by that name anyway, and listing
+/// it again would render a duplicate, unreachable row in the cycle. Returns
+/// an empty list, never an error, when the directory does not exist or
+/// is not readable -- a missing `themes/` directory is the ordinary case,
+/// not a misconfiguration (config is untrusted input, never a panic).
+pub fn custom_theme_names(env: &HashMap<String, String>) -> Vec<String> {
+    let Some(dir) = themes_dir(env) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                return None;
+            }
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| stem.to_string())
+        })
+        .filter(|name| ThemePreset::parse(name).is_none())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: the `/settings →
+/// display → theme` row's own cycle order -- every [`ThemePreset::ALL`]
+/// name, in that fixed order, followed by every [`custom_theme_names`]
+/// result (alphabetical, re-read fresh on every call, so a theme file added
+/// or removed mid-session takes effect the next time the row cycles) --
+/// wrapping. `current` is matched by exact name; a name no longer in either
+/// list (its custom file was deleted mid-session, say) falls back to index
+/// 0 (`"system"`), the same way [`ThemePreset::next`]'s own `unwrap_or(0)`
+/// degrades for a stale value rather than panicking. Always returns a name
+/// (at minimum `ThemePreset::ALL`'s six built-ins), so the cycle can never
+/// get stuck or run out of names to offer.
+pub fn next_theme_name(current: &str, env: &HashMap<String, String>) -> String {
+    let mut names: Vec<String> = ThemePreset::ALL
+        .iter()
+        .map(|p| p.name().to_string())
+        .collect();
+    names.extend(custom_theme_names(env));
+    let idx = names.iter().position(|n| n == current).unwrap_or(0);
+    names[(idx + 1) % names.len()].clone()
 }
 
 /// Loads `name`'s custom theme file (the per-slot [`ThemeConfig`] shape --
@@ -864,7 +967,10 @@ pub fn custom_theme_path(env: &HashMap<String, String>, name: &str) -> Option<Pa
 /// valid JSON or fails this crate's own `#[serde(deny_unknown_fields)]`
 /// schema -- the same "exists but malformed IS an error" posture
 /// `crate::tui::keybindings::Keymap::load` already established.
-fn load_custom_theme_file(env: &HashMap<String, String>, name: &str) -> Result<Option<ThemeConfig>, String> {
+fn load_custom_theme_file(
+    env: &HashMap<String, String>,
+    name: &str,
+) -> Result<Option<ThemeConfig>, String> {
     let Some(path) = custom_theme_path(env, name) else {
         return Ok(None);
     };
@@ -1630,8 +1736,148 @@ mod tests {
             seen.insert(current);
             current = current.next();
         }
-        assert_eq!(seen.len(), ThemePreset::ALL.len(), "every preset visited exactly once");
-        assert_eq!(current, ThemePreset::System, "the cycle wraps back to the start");
+        assert_eq!(
+            seen.len(),
+            ThemePreset::ALL.len(),
+            "every preset visited exactly once"
+        );
+        assert_eq!(
+            current,
+            ThemePreset::System,
+            "the cycle wraps back to the start"
+        );
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: with no custom
+    /// theme files present, `next_theme_name` cycles through exactly the
+    /// six built-ins, in `ThemePreset::ALL`'s own order, and wraps -- the
+    /// `/settings` row's own cycle, pinned independently of
+    /// `ThemePreset::next` (which this delegates to for the built-in-only
+    /// case, but is never called directly by the row).
+    #[test]
+    fn next_theme_name_cycles_through_every_preset_and_wraps_with_no_custom_themes() {
+        let env = HashMap::new();
+        let mut seen = Vec::new();
+        let mut current = "system".to_string();
+        for _ in 0..ThemePreset::ALL.len() {
+            seen.push(current.clone());
+            current = next_theme_name(&current, &env);
+        }
+        let expected: Vec<String> = ThemePreset::ALL
+            .iter()
+            .map(|p| p.name().to_string())
+            .collect();
+        assert_eq!(seen, expected);
+        assert_eq!(current, "system", "the cycle wraps back to the start");
+    }
+
+    /// A custom theme file in `<config dir>/themes/` extends the cycle past
+    /// the six built-ins, alphabetically, before wrapping back to `system`.
+    #[test]
+    fn next_theme_name_includes_custom_theme_files_after_every_preset() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let themes_dir = config_dir.path().join("themes");
+        std::fs::create_dir_all(&themes_dir).expect("mkdir themes");
+        std::fs::write(themes_dir.join("my-custom.json"), "{}").expect("write custom theme file");
+        std::fs::write(themes_dir.join("another.json"), "{}").expect("write custom theme file");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.path().to_string_lossy().to_string(),
+        );
+
+        // Last built-in (`nord`) advances into the custom names, alpha
+        // order ("another" before "my-custom"), then wraps back to
+        // "system" only after BOTH have been visited.
+        assert_eq!(next_theme_name("nord", &env), "another");
+        assert_eq!(next_theme_name("another", &env), "my-custom");
+        assert_eq!(next_theme_name("my-custom", &env), "system");
+    }
+
+    /// A custom file that happens to share a built-in's own name is never
+    /// listed a second time -- `ThemePreset::parse` already intercepts that
+    /// name first (`Theme::resolve`'s own doc), so a duplicate row would be
+    /// dead weight the cycle could never actually reach by that name.
+    #[test]
+    fn custom_theme_names_skips_a_name_already_claimed_by_a_builtin_preset() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let themes_dir = config_dir.path().join("themes");
+        std::fs::create_dir_all(&themes_dir).expect("mkdir themes");
+        std::fs::write(themes_dir.join("dark.json"), "{}").expect("write shadowed file");
+        std::fs::write(themes_dir.join("my-custom.json"), "{}").expect("write custom theme file");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.path().to_string_lossy().to_string(),
+        );
+
+        assert_eq!(custom_theme_names(&env), vec!["my-custom".to_string()]);
+    }
+
+    /// With no `<config dir>/themes/` directory at all (the ordinary case),
+    /// `custom_theme_names` degrades to empty rather than erroring.
+    #[test]
+    fn custom_theme_names_is_empty_when_the_themes_directory_does_not_exist() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.path().to_string_lossy().to_string(),
+        );
+        assert_eq!(custom_theme_names(&env), Vec::<String>::new());
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up:
+    /// `Theme::resolve_named` -- the cycle's own theme-builder -- overlays
+    /// `theme_overrides` on top of whatever name it is building (the
+    /// `App::theme_overrides` field's own contract: a `[tui.theme_overrides]`
+    /// top-up must survive every cycle, not just the theme `[tui.theme]`
+    /// named at startup).
+    #[test]
+    fn resolve_named_overlays_theme_overrides_on_top_of_the_named_preset() {
+        let overrides = ThemeConfig {
+            notice: Some(fg_only("white")),
+            ..Default::default()
+        };
+        let (theme, warning) = Theme::resolve_named("dark", &overrides, false, &HashMap::new());
+        assert_eq!(warning, None);
+        assert_eq!(theme.notice, Style::default().fg(Color::White));
+        let preset_only = Theme::from_preset(ThemePreset::Dark);
+        assert_eq!(theme.tool_running, preset_only.tool_running);
+    }
+
+    /// `force_no_color` strips color from EVERY preset `resolve_named`
+    /// builds, exactly as `Theme::resolve`'s own `NO_COLOR`/`tui.color`
+    /// handling does -- the `/settings` row's own "the cycle still changes
+    /// the name but colour stays off" contract (`docs/interactive.md`).
+    #[test]
+    fn resolve_named_strips_color_when_forced() {
+        let (theme, _) =
+            Theme::resolve_named("dark", &ThemeConfig::default(), true, &HashMap::new());
+        assert!(!theme.color_enabled);
+        assert_eq!(theme.notice.fg, None);
+    }
+
+    /// End to end: composing `next_theme_name` with `Theme::resolve_named`
+    /// exactly the way `Action::CycleThemePreset`'s `app/run.rs` arm does
+    /// actually changes a rendered slot's color, not just the active name
+    /// -- the `/settings` row's own "cycling advances through presets ...
+    /// the rendered theme changes" acceptance.
+    #[test]
+    fn cycling_the_resolved_name_changes_a_rendered_slots_color() {
+        let (system, _) =
+            Theme::resolve_named("system", &ThemeConfig::default(), false, &HashMap::new());
+        let next_name = next_theme_name("system", &HashMap::new());
+        let (next, _) =
+            Theme::resolve_named(&next_name, &ThemeConfig::default(), false, &HashMap::new());
+
+        assert_ne!(next_name, "system", "the cycle must actually advance");
+        assert_ne!(
+            system.notice, next.notice,
+            "cycling to {next_name:?} must actually change a rendered slot"
+        );
     }
 
     #[test]
@@ -1709,11 +1955,26 @@ mod tests {
         for preset in ThemePreset::ALL {
             let t = Theme::from_preset(preset);
             assert_eq!(t.user.fg, None, "{preset:?}: user must stay uncolored");
-            assert_eq!(t.assistant.fg, None, "{preset:?}: assistant must stay uncolored");
-            assert_eq!(t.border_normal.fg, None, "{preset:?}: border_normal must stay uncolored");
-            assert_eq!(t.focused.fg, None, "{preset:?}: focused must stay uncolored");
-            assert_eq!(t.selected.fg, None, "{preset:?}: selected must stay uncolored");
-            assert_eq!(t.status_mode.fg, None, "{preset:?}: status_mode must stay uncolored");
+            assert_eq!(
+                t.assistant.fg, None,
+                "{preset:?}: assistant must stay uncolored"
+            );
+            assert_eq!(
+                t.border_normal.fg, None,
+                "{preset:?}: border_normal must stay uncolored"
+            );
+            assert_eq!(
+                t.focused.fg, None,
+                "{preset:?}: focused must stay uncolored"
+            );
+            assert_eq!(
+                t.selected.fg, None,
+                "{preset:?}: selected must stay uncolored"
+            );
+            assert_eq!(
+                t.status_mode.fg, None,
+                "{preset:?}: status_mode must stay uncolored"
+            );
         }
     }
 
@@ -1763,7 +2024,8 @@ mod tests {
 
     #[test]
     fn resolve_with_no_config_yields_the_system_default_and_no_warning() {
-        let (theme, warning) = Theme::resolve(&crate::tui::config::TuiSection::default(), &HashMap::new());
+        let (theme, warning) =
+            Theme::resolve(&crate::tui::config::TuiSection::default(), &HashMap::new());
         assert_eq!(theme, Theme::default());
         assert_eq!(warning, None);
     }
@@ -1810,10 +2072,15 @@ mod tests {
         let tui = tui_section_with_theme(ThemeSetting::Preset("my-custom".to_string()));
         let (theme, warning) = Theme::resolve(&tui, &env);
 
-        assert_eq!(warning, None, "a custom theme file that parses must not warn");
+        assert_eq!(
+            warning, None,
+            "a custom theme file that parses must not warn"
+        );
         assert_eq!(
             theme.notice,
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
         );
         // Untouched slots keep the system default -- a custom theme file
         // is an override table, same as `[tui.theme]`'s object shape,
@@ -1838,7 +2105,9 @@ mod tests {
 
         assert_eq!(theme, Theme::default());
         assert!(
-            warning.expect("a malformed custom theme file must warn").contains("broken"),
+            warning
+                .expect("a malformed custom theme file must warn")
+                .contains("broken"),
             "the warning must name the broken file"
         );
     }
@@ -1899,7 +2168,10 @@ mod tests {
         let mut empty_env = HashMap::new();
         empty_env.insert("NO_COLOR".to_string(), String::new());
         let (theme, _) = Theme::resolve(&crate::tui::config::TuiSection::default(), &empty_env);
-        assert!(theme.color_enabled, "an empty NO_COLOR must not disable color");
+        assert!(
+            theme.color_enabled,
+            "an empty NO_COLOR must not disable color"
+        );
         assert_eq!(theme.notice.fg, Some(Color::Cyan));
     }
 
@@ -1959,7 +2231,10 @@ mod tests {
     fn into_no_color_keeps_meaningful_modifiers() {
         let no_color = Theme::default().into_no_color();
         assert!(no_color.selected.add_modifier.contains(Modifier::REVERSED));
-        assert!(no_color.status_mode.add_modifier.contains(Modifier::REVERSED));
+        assert!(no_color
+            .status_mode
+            .add_modifier
+            .contains(Modifier::REVERSED));
         assert!(no_color.focused.add_modifier.contains(Modifier::BOLD));
         assert!(no_color.user.add_modifier.contains(Modifier::BOLD));
     }
@@ -1975,7 +2250,10 @@ mod tests {
             no_color.fatal_error, no_color.emphasized,
             "AUTO-ALLOW must not collapse onto the plan rung's bare BOLD under no-color"
         );
-        assert!(no_color.fatal_error.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(no_color
+            .fatal_error
+            .add_modifier
+            .contains(Modifier::UNDERLINED));
         assert!(no_color.fatal_error.add_modifier.contains(Modifier::BOLD));
     }
 

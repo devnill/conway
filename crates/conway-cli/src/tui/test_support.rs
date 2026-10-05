@@ -202,6 +202,13 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // Cycling the default role is an `App` action with no `AppState`-only
         // effect, so this state-level dispatcher has nothing to do for it.
         | Action::CycleDefaultRole
+        // Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: mirrors
+        // `CycleDefaultRole` immediately above for the identical reason --
+        // `Theme` lives on `App`, not `AppState` (`Action::
+        // CycleThemePreset`'s own doc), so this state-level dispatcher has
+        // nothing to do for it either; it is applied in `app/run.rs`'s run
+        // loop only.
+        | Action::CycleThemePreset
         // Board item `01M1AWGSTD7084VFVGN1GK9AS8`: mirrors `CycleDefaultRole`
         // immediately above for the identical reason -- writing the chain
         // reorder needs a real facade/filesystem context this

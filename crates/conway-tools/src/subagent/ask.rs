@@ -133,7 +133,8 @@ impl Tool for AskTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_ask"),
-            description: "Run a prompt in an ephemeral fork and return the child's full reply text.".into(),
+            description:
+                "Run a prompt in an ephemeral fork and return the child's full reply text.".into(),
             schema: schemars::schema_for!(AskArgs),
             category: ToolCategory::Delegate,
             // The child inherits AT MOST the caller's requested tool set

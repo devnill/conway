@@ -759,8 +759,7 @@ async fn export(
         ExportFormat::Jsonl => {
             let mut buf = String::new();
             for record in &records {
-                let line =
-                    serde_json::to_string(record).expect("log record always serializes");
+                let line = serde_json::to_string(record).expect("log record always serializes");
                 buf.push_str(&line);
                 buf.push('\n');
             }

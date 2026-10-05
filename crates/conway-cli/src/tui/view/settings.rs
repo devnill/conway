@@ -307,6 +307,10 @@ pub(crate) const LEAF_BUSY_INPUT: &str = "busy_input";
 /// Board item `01M1YVJNS575YN5DCQG9BKZR4E`: `Enter` flips `emacs <-> vim`
 /// -- `AppState::toggle_editor_mode`'s own doc.
 pub(crate) const LEAF_EDITOR_MODE: &str = "editor_mode";
+/// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: `Enter` cycles
+/// through every built-in theme preset plus any custom theme file found in
+/// `<config dir>/themes/` -- `input::Action::CycleThemePreset`'s own doc.
+pub(crate) const LEAF_THEME: &str = "theme";
 pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
 /// V2b: cycles `prompt` -> `plan` -> `AUTO-ALLOW` -> `prompt`.
 pub(crate) const LEAF_PERMISSION_MODE: &str = "permission_mode";
@@ -513,6 +517,7 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                 ),
                 MenuNode::leaf(busy_input_label(state.busy_input), LEAF_BUSY_INPUT),
                 MenuNode::leaf(editor_mode_label(state.editor_mode), LEAF_EDITOR_MODE),
+                MenuNode::leaf(theme_label(&state.theme_name), LEAF_THEME),
             ],
         ),
         group_node(
@@ -906,6 +911,19 @@ fn editor_mode_label(mode: crate::tui::state::EditorMode) -> String {
     format!("editor mode -- {name} ({detail}; Enter to toggle; [tui.editor_mode])")
 }
 
+/// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: the `theme` row's own
+/// label, mirroring [`editor_mode_label`]'s shape immediately above --
+/// `name` is `AppState::theme_name`'s own display mirror (a built-in preset
+/// name or a custom theme file's stem), never re-derived here. Session-
+/// only, like every other row in this group -- never written back to
+/// `settings.json` -- so the hint names `[tui.theme]` as what to edit for a
+/// value that should survive a restart, exactly as `[tui.editor_mode]` does
+/// immediately above, rather than implying this row itself persists
+/// anything.
+fn theme_label(name: &str) -> String {
+    format!("theme -- {name} (Enter to cycle; session-only; [tui.theme])")
+}
+
 /// Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: the `/settings` footer's key
 /// hint, built from `Context::Settings`'s CURRENT effective bindings
 /// (`keymap.keys_for`) rather than the hardcoded `[Up/Down] move  [Enter]
@@ -1101,6 +1119,33 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("show reasoning traces") && l.ends_with("off")),
             "a freshly built tree must reflect the CURRENT value, not a stale one: {labels_after:?}"
+        );
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: the `theme` row
+    /// shows `AppState::theme_name`'s own CURRENT value (the display
+    /// mirror `Action::CycleThemePreset`'s `app/run.rs` arm writes), and
+    /// is a selectable leaf (never a static row) under `LEAF_THEME`.
+    #[test]
+    fn theme_row_shows_the_active_theme_name_and_is_a_leaf() {
+        let mut state = AppState::new(AgentId::new());
+        state.theme_name = "gruvbox".to_string();
+
+        let rows = build_tree(&state).rows();
+        let theme_row = rows
+            .iter()
+            .find(|r| r.label.starts_with("theme"))
+            .expect("the theme row must exist");
+        assert!(
+            theme_row.label.contains("gruvbox"),
+            "the row must show the CURRENT theme name: {}",
+            theme_row.label
+        );
+        assert_eq!(
+            theme_row.kind,
+            menu::MenuRowKind::Leaf {
+                id: LEAF_THEME.to_string()
+            }
         );
     }
 

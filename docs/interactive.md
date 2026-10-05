@@ -141,6 +141,16 @@ built-in names first, then this file. An unresolvable name (no built-in,
 no matching file) falls back to `system` with a startup notice naming it
 -- never a refusal to start.
 
+`/settings` → "display" → `theme` cycles through all six built-in presets
+plus any custom theme file found in `<config dir>/themes/` (alphabetical,
+after the six built-ins), wrapping -- the same session-only posture the
+"display" group's other rows (`editor mode`, `busy input`, ...) already
+have: it changes what the REST of this session renders, never
+`settings.json`. Under `NO_COLOR`/`"tui": {"color": false}`, cycling still
+changes the active name shown on the row, but the screen stays
+colorless -- color, once disabled, stays disabled for the rest of the
+session regardless of which theme is active.
+
 **No color.** `NO_COLOR` (set to anything non-empty -- see
 [no-color.org](https://no-color.org)) or `"tui": {"color": false}` renders
 every slot without `fg`/`bg`, keeping modifiers that carry meaning on

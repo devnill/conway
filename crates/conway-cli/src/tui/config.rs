@@ -339,6 +339,19 @@ impl Default for StatusLineConfig {
 /// the object arm's `serde_json::from_value::<ThemeConfig>` failure -- with
 /// `#[serde(deny_unknown_fields)]`'s own specific, field-naming message --
 /// passes straight through untouched.
+// `ThemeConfig` (the `Overrides` variant) is a ~35-field per-slot override
+// table -- genuinely that large because it names one optional override per
+// `Theme` slot (see `ThemeConfig`'s own doc), not accidental bloat clippy's
+// `large_enum_variant` would otherwise flag constructively. `ThemeSetting`
+// is parsed once per process (`crate::tui::config::load`, `App::new`'s own
+// startup path) and never cloned in a loop or stored per-frame, so boxing
+// the large variant purely to shrink the enum's stack footprint would
+// ripple a `Box<ThemeConfig>` deref through `Theme::resolve`/this module's
+// own tests for no runtime benefit -- mirrors this crate's existing
+// `#[allow(clippy::too_many_arguments)]` precedent (`main.rs`,
+// `view/plugins.rs`, `view/transcript.rs`): a narrow, justified allow over a
+// mechanical refactor with no behavioral upside.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(untagged)]
 pub enum ThemeSetting {

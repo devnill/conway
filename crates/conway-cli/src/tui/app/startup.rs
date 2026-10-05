@@ -450,13 +450,27 @@ impl App {
             &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
         );
         if let Some(warning) = theme_warning {
-            state
-                .transcript
-                .push(crate::tui::state::Entry::Error {
-                    text: warning,
-                    fatal: false,
-                });
+            state.transcript.push(crate::tui::state::Entry::Error {
+                text: warning,
+                fatal: false,
+            });
         }
+        // Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: the three
+        // pieces `Action::CycleThemePreset` (`app/run.rs`) needs to rebuild
+        // `theme` later, without re-reading `[tui]` config at cycle time --
+        // see `App::theme_overrides`'s own field doc for why. `theme_name`
+        // mirrors exactly what `tui_config.theme` resolved to (a preset
+        // name, or `"system"` for the legacy per-slot object shape -- the
+        // SAME fallback `Theme::resolve`'s own `ThemeSetting::Overrides`
+        // arm uses), seeded into `state.theme_name` (the row's own display
+        // mirror -- `view/settings.rs::build_tree` has no other way to read
+        // it) right here, once, at startup.
+        let theme_name = match &tui_config.theme {
+            crate::tui::config::ThemeSetting::Preset(name) => name.clone(),
+            crate::tui::config::ThemeSetting::Overrides(_) => "system".to_string(),
+        };
+        state.theme_name = theme_name.clone();
+        let theme_overrides = tui_config.theme_overrides.clone();
         // T3: status-line field order/visibility from `[tui.status_line]`
         // (defaults to the Lean line when absent; unknown field names are
         // dropped at render time -- untrusted input, never a panic).
@@ -982,6 +996,7 @@ impl App {
             state,
             conway: conway.clone(),
             theme,
+            theme_overrides,
             modal_ask_tx,
             modal_ask_rx: Some(modal_ask_rx),
             command_registry,

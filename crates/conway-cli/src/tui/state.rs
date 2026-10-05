@@ -1439,6 +1439,28 @@ pub struct AppState {
     /// editor_mode`'s own module doc for the full CARRY/RESET split against
     /// [`Self::vim`].
     pub editor_mode: EditorMode,
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: the ACTIVE
+    /// theme's own name -- a built-in `crate::tui::view::ThemePreset::name`
+    /// or a custom theme file's stem -- for `view/settings.rs::build_tree`
+    /// to show on the "display" group's `theme` row. This is a DISPLAY
+    /// MIRROR only, the same role [`Self::permission_mode`] plays for the
+    /// permission broker: the actual `Theme` (the resolved colors) lives on
+    /// `App`, not here (`build_tree` takes only `&AppState`, so it has no
+    /// other way to read it -- see `Action::CycleThemePreset`'s own doc for
+    /// why cycling needs this split at all). Seeded at `App::new` from the
+    /// SAME name `[tui.theme]` resolved (`"system"` when absent, matching
+    /// `ThemePreset::System.name()` -- this field intentionally does not
+    /// import `crate::tui::view` to set its own default, since `state.rs`
+    /// sits below `view` in this crate's module layering); the `/settings`
+    /// menu's "display" group cycles it for the rest of THIS session only,
+    /// the same session-only posture [`Self::editor_mode`] immediately above
+    /// already has. CARRIED across `/resume`/`/new`, exactly like
+    /// [`Self::editor_mode`]/[`Self::busy_input`] -- `App::theme` itself
+    /// is untouched by `reset_for_new_session` (it lives outside
+    /// `AppState` entirely), so this mirror would silently go stale if it
+    /// reset to `"system"` while the real theme stayed whatever the
+    /// operator had cycled to.
+    pub theme_name: String,
     /// `busy_input = queue`'s own withheld-message FIFO, tagged with the
     /// `AgentId` each entry was queued FOR -- review round 1's CRITICAL
     /// fix: a bare `String` queue implicitly assumed delivery would always
@@ -2154,6 +2176,7 @@ impl AppState {
             show_timestamps: false,
             busy_input: BusyInputMode::default(),
             editor_mode: EditorMode::default(),
+            theme_name: "system".to_string(),
             held_prompts: VecDeque::new(),
             pending_steers: VecDeque::new(),
             history: VecDeque::new(),
@@ -2386,6 +2409,7 @@ impl AppState {
             show_timestamps,
             busy_input,
             editor_mode,
+            theme_name,
             held_prompts: _,
             pending_steers: _,
             history,
@@ -2458,6 +2482,7 @@ impl AppState {
         self.show_timestamps = show_timestamps;
         self.busy_input = busy_input;
         self.editor_mode = editor_mode;
+        self.theme_name = theme_name;
         self.history = history;
         self.history_cap = history_cap;
         self.plugin_commands = plugin_commands;

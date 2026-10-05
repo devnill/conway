@@ -47,6 +47,7 @@
 //!      [`MIN_REDUCTION_CHARS`] drop from [`BASELINE_TOTAL_CHARS`], a
 //!      stricter aggregate backstop that catches creep even if no single
 //!      tool individually breaches its own budget.
+//!
 //! A future edit may still shrink a tool's wording further (both checks
 //! only cap growth); growing back past either one is the regression this
 //! test exists to catch.

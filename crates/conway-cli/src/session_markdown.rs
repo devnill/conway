@@ -28,15 +28,21 @@
 //! ## Markdown safety
 //!
 //! Tool output and model text are untrusted strings that may contain their
-//! own Markdown fences or raw backticks. [`fenced_block`] counts the
+//! own Markdown fences or raw backticks. `fenced_block` counts the
 //! longest run of consecutive backticks already present in the content and
 //! wraps it in a fence one backtick longer (floor 3) -- a fence the
 //! content's own backtick runs can never prematurely close. Every string
-//! this module writes is also run through [`conway::sanitize_control_chars`]
-//! first, the same control-character sanitizer the TUI's own transcript
-//! render path (`tui/view/transcript.rs`) and the runtime's `rendered` seam
-//! share -- a raw ANSI escape or embedded control byte cannot reach a
-//! pasted Markdown file as a live control byte.
+//! this module writes is also run through `sanitize`, this module's OWN
+//! control-character sanitizer -- NOT [`conway::sanitize_control_chars`]
+//! unchanged, see that function's own doc for the one deliberate
+//! difference: a raw ANSI escape or any other embedded control byte still
+//! cannot reach a pasted Markdown file as a live control byte, but a plain
+//! `\n` is left alone. `conway::sanitize_control_chars`'s own hazard --
+//! a forged control sequence surviving a later paste into a terminal --
+//! never applied to a bare line break at all, and multi-line tool output
+//! (the overwhelmingly common case -- a file listing, a diff, build output)
+//! NEEDS its line breaks to render as more than one visually garbled line
+//! inside a fenced block.
 //!
 //! ## Out of scope
 //!
@@ -103,7 +109,7 @@ pub fn usage_from_records(records: &[LogRecord]) -> Usage {
 /// Renders `entries` (and `header`) as one Markdown document. `tool_lines`
 /// caps a collapsed `Entry::Tool`'s output preview, mirroring the TUI
 /// pane's own `tool_preview_lines` cap/affordance exactly (see
-/// [`fold_lines`]) -- the CLI caller clamps an operator-supplied
+/// `fold_lines`) -- the CLI caller clamps an operator-supplied
 /// `--tool-lines` the same way `tui::state::clamp_tool_preview_lines` does;
 /// the TUI's own `/export` passes `AppState::tool_preview_lines` straight
 /// through, so a hand-adjusted live cap is reflected in the export too.
@@ -133,8 +139,12 @@ fn render_header(header: &Header, out: &mut String) {
         .saturating_add(u.reasoning_tokens);
     out.push_str(&format!(
         "- tokens: {} in / {} out / {} cache-read / {} cache-write / {} reasoning (total {})\n",
-        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
-        u.reasoning_tokens, total,
+        u.input_tokens,
+        u.output_tokens,
+        u.cache_read_tokens,
+        u.cache_write_tokens,
+        u.reasoning_tokens,
+        total,
     ));
     out.push('\n');
 }
@@ -329,8 +339,34 @@ fn fence_len(content: &str) -> usize {
     (longest + 1).max(3)
 }
 
+/// This module's own control-character sanitizer -- deliberately NOT a bare
+/// call to [`conway::sanitize_control_chars`]: that shared sentinel treats a
+/// `\n` as just another `Cc` control character to launder (its own doc: the
+/// single source of truth the permission gate's laundering-recognition and
+/// the runtime's `rendered` seam both depend on, so it must never drift for
+/// EITHER of them), which is correct there -- an embedded newline inside a
+/// single-line shell-command DISPLAY or a permission-pattern match is itself
+/// suspicious -- but wrong here: a session export is a static FILE, written
+/// once, not a live terminal or a pattern-matching input, and this module's
+/// own fenced-code-block output (see this module's own doc, "Markdown
+/// safety") is multi-line by nature (a file listing, a diff, build output).
+/// Replacing every embedded `\n` with a placeholder character would turn
+/// ordinary multi-line tool output into a single garbled line -- this
+/// function keeps `\n` as a real line break and launders every OTHER
+/// control character exactly the shared sentinel would (same replacement
+/// character, `'\u{FFFD}'`, by convention -- not importable here: `conway`
+/// does not re-export `SANITIZED_CONTROL_PLACEHOLDER`, and `conway-core` is
+/// a test-only dependency of this crate, never a production one).
 fn sanitize(text: &str) -> String {
-    conway::sanitize_control_chars(text)
+    text.chars()
+        .map(|c| {
+            if c == '\n' || !c.is_control() {
+                c
+            } else {
+                '\u{FFFD}'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -338,10 +374,10 @@ mod tests {
     use super::*;
     use crate::tui::state::backfill_entries;
     use conway::backend::{ModelId, StopReason};
-    use conway::ModelRef;
     use conway::plugin::ContentBlock;
-    use conway_core::ids::{BackendId, LogSeq};
+    use conway::ModelRef;
     use conway_core::content::ToolResult;
+    use conway_core::ids::{BackendId, LogSeq};
 
     fn ts() -> chrono::DateTime<chrono::Utc> {
         chrono::DateTime::parse_from_rfc3339("2026-09-01T00:00:00Z")
@@ -572,6 +608,16 @@ Found two files: a.txt and b.txt.
         let got = render(&entries, &header, 10);
         assert!(!got.contains('\x1b'), "{got}");
         assert!(got.contains('\u{FFFD}'), "{got}");
+    }
+
+    /// Multi-line user and assistant text keeps its line breaks: `sanitize`
+    /// leaves `\n` alone, so a reply's paragraphs and lists survive export.
+    #[test]
+    fn sessions_export_markdown_multi_line_prose_keeps_its_line_breaks() {
+        let mut out = String::new();
+        push_prose(&mut out, "first line\n\n- a\n- b");
+        assert_eq!(out, "first line\n\n- a\n- b\n\n");
+        assert!(!out.contains('\u{FFFD}'), "{out}");
     }
 
     /// `Entry::QueuedUser` is skipped entirely -- see `render_entry`'s own

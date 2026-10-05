@@ -122,6 +122,27 @@ pub enum Action {
     /// never a separate one, so the app loop's single handling arm covers
     /// either origin identically.
     CyclePermissionMode,
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: `Enter` on the
+    /// `/settings` menu's "display" group `theme` row -- cycles through
+    /// every built-in [`crate::tui::view::ThemePreset`] name plus any custom
+    /// theme file found in `<config dir>/themes/`
+    /// (`crate::tui::view::theme::next_theme_name`'s own order), wrapping.
+    /// Session-only, the same posture [`Action::CyclePermissionMode`]'s own
+    /// doc states for a DISPLAY mirror -- except here there is no broker to
+    /// write at all: `Theme` lives on `App`, not `AppState` (see `App::
+    /// theme`'s own field doc), so unlike every OTHER "display" group
+    /// leaf (`LEAF_SHOW_REASONING`/`LEAF_SHOW_TIMESTAMPS`/`LEAF_BUSY_INPUT`/
+    /// `LEAF_EDITOR_MODE`, all pure `AppState` flips applied directly in
+    /// `activate_settings_selection`) this one MUST round-trip through an
+    /// `Action` the app loop (`app/run.rs`) carries out, exactly as
+    /// `CyclePermissionMode` already must for the same structural reason
+    /// (its own authority, the broker, is likewise not on `AppState`). The
+    /// app loop rebuilds `App::theme` via `crate::tui::view::theme::Theme::
+    /// resolve_named` and refreshes `AppState::theme_name` (the row's own
+    /// display mirror, since `view/settings.rs::build_tree` only ever reads
+    /// `&AppState`) together, so the two can never disagree about which
+    /// theme is active.
+    CycleThemePreset,
     /// V2b: drop every pattern grant and cached allow-always.
     RevokePermissionGrants,
     /// Revoke exactly ONE pattern
@@ -584,6 +605,14 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 // `LEAF_BUSY_INPUT` immediately above -- session-only, no
                 // broker/config write.
                 state.toggle_editor_mode();
+            } else if id == super::view::settings::LEAF_THEME {
+                // Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: UNLIKE
+                // every other "display" group leaf immediately above, this
+                // one cannot be a pure `AppState` flip -- `Theme` lives on
+                // `App`, not `AppState` (see `Action::CycleThemePreset`'s
+                // own doc for why). Mirrors `LEAF_PERMISSION_MODE`'s arm
+                // immediately below for the identical reason.
+                return Some(Action::CycleThemePreset);
             } else if id == super::view::settings::LEAF_PERMISSION_MODE {
                 // V2b: cycles the DISPLAY mirror only. The app loop sees
                 // the returned action and writes the broker, which is the
@@ -2645,7 +2674,7 @@ fn insert_newline(state: &mut AppState) {
 /// Inserts a whole pasted block as ONE edit at the cursor (bracketed
 /// paste, `CEvent::Paste` -- wired from `app.rs`, not through
 /// [`handle_key`], since a paste is not a `KeyEvent`). Lands in the draft
-/// for every `Mode` [`paste_targets_the_draft`] says has one -- see that
+/// for every `Mode` `paste_targets_the_draft` says has one -- see that
 /// function's own doc for the rule, mode by mode. Also swallowed, T7,
 /// while the `/help` overlay is open, for the same reason `handle_help_key`
 /// swallows ordinary keys.
@@ -6443,12 +6472,13 @@ mod tests {
         // this test already walked past ("default role" leaf; "default
         // model" is `MenuNode::Static` and Down skips it); board item
         // `01M1YVHKTQVXJRDSRYT3TCRXFX` added a third row ("busy input") to
-        // "display" itself, and board item `01M1YVJNS575YN5DCQG9BKZR4E`
-        // added a fourth ("editor mode"), right after it: defaults group
-        // (0), default role (1), display group (2), reasoning (3),
-        // timestamps (4), busy input (5), editor mode (6), tool output
-        // group (7), tool preview lines (8).
-        for _ in 0..8 {
+        // "display" itself, board item `01M1YVJNS575YN5DCQG9BKZR4E` added a
+        // fourth ("editor mode") right after it, and board item
+        // `01M1YVX43MABAVX491HQ5ZCC2M`'s follow-up added a fifth ("theme")
+        // after THAT: defaults group (0), default role (1), display group
+        // (2), reasoning (3), timestamps (4), busy input (5), editor mode
+        // (6), theme (7), tool output group (8), tool preview lines (9).
+        for _ in 0..9 {
             handle_key(&mut state, key(KeyCode::Down));
         }
         assert!(
@@ -6570,6 +6600,32 @@ mod tests {
 
         handle_key(&mut state, key(KeyCode::Enter));
         assert_eq!(state.busy_input, crate::tui::state::BusyInputMode::Steer);
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: `Enter` on the
+    /// "theme" row returns `Action::CycleThemePreset` -- UNLIKE
+    /// `enter_on_the_busy_input_row_cycles_the_mode` immediately above, this
+    /// cannot be a pure `AppState` mutation this function makes directly
+    /// (`Theme` lives on `App`, not `AppState` -- `Action::
+    /// CycleThemePreset`'s own doc), so the assertion is on the returned
+    /// `Action`, mirroring `shift_tab_and_the_settings_row_return_the_
+    /// identical_action`'s own shape for `LEAF_PERMISSION_MODE` below.
+    #[test]
+    fn enter_on_the_theme_row_returns_cycle_theme_preset() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+
+        let theme_idx = crate::tui::view::settings::build_tree(&state)
+            .rows()
+            .iter()
+            .position(|r| r.label.starts_with("theme"))
+            .expect("the theme row must exist");
+        state.settings_selected = theme_idx;
+
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Enter)),
+            Action::CycleThemePreset
+        );
     }
 
     /// Acceptance: arrows navigate the menu WHILE it is open.

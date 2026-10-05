@@ -88,8 +88,24 @@ pub struct App {
     /// `[tui.theme]` config (defaults when the key is absent or a value is
     /// malformed -- config is untrusted input) and passed by reference into
     /// `view::draw` every frame. Decision D-T1: threaded as `&Theme`, not
-    /// re-fetched via a call-site accessor or a global `Lazy`.
+    /// re-fetched via a call-site accessor or a global `Lazy`. Board item
+    /// `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: `/settings → display →
+    /// theme`'s `Action::CycleThemePreset` arm (`app/run.rs`) REBUILDS this
+    /// field for the rest of the session -- see [`Self::theme_overrides`]
+    /// for the other two pieces that rebuild needs, and `state::AppState::
+    /// theme_name` for the display mirror `view/settings.rs::build_tree`
+    /// reads instead (this field is unreachable from there -- `build_tree`
+    /// takes only `&AppState`).
     theme: Theme,
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: `[tui.
+    /// theme_overrides]` as loaded at startup, retained so `Action::
+    /// CycleThemePreset` can re-overlay it on top of EVERY preset/custom
+    /// theme cycled through (`crate::tui::view::theme::Theme::
+    /// resolve_named`'s own doc) -- an operator-configured per-slot top-up
+    /// should not silently vanish the first time the theme row is cycled.
+    /// Never written to after startup (cycling changes [`Self::theme`] and
+    /// `AppState::theme_name`, never this).
+    theme_overrides: crate::tui::config::ThemeConfig,
     /// `/ask` (B5) spawns a `tokio::spawn`ed task per question (fork-ask,
     /// then drain the child's single turn to completion via
     /// `TurnHandle::text` -- see [`ask::run_modal_ask`]) rather than folding it
@@ -2024,8 +2040,13 @@ mod tests {
         // deny/prompt sections this test asserts on two rows further down.
         // A taller viewport, not a narrower assertion: the rows this test
         // cares about are still exactly as visible as before, just lower
-        // on an unchanged-width screen.
-        let text = crate::tui::test_support::render_text(&app.state, 200, 56);
+        // on an unchanged-width screen. Board item `01M1YVX43MABAVX491HQ5ZCC2M`,
+        // follow-up: bumped again, 56 to 58 -- the new "theme" row in the
+        // "display" group's own single extra line, for the identical
+        // reason (the modal's own height cap is `transcript_area.height /
+        // CAP_DENOMINATOR` (2), so a one-row content growth needs a
+        // two-row viewport growth to actually raise the cap).
+        let text = crate::tui::test_support::render_text(&app.state, 200, 58);
         for needle in [
             "deny",
             "prompt",

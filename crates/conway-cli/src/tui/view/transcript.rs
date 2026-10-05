@@ -1593,8 +1593,6 @@ mod tests {
     /// hide this" style the test immediately above pins.
     #[test]
     fn security_notice_entry_style_drops_color_under_no_color() {
-        use ratatui::style::Color;
-
         let no_color_theme = Theme::default().into_no_color();
         let lines = entry_lines(
             &Entry::SecurityNotice {
@@ -1608,8 +1606,7 @@ mod tests {
 
         assert_eq!(lines.len(), 1);
         assert_eq!(
-            lines[0].spans[0].style.fg,
-            None,
+            lines[0].spans[0].style.fg, None,
             "NO_COLOR must strip even this unreachable-by-config style's \
              fixed color: {:?}",
             lines[0].spans[0].style

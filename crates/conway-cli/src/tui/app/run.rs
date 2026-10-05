@@ -732,6 +732,53 @@ impl App {
                                     self.conway.set_permission_mode(next);
                                     self.state.permission_mode = next;
                                 }
+                                // Board item `01M1YVX43MABAVX491HQ5ZCC2M`,
+                                // follow-up: rebuilds `self.theme` for the
+                                // next name in `Theme::next_theme_name`'s
+                                // own cycle order -- `self.theme.
+                                // color_enabled` (BEFORE the rebuild) is
+                                // read as the session's fixed NO_COLOR/
+                                // tui.color verdict (`Action::
+                                // CycleThemePreset`'s own doc: cycling
+                                // changes the active NAME, never whether
+                                // color itself is allowed), and `self.
+                                // theme_overrides` (seeded once at startup,
+                                // never mutated by cycling) is re-overlaid
+                                // on top of every name cycled through. The
+                                // display mirror (`AppState::theme_name`,
+                                // the only thing `view/settings.rs::
+                                // build_tree` can read) is written in the
+                                // SAME statement, so the row's label and
+                                // the rendered colors can never disagree
+                                // about which theme is active. A load
+                                // warning (an unresolvable name -- a custom
+                                // theme file deleted mid-session, say) is
+                                // non-fatal, the identical `Entry::Error {
+                                // fatal: false }` channel `App::new`'s own
+                                // startup resolve already uses.
+                                Action::CycleThemePreset => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    let force_no_color = !self.theme.color_enabled;
+                                    let next_name = crate::tui::view::theme::next_theme_name(
+                                        &self.state.theme_name,
+                                        &env_vars,
+                                    );
+                                    let (theme, warning) = crate::tui::view::theme::Theme::resolve_named(
+                                        &next_name,
+                                        &self.theme_overrides,
+                                        force_no_color,
+                                        &env_vars,
+                                    );
+                                    self.theme = theme;
+                                    self.state.theme_name = next_name;
+                                    if let Some(warning) = warning {
+                                        self.state.transcript.push(Entry::Error {
+                                            text: warning,
+                                            fatal: false,
+                                        });
+                                    }
+                                }
                                 Action::RevokePermissionGrants => {
                                     self.conway.revoke_permission_grants();
                                     self.state.permission_grants.clear();
