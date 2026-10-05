@@ -516,6 +516,19 @@ fn bundle(
         // `docs/vision/CATALOGUE.md`), so a fresh operator never gets it
         // unprompted.
         Arc::new(conway_plugin_compaction::CompactionPlugin::new()),
+        // `conway.todo` -- an opt-in task list the model writes and ticks off:
+        // `todo_write` (whole-list replace) and `todo_read`, a compact
+        // `ContextHook` segment near the end of a request whenever the list
+        // is non-empty, a `todo` status-line contribution, and
+        // `/conway.todo.list` for the operator. Needs no constructor
+        // argument -- the same bare footing `conway.trim`/`conway.web`/
+        // `conway.toolindex`/`conway.compaction` immediately above already
+        // take. Opt-in, deliberately NOT in `DEFAULT_OPINION_SET`: a
+        // model-authored plan is a genuine opinion about how an agent should
+        // work, not every task benefits from one, and an operator who never
+        // asked for a visible todo list should not get a new context segment
+        // on every turn unasked -- see `conway_plugin_todo`'s own module doc.
+        Arc::new(conway_plugin_todo::TodoPlugin::new()),
     ]
 }
 

@@ -29,6 +29,7 @@ a summary pointing somewhere else.
 | [`names.md`](names.md) — `conway.names` | What does naming an agent actually change, and how does a name interact with the id and short-id it sits alongside? | You are steering more than a couple of agents by id and want a handle you remember instead. |
 | [`trim.md`](trim.md) — `conway.trim` | What does dropping old tool call/result round-trips actually do, and how do you set the window it drops them by? | You have a long session accumulating context it no longer needs, or you're evaluating what a curator like this one may and may not touch. |
 | [`compaction.md`](compaction.md) — `conway.compaction` | What does the ephemeral tool-result-folding hook actually do, why is it explicitly the weakest form of "compaction", and how do you set `fold_after_turns`? | You want condensing beyond what `conway.trim` drops, or you're evaluating why this entry is deliberately not marketed as "conway has compaction." |
+| [`todo.md`](todo.md) — `conway.todo` | What does `todo_write`/`todo_read` let the model track, where does the rendered list sit in context, and how does the list survive a `--resume`? | You want a long multi-step run to stay on a plan instead of improvising it one turn at a time, or you're evaluating what installing this adds to every request. |
 | [`mcp.md`](mcp.md) — the MCP client | How do I bring an existing MCP server's tools into conway, and what is conway's own MCP client (not server) posture? | You have an MCP server already and want its tools available to the model, or you're evaluating what naming one in `[plugins].mcp` actually trusts. |
 | [`claude-compat.md`](claude-compat.md) — Claude Code plugin compatibility | I have a Claude Code plugin directory already on disk — what does conway actually do with it, and what does it name but not use? | You want to point conway at an existing Claude Code plugin, or you're deciding whether its MCP-only, read-at-runtime scope is enough for what you have. |
 | [`marketplace.md`](marketplace.md) — installing a plugin from a marketplace | How do I fetch a plugin from a marketplace instead of cloning it myself, where does conway put it, and what does the trust ruling say about a fetched artifact? | You want conway to fetch a plugin for you rather than pointing it at a directory you already prepared, or you're evaluating what naming a marketplace URL actually trusts. |
@@ -71,7 +72,7 @@ full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
 
-## Sixteen shipped first-party plugins
+## Seventeen shipped first-party plugins
 
 **The membership rule for this section:** every id
 [`first_party_plugins::bundle()`](../../crates/conway-cli/src/first_party_plugins.rs)
@@ -117,7 +118,7 @@ individually" — the list below decides which plugins ship, which remains a
 separate question from what an operator may configure inside one they
 chose to install.
 
-Sixteen capabilities beyond the mechanism itself now ship, each installable
+Seventeen capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild.
 
 Run `conway plugin list` to see this exact table (`[x]`/`[ ]`, id, and a
@@ -186,6 +187,15 @@ routes` — see [`sessions.md`](../sessions.md) and
   set. `fold_after_turns` is operator-configurable via
   `[plugins.config.conway.compaction]`, the SAME `[plugins.config.<id>]`
   mechanism `conway.trim` already adopted.
+- [`todo.md`](todo.md) — `conway.todo` (`crates/conway-plugin-todo`), a
+  small task list the model writes and ticks off: `todo_write` (whole-list
+  replace) and `todo_read`, a compact `ContextHook` segment appended near
+  the end of a request whenever the list is non-empty, a `todo` status-line
+  contribution, and `/conway.todo.list` for the operator. State is kept per
+  agent and persisted as a system-note record on every `todo_write`, so it
+  survives a `--resume`. NOT in the default opinion set — a model-authored
+  plan is a genuine opinion about how an agent should work, not every task
+  benefits from one.
 - `conway.history` — `/conway.history.rewind <seq>`/`.mask`/`.checkout`:
   forks the calling session at a sequence number, masks a record out of
   future context, or checks out a prior session as the active one. No
@@ -272,7 +282,7 @@ directory the operator already has on disk (no downloading) and translates
 what it can. **Only its MCP server declarations are wired to actually
 run** — everything else it finds (`commands/*.md`, `skills/`, `agents/*.md`,
 most hook events) is named in an operator-visible report, never silently
-imported. Deliberately excluded from the "fifteen shipped first-party plugins"
+imported. Deliberately excluded from the "seventeen shipped first-party plugins"
 count above and from the MCP section immediately above this one: it
 attaches through its own `[plugins].claude_compat[]` config surface,
 resolved by `crates/conway-cli/src/claude_compat_plugins.rs`, a fourth
@@ -290,7 +300,7 @@ describes, pointing at where it landed. Not a fourth import mechanism: an
 installed marketplace plugin is, on disk and in `settings.json`,
 indistinguishable from a directory the operator cloned or typed the path to
 by hand — same entry shape, same read-at-runtime translation, same trust
-footing. Deliberately excluded from the "fifteen shipped first-party plugins"
+footing. Deliberately excluded from the "seventeen shipped first-party plugins"
 count and from both sections immediately above: it writes its own
 `[plugins].claude_compat[]` entry through `crates/conway-cli/src/tui/app/
 marketplace.rs`, not through `first_party_plugins::bundle()`,

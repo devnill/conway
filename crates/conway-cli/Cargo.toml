@@ -246,6 +246,15 @@ conway-plugin-toolindex = { path = "../conway-plugin-toolindex" }
 # bundle doc and `conway-plugin-compaction/src/lib.rs`'s own module doc for
 # the "weakest form of compaction" caveat this entry carries.
 conway-plugin-compaction = { path = "../conway-plugin-compaction" }
+# `conway.todo`: an opt-in task list the model writes and ticks off
+# (`todo_write`/`todo_read`), a compact context segment near the end of the
+# request, a `todo` status-line entry, and `/conway.todo.list`. Resolved
+# through the SAME `[plugins].install`/`src/first_party_plugins.rs` choke
+# point every other tool-contributing entry above uses; NOT installed by
+# default and NOT in `DEFAULT_OPINION_SET` -- see this crate's own
+# `first_party_plugins.rs` bundle doc and
+# `conway-plugin-todo/src/lib.rs`'s own module doc for the opt-in reasoning.
+conway-plugin-todo = { path = "../conway-plugin-todo" }
 clap = { workspace = true, features = ["derive", "env"] }
 # "io-std"/"io-util" (board item 01M1YVWPXWTPZT73R9AK1TVG1M): `oneshot::
 # run_driven`'s `--input-format jsonl` reads stdin line-by-line, async,
