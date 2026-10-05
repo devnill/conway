@@ -748,26 +748,72 @@ pub fn clamp_tool_preview_lines(n: Option<u32>) -> u32 {
 /// return value straight through, in the seq order the store already
 /// resolved it in.
 ///
-/// **Declaration-honesty**: every record kind without a dedicated arm in
-/// `push_record` below still produces exactly one `Entry` -- a dim
-/// placeholder naming the kind (`LogRecord::kind_str`) -- never silently
-/// dropped. See that function's own trailing wildcard arm and
-/// `unknown_record_kind_becomes_a_named_placeholder_not_a_silent_drop`,
-/// below, for the test that catches an implementation which drops it
-/// instead.
+/// **The replay shows what the live transcript showed** (board item
+/// `01M3SJBY8DXDB1PWEAXARZY9FH`, reversing the "declaration-honesty"
+/// placeholder policy this doc used to state here): a record kind with no
+/// dedicated rendering in `push_record` now produces NO entry at all,
+/// exactly like the live TUI's own `AppState::apply` already does for the
+/// identical `Event` kinds -- see `push_record`'s own trailing wildcard
+/// arm for the full reasoning and the dogfood evidence that reversed
+/// this.
+///
+/// **The interrupted-final-turn marker** (same board item): once every
+/// record has been folded into `entries` above, a session whose own LAST
+/// record -- skipping any trailing turn-bookkeeping record
+/// [`is_transcript_silent`] already drops from the replay entirely, since
+/// one of those (most commonly a `ContextReportRecord`, persisted as part
+/// of assembling the very turn that then never got a reply) can genuinely
+/// be the literal last line a hard kill left behind -- is a bare
+/// [`conway::LogRecord::UserTurn`] gets [`INTERRUPTED_TURN_NOTICE`]
+/// appended once more: the hard-kill case, where the process never reached
+/// the graceful-shutdown path that would have persisted an operator-abort
+/// `SystemNote` (`push_record`'s own arm for that record already renders
+/// the identical marker, in place, for that case -- this is its sibling
+/// for when no such record exists at all). A resumed session's last line
+/// must never leave the operator's own final question sitting there with
+/// nothing saying it was cut off.
 pub fn backfill_entries(records: &[conway::LogRecord]) -> Vec<Entry> {
     let mut entries = Vec::new();
     for record in records {
         push_record(&mut entries, record);
     }
+    let last_significant = records.iter().rev().find(|&record| !is_transcript_silent(record));
+    if matches!(last_significant, Some(conway::LogRecord::UserTurn { .. })) {
+        entries.push(Entry::Notice {
+            text: INTERRUPTED_TURN_NOTICE.to_string(),
+        });
+    }
     entries
+}
+
+/// Whether `record`'s own kind is one [`push_record`]'s trailing wildcard
+/// arm drops silently from the replay (a `ContextReportRecord`, or one of
+/// the four pure-bookkeeping kinds its own doc names) -- factored out so
+/// [`backfill_entries`]'s own trailing-record scan (above) can look PAST a
+/// run of these to find the session's actual last CONVERSATIONAL record,
+/// the same way a human skimming the raw log would. Not reusable as a
+/// general "does this produce an entry" predicate for every other kind
+/// `push_record` DOES handle (`Header` also produces no entry, but is
+/// never meaningfully a session's "last" record and is deliberately left
+/// out here) -- this exists for exactly the one caller above.
+fn is_transcript_silent(record: &conway::LogRecord) -> bool {
+    use conway::LogRecord;
+    matches!(
+        record,
+        LogRecord::ContextReportRecord { .. }
+            | LogRecord::ContextMask { .. }
+            | LogRecord::ContextPathSet { .. }
+            | LogRecord::ContextPathNamed { .. }
+            | LogRecord::PermissionDecisionRecord { .. }
+    )
 }
 
 /// One [`backfill_entries`] record. `#[non_exhaustive]` on
 /// `conway::LogRecord` (`conway-core`'s own attribute) means this match
 /// needs a wildcard arm regardless of how many kinds get a dedicated one
-/// below -- exactly the arm the module doc's "declaration-honesty"
-/// paragraph describes.
+/// below -- see that arm's own doc (board item
+/// `01M3SJBY8DXDB1PWEAXARZY9FH` REVERSED the previous "declaration-honesty"
+/// placeholder policy this comment used to describe).
 fn push_record(entries: &mut Vec<Entry>, record: &conway::LogRecord) {
     use conway::LogRecord;
     match record {
@@ -813,6 +859,28 @@ fn push_record(entries: &mut Vec<Entry>, record: &conway::LogRecord) {
         LogRecord::ParentSteer { text, from, .. } => entries.push(Entry::Notice {
             text: format!("parent steer from {from}: {text}"),
         }),
+        // Board item `01M3SJBY8DXDB1PWEAXARZY9FH`: an operator-abort
+        // `SystemNote` (`conway_runtime::agent_loop::AgentLoop::
+        // abort_current_turn`'s own persisted record, reason always the
+        // literal `"turn_aborted_by_operator"` -- matched the same way
+        // `crates/conway/tests/turn_abort.rs` already asserts this record's
+        // shape) gets its OWN clean rendering, not the generic `"{reason}:
+        // {text}"` below: that generic form leaks the internal reason
+        // string and the record's own MODEL-facing phrasing ("Answer with
+        // what you have; your next prompt continues this same session.")
+        // straight onto the operator's screen, which reads as jargon, not
+        // as "your last question was cut off". This is [`backfill_entries`]'s
+        // own interrupted-turn marker -- see [`INTERRUPTED_TURN_NOTICE`]'s
+        // doc -- rendered inline, in log order, wherever this record
+        // actually falls (not only when it is the session's own LAST
+        // record): an abort recorded mid-transcript, with a later prompt
+        // that went on to complete the session, was still every bit as
+        // much an interrupted turn at the moment it happened.
+        LogRecord::SystemNote { reason, .. } if reason == "turn_aborted_by_operator" => {
+            entries.push(Entry::Notice {
+                text: INTERRUPTED_TURN_NOTICE.to_string(),
+            });
+        }
         LogRecord::SystemNote { text, reason, .. } => entries.push(Entry::Notice {
             text: format!("{reason}: {text}"),
         }),
@@ -826,40 +894,76 @@ fn push_record(entries: &mut Vec<Entry>, record: &conway::LogRecord) {
         LogRecord::ChildResultRecord { result, .. } => entries.push(Entry::Notice {
             text: format!("child {} finished: {}", result.agent_id, result.summary),
         }),
-        LogRecord::ContextReportRecord { report, .. } => entries.push(Entry::Notice {
-            text: format!(
-                "context report: {} segments, {} tokens",
-                report.segments.len(),
-                report.total_tokens_est
-            ),
+        // Board item `01M1YVFRPH0DCE8N0DR5BS5BRT`'s own persisted twin of
+        // `Entry::Shell`: an operator-typed `!>` command (the form whose
+        // output WAS sent to the model, the only form ever persisted --
+        // `Entry::Shell::to_model`'s own doc, "the bare `!command` form ...
+        // never admitted to context"). Mirrors `view/transcript.rs`'s live
+        // rendering of the same content exactly, so a replayed `!>` command
+        // reads identically to however it looked when it originally ran.
+        LogRecord::OperatorShellRecord {
+            ts,
+            command,
+            output,
+            exit_code,
+            truncated,
+            ..
+        } => entries.push(Entry::Shell {
+            command: command.clone(),
+            output: output.clone(),
+            exit_code: *exit_code,
+            truncated: *truncated,
+            to_model: true,
+            ts: Some(*ts),
         }),
-        // Declaration-honesty: every OTHER record kind (today:
-        // `ContextMask`/`ContextPathSet`/`ContextPathNamed`/
-        // `PermissionDecisionRecord` -- internal bookkeeping this
-        // transcript pane has no dedicated line for yet, matching
-        // `record_to_event`'s own identical `_ => None` for these same
-        // four) still produces exactly one entry, naming the kind, rather
-        // than vanishing.
-        //
-        // Reuses `Entry::PermissionDecision`'s existing render slot
-        // (the ONE `theme.dim` line `view/transcript.rs::entry_lines`
-        // already has -- this module owns transcript STATE, not the view,
-        // and `view/transcript.rs` was fenced off when this landed;
-        // adding a ninth `Entry` variant would need a matching
-        // arm there). `call_id` is left empty: nothing reads it outside
-        // `AppState::apply_permission_decision`'s own construction path,
-        // which this is not. Disclosed, deliberate reuse of an
-        // existing-but-differently-named variant for its STYLE, not its
-        // semantics -- the text itself always says plainly what it is
-        // ("record not shown"), so a reader who greps for a real
-        // permission audit line and finds one of these is not misled once
-        // they read it.
-        other => entries.push(Entry::PermissionDecision {
-            call_id: String::new(),
-            text: format!("[{} record not shown in the transcript]", other.kind_str()),
-        }),
+        // Board item `01M3SJBY8DXDB1PWEAXARZY9FH` (dogfood round 2):
+        // REVERSES this match's previous "declaration-honesty" policy for
+        // every record kind with no dedicated arm above, now including
+        // `ContextReportRecord` (demoted from its own arm to this one) --
+        // see this function's own module doc, "The replay shows what the
+        // live transcript showed". The live TUI's own `AppState::apply`
+        // never renders ANY of these record kinds' live-event
+        // counterparts into the transcript pane at all (`Event::
+        // ContextReport`/`PermissionDecision`'s own `apply` arms update
+        // side-channel state only -- `context_report`/
+        // `permission_decision_pending` -- never push an `Entry`; there is
+        // no live `Event` for `ContextMask`/`ContextPathSet`/
+        // `ContextPathNamed` at all), so a replayed session showing a `[…
+        // record not shown in the transcript]` placeholder or a `context
+        // report: N segments, M tokens` line for one of these -- exactly
+        // what dogfooding this crate against itself (not merely reading
+        // this doc) first surfaced -- was the replay showing the operator
+        // something the LIVE session never had, not filling in something
+        // backfill owed them. Silently producing nothing here is what
+        // makes the replay match the live transcript it is reconstructing,
+        // not a declaration-honesty regression: a genuinely NEW record
+        // kind this match has not been taught to render yet defaults to
+        // the same "no transcript form" silence `AppState::apply`'s own
+        // trailing `_ => {}` wildcard already gives an unhandled live
+        // `Event` -- see that arm, in `state.rs`, for the identical
+        // precedent this now matches instead of diverging from.
+        _ => {}
     }
 }
+
+/// [`push_record`]'s own interrupted-turn marker text -- pushed for an
+/// operator-abort `SystemNote` (above) and, in [`backfill_entries`] itself,
+/// appended once more when the session's own LAST record is a bare
+/// `LogRecord::UserTurn` with nothing recorded after it at all (a hard kill
+/// that never reached the graceful-shutdown abort path above, so no
+/// `SystemNote` was ever persisted). Deliberately carries no "press Up to
+/// recall it" (or any other resend) hint: [`backfill_entries`] is a pure
+/// `&[LogRecord] -> Vec<Entry>` mapping with no access to `AppState::
+/// history` (the separate, project-scoped input-history FIFO/file `App::
+/// submit` persists to on every SUBMIT, independent of whether the turn
+/// it started ever finished) -- whether `Up` would actually recall this
+/// exact prompt depends on that file's own state (a `--input-format jsonl`
+/// one-shot turn, or one driven by any other non-TUI caller of `Runtime::
+/// prompt`, never touches it at all), which this function cannot see and
+/// must not guess at. A true hint belongs at the layer that HAS that
+/// state (`tui::app::startup`/`tui::commands::apply_resume`), not here --
+/// disclosed as a follow-up, not implemented speculatively.
+const INTERRUPTED_TURN_NOTICE: &str = "this turn was interrupted; it never got a reply";
 
 /// Folds one `LogRecord::Assistant`'s content blocks into `entries`,
 /// mirroring the exact live shape [`AppState::apply`] already builds
@@ -2429,20 +2533,15 @@ mod tests {
         }
     }
 
-    /// Required test: a record kind [`push_record`] has no dedicated arm
-    /// for (`ContextMask`, chosen as a representative -- `record_to_event`
-    /// itself falls back to its own `_ => None` for the identical four
-    /// kinds) still produces exactly one entry, naming the kind -- never
-    /// silently dropped.
-    ///
-    /// Catches a wrong implementation whose wildcard arm is `other => {}`
-    /// (or omits the arm's push): `entries.len()` would be `0`, not `1`.
-    /// Also catches one whose placeholder text does not name which kind was
-    /// unrecognized (a bare `"[unrecognized record]"`, say) -- silent about
-    /// WHAT was dropped is still a form of the same honesty failure this
-    /// item's own acceptance criteria call out.
+    /// Board item `01M3SJBY8DXDB1PWEAXARZY9FH` (reverses the test this one
+    /// replaces, `unknown_record_kind_becomes_a_named_placeholder_not_a_
+    /// silent_drop`): a pure-bookkeeping record kind `push_record` has no
+    /// dedicated arm for (`ContextMask`, same representative the replaced
+    /// test used) produces NO entry at all -- "the replay shows what the
+    /// live transcript showed", and the live transcript never showed one
+    /// of these either.
     #[test]
-    fn unknown_record_kind_becomes_a_named_placeholder_not_a_silent_drop() {
+    fn unrecognized_bookkeeping_record_kind_is_silently_dropped() {
         let records = vec![conway::LogRecord::ContextMask {
             seq: LogSeq(1),
             ts: ts(),
@@ -2454,18 +2553,238 @@ mod tests {
 
         assert_eq!(
             entries.len(),
-            1,
-            "an unrecognized record kind must still produce exactly one entry, never zero: \
-             {entries:#?}"
+            0,
+            "a pure-bookkeeping record kind must produce no transcript entry at all, matching \
+             what the live TUI already showed for it: {entries:#?}"
         );
+    }
+
+    /// The dogfood round 2 complaint's own second symptom: a
+    /// `ContextReportRecord` -- "not conversation" -- is dropped from the
+    /// replay exactly like the bookkeeping kinds above, not rendered as a
+    /// `context report: N segments, M tokens` line.
+    #[test]
+    fn context_report_record_is_dropped_from_the_replay() {
+        let records = vec![conway::LogRecord::ContextReportRecord {
+            seq: LogSeq(0),
+            ts: ts(),
+            report: empty_context_report(),
+        }];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(entries.len(), 0, "{entries:#?}");
+    }
+
+    /// A minimal, valid [`conway::ContextReport`] for the two tests above
+    /// that need ONE to build a `ContextReportRecord` fixture -- the exact
+    /// field set `tui::commands`'s own `context_report_with_tool_registry`
+    /// test helper already builds, with every list left empty since
+    /// nothing here reads the report's own content (`push_record`'s arm
+    /// for this record kind drops it unconditionally).
+    fn empty_context_report() -> conway::ContextReport {
+        conway::ContextReport {
+            agent_id: AgentId::new(),
+            turn: 1,
+            tokenizer: "heuristic-chars4".to_string(),
+            segments: Vec::new(),
+            total_tokens_est: 0,
+            dropped: Vec::new(),
+            curator_failed: None,
+            instruction_fragments: Vec::new(),
+            not_admitted: Vec::new(),
+        }
+    }
+
+    /// A persisted `!>` shell command (`LogRecord::OperatorShellRecord`)
+    /// now gets a real `Entry::Shell`, not the dropped/placeholder
+    /// treatment -- this kind carries genuine operator-authored content a
+    /// silent drop would lose.
+    #[test]
+    fn operator_shell_record_becomes_a_real_shell_entry() {
+        let records = vec![conway::LogRecord::OperatorShellRecord {
+            seq: LogSeq(0),
+            ts: ts(),
+            command: "ls /tmp".to_string(),
+            output: "a.txt\nb.txt".to_string(),
+            exit_code: Some(0),
+            truncated: false,
+        }];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(entries.len(), 1, "{entries:#?}");
         match &entries[0] {
-            Entry::PermissionDecision { text, .. } => {
+            Entry::Shell {
+                command,
+                output,
+                exit_code,
+                truncated,
+                to_model,
+                ..
+            } => {
+                assert_eq!(command, "ls /tmp");
+                assert_eq!(output, "a.txt\nb.txt");
+                assert_eq!(*exit_code, Some(0));
+                assert!(!*truncated);
                 assert!(
-                    text.contains("context_mask"),
-                    "the placeholder must name the record's own kind: {text:?}"
+                    *to_model,
+                    "a persisted operator-shell record is always the `!>` form"
                 );
             }
-            other => panic!("expected a placeholder entry, got {other:?}"),
+            other => panic!("expected Entry::Shell, got {other:?}"),
         }
+    }
+
+    /// Board item `01M3SJBY8DXDB1PWEAXARZY9FH`, criterion 1: an
+    /// operator-abort `SystemNote` (`reason: "turn_aborted_by_operator"`,
+    /// the exact shape `conway_runtime::agent_loop::AgentLoop::
+    /// abort_current_turn` persists) renders the clean interrupted-turn
+    /// marker, not the generic `"{reason}: {text}"` notice every other
+    /// `SystemNote` reason still gets.
+    #[test]
+    fn turn_aborted_by_operator_system_note_renders_the_interrupted_marker() {
+        let records = vec![conway::LogRecord::SystemNote {
+            seq: LogSeq(0),
+            ts: ts(),
+            text: "this turn was ended by the operator (tui quit). Answer with what you have."
+                .to_string(),
+            reason: "turn_aborted_by_operator".to_string(),
+            prov: conway::Provenance::SystemNote {
+                reason: "turn_aborted_by_operator".to_string(),
+            },
+        }];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(entries.len(), 1, "{entries:#?}");
+        assert_eq!(
+            entries[0],
+            Entry::Notice {
+                text: INTERRUPTED_TURN_NOTICE.to_string(),
+            }
+        );
+    }
+
+    /// A `SystemNote` with any OTHER reason is unaffected -- still the
+    /// generic `"{reason}: {text}"` rendering, unchanged from before this
+    /// item.
+    #[test]
+    fn system_note_with_a_different_reason_keeps_the_generic_rendering() {
+        let records = vec![conway::LogRecord::SystemNote {
+            seq: LogSeq(0),
+            ts: ts(),
+            text: "budget warning".to_string(),
+            reason: "budget_warned".to_string(),
+            prov: conway::Provenance::SystemNote {
+                reason: "budget_warned".to_string(),
+            },
+        }];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(
+            entries,
+            vec![Entry::Notice {
+                text: "budget_warned: budget warning".to_string(),
+            }]
+        );
+    }
+
+    /// Criterion 1's OTHER case: a hard kill leaves a bare trailing
+    /// `UserTurn` with nothing recorded after it at all (no graceful-abort
+    /// `SystemNote` -- the process never got the chance). The marker is
+    /// still appended, as the session's own LAST entry.
+    #[test]
+    fn trailing_user_turn_with_no_reply_gets_the_interrupted_marker() {
+        let records = vec![conway::LogRecord::UserTurn {
+            seq: LogSeq(0),
+            ts: ts(),
+            text: "are you still there?".to_string(),
+            prov: conway::Provenance::UserPrompt,
+        }];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(
+            entries,
+            vec![
+                Entry::User("are you still there?".to_string()),
+                Entry::Notice {
+                    text: INTERRUPTED_TURN_NOTICE.to_string(),
+                },
+            ]
+        );
+    }
+
+    /// The marker fires even when a `ContextReportRecord` -- itself
+    /// dropped from the replay -- is the LITERAL last record (context was
+    /// assembled for the turn, then the process died before the backend
+    /// ever replied): the trailing scan must look PAST it to the turn's
+    /// own `UserTurn`, not stop at the first (silently-dropped) record it
+    /// finds.
+    #[test]
+    fn trailing_context_report_does_not_hide_a_trailing_unanswered_user_turn() {
+        let records = vec![
+            conway::LogRecord::UserTurn {
+                seq: LogSeq(0),
+                ts: ts(),
+                text: "are you still there?".to_string(),
+                prov: conway::Provenance::UserPrompt,
+            },
+            conway::LogRecord::ContextReportRecord {
+                seq: LogSeq(1),
+                ts: ts(),
+                report: empty_context_report(),
+            },
+        ];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(
+            entries,
+            vec![
+                Entry::User("are you still there?".to_string()),
+                Entry::Notice {
+                    text: INTERRUPTED_TURN_NOTICE.to_string(),
+                },
+            ]
+        );
+    }
+
+    /// The negative case: an ordinary, answered user turn gets no marker
+    /// at all -- the trailing scan only fires when the session's own last
+    /// significant record really is an unanswered `UserTurn`.
+    #[test]
+    fn an_answered_user_turn_gets_no_interrupted_marker() {
+        let model: conway::ModelRef = "test/echo".parse().expect("valid model ref");
+        let records = vec![
+            conway::LogRecord::UserTurn {
+                seq: LogSeq(0),
+                ts: ts(),
+                text: "hi".to_string(),
+                prov: conway::Provenance::UserPrompt,
+            },
+            conway::LogRecord::Assistant {
+                seq: LogSeq(1),
+                ts: ts(),
+                content: vec![ContentBlock::Text {
+                    text: "hello".to_string(),
+                }],
+                model,
+                route_reason: serde_json::json!({}),
+                usage: conway::Usage::default(),
+                stop: conway::backend::StopReason::EndTurn,
+            },
+        ];
+
+        let entries = backfill_entries(&records);
+
+        assert!(
+            !entries.contains(&Entry::Notice {
+                text: INTERRUPTED_TURN_NOTICE.to_string(),
+            }),
+            "{entries:#?}"
+        );
     }
 }

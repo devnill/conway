@@ -261,7 +261,49 @@ session; passing it to `--resume` instead fails with
 
 `agent_def`/`role`/`cwd` are **not** overridable on resume — they come back
 exactly as the persisted header recorded them; there's no flag or spec
-field to change them on the way back in.
+field to change them on the way back in. (`--role-override`/`--model`
+combined with `--resume`/`--continue` are a different thing: an explicit
+*override*, not a way to edit the header — see
+[Role and model continuity](#role-and-model-continuity) below.)
+
+### Role and model continuity
+
+A resumed session continues on the role (and model pin, if any) it was
+last using — read back from its own persisted header, the same
+`agent_def`/`role`/`cwd` continuity the paragraph above describes.
+Applies to `--continue`, `--resume <id>`, and the TUI's `/resume`: none of
+them silently revert to your *current* default role just because that
+happens to be configured too.
+
+If the role your header recorded is no longer a configured alias — you
+renamed it, or removed its whole `[roles.<name>]` stanza, since this
+session last ran — resuming falls back to your current default role
+instead of failing outright, and says so: a line naming both the stale
+role and the fallback it was replaced with is added to the transcript,
+so you see it on the next backfill, not just in a log file you'd have to
+go dig up.
+
+An explicit `--role-override`/`--model` passed alongside `--resume`/
+`--continue` always wins outright, same as it does for a fresh session —
+see
+[`/model` and `/role`: changing model mid-session](interactive.md#model-and-role-changing-model-mid-session)
+for the live, in-TUI equivalent, which works the same way: the session
+you land on afterward already has its own established role/model, and
+resuming it later continues on THAT, not on whatever the session you
+switched FROM was using.
+
+### A turn that never got a reply
+
+Quitting (or a crash, or a `kill`) while a turn is still in flight can
+leave that turn's own question unanswered in the log — either because the
+operator-initiated abort got recorded (an ordinary `Ctrl-C`/quit, which
+ends the turn cleanly before exiting) or because nothing at all got
+recorded after it (a hard kill, with no chance to do that). Either way,
+the next time this session is resumed or forked from, the transcript
+shows a plain notice marking that final turn as interrupted rather than
+leaving it looking like a question that simply never got answered. The
+underlying prompt itself is not resent automatically — repeat it if it
+still needs an answer.
 
 Three related but distinct ways to get a session handle. `--session` stays
 **one-shot (`-p`) only** — the TUI refuses to start if you pass it (a usage
