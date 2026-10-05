@@ -106,6 +106,14 @@
 //!   misrepresent an unobserved figure as a real zero. See
 //!   `crate::tui::usage_format::cache_suffix`, shared with the turn-end
 //!   summary line.
+//! - `cost` -- **NEW** (board item `01M1YVRS0K284H9QB32ZZW6D5G`): the focused
+//!   agent's cumulative session cost, e.g. `$0.145`, priced from the SAME
+//!   `focused_agent_usage` `tokens` reads, through the one shared
+//!   `conway::turn_cost` computation `conway sessions show --cost` and
+//!   one-shot `--output-format json` also call. Omitted entirely (never a
+//!   placeholder, never a guessed figure) whenever no `price` is configured
+//!   for the focused model's `models.json` entry -- not in the default
+//!   Lean line; an operator opts it in explicitly.
 //! - `activity` -- T2's working indicator: a braille spinner glyph plus the
 //!   activity word plus live elapsed plus new-segment tokens added this
 //!   turn, e.g. `⠋ thinking… 12s · +45 tok`, pulsing through
@@ -302,6 +310,9 @@ enum StatusLineField {
     Model,
     Ctx,
     Tokens,
+    /// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: the focused agent's cumulative
+    /// session cost -- see [`cost_label`]'s own doc.
+    Cost,
     Activity,
     Hint,
     Git,
@@ -324,6 +335,7 @@ impl StatusLineField {
             "model" => Some(Self::Model),
             "ctx" => Some(Self::Ctx),
             "tokens" => Some(Self::Tokens),
+            "cost" => Some(Self::Cost),
             "activity" => Some(Self::Activity),
             "hint" => Some(Self::Hint),
             "git" => Some(Self::Git),
@@ -659,6 +671,10 @@ fn drop_priority(field: StatusLineField) -> u8 {
         StatusLineField::Model => 2,
         StatusLineField::Ctx => 3,
         StatusLineField::Tokens => 4,
+        // Board item `01M1YVRS0K284H9QB32ZZW6D5G`: alongside `tokens` --
+        // both are point-in-time telemetry about the same cumulative
+        // session spend, so they give up space together.
+        StatusLineField::Cost => 4,
         StatusLineField::Session => 5,
         StatusLineField::Lineage => 6,
         StatusLineField::Activity => 7,
@@ -733,6 +749,10 @@ fn field_ladder(
             }
         }
         StatusLineField::Tokens => vec![vec![Span::raw(tokens_label(state))], vec![]],
+        StatusLineField::Cost => match cost_label(state) {
+            Some(text) => vec![vec![Span::raw(text)], vec![]],
+            None => vec![vec![]],
+        },
         StatusLineField::Activity => activity_ladder(state, theme),
         StatusLineField::Hint => hint_ladder(state, theme, lineage_present),
         StatusLineField::Git => match state.git_branch.as_deref() {
@@ -1146,6 +1166,19 @@ fn tokens_label(state: &AppState) -> String {
         state.focused_model_cache_reporting,
     );
     format!("{total} tok{suffix}")
+}
+
+/// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: the `cost` field's text -- the
+/// focused agent's cumulative session cost, the SAME scope `tokens_label`
+/// above reads (`AppState::focused_agent_usage`), priced through the same
+/// shared `conway::turn_cost` `conway sessions show --cost` and one-shot
+/// `--output-format json` also call. `None` (the field renders nothing at
+/// all) whenever no price is configured for the focused model -- GP-14:
+/// never a placeholder, never a guessed figure.
+fn cost_label(state: &AppState) -> Option<String> {
+    let price = state.focused_model_price.as_ref()?;
+    let cost = conway::turn_cost(&state.focused_agent_usage, price)?;
+    Some(cost.format())
 }
 
 /// The `activity` field's ladder (ladder shape added by the
@@ -1663,6 +1696,47 @@ mod tests {
         };
         // 100 + 23 + 2 + 0 + 5
         assert!(status_line(&state).contains("130 tok"));
+    }
+
+    fn status_test_price() -> conway::Price {
+        conway::Price {
+            input_per_mtok: 3.0,
+            output_per_mtok: 15.0,
+            cache_read_per_mtok: None,
+            cache_write_per_mtok: None,
+            currency: "USD".to_string(),
+        }
+    }
+
+    /// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: the `cost` field renders the
+    /// focused agent's cumulative session cost when both it and `fields`
+    /// name `cost` -- it is NOT part of the default Lean line.
+    #[test]
+    fn cost_field_renders_the_focused_agents_cumulative_cost_when_priced() {
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["tokens", "cost"]);
+        state.focused_agent_usage = conway::Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            ..Default::default()
+        };
+        state.focused_model_price = Some(status_test_price());
+        // 1M input tokens @ $3/Mtok = $3.00 (>= $0.01 -> 3 decimals).
+        assert!(status_line(&state).contains("$3.000"));
+    }
+
+    /// No price configured for the focused model -- the `cost` field
+    /// renders nothing at all, even when `fields` names it (GP-14: never a
+    /// placeholder, never a guessed figure).
+    #[test]
+    fn cost_field_is_omitted_without_a_price() {
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["tokens", "cost"]);
+        state.focused_agent_usage = conway::Usage {
+            input_tokens: 1_000_000,
+            ..Default::default()
+        };
+        assert!(!status_line(&state).contains('$'));
     }
 
     #[test]

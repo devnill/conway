@@ -92,6 +92,17 @@ pub enum SessionsAction {
         /// `--json` as an output-shape switch, not an additive flag.
         #[arg(long)]
         diff: bool,
+        /// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: print this session's
+        /// per-turn cost (one line per `LogRecord::Assistant` record) and a
+        /// total broken down by model, using the SAME shared
+        /// `conway::turn_cost` computation the TUI's turn summary and
+        /// one-shot `--output-format json` also call. A model with no
+        /// `price` configured in `models.json` names that explicitly rather
+        /// than being silently omitted or priced as zero. Checked before
+        /// `--diff`/`--json` -- the three are mutually exclusive output
+        /// modes, like `--diff` already is with `--json`.
+        #[arg(long)]
+        cost: bool,
     },
     /// Print a session's fork tree.
     Tree { id: String },
@@ -154,7 +165,12 @@ pub async fn run(args: &SessionsArgs, conway: &Conway) -> conway::Result<ExitCod
         SessionsAction::List { limit, label, json } => {
             list(conway, *limit, label.clone(), *json).await
         }
-        SessionsAction::Show { id, json, diff } => show(conway, id, *json, *diff).await,
+        SessionsAction::Show {
+            id,
+            json,
+            diff,
+            cost,
+        } => show(conway, id, *json, *diff, *cost).await,
         SessionsAction::Tree { id } => tree(conway, id).await,
         SessionsAction::Export {
             id,
@@ -454,7 +470,13 @@ async fn list(
     Ok(ExitCode::Completed)
 }
 
-async fn show(conway: &Conway, id: &str, json: bool, diff: bool) -> conway::Result<ExitCode> {
+async fn show(
+    conway: &Conway,
+    id: &str,
+    json: bool,
+    diff: bool,
+    cost: bool,
+) -> conway::Result<ExitCode> {
     let names = match load_names(conway) {
         Ok(names) => names,
         Err(code) => return Ok(code),
@@ -468,6 +490,12 @@ async fn show(conway: &Conway, id: &str, json: bool, diff: bool) -> conway::Resu
         Err(code) => return Ok(code),
     };
     let records: Vec<LogRecord> = handle.transcript(handle.root()).await?;
+
+    if cost {
+        print_cost_report(&records, conway);
+        let _ = std::io::stdout().flush();
+        return Ok(ExitCode::Completed);
+    }
 
     if diff {
         print_diff_snapshot(&records);
@@ -512,6 +540,123 @@ async fn show(conway: &Conway, id: &str, json: bool, diff: bool) -> conway::Resu
     }
     let _ = std::io::stdout().flush();
     Ok(ExitCode::Completed)
+}
+
+/// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: `--cost`'s per-turn-then-by-model
+/// report -- every `LogRecord::Assistant` record names its own turn's cost
+/// (or, explicitly, that its model has no configured price), then a
+/// per-model subtotal and a grand total. Uses
+/// [`conway::config::model_metadata::ModelMetadata::price_for`]/
+/// [`conway::turn_cost`], the SAME price lookup and cost arithmetic the TUI
+/// turn summary and one-shot `--output-format json` also use -- this surface
+/// can never disagree with either about what a turn cost.
+fn print_cost_report(records: &[LogRecord], conway: &Conway) {
+    for line in cost_report_lines(records, conway.model_metadata()) {
+        println!("{line}");
+    }
+}
+
+/// Pure formatter behind [`print_cost_report`], split out so it is testable
+/// with no real `Conway` at all -- mirrors this module's own
+/// `diff_walk`/`print_diff_snapshot` split for the identical reason.
+///
+/// A model with at least one unpriced turn is named in the total's own
+/// caveat rather than silently folded into it as if it cost nothing (GP-14:
+/// cost is shown only when a price is configured, never guessed).
+fn cost_report_lines(
+    records: &[LogRecord],
+    metadata: &conway::config::model_metadata::ModelMetadata,
+) -> Vec<String> {
+    use conway::Usage;
+
+    struct ModelAgg {
+        turns: usize,
+        usage: Usage,
+    }
+
+    let mut lines = Vec::new();
+    let mut by_model: std::collections::BTreeMap<String, ModelAgg> =
+        std::collections::BTreeMap::new();
+
+    for record in records {
+        let LogRecord::Assistant {
+            seq, model, usage, ..
+        } = record
+        else {
+            continue;
+        };
+        let key = model.to_string();
+        let cost = metadata
+            .price_for(&key)
+            .and_then(|price| conway::turn_cost(usage, price));
+        lines.push(match cost {
+            Some(cost) => format!("#{} {key} {}", seq.0, cost.format()),
+            None => format!("#{} {key} (no price configured)", seq.0),
+        });
+        let agg = by_model.entry(key).or_insert_with(|| ModelAgg {
+            turns: 0,
+            usage: Usage::default(),
+        });
+        agg.turns += 1;
+        agg.usage += *usage;
+    }
+
+    if by_model.is_empty() {
+        lines.push("no assistant turns in this session yet".to_string());
+        return lines;
+    }
+
+    lines.push(String::new());
+    lines.push("by model:".to_string());
+    let mut total: Option<conway::Cost> = None;
+    let mut unpriced_models: Vec<&str> = Vec::new();
+    for (key, agg) in &by_model {
+        let turn_word = if agg.turns == 1 { "turn" } else { "turns" };
+        match metadata
+            .price_for(key)
+            .and_then(|price| conway::turn_cost(&agg.usage, price))
+        {
+            Some(cost) => {
+                lines.push(format!(
+                    "  {key}  {} {turn_word}  {}",
+                    agg.turns,
+                    cost.format()
+                ));
+                total = Some(match total {
+                    Some(running) => conway::Cost {
+                        amount: running.amount + cost.amount,
+                        approximate: running.approximate || cost.approximate,
+                    },
+                    None => cost,
+                });
+            }
+            None => {
+                lines.push(format!(
+                    "  {key}  {} {turn_word}  no price configured",
+                    agg.turns
+                ));
+                unpriced_models.push(key);
+            }
+        }
+    }
+
+    lines.push(String::new());
+    match total {
+        Some(total) if unpriced_models.is_empty() => {
+            lines.push(format!("total: {}", total.format()));
+        }
+        Some(total) => {
+            lines.push(format!(
+                "total: {} (excludes {}, which carries no configured price)",
+                total.format(),
+                unpriced_models.join(", ")
+            ));
+        }
+        None => {
+            lines.push("total: no price configured for any model in this session".to_string());
+        }
+    }
+    lines
 }
 
 /// Board item 01M1YVEJB6GAPST5YZET4KZZE2: prints the SAME cumulative diff
@@ -1200,5 +1345,162 @@ mod tests {
         let truncated = truncate_chars_with_ellipsis(&text, 5);
         assert_eq!(truncated.chars().count(), 5, "4 kept chars + 1 sentinel");
         assert!(truncated.ends_with('…'));
+    }
+
+    // ---- `sessions show --cost` (board item `01M1YVRS0K284H9QB32ZZW6D5G`) ----
+
+    fn assistant_record(seq: u64, backend: &str, model: &str, usage: Usage) -> LogRecord {
+        LogRecord::Assistant {
+            seq: LogSeq(seq),
+            ts: chrono::Utc::now(),
+            content: Vec::new(),
+            model: conway::ModelRef {
+                backend: BackendId::new(backend),
+                model: ModelId::new(model),
+            },
+            route_reason: serde_json::json!({}),
+            usage,
+            stop: StopReason::EndTurn,
+        }
+    }
+
+    fn metadata_with_price(key: &str, price: conway::Price) -> conway::config::model_metadata::ModelMetadata {
+        let mut metadata = conway::config::model_metadata::ModelMetadata::empty();
+        metadata.models.insert(
+            key.to_string(),
+            conway::config::model_metadata::ModelMetadataEntry {
+                max_context_tokens: 200_000,
+                tool_calling: "streaming".to_string(),
+                reasoning: false,
+                reliability_tier: "verified".to_string(),
+                price: Some(price),
+            },
+        );
+        metadata
+    }
+
+    fn cost_fixture_price() -> conway::Price {
+        conway::Price {
+            input_per_mtok: 3.0,
+            output_per_mtok: 15.0,
+            cache_read_per_mtok: None,
+            cache_write_per_mtok: None,
+            currency: "USD".to_string(),
+        }
+    }
+
+    /// Two turns on the same priced model: per-turn lines, then a
+    /// by-model subtotal and a total that match `conway::turn_cost`'s own
+    /// arithmetic over the SUMMED usage, not the sum of the per-turn
+    /// figures (the two happen to agree here, since there is one model).
+    #[test]
+    fn cost_report_lines_prints_per_turn_then_a_total_by_model() {
+        let metadata = metadata_with_price("test/model-a", cost_fixture_price());
+        let records = vec![
+            assistant_record(
+                1,
+                "test",
+                "model-a",
+                Usage {
+                    input_tokens: 1_000_000,
+                    output_tokens: 0,
+                    ..Usage::default()
+                },
+            ),
+            assistant_record(
+                2,
+                "test",
+                "model-a",
+                Usage {
+                    input_tokens: 0,
+                    output_tokens: 1_000_000,
+                    ..Usage::default()
+                },
+            ),
+        ];
+
+        let lines = cost_report_lines(&records, &metadata);
+
+        assert_eq!(lines[0], "#1 test/model-a $3.000");
+        assert_eq!(lines[1], "#2 test/model-a $15.000");
+        assert!(lines.contains(&"by model:".to_string()));
+        assert!(
+            lines.iter().any(|l| l == "  test/model-a  2 turns  $18.000"),
+            "{lines:?}"
+        );
+        assert_eq!(lines.last().unwrap(), "total: $18.000");
+    }
+
+    /// A model with no configured price names that explicitly, on its own
+    /// per-turn line AND in the by-model/total section -- never silently
+    /// priced at zero, never folded into the total as if it cost nothing
+    /// (GP-14).
+    #[test]
+    fn cost_report_lines_names_a_model_with_no_configured_price() {
+        let metadata = conway::config::model_metadata::ModelMetadata::empty();
+        let records = vec![assistant_record(
+            1,
+            "test",
+            "unpriced-model",
+            Usage {
+                input_tokens: 100,
+                ..Usage::default()
+            },
+        )];
+
+        let lines = cost_report_lines(&records, &metadata);
+
+        assert_eq!(lines[0], "#1 test/unpriced-model (no price configured)");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("test/unpriced-model") && l.contains("no price configured")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.last().unwrap(),
+            "total: no price configured for any model in this session"
+        );
+    }
+
+    /// A priced model and an unpriced model in the same session: the total
+    /// covers only the priced model, and names the excluded one rather than
+    /// silently narrowing the total with no sign anything was left out.
+    #[test]
+    fn cost_report_lines_total_excludes_and_names_an_unpriced_model() {
+        let metadata = metadata_with_price("test/model-a", cost_fixture_price());
+        let records = vec![
+            assistant_record(
+                1,
+                "test",
+                "model-a",
+                Usage {
+                    input_tokens: 1_000_000,
+                    ..Usage::default()
+                },
+            ),
+            assistant_record(
+                2,
+                "test",
+                "model-b",
+                Usage {
+                    input_tokens: 500,
+                    ..Usage::default()
+                },
+            ),
+        ];
+
+        let lines = cost_report_lines(&records, &metadata);
+
+        let total = lines.last().unwrap();
+        assert!(total.starts_with("total: $3.000"), "{total}");
+        assert!(total.contains("test/model-b"), "{total}");
+    }
+
+    #[test]
+    fn cost_report_lines_with_no_assistant_turns_says_so() {
+        let metadata = conway::config::model_metadata::ModelMetadata::empty();
+        let lines = cost_report_lines(&[], &metadata);
+        assert_eq!(lines, vec!["no assistant turns in this session yet".to_string()]);
     }
 }

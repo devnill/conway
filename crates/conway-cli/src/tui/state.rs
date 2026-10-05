@@ -1288,6 +1288,18 @@ pub struct AppState {
     /// either way). Reset to `None` on [`Self::focus_agent`], alongside its
     /// `focused_model_max_context*` siblings.
     pub focused_model_cache_reporting: Option<conway::CacheReporting>,
+    /// Board item `01M1YVRS0K284H9QB32ZZW6D5G` (session cost): the focused
+    /// model's configured [`conway::Price`], looked up from
+    /// [`Self::model_prices`] at the same `Event::ModelDecision` site
+    /// `focused_model_max_context`/`focused_model_cache_reporting` are, with
+    /// the identical exact-then-bare-model-id fallback
+    /// `focused_model_max_context` already uses (`models.json` keys a price
+    /// the same way it keys a context window). `None` when no price is
+    /// configured for the focused model -- the turn-summary cost figure and
+    /// the status line's `cost` field are both omitted in that case, never a
+    /// guessed number. Reset to `None` on [`Self::focus_agent`], alongside
+    /// its `focused_model_*` siblings.
+    pub focused_model_price: Option<conway::Price>,
     /// T3: the focused agent's cumulative context-occupancy estimate, the
     /// deduped-by-`SegmentId` sum of every
     /// `Event::ContextSegmentAdded { tokens_est }` observed on the focused
@@ -1401,6 +1413,17 @@ pub struct AppState {
     /// the status line then falls back to the "capability unknown" cache
     /// wording rather than fabricating one.
     pub model_cache_reporting: HashMap<String, conway::CacheReporting>,
+    /// Board item `01M1YVRS0K284H9QB32ZZW6D5G` (session cost): `"backend/model"`
+    /// -> that pair's configured [`conway::Price`], derived once at
+    /// `App::new` directly from `Conway::model_metadata()`'s own entries --
+    /// unlike [`Self::model_max_context`], this does not go through
+    /// `Conway::capability_index()` (a price is not a routing capability),
+    /// it reads `ModelMetadataEntry::price` straight off the loaded
+    /// `models.json`. Empty when no model in `models.json` carries a
+    /// `price`. `apply`'s `ModelDecision` arm looks up the chosen model here
+    /// (exact key, then the bare model id) to set
+    /// [`Self::focused_model_price`].
+    pub model_prices: HashMap<String, conway::Price>,
     /// T4: whether reasoning-trace entries ([`Entry::Reasoning`]) are
     /// rendered in the transcript. Defaults `true` (reasoning EXPANDED by
     /// default) -- the user opts OUT from the `/settings` menu's "show
@@ -2141,6 +2164,7 @@ impl AppState {
             focused_model_max_context: None,
             focused_model_max_context_source: None,
             focused_model_cache_reporting: None,
+            focused_model_price: None,
             focused_ctx_tokens: 0,
             focused_seen_segments: HashSet::new(),
             git_branch: None,
@@ -2150,6 +2174,7 @@ impl AppState {
             model_max_context: HashMap::new(),
             model_max_context_source: HashMap::new(),
             model_cache_reporting: HashMap::new(),
+            model_prices: HashMap::new(),
             show_reasoning: true,
             show_timestamps: false,
             busy_input: BusyInputMode::default(),
@@ -2373,6 +2398,7 @@ impl AppState {
             focused_model_max_context: _,
             focused_model_max_context_source: _,
             focused_model_cache_reporting: _,
+            focused_model_price: _,
             focused_ctx_tokens: _,
             focused_seen_segments: _,
             git_branch,
@@ -2382,6 +2408,7 @@ impl AppState {
             model_max_context,
             model_max_context_source,
             model_cache_reporting,
+            model_prices,
             show_reasoning,
             show_timestamps,
             busy_input,
@@ -2454,6 +2481,7 @@ impl AppState {
         self.model_max_context = model_max_context;
         self.model_max_context_source = model_max_context_source;
         self.model_cache_reporting = model_cache_reporting;
+        self.model_prices = model_prices;
         self.show_reasoning = show_reasoning;
         self.show_timestamps = show_timestamps;
         self.busy_input = busy_input;
@@ -2573,6 +2601,7 @@ impl AppState {
         self.focused_model_max_context = None;
         self.focused_model_max_context_source = None;
         self.focused_model_cache_reporting = None;
+        self.focused_model_price = None;
         self.focused_ctx_tokens = 0;
         self.focused_seen_segments.clear();
     }
@@ -3074,10 +3103,20 @@ impl AppState {
                         .model_cache_reporting
                         .get(chosen.backend.as_str())
                         .copied();
+                    // Board item `01M1YVRS0K284H9QB32ZZW6D5G`: the identical
+                    // exact-then-bare-model-id fallback `max`/`source` above
+                    // already apply -- `models.json` keys a price the same
+                    // way it keys a context window.
+                    let price = self
+                        .model_prices
+                        .get(&name)
+                        .cloned()
+                        .or_else(|| self.model_prices.get(chosen.model.as_str()).cloned());
                     self.focused_model = Some(name);
                     self.focused_model_max_context = max;
                     self.focused_model_max_context_source = source;
                     self.focused_model_cache_reporting = cache_reporting;
+                    self.focused_model_price = price;
 
                     // Board item A1d ("say why a turn fell back"): a
                     // one-line dim notice on the turn itself, not only

@@ -644,6 +644,20 @@ pub async fn run(
         }
     }
 
+    // Board item `01M1YVRS0K284H9QB32ZZW6D5G`: the LAST model this run
+    // actually routed to (`chosen_backend`, reassigned on every root-scoped
+    // `ModelDecision` above) priced against `models.json`, through the SAME
+    // shared `conway::turn_cost` the TUI turn summary and `conway sessions
+    // show --cost` also call. `None` whenever no turn ever routed, or no
+    // price is configured for whichever model did -- `JsonRenderer` (the
+    // only renderer that reads this) then omits `usage.cost` entirely,
+    // never a placeholder.
+    let cost = final_result.as_ref().and_then(|result| {
+        let model_ref = chosen_backend.as_deref()?;
+        let price = conway.model_metadata().price_for(model_ref)?;
+        conway::turn_cost(&result.usage, price)
+    });
+    renderer.set_cost(cost);
     renderer.finish(final_result.as_ref())?;
 
     // Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): the automatic

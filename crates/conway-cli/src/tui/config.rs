@@ -262,8 +262,10 @@ pub enum BusyInputMode {
 /// `["session","lineage","mode","model","ctx","tokens","activity","hint"]`.
 ///
 /// Available field names (see `docs/interactive.md`): `session`,
-/// `lineage`, `mode`, `model`, `ctx`, `tokens`, `activity`, `hint`, `git`,
-/// `cwd`.
+/// `lineage`, `mode`, `model`, `ctx`, `tokens`, `cost`, `activity`, `hint`,
+/// `git`, `cwd`. `cost` (board item `01M1YVRS0K284H9QB32ZZW6D5G`) is omitted
+/// from the default Lean line -- it renders only when an operator both
+/// configures it here AND prices the focused model in `models.json`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct StatusLineConfig {

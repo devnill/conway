@@ -4703,10 +4703,24 @@ fn render_context_summary(
     tool_registry_breakdown: &[ToolRegistryPluginRow],
     state: &mut AppState,
 ) {
+    // Board item `01M1YVRS0K284H9QB32ZZW6D5G`: the estimated cost of the NEXT
+    // request at the CURRENT model -- this turn's own built context size
+    // (`summary.total_tokens`, the same figure the header already names)
+    // times the focused model's configured input price. Always marked `≈`
+    // ([`conway::Price::estimate_input_cost`] never returns anything else):
+    // this is a prediction over today's context size, not an observation of
+    // what a request actually cost. Omitted entirely -- never a guessed
+    // figure -- when no price is configured for the focused model.
+    let cost_suffix = state
+        .focused_model_price
+        .as_ref()
+        .and_then(|price| price.estimate_input_cost(u64::from(summary.total_tokens)))
+        .map(|cost| format!(" · {} next request", cost.format()))
+        .unwrap_or_default();
     notice(
         state,
         format!(
-            "context: {} tok est across {} segment{}",
+            "context: {} tok est across {} segment{}{cost_suffix}",
             format_thousands(summary.total_tokens),
             summary.segment_count,
             if summary.segment_count == 1 { "" } else { "s" },
@@ -12007,6 +12021,84 @@ mod tests {
             lines[4].contains("read") && lines[4].contains("tc_1") && lines[4].contains("60tok"),
             "expected the largest segment's tool and call id: {:?}",
             lines[4]
+        );
+    }
+
+    /// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: `/context`'s header names the
+    /// estimated cost of the NEXT request at the focused model's INPUT
+    /// price, always marked `≈` -- a prediction over today's context size,
+    /// not an observation of a completed request.
+    #[tokio::test]
+    async fn context_header_shows_the_estimated_next_request_cost_when_priced() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.focused_model_price = Some(conway::Price {
+            input_per_mtok: 3.0,
+            output_per_mtok: 15.0,
+            cache_read_per_mtok: None,
+            cache_write_per_mtok: None,
+            currency: "USD".to_string(),
+        });
+        let mut host = FakeHost::new(root);
+        let mut report = report_with(vec![(Provenance::UserPrompt, 1_000_000)]);
+        report.agent_id = root;
+        host.context = Some(report);
+
+        execute(
+            SlashCommand::Context {
+                agent: Some(root.to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let header = state
+            .transcript
+            .iter()
+            .find_map(|e| match e {
+                Entry::Notice { text } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("a header notice was pushed");
+        // 1,000,000 tokens @ $3/Mtok = $3.00, always approximate.
+        assert!(
+            header.contains("≈$3.000 next request"),
+            "expected the estimated next-request cost in the header, got: {header:?}"
+        );
+    }
+
+    /// No price configured for the focused model -- the header carries no
+    /// cost figure at all (GP-14: never a guessed figure).
+    #[tokio::test]
+    async fn context_header_has_no_cost_estimate_without_a_price() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let mut report = report_with(vec![(Provenance::UserPrompt, 1_000_000)]);
+        report.agent_id = root;
+        host.context = Some(report);
+
+        execute(
+            SlashCommand::Context {
+                agent: Some(root.to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let header = state
+            .transcript
+            .iter()
+            .find_map(|e| match e {
+                Entry::Notice { text } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("a header notice was pushed");
+        assert!(
+            !header.contains('$'),
+            "no price configured must mean no cost estimate at all, got: {header:?}"
         );
     }
 
