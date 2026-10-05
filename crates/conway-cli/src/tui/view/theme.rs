@@ -85,10 +85,43 @@
 //! anywhere in `view/*.rs` since the day T4 defined it (grep-verified), so
 //! it was a config key that could be set and would silently do nothing --
 //! the exact failure mode V6 already ruled out for `spinner_b`/`spinner_c`.
+//!
+//! ## Presets, custom themes, and no-color (board item `01M1YVX43MABAVX491HQ5ZCC2M`)
+//!
+//! Before board item `01M1YVX43MABAVX491HQ5ZCC2M`, the only way to get
+//! anything other than the plain ANSI-16 [`Theme::default`] was to restate
+//! every slot you cared about by hand. [`ThemePreset`] adds six named,
+//! built-in color schemes
+//! ([`Theme::from_preset`]); [`Theme::resolve`] is the new top-level entry
+//! point `app/startup.rs` calls instead of [`Theme::from_config`] directly
+//! -- it composes a preset (or a custom theme file, same per-slot shape as
+//! `[tui.theme]`'s object form, loaded from `<config dir>/themes/<name>.json`)
+//! with `[tui.theme_overrides]`/the legacy `[tui.theme]` object shape, then
+//! applies `NO_COLOR`/`tui.color = false` last via [`Theme::into_no_color`].
+//! See `crate::tui::config::ThemeSetting`'s own doc for the config shape
+//! decision and [`Theme::resolve`]'s own doc for the full composition
+//! order.
+//!
+//! **No-color keeps modifiers, strips colors, with one exception.**
+//! [`Theme::into_no_color`] clears every slot's `fg`/`bg` but keeps every
+//! modifier (`BOLD`/`DIM`/`ITALIC`/`REVERSED`/...) -- `selected`
+//! (`Modifier::REVERSED`, the cursor) never had a color to lose, so it
+//! stays exactly as visible as ever. The one exception is
+//! [`Theme::fatal_error`] (the status line's `AUTO-ALLOW` indicator, this
+//! module's own highest-alert accent -- see the V7 note above): stripped
+//! of its `fg`, it would render IDENTICAL to [`Theme::emphasized`] (the
+//! `plan` rung's own style, `BOLD` with no color either), silently
+//! reopening the exact "operator can't tell AUTO-ALLOW from plan" failure
+//! this accent exists to prevent. `into_no_color` adds `Modifier::UNDERLINED`
+//! to `fatal_error` alone to keep that one safety-critical distinction
+//! alive without color.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::tui::config::{ThemeConfig, ThemeStyleConfig};
+use crate::tui::config::{ThemeConfig, ThemeSetting, ThemeStyleConfig, TuiSection};
 
 /// The TUI's named style table -- one [`Style`] per concern, threaded
 /// through `view::draw` and each per-view `draw` fn as `&Theme`.
@@ -253,6 +286,18 @@ pub struct Theme {
     /// pairing for their own diff surfaces) that inventing a different
     /// color for it would cost legibility for no gain.
     pub diff_del: Style,
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: whether this `Theme` was
+    /// built WITH color -- `true` for every preset/`from_config` build
+    /// ([`Theme::default`]/[`Theme::from_preset`]/[`Theme::from_config`]
+    /// all set it `true`); `false` only after [`Theme::into_no_color`],
+    /// which [`Theme::resolve`] applies when `NO_COLOR` (non-empty) or
+    /// `tui.color = false`. Not reachable through [`Theme::overlay`]/
+    /// `[tui.theme]`'s per-slot table at all -- there is no `color_enabled`
+    /// slot in [`ThemeConfig`] for an override to name. Read by
+    /// [`Theme::security_notice_style`] so that style degrades the SAME
+    /// way under `NO_COLOR` as every other slot does, without `[tui.theme]`
+    /// gaining a new way to reach it (see that method's own doc).
+    pub color_enabled: bool,
 }
 
 impl Default for Theme {
@@ -304,81 +349,532 @@ impl Default for Theme {
             help_key: Style::default().add_modifier(Modifier::BOLD),
             diff_add: Style::default().fg(Color::Green),
             diff_del: Style::default().fg(Color::Red),
+            color_enabled: true,
         }
     }
 }
 
 impl Theme {
     /// Builds a [`Theme`] from a loaded `[tui.theme]` config table overlaid
-    /// on the built-in defaults. Each slot's override is applied
-    /// independently; a malformed value (unknown color name, unparseable
-    /// hex, unknown modifier) falls back to that slot's default for the
-    /// affected channel -- never a panic on untrusted config. `None` overrides are
-    /// no-ops, so an empty `ThemeConfig` yields `Theme::default()`.
+    /// on the built-in defaults -- equivalent to `Theme::default().overlay(config)`.
+    /// Each slot's override is applied independently; a malformed value
+    /// (unknown color name, unparseable hex, unknown modifier) falls back
+    /// to that slot's default for the affected channel -- never a panic on
+    /// untrusted config. `None` overrides are no-ops, so an empty
+    /// `ThemeConfig` yields `Theme::default()`.
     pub fn from_config(config: &ThemeConfig) -> Self {
-        let mut theme = Self::default();
-        theme.user = overlay(theme.user, config.user.as_ref());
-        theme.assistant = overlay(theme.assistant, config.assistant.as_ref());
-        theme.assistant_marker = overlay(theme.assistant_marker, config.assistant_marker.as_ref());
-        theme.reasoning = overlay(theme.reasoning, config.reasoning.as_ref());
-        theme.timestamp = overlay(theme.timestamp, config.timestamp.as_ref());
-        theme.tool_proposed = overlay(theme.tool_proposed, config.tool_proposed.as_ref());
-        theme.tool_awaiting = overlay(theme.tool_awaiting, config.tool_awaiting.as_ref());
-        theme.tool_running = overlay(theme.tool_running, config.tool_running.as_ref());
-        theme.tool_done = overlay(theme.tool_done, config.tool_done.as_ref());
-        theme.tool_failed = overlay(theme.tool_failed, config.tool_failed.as_ref());
-        theme.agent_starting = overlay(theme.agent_starting, config.agent_starting.as_ref());
-        theme.agent_running = overlay(theme.agent_running, config.agent_running.as_ref());
-        theme.agent_awaiting = overlay(theme.agent_awaiting, config.agent_awaiting.as_ref());
-        theme.agent_finished = overlay(theme.agent_finished, config.agent_finished.as_ref());
-        theme.agent_failed = overlay(theme.agent_failed, config.agent_failed.as_ref());
-        theme.agent_cancelled = overlay(theme.agent_cancelled, config.agent_cancelled.as_ref());
-        theme.notice = overlay(theme.notice, config.notice.as_ref());
-        theme.error = overlay(theme.error, config.error.as_ref());
-        theme.fatal_error = overlay(theme.fatal_error, config.fatal_error.as_ref());
-        theme.dim = overlay(theme.dim, config.dim.as_ref());
-        theme.focused = overlay(theme.focused, config.focused.as_ref());
-        theme.selected = overlay(theme.selected, config.selected.as_ref());
-        theme.emphasized = overlay(theme.emphasized, config.emphasized.as_ref());
-        theme.border_normal = overlay(theme.border_normal, config.border_normal.as_ref());
-        theme.border_warning = overlay(theme.border_warning, config.border_warning.as_ref());
-        theme.border_danger = overlay(theme.border_danger, config.border_danger.as_ref());
-        theme.border_accent = overlay(theme.border_accent, config.border_accent.as_ref());
-        theme.status_mode = overlay(theme.status_mode, config.status_mode.as_ref());
-        theme.status_dim = overlay(theme.status_dim, config.status_dim.as_ref());
-        theme.spinner = overlay(theme.spinner, config.spinner.as_ref());
-        theme.header = overlay(theme.header, config.header.as_ref());
-        theme.scroll_footer = overlay(theme.scroll_footer, config.scroll_footer.as_ref());
-        theme.help_border = overlay(theme.help_border, config.help_border.as_ref());
-        theme.help_key = overlay(theme.help_key, config.help_key.as_ref());
-        theme.diff_add = overlay(theme.diff_add, config.diff_add.as_ref());
-        theme.diff_del = overlay(theme.diff_del, config.diff_del.as_ref());
+        Self::default().overlay(config)
+    }
+
+    /// Applies `config`'s per-slot overrides on top of `self`, returning a
+    /// new `Theme` -- the general form [`Theme::from_config`] is a
+    /// shorthand for (`Theme::default().overlay(config)`). Board item
+    /// `01M1YVX43MABAVX491HQ5ZCC2M`'s [`Theme::resolve`] is the other
+    /// caller: it overlays onto a PRESET's own built theme rather than the
+    /// plain default, so `[tui.theme_overrides]`/the legacy `[tui.theme]`
+    /// object shape compose on top of whichever preset (or custom theme
+    /// file) is active. Same malformed-value-falls-back-to-the-CURRENT-
+    /// slot's-value posture as `from_config` -- never a panic.
+    pub fn overlay(&self, config: &ThemeConfig) -> Self {
+        let mut theme = self.clone();
+        theme.user = overlay_style(theme.user, config.user.as_ref());
+        theme.assistant = overlay_style(theme.assistant, config.assistant.as_ref());
+        theme.assistant_marker =
+            overlay_style(theme.assistant_marker, config.assistant_marker.as_ref());
+        theme.reasoning = overlay_style(theme.reasoning, config.reasoning.as_ref());
+        theme.timestamp = overlay_style(theme.timestamp, config.timestamp.as_ref());
+        theme.tool_proposed = overlay_style(theme.tool_proposed, config.tool_proposed.as_ref());
+        theme.tool_awaiting = overlay_style(theme.tool_awaiting, config.tool_awaiting.as_ref());
+        theme.tool_running = overlay_style(theme.tool_running, config.tool_running.as_ref());
+        theme.tool_done = overlay_style(theme.tool_done, config.tool_done.as_ref());
+        theme.tool_failed = overlay_style(theme.tool_failed, config.tool_failed.as_ref());
+        theme.agent_starting = overlay_style(theme.agent_starting, config.agent_starting.as_ref());
+        theme.agent_running = overlay_style(theme.agent_running, config.agent_running.as_ref());
+        theme.agent_awaiting = overlay_style(theme.agent_awaiting, config.agent_awaiting.as_ref());
+        theme.agent_finished = overlay_style(theme.agent_finished, config.agent_finished.as_ref());
+        theme.agent_failed = overlay_style(theme.agent_failed, config.agent_failed.as_ref());
+        theme.agent_cancelled =
+            overlay_style(theme.agent_cancelled, config.agent_cancelled.as_ref());
+        theme.notice = overlay_style(theme.notice, config.notice.as_ref());
+        theme.error = overlay_style(theme.error, config.error.as_ref());
+        theme.fatal_error = overlay_style(theme.fatal_error, config.fatal_error.as_ref());
+        theme.dim = overlay_style(theme.dim, config.dim.as_ref());
+        theme.focused = overlay_style(theme.focused, config.focused.as_ref());
+        theme.selected = overlay_style(theme.selected, config.selected.as_ref());
+        theme.emphasized = overlay_style(theme.emphasized, config.emphasized.as_ref());
+        theme.border_normal = overlay_style(theme.border_normal, config.border_normal.as_ref());
+        theme.border_warning = overlay_style(theme.border_warning, config.border_warning.as_ref());
+        theme.border_danger = overlay_style(theme.border_danger, config.border_danger.as_ref());
+        theme.border_accent = overlay_style(theme.border_accent, config.border_accent.as_ref());
+        theme.status_mode = overlay_style(theme.status_mode, config.status_mode.as_ref());
+        theme.status_dim = overlay_style(theme.status_dim, config.status_dim.as_ref());
+        theme.spinner = overlay_style(theme.spinner, config.spinner.as_ref());
+        theme.header = overlay_style(theme.header, config.header.as_ref());
+        theme.scroll_footer = overlay_style(theme.scroll_footer, config.scroll_footer.as_ref());
+        theme.help_border = overlay_style(theme.help_border, config.help_border.as_ref());
+        theme.help_key = overlay_style(theme.help_key, config.help_key.as_ref());
+        theme.diff_add = overlay_style(theme.diff_add, config.diff_add.as_ref());
+        theme.diff_del = overlay_style(theme.diff_del, config.diff_del.as_ref());
         theme
     }
 
     /// Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review): the one
     /// style NO `[tui.theme]` override can ever reach -- deliberately a
-    /// plain function, NOT a [`Theme`] field. Every field on `Theme` is, by
-    /// construction, something [`Theme::from_config`] overlays a
-    /// `ThemeStyleConfig` onto; a field here would just be `theme.error`
-    /// under a different name, reachable by the identical
-    /// `{"error":{"modifiers":["hidden"]}}` an untrusted project
-    /// `settings.json` could otherwise use to hide its own ignore-notice.
-    /// Bypassing `Theme` entirely is what makes that unreachable: nothing
-    /// in `from_config`/`overlay` ever touches this function's return
-    /// value, from ANY config source, trusted or not. Used by `tui::state::
+    /// method with no OTHER input than `self.color_enabled`, not a
+    /// `Theme` field. Every field on `Theme` is, by construction, something
+    /// [`Theme::overlay`]/[`Theme::from_config`] applies a `ThemeStyleConfig`
+    /// onto; a field here would just be `theme.error` under a different
+    /// name, reachable by the identical `{"error":{"modifiers":["hidden"]}}`
+    /// an untrusted project `settings.json` could otherwise use to hide its
+    /// own ignore-notice. Bypassing `Theme`'s own fields entirely is what
+    /// makes that unreachable: nothing in `overlay`/`overlay_style` ever
+    /// touches this method's return value, from ANY `[tui.theme]`/
+    /// `[tui.theme_overrides]` source, trusted or not. Used by `tui::state::
     /// transcript::Entry::SecurityNotice`'s own render arm and
     /// `tui::view::status`'s persistent `project config ignored` marker --
     /// see each one's own doc for why.
+    ///
+    /// **`self.color_enabled` IS read here (board item
+    /// `01M1YVX43MABAVX491HQ5ZCC2M`), and that is a DIFFERENT exposure than
+    /// the one the paragraph above forecloses.** `NO_COLOR`/`tui.color =
+    /// false` are a global, operator/environment-level accessibility
+    /// toggle, never a per-slot `[tui.theme]` value -- there is no
+    /// `color_enabled` key in [`ThemeConfig`] for an untrusted project to
+    /// set, and stripping color never makes text invisible the way the
+    /// `"hidden"` modifier this method exists to resist does. Honoring
+    /// `NO_COLOR` here is the same "every slot renders the same way under
+    /// no-color" guarantee [`Theme::into_no_color`] gives every other slot,
+    /// extended to this one deliberately-unreachable style too.
     ///
     /// Still satisfies this module's own T1 convention (`no_inline_style_
     /// default_fg_color_remains_in_view_files`, below): the inline
     /// `Style::default().fg(Color::…)` construction lives HERE, in
     /// `theme.rs`, the one file that owns style construction -- callers
     /// elsewhere get a `Style` back, they never build one themselves.
-    pub fn security_notice_style() -> Style {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    pub fn security_notice_style(&self) -> Style {
+        let style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+        if self.color_enabled {
+            style
+        } else {
+            strip_color(style)
+        }
     }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: one of [`ThemePreset`]'s
+    /// six built-ins, built directly (never through [`Theme::from_config`]
+    /// -- a preset is not a `[tui.theme]` override table). `System` is
+    /// `Theme::default()` verbatim, so every existing visual-parity test
+    /// above stays true of it unchanged. See [`ThemePreset`]'s own doc for
+    /// what each preset assumes about the terminal's background and why.
+    pub fn from_preset(preset: ThemePreset) -> Self {
+        if preset == ThemePreset::System {
+            return Theme::default();
+        }
+        let p = palette_for(preset);
+        let dim = dim_style(p.dim_base);
+        Theme {
+            user: Style::default().add_modifier(Modifier::BOLD),
+            assistant: Style::default(),
+            assistant_marker: Style::default().fg(p.blocked).add_modifier(Modifier::BOLD),
+            reasoning: dim.add_modifier(Modifier::ITALIC),
+            timestamp: dim,
+            tool_proposed: Style::default().fg(p.secondary),
+            tool_awaiting: Style::default().fg(p.blocked),
+            tool_running: Style::default().fg(p.warning),
+            tool_done: Style::default().fg(p.success),
+            tool_failed: Style::default().fg(p.danger),
+            agent_starting: Style::default().fg(p.secondary),
+            agent_running: Style::default().fg(p.warning),
+            agent_awaiting: Style::default().fg(p.blocked),
+            agent_finished: Style::default().fg(p.success),
+            agent_failed: Style::default().fg(p.danger),
+            agent_cancelled: dim,
+            notice: Style::default().fg(p.info),
+            error: Style::default().fg(p.danger),
+            fatal_error: Style::default().fg(p.danger).add_modifier(Modifier::BOLD),
+            dim,
+            focused: Style::default().add_modifier(Modifier::BOLD),
+            selected: Style::default().add_modifier(Modifier::REVERSED),
+            emphasized: Style::default().add_modifier(Modifier::BOLD),
+            border_normal: Style::default(),
+            border_warning: Style::default().fg(p.warning).add_modifier(Modifier::BOLD),
+            border_danger: Style::default().fg(p.danger).add_modifier(Modifier::BOLD),
+            border_accent: Style::default().fg(p.info).add_modifier(Modifier::BOLD),
+            status_mode: Style::default().add_modifier(Modifier::REVERSED),
+            status_dim: dim,
+            spinner: Style::default().fg(p.warning),
+            header: Style::default().add_modifier(Modifier::REVERSED),
+            scroll_footer: dim,
+            help_border: Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+            help_key: Style::default().add_modifier(Modifier::BOLD),
+            diff_add: Style::default().fg(p.success),
+            diff_del: Style::default().fg(p.danger),
+            color_enabled: true,
+        }
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: `NO_COLOR`/`tui.color =
+    /// false` -- strips every slot's `fg`/`bg`, keeping every modifier (a
+    /// modifier carries meaning on its own: `REVERSED` IS the selection
+    /// highlight, `BOLD` IS the emphasis, independent of color). The one
+    /// exception is [`Theme::fatal_error`] -- see this module's own doc,
+    /// "No-color keeps modifiers, strips colors, with one exception," for
+    /// why it alone gains `Modifier::UNDERLINED` here.
+    pub fn into_no_color(self) -> Theme {
+        Theme {
+            user: strip_color(self.user),
+            assistant: strip_color(self.assistant),
+            assistant_marker: strip_color(self.assistant_marker),
+            reasoning: strip_color(self.reasoning),
+            timestamp: strip_color(self.timestamp),
+            tool_proposed: strip_color(self.tool_proposed),
+            tool_awaiting: strip_color(self.tool_awaiting),
+            tool_running: strip_color(self.tool_running),
+            tool_done: strip_color(self.tool_done),
+            tool_failed: strip_color(self.tool_failed),
+            agent_starting: strip_color(self.agent_starting),
+            agent_running: strip_color(self.agent_running),
+            agent_awaiting: strip_color(self.agent_awaiting),
+            agent_finished: strip_color(self.agent_finished),
+            agent_failed: strip_color(self.agent_failed),
+            agent_cancelled: strip_color(self.agent_cancelled),
+            notice: strip_color(self.notice),
+            error: strip_color(self.error),
+            fatal_error: strip_color(self.fatal_error).add_modifier(Modifier::UNDERLINED),
+            dim: strip_color(self.dim),
+            focused: strip_color(self.focused),
+            selected: strip_color(self.selected),
+            emphasized: strip_color(self.emphasized),
+            border_normal: strip_color(self.border_normal),
+            border_warning: strip_color(self.border_warning),
+            border_danger: strip_color(self.border_danger),
+            border_accent: strip_color(self.border_accent),
+            status_mode: strip_color(self.status_mode),
+            status_dim: strip_color(self.status_dim),
+            spinner: strip_color(self.spinner),
+            header: strip_color(self.header),
+            scroll_footer: strip_color(self.scroll_footer),
+            help_border: strip_color(self.help_border),
+            help_key: strip_color(self.help_key),
+            diff_add: strip_color(self.diff_add),
+            diff_del: strip_color(self.diff_del),
+            color_enabled: false,
+        }
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: the ONE place preset
+    /// selection, custom-theme-file loading, per-slot overrides (both the
+    /// legacy `[tui.theme]` object shape and the new `[tui.theme_overrides]`
+    /// sibling), and `NO_COLOR`/`tui.color` color-disabling all compose.
+    /// `app/startup.rs` calls this instead of [`Theme::from_config`]
+    /// directly.
+    ///
+    /// **Composition order:** (1) resolve `tui.theme` to a base `Theme` --
+    /// a built-in [`ThemePreset`] by name, a custom theme file loaded from
+    /// `<config dir>/themes/<name>.json` by the SAME name, or (the legacy
+    /// shape) [`Theme::default`] when `tui.theme` is already the per-slot
+    /// object; (2) if `tui.theme` WAS that legacy object, overlay it; (3)
+    /// overlay `tui.theme_overrides` (applies in both cases -- a preset's
+    /// own per-slot top-up, or a second pass over the legacy shape, which
+    /// is a harmless no-op for every existing config since nothing wrote
+    /// `theme_overrides` before this board item); (4) strip color
+    /// entirely if `NO_COLOR` (non-empty) or `tui.color == Some(false)`.
+    ///
+    /// Returns the built theme and an optional load warning -- an unknown
+    /// preset/custom-theme name, or a custom theme file that exists but
+    /// fails to parse -- for the caller to surface via `Entry::Error {
+    /// fatal: false }`, mirroring `crate::tui::keybindings::Keymap::load`'s
+    /// own "exists but malformed fails loudly, missing/unresolvable
+    /// degrades quietly to a default" posture. Never a startup failure --
+    /// config, including the environment, is always untrusted input here.
+    pub fn resolve(tui: &TuiSection, env: &HashMap<String, String>) -> (Theme, Option<String>) {
+        let (preset_name, legacy_overrides): (String, Option<&ThemeConfig>) = match &tui.theme {
+            ThemeSetting::Preset(name) => (name.clone(), None),
+            ThemeSetting::Overrides(cfg) => ("system".to_string(), Some(cfg)),
+        };
+
+        let mut warning = None;
+        let mut theme = if let Some(preset) = ThemePreset::parse(&preset_name) {
+            Theme::from_preset(preset)
+        } else {
+            match load_custom_theme_file(env, &preset_name) {
+                Ok(Some(cfg)) => Theme::from_config(&cfg),
+                Ok(None) => {
+                    warning = Some(format!(
+                        "[tui.theme] names unknown preset or theme {preset_name:?} \
+                         (expected one of {} or a file at <config dir>/themes/{preset_name}.json) \
+                         -- using the \"system\" default",
+                        ThemePreset::ALL
+                            .iter()
+                            .map(|p| p.name())
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    ));
+                    Theme::default()
+                }
+                Err(reason) => {
+                    warning = Some(format!(
+                        "custom theme file for {preset_name:?} failed to load ({reason}) -- \
+                         using the \"system\" default"
+                    ));
+                    Theme::default()
+                }
+            }
+        };
+        if let Some(cfg) = legacy_overrides {
+            theme = theme.overlay(cfg);
+        }
+        theme = theme.overlay(&tui.theme_overrides);
+
+        let no_color_env = env.get("NO_COLOR").map(|v| !v.is_empty()).unwrap_or(false);
+        if no_color_env || tui.color == Some(false) {
+            theme = theme.into_no_color();
+        }
+        (theme, warning)
+    }
+}
+
+/// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: clears `fg`/`bg`, keeping
+/// every modifier -- the one shared primitive [`Theme::into_no_color`]/
+/// [`Theme::security_notice_style`] both apply per-slot. Never touches
+/// `add_modifier`/`sub_modifier`, so `BOLD`/`DIM`/`ITALIC`/`REVERSED`
+/// survive untouched.
+fn strip_color(style: Style) -> Style {
+    Style {
+        fg: None,
+        bg: None,
+        ..style
+    }
+}
+
+/// One built-in color scheme `[tui.theme]` can select by name (the string
+/// shape) -- see [`Theme::from_preset`] for how each maps onto every named
+/// style, and `crate::tui::config::ThemeSetting` for the config shape that
+/// carries this name (or a custom theme file's name instead --
+/// [`Theme::resolve`] is where the two are told apart: a name matching one
+/// of these six wins; anything else is tried as a custom theme file).
+///
+/// **`System` is the default** (`[tui.theme]` absent, or set to the
+/// literal string `"system"`): it is [`Theme::default`] verbatim -- the
+/// plain ANSI-16 color names this module already used before this board
+/// item, so an unconfigured TUI still renders identically and still lets
+/// the TERMINAL's own palette decide light vs. dark, exactly as it always
+/// has. `Dark`/`Light` assume a literal dark/light terminal background and
+/// pick concrete RGB accents calibrated for legibility against it
+/// (`System` cannot do this -- an ANSI name's actual RGB is whatever the
+/// terminal emulator's own palette maps it to, which is the entire point
+/// of letting the terminal decide). The remaining three are well-known
+/// third-party color schemes, picked for name recognition over a
+/// from-scratch palette: `SolarizedDark` (Solarized's dark variant),
+/// `Gruvbox` (its dark variant, using its own "bright" accent set for
+/// contrast against a dark background), `Nord`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ThemePreset {
+    System,
+    Dark,
+    Light,
+    SolarizedDark,
+    Gruvbox,
+    Nord,
+}
+
+impl ThemePreset {
+    /// Every built-in preset, in [`Self::next`]'s own cycle order.
+    pub const ALL: [ThemePreset; 6] = [
+        ThemePreset::System,
+        ThemePreset::Dark,
+        ThemePreset::Light,
+        ThemePreset::SolarizedDark,
+        ThemePreset::Gruvbox,
+        ThemePreset::Nord,
+    ];
+
+    /// The config-facing name `[tui.theme]`/`CONWAY_TUI__THEME` matches
+    /// against, exact and lowercase -- `snake_case`, matching every other
+    /// string-valued config vocabulary in this crate (`EditorMode`'s
+    /// `"emacs"`/`"vim"`, `BusyInputMode`'s `"queue"`/`"steer"`/
+    /// `"interrupt"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            ThemePreset::System => "system",
+            ThemePreset::Dark => "dark",
+            ThemePreset::Light => "light",
+            ThemePreset::SolarizedDark => "solarized_dark",
+            ThemePreset::Gruvbox => "gruvbox",
+            ThemePreset::Nord => "nord",
+        }
+    }
+
+    /// The built-in preset named `raw`, exact (case-sensitive, matching
+    /// [`Self::name`]'s own lowercase `snake_case`) -- `None` for anything
+    /// else, including a custom theme's own name ([`Theme::resolve`] tries
+    /// this FIRST and falls back to a custom theme file only when it
+    /// returns `None`, never a panic either way).
+    pub fn parse(raw: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.name() == raw)
+    }
+
+    /// The next preset in [`Self::ALL`]'s own order, wrapping --
+    /// `System -> Dark -> Light -> SolarizedDark -> Gruvbox -> Nord ->
+    /// System`. Pure and total (every variant has a successor), so cycling
+    /// can never get stuck or panic regardless of which preset is current.
+    pub fn next(self) -> Self {
+        let idx = Self::ALL.iter().position(|p| *p == self).unwrap_or(0);
+        Self::ALL[(idx + 1) % Self::ALL.len()]
+    }
+}
+
+/// The handful of semantic colors [`Theme::from_preset`] maps onto every
+/// named style, for ONE preset -- keeps each preset's definition to "name
+/// its danger/warning/blocked/success/info/accent/secondary color plus its
+/// dim-annotation base" instead of restating all ~30 slot assignments per
+/// preset. Matches this module's own V7 "what each color MEANS" rule
+/// (module-level doc, above): `danger` is every red slot, `warning` every
+/// yellow, `blocked` every magenta, `success` every green, `info` every
+/// cyan (`notice`/`border_accent`), `accent` is `help_border`'s own blue,
+/// `secondary` is the gray `tool_proposed`/`agent_starting` pending-state
+/// color.
+struct Palette {
+    danger: Color,
+    warning: Color,
+    blocked: Color,
+    success: Color,
+    info: Color,
+    accent: Color,
+    secondary: Color,
+    dim_base: DimBase,
+}
+
+/// The base style for every "secondary/annotation" slot (`dim`/
+/// `timestamp`/`agent_cancelled`/`status_dim`/`scroll_footer`, and
+/// `reasoning` with `Modifier::ITALIC` added on top) -- see
+/// [`dim_style`]'s own doc for how each resolves to a concrete [`Style`].
+#[derive(Clone, Copy)]
+enum DimBase {
+    /// `System`/dark-background presets: a bare `Modifier::DIM`, matching
+    /// this module's own V7 "never a fixed dark color" rule (module-level
+    /// doc) -- a RELATIVE dimming of the terminal's own foreground stays
+    /// legible against a dark background.
+    Modifier,
+    /// `Light`: an explicit mid-gray `fg` instead. `Modifier::DIM`'s
+    /// relative dimming is calibrated for a dark background (V7's own
+    /// rule, immediately above) and is not guaranteed legible against a
+    /// LIGHT one -- a light terminal's own foreground is already dark, and
+    /// "dim" rendering of an already-dark color can land anywhere from
+    /// "slightly lighter" to "unreadably close to white," entirely at the
+    /// terminal emulator's own discretion. An explicit color sidesteps
+    /// that uncertainty the same way every other named-color slot already
+    /// does.
+    Fg(Color),
+}
+
+fn dim_style(base: DimBase) -> Style {
+    match base {
+        DimBase::Modifier => Style::default().add_modifier(Modifier::DIM),
+        DimBase::Fg(color) => Style::default().fg(color),
+    }
+}
+
+/// [`Theme::from_preset`]'s own palette table -- one [`Palette`] per
+/// [`ThemePreset`] other than `System` (which shortcuts to
+/// [`Theme::default`] before ever calling this). RGB values are each
+/// preset's own well-known accent set (Solarized/Gruvbox/Nord each
+/// publish one); `Dark`/`Light` are hand-picked for legibility against an
+/// assumed dark/light terminal background -- see [`ThemePreset`]'s own
+/// doc.
+fn palette_for(preset: ThemePreset) -> Palette {
+    match preset {
+        ThemePreset::System => unreachable!(
+            "Theme::from_preset returns Theme::default() for System before calling this"
+        ),
+        ThemePreset::Dark => Palette {
+            danger: Color::Rgb(0xe0, 0x6c, 0x75),
+            warning: Color::Rgb(0xe5, 0xc0, 0x7b),
+            blocked: Color::Rgb(0xc6, 0x78, 0xdd),
+            success: Color::Rgb(0x98, 0xc3, 0x79),
+            info: Color::Rgb(0x56, 0xb6, 0xc2),
+            accent: Color::Rgb(0x61, 0xaf, 0xef),
+            secondary: Color::Rgb(0x9d, 0xa5, 0xb4),
+            dim_base: DimBase::Modifier,
+        },
+        ThemePreset::Light => Palette {
+            danger: Color::Rgb(0xc4, 0x1a, 0x1a),
+            warning: Color::Rgb(0x9a, 0x67, 0x00),
+            blocked: Color::Rgb(0x8f, 0x3f, 0x8f),
+            success: Color::Rgb(0x1e, 0x7d, 0x32),
+            info: Color::Rgb(0x0b, 0x72, 0x85),
+            accent: Color::Rgb(0x1a, 0x56, 0xb0),
+            secondary: Color::Rgb(0x5a, 0x5a, 0x5a),
+            dim_base: DimBase::Fg(Color::Rgb(0x6e, 0x6e, 0x6e)),
+        },
+        ThemePreset::SolarizedDark => Palette {
+            danger: Color::Rgb(0xdc, 0x32, 0x2f),
+            warning: Color::Rgb(0xb5, 0x89, 0x00),
+            blocked: Color::Rgb(0xd3, 0x36, 0x82),
+            success: Color::Rgb(0x85, 0x99, 0x00),
+            info: Color::Rgb(0x2a, 0xa1, 0x98),
+            accent: Color::Rgb(0x26, 0x8b, 0xd2),
+            secondary: Color::Rgb(0x58, 0x6e, 0x75),
+            dim_base: DimBase::Modifier,
+        },
+        ThemePreset::Gruvbox => Palette {
+            danger: Color::Rgb(0xfb, 0x49, 0x34),
+            warning: Color::Rgb(0xfa, 0xbd, 0x2f),
+            blocked: Color::Rgb(0xd3, 0x86, 0x9b),
+            success: Color::Rgb(0xb8, 0xbb, 0x26),
+            info: Color::Rgb(0x8e, 0xc0, 0x7c),
+            accent: Color::Rgb(0x83, 0xa5, 0x98),
+            secondary: Color::Rgb(0xa8, 0x99, 0x84),
+            dim_base: DimBase::Modifier,
+        },
+        ThemePreset::Nord => Palette {
+            danger: Color::Rgb(0xbf, 0x61, 0x6a),
+            warning: Color::Rgb(0xeb, 0xcb, 0x8b),
+            blocked: Color::Rgb(0xb4, 0x8e, 0xad),
+            success: Color::Rgb(0xa3, 0xbe, 0x8c),
+            info: Color::Rgb(0x88, 0xc0, 0xd0),
+            accent: Color::Rgb(0x81, 0xa1, 0xc1),
+            secondary: Color::Rgb(0x4c, 0x56, 0x6a),
+            dim_base: DimBase::Modifier,
+        },
+    }
+}
+
+/// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: `<config dir>/themes/<name>.json`
+/// -- the custom-theme file path for `name` (same directory
+/// `conway::config::discovery::user_config_path` resolves `settings.json`
+/// into, so `CONWAY_CONFIG_DIR` relocates it exactly as it relocates
+/// `history`/`keybindings.json` -- see those two resolvers' own doc for the
+/// identical shape). `None` only when that function is (no resolvable home
+/// directory and `CONWAY_CONFIG_DIR` unset).
+pub fn custom_theme_path(env: &HashMap<String, String>, name: &str) -> Option<PathBuf> {
+    conway::config::discovery::user_config_path(env).and_then(|settings| {
+        settings
+            .parent()
+            .map(|dir| dir.join("themes").join(format!("{name}.json")))
+    })
+}
+
+/// Loads `name`'s custom theme file (the per-slot [`ThemeConfig`] shape --
+/// one schema for "override some slots," whether it arrived inline in
+/// `settings.json` or as its own file). `Ok(None)` means the file does not
+/// exist (or [`custom_theme_path`] itself returned `None`) -- NOT an
+/// error, the caller's cue to fall back to the `"system"` default
+/// ([`Theme::resolve`]). `Err` only for a file that EXISTS but is not
+/// valid JSON or fails this crate's own `#[serde(deny_unknown_fields)]`
+/// schema -- the same "exists but malformed IS an error" posture
+/// `crate::tui::keybindings::Keymap::load` already established.
+fn load_custom_theme_file(env: &HashMap<String, String>, name: &str) -> Result<Option<ThemeConfig>, String> {
+    let Some(path) = custom_theme_path(env, name) else {
+        return Ok(None);
+    };
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    serde_json::from_str(&contents)
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Applies one slot's `Option<ThemeStyleConfig>` override on top of its
@@ -386,7 +882,7 @@ impl Theme {
 /// are silently skipped (the default for that channel is kept); each
 /// modifier string that doesn't parse to a ratatui `Modifier` is silently
 /// skipped too. `None` returns `default` unchanged. Never panics on untrusted config.
-fn overlay(default: Style, cfg: Option<&ThemeStyleConfig>) -> Style {
+fn overlay_style(default: Style, cfg: Option<&ThemeStyleConfig>) -> Style {
     let Some(cfg) = cfg else {
         return default;
     };
@@ -1113,5 +1609,422 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(overridden.spinner, Style::default().fg(Color::Cyan));
+    }
+
+    // ---- board item 01M1YVX43MABAVX491HQ5ZCC2M: presets ----
+
+    #[test]
+    fn theme_preset_name_round_trips_through_parse() {
+        for preset in ThemePreset::ALL {
+            assert_eq!(ThemePreset::parse(preset.name()), Some(preset));
+        }
+        assert_eq!(ThemePreset::parse("not-a-real-preset"), None);
+        assert_eq!(ThemePreset::parse(""), None);
+    }
+
+    #[test]
+    fn theme_preset_next_cycles_through_all_six_and_wraps() {
+        let mut seen = std::collections::HashSet::new();
+        let mut current = ThemePreset::System;
+        for _ in 0..ThemePreset::ALL.len() {
+            seen.insert(current);
+            current = current.next();
+        }
+        assert_eq!(seen.len(), ThemePreset::ALL.len(), "every preset visited exactly once");
+        assert_eq!(current, ThemePreset::System, "the cycle wraps back to the start");
+    }
+
+    #[test]
+    fn system_preset_is_default_verbatim() {
+        assert_eq!(Theme::from_preset(ThemePreset::System), Theme::default());
+    }
+
+    /// Every non-`System` preset actually changes the palette (otherwise a
+    /// preset would be indistinguishable from `system`, defeating the
+    /// point of naming it).
+    #[test]
+    fn every_non_system_preset_differs_from_the_default() {
+        for preset in ThemePreset::ALL {
+            if preset == ThemePreset::System {
+                continue;
+            }
+            let t = Theme::from_preset(preset);
+            assert_ne!(
+                t,
+                Theme::default(),
+                "{preset:?} must render differently than the system default"
+            );
+        }
+    }
+
+    /// V7's "what each color MEANS" grouping (module doc, above) holds for
+    /// every preset, not just the ANSI default: slots sharing one semantic
+    /// color (e.g. every "success" slot) share one concrete `Color`, for
+    /// every built-in.
+    #[test]
+    fn every_preset_keeps_v7_semantic_color_grouping() {
+        for preset in ThemePreset::ALL {
+            let t = Theme::from_preset(preset);
+            assert_eq!(
+                t.tool_done.fg, t.agent_finished.fg,
+                "{preset:?}: tool_done/agent_finished must share one success color"
+            );
+            assert_eq!(
+                t.tool_done.fg, t.diff_add.fg,
+                "{preset:?}: diff_add must share tool_done's success color"
+            );
+            assert_eq!(
+                t.tool_failed.fg, t.agent_failed.fg,
+                "{preset:?}: tool_failed/agent_failed must share one danger color"
+            );
+            assert_eq!(
+                t.tool_failed.fg, t.error.fg,
+                "{preset:?}: error must share tool_failed's danger color"
+            );
+            assert_eq!(
+                t.fatal_error.fg, t.border_danger.fg,
+                "{preset:?}: fatal_error/border_danger must share one danger color"
+            );
+            assert_eq!(
+                t.tool_awaiting.fg, t.agent_awaiting.fg,
+                "{preset:?}: tool_awaiting/agent_awaiting must share one blocked color"
+            );
+            assert_eq!(
+                t.tool_running.fg, t.agent_running.fg,
+                "{preset:?}: tool_running/agent_running must share one warning color"
+            );
+            assert_eq!(
+                t.tool_running.fg, t.spinner.fg,
+                "{preset:?}: spinner must share tool_running's warning color"
+            );
+        }
+    }
+
+    /// "Conversation text is never colored" and "chrome with no state is
+    /// bold or dim, never colored" (module doc, above) hold for every
+    /// preset -- these slots have no `fg` in `Theme::default()` and must
+    /// not grow one just because a colorful preset is active.
+    #[test]
+    fn every_preset_keeps_conversation_text_and_plain_chrome_uncolored() {
+        for preset in ThemePreset::ALL {
+            let t = Theme::from_preset(preset);
+            assert_eq!(t.user.fg, None, "{preset:?}: user must stay uncolored");
+            assert_eq!(t.assistant.fg, None, "{preset:?}: assistant must stay uncolored");
+            assert_eq!(t.border_normal.fg, None, "{preset:?}: border_normal must stay uncolored");
+            assert_eq!(t.focused.fg, None, "{preset:?}: focused must stay uncolored");
+            assert_eq!(t.selected.fg, None, "{preset:?}: selected must stay uncolored");
+            assert_eq!(t.status_mode.fg, None, "{preset:?}: status_mode must stay uncolored");
+        }
+    }
+
+    /// CONSTRAINTS: the permission-mode field's warning color stays
+    /// distinguishable from the status line's other two rungs in EVERY
+    /// preset -- "distinct from the normal status style" (the spec's own
+    /// second option). `fatal_error` (`AUTO-ALLOW`) must carry a real
+    /// color no other status-line style carries, and `status_mode`/
+    /// `emphasized` (the healthy/`plan` rungs -- `view/status.rs`'s own
+    /// `mode_ladder` doc) must stay exactly as colorless as they always
+    /// were.
+    #[test]
+    fn fatal_error_is_distinguishable_from_other_status_styles_in_every_preset() {
+        for preset in ThemePreset::ALL {
+            let t = Theme::from_preset(preset);
+            assert!(
+                t.fatal_error.fg.is_some(),
+                "{preset:?}: fatal_error must carry a concrete color"
+            );
+            assert_eq!(
+                t.status_mode.fg, None,
+                "{preset:?}: the healthy status rung must carry no color of its own"
+            );
+            assert_eq!(
+                t.emphasized.fg, None,
+                "{preset:?}: the plan rung must carry no color of its own"
+            );
+            assert_ne!(
+                t.fatal_error, t.status_mode,
+                "{preset:?}: AUTO-ALLOW must not render identically to the healthy rung"
+            );
+            assert_ne!(
+                t.fatal_error, t.emphasized,
+                "{preset:?}: AUTO-ALLOW must not render identically to the plan rung"
+            );
+        }
+    }
+
+    // ---- Theme::resolve ----
+
+    fn tui_section_with_theme(theme: ThemeSetting) -> crate::tui::config::TuiSection {
+        crate::tui::config::TuiSection {
+            theme,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_with_no_config_yields_the_system_default_and_no_warning() {
+        let (theme, warning) = Theme::resolve(&crate::tui::config::TuiSection::default(), &HashMap::new());
+        assert_eq!(theme, Theme::default());
+        assert_eq!(warning, None);
+    }
+
+    #[test]
+    fn resolve_a_known_preset_name_matches_from_preset_directly() {
+        let tui = tui_section_with_theme(ThemeSetting::Preset("dark".to_string()));
+        let (theme, warning) = Theme::resolve(&tui, &HashMap::new());
+        assert_eq!(theme, Theme::from_preset(ThemePreset::Dark));
+        assert_eq!(warning, None);
+    }
+
+    #[test]
+    fn resolve_an_unknown_name_falls_back_to_system_with_a_named_warning() {
+        let tui = tui_section_with_theme(ThemeSetting::Preset("not-a-real-theme".to_string()));
+        let (theme, warning) = Theme::resolve(&tui, &HashMap::new());
+        assert_eq!(theme, Theme::default());
+        let warning = warning.expect("an unresolvable name must warn, not silently default");
+        assert!(
+            warning.contains("not-a-real-theme"),
+            "the warning must name the unresolved value: {warning}"
+        );
+    }
+
+    /// P-15: a custom theme file loads from a temp config dir (the per-slot
+    /// shape, item 2's own requirement), without touching the real
+    /// operator home directory -- `CONWAY_CONFIG_DIR` throughout.
+    #[test]
+    fn resolve_loads_a_custom_theme_file_from_a_temp_config_dir() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let themes_dir = config_dir.path().join("themes");
+        std::fs::create_dir_all(&themes_dir).expect("mkdir themes");
+        std::fs::write(
+            themes_dir.join("my-custom.json"),
+            r#"{"notice": {"fg": "magenta", "modifiers": ["bold"]}}"#,
+        )
+        .expect("write custom theme file");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.path().to_string_lossy().to_string(),
+        );
+        let tui = tui_section_with_theme(ThemeSetting::Preset("my-custom".to_string()));
+        let (theme, warning) = Theme::resolve(&tui, &env);
+
+        assert_eq!(warning, None, "a custom theme file that parses must not warn");
+        assert_eq!(
+            theme.notice,
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
+        );
+        // Untouched slots keep the system default -- a custom theme file
+        // is an override table, same as `[tui.theme]`'s object shape,
+        // never a full replacement.
+        assert_eq!(theme.tool_running, Style::default().fg(Color::Yellow));
+    }
+
+    #[test]
+    fn resolve_a_custom_theme_file_that_is_not_valid_json_warns_and_falls_back() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let themes_dir = config_dir.path().join("themes");
+        std::fs::create_dir_all(&themes_dir).expect("mkdir themes");
+        std::fs::write(themes_dir.join("broken.json"), "{ not json").expect("write broken file");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.path().to_string_lossy().to_string(),
+        );
+        let tui = tui_section_with_theme(ThemeSetting::Preset("broken".to_string()));
+        let (theme, warning) = Theme::resolve(&tui, &env);
+
+        assert_eq!(theme, Theme::default());
+        assert!(
+            warning.expect("a malformed custom theme file must warn").contains("broken"),
+            "the warning must name the broken file"
+        );
+    }
+
+    #[test]
+    fn resolve_layers_theme_overrides_on_top_of_a_preset() {
+        let mut tui = tui_section_with_theme(ThemeSetting::Preset("dark".to_string()));
+        tui.theme_overrides = ThemeConfig {
+            notice: Some(fg_only("white")),
+            ..Default::default()
+        };
+        let (theme, warning) = Theme::resolve(&tui, &HashMap::new());
+        assert_eq!(warning, None);
+        assert_eq!(theme.notice, Style::default().fg(Color::White));
+        // Every other slot still matches the preset untouched.
+        let preset_only = Theme::from_preset(ThemePreset::Dark);
+        assert_eq!(theme.tool_running, preset_only.tool_running);
+    }
+
+    /// The legacy object shape of `[tui.theme]` -- `tui.theme = {"notice":
+    /// ...}` rather than a preset string -- still resolves bit-for-bit
+    /// identically to `Theme::from_config` (backward compatibility: "keep
+    /// existing per-slot configs working unchanged").
+    #[test]
+    fn resolve_the_legacy_object_shape_matches_from_config_exactly() {
+        let cfg = ThemeConfig {
+            notice: Some(fg_only("red")),
+            ..Default::default()
+        };
+        let tui = tui_section_with_theme(ThemeSetting::Overrides(cfg.clone()));
+        let (theme, warning) = Theme::resolve(&tui, &HashMap::new());
+        assert_eq!(warning, None);
+        assert_eq!(theme, Theme::from_config(&cfg));
+    }
+
+    #[test]
+    fn resolve_honors_tui_color_false() {
+        let tui = crate::tui::config::TuiSection {
+            color: Some(false),
+            ..Default::default()
+        };
+        let (theme, _) = Theme::resolve(&tui, &HashMap::new());
+        assert!(!theme.color_enabled);
+        assert_eq!(theme.notice.fg, None);
+    }
+
+    /// no-color.org: `NO_COLOR` disables color when it is present AND
+    /// non-empty -- an EMPTY `NO_COLOR` (set, but `""`) must NOT disable
+    /// it.
+    #[test]
+    fn resolve_honors_no_color_env_present_and_non_empty_only() {
+        let mut env = HashMap::new();
+        env.insert("NO_COLOR".to_string(), "1".to_string());
+        let (theme, _) = Theme::resolve(&crate::tui::config::TuiSection::default(), &env);
+        assert!(!theme.color_enabled);
+        assert_eq!(theme.notice.fg, None);
+
+        let mut empty_env = HashMap::new();
+        empty_env.insert("NO_COLOR".to_string(), String::new());
+        let (theme, _) = Theme::resolve(&crate::tui::config::TuiSection::default(), &empty_env);
+        assert!(theme.color_enabled, "an empty NO_COLOR must not disable color");
+        assert_eq!(theme.notice.fg, Some(Color::Cyan));
+    }
+
+    // ---- Theme::into_no_color ----
+
+    #[test]
+    fn into_no_color_strips_every_slots_fg_and_bg() {
+        let no_color = Theme::default().into_no_color();
+        assert!(!no_color.color_enabled);
+        for (name, style) in [
+            ("user", no_color.user),
+            ("assistant", no_color.assistant),
+            ("assistant_marker", no_color.assistant_marker),
+            ("reasoning", no_color.reasoning),
+            ("timestamp", no_color.timestamp),
+            ("tool_proposed", no_color.tool_proposed),
+            ("tool_awaiting", no_color.tool_awaiting),
+            ("tool_running", no_color.tool_running),
+            ("tool_done", no_color.tool_done),
+            ("tool_failed", no_color.tool_failed),
+            ("agent_starting", no_color.agent_starting),
+            ("agent_running", no_color.agent_running),
+            ("agent_awaiting", no_color.agent_awaiting),
+            ("agent_finished", no_color.agent_finished),
+            ("agent_failed", no_color.agent_failed),
+            ("agent_cancelled", no_color.agent_cancelled),
+            ("notice", no_color.notice),
+            ("error", no_color.error),
+            ("fatal_error", no_color.fatal_error),
+            ("dim", no_color.dim),
+            ("focused", no_color.focused),
+            ("selected", no_color.selected),
+            ("emphasized", no_color.emphasized),
+            ("border_normal", no_color.border_normal),
+            ("border_warning", no_color.border_warning),
+            ("border_danger", no_color.border_danger),
+            ("border_accent", no_color.border_accent),
+            ("status_mode", no_color.status_mode),
+            ("status_dim", no_color.status_dim),
+            ("spinner", no_color.spinner),
+            ("header", no_color.header),
+            ("scroll_footer", no_color.scroll_footer),
+            ("help_border", no_color.help_border),
+            ("help_key", no_color.help_key),
+            ("diff_add", no_color.diff_add),
+            ("diff_del", no_color.diff_del),
+        ] {
+            assert_eq!(style.fg, None, "{name}.fg must be stripped");
+            assert_eq!(style.bg, None, "{name}.bg must be stripped");
+        }
+    }
+
+    /// "Modifiers that carry meaning on their own stay" -- the selection
+    /// highlight (`REVERSED`) and plain emphasis (`BOLD`) survive
+    /// `into_no_color` untouched.
+    #[test]
+    fn into_no_color_keeps_meaningful_modifiers() {
+        let no_color = Theme::default().into_no_color();
+        assert!(no_color.selected.add_modifier.contains(Modifier::REVERSED));
+        assert!(no_color.status_mode.add_modifier.contains(Modifier::REVERSED));
+        assert!(no_color.focused.add_modifier.contains(Modifier::BOLD));
+        assert!(no_color.user.add_modifier.contains(Modifier::BOLD));
+    }
+
+    /// See this module's own doc, "No-color keeps modifiers, strips
+    /// colors, with one exception": `fatal_error` alone gains `UNDERLINED`
+    /// so it stays visually distinct from `emphasized` (both are otherwise
+    /// bare `BOLD` once color is stripped).
+    #[test]
+    fn into_no_color_keeps_fatal_error_distinguishable_from_emphasized() {
+        let no_color = Theme::default().into_no_color();
+        assert_ne!(
+            no_color.fatal_error, no_color.emphasized,
+            "AUTO-ALLOW must not collapse onto the plan rung's bare BOLD under no-color"
+        );
+        assert!(no_color.fatal_error.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(no_color.fatal_error.add_modifier.contains(Modifier::BOLD));
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`'s own P-15 requirement:
+    /// render a REAL frame (through the real `view::draw`, not a hand-built
+    /// style) with a `NO_COLOR` theme and assert NOT ONE cell anywhere in
+    /// the buffer carries a non-`Reset` fg/bg -- several entry kinds that
+    /// DO carry color under the default theme (a notice, a non-fatal
+    /// error, a fatal error, an `AUTO-ALLOW` status line) are deliberately
+    /// present, so this fails against a version that forgets to strip any
+    /// one of them.
+    #[test]
+    fn no_color_theme_renders_with_no_color_sgr_anywhere_in_the_frame() {
+        use crate::tui::state::{AppState, Entry};
+        use conway::AgentId;
+
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Notice {
+            text: "a routine notice".to_string(),
+        });
+        state.transcript.push(Entry::Error {
+            text: "a non-fatal error".to_string(),
+            fatal: false,
+        });
+        state.transcript.push(Entry::Error {
+            text: "a fatal error".to_string(),
+            fatal: true,
+        });
+        state.transcript.push(Entry::SecurityNotice {
+            text: "project config ignored: /repo/.conway/settings.json".to_string(),
+        });
+        state.permission_mode = conway::PermissionMode::AutoAllow;
+
+        let no_color_theme = Theme::default().into_no_color();
+        let buffer = render_with_theme(&state, &no_color_theme, 100, 30);
+
+        for (i, cell) in buffer.content().iter().enumerate() {
+            assert_eq!(
+                cell.fg,
+                Color::Reset,
+                "cell {i} ({:?}) carries a non-Reset fg under NO_COLOR",
+                cell.symbol()
+            );
+            assert_eq!(
+                cell.bg,
+                Color::Reset,
+                "cell {i} ({:?}) carries a non-Reset bg under NO_COLOR",
+                cell.symbol()
+            );
+        }
     }
 }

@@ -434,11 +434,29 @@ impl App {
         // protection this crate keeps for its own presentation schema even
         // though the facade no longer can.
         let tui_config = crate::tui::config::load(cli)?;
-        // T1: build the theme once from the loaded `[tui.theme]` config
-        // (defaults when the section is absent; malformed values fall back
-        // to per-slot defaults -- untrusted input, never a panic). `Theme::from_config`
-        // is infallible by construction.
-        let theme = Theme::from_config(&tui_config.theme);
+        // T1: build the theme once from the loaded `[tui]` config (defaults
+        // when `[tui.theme]` is absent; malformed values fall back to
+        // per-slot defaults -- untrusted input, never a panic). Board item
+        // `01M1YVX43MABAVX491HQ5ZCC2M`: `Theme::resolve` replaces the
+        // former direct `Theme::from_config(&tui_config.theme)` call --
+        // same infallible-by-construction guarantee, now also resolving a
+        // preset name/custom theme file and `NO_COLOR`/`tui.color`. A
+        // surfaced warning (an unknown preset/theme name, or a custom
+        // theme file that exists but fails to parse) is non-fatal, the
+        // SAME `Entry::Error { fatal: false }` channel a malformed
+        // `keybindings.json` already uses just below.
+        let (theme, theme_warning) = Theme::resolve(
+            &tui_config,
+            &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
+        );
+        if let Some(warning) = theme_warning {
+            state
+                .transcript
+                .push(crate::tui::state::Entry::Error {
+                    text: warning,
+                    fatal: false,
+                });
+        }
         // T3: status-line field order/visibility from `[tui.status_line]`
         // (defaults to the Lean line when absent; unknown field names are
         // dropped at render time -- untrusted input, never a panic).

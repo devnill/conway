@@ -97,6 +97,59 @@ chrome. The input box, the agent panel, and every modal (the permission
 prompt, `/ask`, `/trust permissions`'s preview card, `/settings`, `/help`)
 are bordered; the transcript is the one thing that deliberately isn't.
 
+## Color themes
+
+Every piece of chrome the TUI draws -- tool-status tags, agent-tree
+markers, modal borders, the status line -- reads one named style out of a
+single table (`fg`/`bg`/modifiers), never a color literal scattered at the
+call site. By default that table is `system`: the plain 16 ANSI color
+names, so the terminal emulator's own palette decides whether red/yellow/
+green/etc. read correctly against a light or dark background -- conway
+never guesses.
+
+`tui.theme` in `settings.json` picks a different one, by name:
+
+```json
+{ "tui": { "theme": "dark" } }
+```
+
+Six built-in names: `system` (the default, above), `dark`, `light`, and
+three well-known third-party palettes -- `solarized_dark`, `gruvbox`,
+`nord`. `dark`/`light` pick concrete colors calibrated against a literal
+dark/light background (unlike `system`, which can't -- an ANSI name's
+actual RGB is whatever the terminal maps it to).
+
+`tui.theme` still accepts the table it always has, for overriding
+individual named styles -- `{"notice": {"fg": "magenta"}}`, one entry per
+style, `fg`/`bg`/`modifiers` each optional. This is unchanged: an existing
+`settings.json` with a `[tui.theme]` table keeps working exactly as
+before. To override a few styles on top of a NAMED preset, use the
+sibling key `tui.theme_overrides` instead, in the same per-style shape:
+
+```json
+{ "tui": { "theme": "light", "theme_overrides": { "notice": {"fg": "magenta"} } } }
+```
+
+`CONWAY_TUI__THEME=dark` overrides `tui.theme` from the environment, the
+same `CONWAY_TUI__*` pattern every other `[tui]` setting already follows.
+
+**Custom themes.** A file at `<config dir>/themes/<name>.json` (same
+directory as `settings.json` -- `~/.conway/themes/`, or
+`$CONWAY_CONFIG_DIR/themes/` if set), in the same per-style table shape, is
+selectable by its own name: `"tui": {"theme": "my-theme"}` tries the six
+built-in names first, then this file. An unresolvable name (no built-in,
+no matching file) falls back to `system` with a startup notice naming it
+-- never a refusal to start.
+
+**No color.** `NO_COLOR` (set to anything non-empty -- see
+[no-color.org](https://no-color.org)) or `"tui": {"color": false}` renders
+every slot without `fg`/`bg`, keeping modifiers that carry meaning on
+their own: the selection highlight and the bottom status line's reverse-
+video both stay exactly as visible, and `AUTO-ALLOW`'s own warning (see
+"The permission prompt," below) gains an underline so it still reads as
+distinct from the `plan` mode's own plain bold, now that color can no
+longer carry that distinction.
+
 ## Composing input
 
 Type your message and press `Enter` to submit. A few other keys matter

@@ -77,7 +77,7 @@ use super::state::{
     DenyFeedbackState, DistillModal, EditingPatternState, EditingShellPrefixState, IntentConfirm,
     Mode, SkillProposalModal, TrustPreviewCard, UiFormState,
 };
-pub use theme::Theme;
+pub use theme::{Theme, ThemePreset};
 
 /// The input box's floor height: one row of text plus the two border rows
 /// (top/bottom) -- the pre-T8 fixed size, still the minimum a single-line
