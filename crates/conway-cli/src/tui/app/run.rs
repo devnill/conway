@@ -59,14 +59,24 @@ const ANIMATION_TICK: Duration = Duration::from_millis(125);
 const PLUGIN_STATUS_POLL_TICK: Duration = Duration::from_millis(1000);
 
 impl App {
-    /// Drives the app loop until the user quits, cancels twice, or a fatal
-    /// error occurs. `terminal` is already in raw/alternate-screen mode
-    /// (`tui::run` owns that lifecycle); this only ever draws to it.
+    /// Drives the app loop until the user quits, cancels twice, a termination
+    /// signal arrives, or a fatal error occurs. `terminal` is already in
+    /// raw/alternate-screen mode (`tui::run` owns that lifecycle); this only
+    /// ever draws to it.
+    ///
+    /// `termination`: board item `01M3WJ7906NP3P2ZNVDK549T1Q` -- the
+    /// `signal::TerminationWatch` `tui::run` installs before this loop
+    /// starts (that function's own top doc). The first SIGTERM/SIGHUP this
+    /// loop observes (the `_ = termination.notified()` arm, below) runs the
+    /// exact same cleanup every other quit path in this file already runs
+    /// (`Self::purge_open_ask_modal`) and returns the matching documented
+    /// exit code -- see that arm's own comment.
     pub async fn run<B: Backend>(
         mut self,
         terminal: &mut Terminal<B>,
         mut gate_rx: GateReceiver,
         mut form_rx: FormReceiver,
+        termination: &crate::signal::TerminationWatch,
     ) -> conway::Result<ExitCode>
     where
         // ratatui 0.30 widened `Backend::Error` from the fixed `io::Error` it
@@ -165,6 +175,46 @@ impl App {
 
         loop {
             tokio::select! {
+                // Board item `01M3WJ7906NP3P2ZNVDK549T1Q`: SIGTERM/SIGHUP get
+                // the exact same shutdown `/quit`/`Ctrl-D`/double-`Ctrl-C`
+                // already run -- `Self::purge_open_ask_modal`
+                // (`app/shutdown.rs`) is the one funnel every quit path in
+                // this file goes through, including killing an in-flight `!`
+                // command's whole process group (bound-awaited, not
+                // fire-and-forget: `kill_shell_command_for_quit`'s own doc)
+                // -- so this arm calls that SAME method rather than building
+                // a second killer. No grace window the way `oneshot::run`
+                // gives a one-shot turn a chance to publish a real terminal
+                // result: `purge_open_ask_modal`'s own cleanup is already
+                // internally bounded (5s timeouts on every await inside it),
+                // so there is nothing further worth waiting for here.
+                // `termination.observed()` cannot be `None` at this point --
+                // `notified()` only resolves after `record_termination` has
+                // already stored the first signal it saw (`signal.rs`'s own
+                // doc) -- the `expect` exists to surface a genuine invariant
+                // violation loudly rather than silently reporting the wrong
+                // exit code.
+                _ = termination.notified() => {
+                    let cause = termination
+                        .observed()
+                        .expect("notified() only resolves after a signal was recorded");
+                    // `cause.reason()` -- the SAME `"signal: SIGTERM"`/`"signal:
+                    // SIGHUP"` text `oneshot::run` already records as the
+                    // terminal root's own `ResultStatus::Cancelled { reason }`
+                    // -- is threaded into `purge_open_ask_modal` below (board
+                    // item `01M3WJ7906NP3P2ZNVDK549T1Q`, round 2) as the
+                    // reason an in-flight turn was ABORTED, never a terminal
+                    // cancel here: the TUI's root is `keep_alive` and must
+                    // stay resumable after a quit, signal-driven or not --
+                    // see `Self::abort_in_flight_turns`'s own doc for why
+                    // this is `abort_turn`, not `cancel`, even though the
+                    // reason TEXT matches one-shot mode's own convention.
+                    self.purge_open_ask_modal(cause.reason()).await;
+                    return Ok(match cause {
+                        crate::signal::TermSignal::Term => ExitCode::TerminatedBySigterm,
+                        crate::signal::TermSignal::Hup => ExitCode::TerminatedBySighup,
+                    });
+                }
                 _ = ticker.tick() => {
                     // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: `busy_input`'s
                     // own delivery/visibility poll -- see `App::
@@ -578,7 +628,7 @@ impl App {
                             // Exiting through any arm must run the same
                             // cleanup the quit paths do, so an in-flight `!`
                             // command's process group is killed, not orphaned.
-                            self.purge_open_ask_modal().await;
+                            self.purge_open_ask_modal("tui quit").await;
                             return Ok(ExitCode::Completed);
                         }
                     }
@@ -609,14 +659,14 @@ impl App {
                         // ever arrive on this arm, so keep looping would
                         // busy-spin it forever. Shut down cleanly instead.
                         None => {
-                            self.purge_open_ask_modal().await;
+                            self.purge_open_ask_modal("tui quit").await;
                             return Ok(ExitCode::Completed);
                         }
                         // A read error is not expected to recur productively
                         // either; treat it the same as a clean shutdown
                         // rather than spinning on it.
                         Some(Err(_)) => {
-                            self.purge_open_ask_modal().await;
+                            self.purge_open_ask_modal("tui quit").await;
                             return Ok(ExitCode::Completed);
                         }
                     };
@@ -639,7 +689,7 @@ impl App {
                                     // method's own doc.
                                     SubmitOutcome::Quit => {
                                         if self.confirm_quit_with_nonempty_queue() {
-                                            self.purge_open_ask_modal().await;
+                                            self.purge_open_ask_modal("tui quit").await;
                                             return Ok(ExitCode::Completed);
                                         }
                                     }
@@ -1505,7 +1555,7 @@ impl App {
                                             // mirroring every other quit
                                             // arm in this file.
                                             Effect::Quit => {
-                                                self.purge_open_ask_modal().await;
+                                                self.purge_open_ask_modal("tui quit").await;
                                                 return Ok(ExitCode::Completed);
                                             }
                                             Effect::Resumed(handle) => {
@@ -1620,7 +1670,7 @@ impl App {
                                                 // other quit arm in this
                                                 // file.
                                                 Effect::Quit => {
-                                                    self.purge_open_ask_modal().await;
+                                                    self.purge_open_ask_modal("tui quit").await;
                                                     return Ok(ExitCode::Completed);
                                                 }
                                                 Effect::Resumed(handle) => {
@@ -1756,7 +1806,7 @@ impl App {
                                         // mirroring every other quit arm
                                         // in this file.
                                         Effect::Quit => {
-                                            self.purge_open_ask_modal().await;
+                                            self.purge_open_ask_modal("tui quit").await;
                                             return Ok(ExitCode::Completed);
                                         }
                                         Effect::Resumed(handle) => {
@@ -1899,7 +1949,7 @@ impl App {
                                         // child is purged first, so there is
                                         // no fourth, fate-less way out of the
                                         // modal.
-                                        self.purge_open_ask_modal().await;
+                                        self.purge_open_ask_modal("tui quit").await;
                                         return Ok(ExitCode::Completed);
                                     }
                                 }

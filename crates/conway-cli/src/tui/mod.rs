@@ -13,6 +13,35 @@
 //! `CEvent::Paste` arm handles the event; THIS is what makes the terminal
 //! send it in the first place). Disabled in `restore_terminal` alongside
 //! raw mode and the alternate screen, on every exit path.
+//!
+//! ## SIGTERM/SIGHUP quit cleanly too (board item `01M3WJ7906NP3P2ZNVDK549T1Q`)
+//!
+//! An uncaught `SIGTERM`/`SIGHUP` (closing the terminal sends the latter; a
+//! process manager stopping conway sends the former) kills a process before
+//! any destructor runs -- no `kill_on_drop`, no process-group kill for an
+//! in-flight `!` command, nothing. [`run`] installs the SAME
+//! `signal::install_termination()` watcher `oneshot::run` already uses
+//! (`crate::signal`'s own module doc, board item A5.3) and hands it to
+//! [`App::run`], whose own `select!` loop reacts to the first delivery
+//! of either signal through the EXACT SAME funnel every other quit path
+//! already uses -- `App::purge_open_ask_modal`
+//! (`app/shutdown.rs`), which kills an in-flight `!` command's whole
+//! process group (bound-awaited, not fire-and-forget) and discards every
+//! other kind of in-flight residue -- then returns the documented
+//! `ExitCode::TerminatedBySigterm`/`TerminatedBySighup` (143/129, the same
+//! codes `docs/scripting.md`'s exit-code table already documents for
+//! one-shot mode; see `docs/interactive.md` for the TUI's own note). This
+//! function's own unconditional `restore_terminal()` call right after
+//! `app.run()` returns, unchanged, is what restores the terminal on this
+//! path too -- no new restore call needed. A SECOND signal still forces an
+//! immediate, unconditional `std::process::exit` from INSIDE
+//! `signal::install_termination`'s own background task (mirroring
+//! `oneshot::run`'s identical safety valve exactly) -- deliberately WITHOUT
+//! restoring the terminal first, since that forced exit exists precisely so
+//! a stuck app loop (which could easily be the very thing preventing an
+//! orderly `restore_terminal()` call) cannot block getting out at all; see
+//! [`install_panic_hook`]'s own doc for the identical reasoning applied to a
+//! panic instead of a second signal.
 
 pub mod app;
 pub mod commands;
@@ -42,6 +71,7 @@ use ratatui::Terminal;
 
 use crate::cli::Cli;
 use crate::exit::ExitCode;
+use crate::signal;
 
 use app::App;
 use gate::GateReceiver;
@@ -136,6 +166,16 @@ pub async fn run(
     // marker to go stale.
     let _ = conway.sweep_stale_modal_asks(sweep_live_threshold()).await;
 
+    // Board item `01M3WJ7906NP3P2ZNVDK549T1Q`: installed before raw mode is
+    // even entered, so coverage starts as early as this function can give
+    // it -- `oneshot::run`'s own `signal::install_termination` call site
+    // carries the identical "a signal landing before anything is actually
+    // `select!`-ing on `notified()` yet is a narrow, accepted gap" caveat
+    // (see that function's own comment); handed to `app.run` below, whose
+    // own `select!` loop is where the FIRST delivery is actually reacted to
+    // (this module's own top doc).
+    let termination = signal::install_termination();
+
     enable_raw_mode().map_err(FacadeError::Io)?;
     // T8: bracketed paste alongside the alternate screen -- one `execute!`
     // call so a mid-sequence failure still leaves `restore_terminal` (which
@@ -189,7 +229,7 @@ pub async fn run(
         }
     });
 
-    let result = app.run(&mut terminal, gate_rx, form_rx).await;
+    let result = app.run(&mut terminal, gate_rx, form_rx, &termination).await;
     restore_terminal();
     // Clean shutdown. Stop the heartbeat FIRST so an in-flight `touch` can
     // no longer rename the marker back over a just-cleared file, then drop
@@ -227,6 +267,42 @@ fn restore_terminal() {
 /// function (rather than inlined into [`run`]) so it can be unit-tested
 /// without a real terminal: a test-only `restore` closure records that it
 /// ran instead of touching the terminal.
+///
+/// **Board item `01M3WJ7906NP3P2ZNVDK549T1Q`: this hook does NOT attempt to
+/// kill an in-flight `!` command's process group, by deliberate choice.**
+/// Three reasons, together:
+///
+/// 1. **It cannot `.await`.** `std::panic::set_hook`'s closure is plain
+///    sync code, run synchronously on whichever thread panicked, possibly
+///    while holding locks -- the same reason `restore` itself is a bare
+///    synchronous function, never an async one. The real group-kill
+///    (`conway::plugin::kill_group`, `app/shell_cmd.rs::kill_child`) sends a
+///    signal AND THEN awaits the child's exit to confirm it actually died;
+///    only the signal-sending half could run here at all, and even that
+///    needs a live pgid this free function has no way to reach (see next).
+/// 2. **A pgid to kill lives on `App`** (`shell_task`/`shell_cancel_tx`,
+///    `app/shell_cmd.rs`), an ordinary value on the app loop's own stack --
+///    not process-wide state this hook, which has no handle to that value,
+///    could read. The only way to change that would be a SECOND, parallel
+///    tracking mechanism (a global registry of live child pgids this hook
+///    could poll) duplicating what `App` already owns -- a SECOND killer,
+///    never a good idea when one already exists and is already correct.
+/// 3. **A panic on the task driving `app.run` already triggers a real,
+///    if coarser, cleanup.** `#[tokio::main]` has no `catch_unwind` around
+///    the top-level future, so an uncaught panic there unwinds the whole
+///    process, dropping the `tokio::Runtime` and every task it was running
+///    -- including a spawned `!` command's own task, wherever it was
+///    suspended. That drops its `tokio::process::Child`, whose
+///    `kill_on_drop(true)` (already set, `app/shell_cmd.rs::execute`) kills
+///    at least the leader process. This is the SAME disclosed gap
+///    `kill_shell_command_for_quit`'s own doc already names for
+///    `kill_on_drop` alone (a backgrounded grandchild outside the leader's
+///    own process can still survive it) -- accepted there for the identical
+///    reason: the durable backstop for a child surviving its own parent's
+///    death is process-group reparenting/init reaping, not a last-ditch
+///    signal handler. Closing it fully (tracking every spawned child's pgid
+///    somewhere this hook could reach) is real, additive scope, flagged as
+///    a follow-up, not done here.
 pub fn install_panic_hook<F>(restore: F)
 where
     F: Fn() + Send + Sync + 'static,

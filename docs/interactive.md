@@ -1702,6 +1702,26 @@ its exact meaning in both vim submodes.
 see the slash command table above). `Ctrl-D` does the same when
 the input box is empty.
 
+**Quitting stops whatever the agent is doing, including a tool it is
+mid-way through running — without ending the session itself.** If a turn
+is in flight — the model streaming a reply, or a tool call actually
+executing — quitting aborts it before the process exits, the SAME
+non-terminal abort a single `Ctrl-C` press already uses (see "Typing while
+the agent works" above): the agent is left idle, ready to resume, never
+given a terminal result. A `keep_alive` session stays fully resumable
+afterward (`--resume`/`/resume`), exactly as if you had pressed `Ctrl-C`
+once and then quit, never as if the session itself had ended in error.
+This matters most for a long-running tool: a `bash` call the model started
+(`sleep 999999 &`, a build, anything that outlives the call that launched
+it) is killed, whole process group and all, rather than left running with
+no supervisor once conway exits — previously, nothing on any quit path
+stopped it, since killing a tool's process group has always depended on
+the call actually being aborted, and no quit path aborted anything. A
+forked or spawned subagent with its own turn running gets the identical
+treatment, not just the root. An MCP server or other plugin-managed
+subprocess needs no separate handling here: those are torn down whenever
+the process holding them exits, regardless of how.
+
 A bare, unprefixed `exit`, `quit`, `q`, `:q` or `:wq` — typed as an
 ordinary message, no leading `/` — is intercepted too, with a one-line
 hint ("to leave, use `/quit` (or `Ctrl-D` on an empty line) — press Enter
@@ -1724,3 +1744,34 @@ manual (unclassified) flow; quitting with `/trust permissions`'s preview
 card open is the same as pressing `[n]` — nothing was ever trusted or
 written, so there is nothing to undo. None of these leave anything
 half-created behind.
+
+### Closing the terminal, or a process manager stopping conway
+
+Closing the terminal window you launched conway from sends it `SIGHUP`; a
+process manager (systemd, a supervisor script, a parent shell's own job
+control) asking it to stop sends `SIGTERM`. Both get the same cleanup
+every other way of ending a session already gets: the agent's own current
+turn is aborted (never the session itself — it stays resumable), just like
+an ordinary `/quit` (see above) — an in-flight `!` command, or a
+model-issued tool call such as `bash`, is killed, whole
+process group and all (bound-awaited, not a bare signal with no
+confirmation it actually landed), every other kind of in-flight residue
+(an `/ask`/`/distill` fork, a parked confirmation card) is discarded
+exactly as it would be on an ordinary quit, and the terminal itself is
+left sane — never stuck in raw mode or the alternate screen. conway then
+exits with the same signal-specific code
+[`scripting.md`'s exit-code table](scripting.md#exit-codes) documents for
+one-shot mode: **143** for `SIGTERM`, **129** for `SIGHUP`. A second
+`SIGTERM`/`SIGHUP` while that cleanup is still running forces an
+immediate, unconditional exit — the identical "second signal always wins"
+safety valve two consecutive `Ctrl-C` presses already give you above — and,
+unlike the first signal, does **not** wait for the terminal to be restored
+first: that immediate exit exists specifically so a wedged app loop (which
+could itself be the very thing blocking an orderly restore) can never
+prevent getting out at all. A panic is handled differently again: the
+terminal is always restored (the same panic hook that has always done
+this), but an in-flight `!` command's child is not deliberately killed —
+dropping the whole process on an unwinding panic already kills at least
+that command's own leader process (`kill_on_drop`), though a backgrounded
+grandchild it spawned could in principle outlive it; closing that
+remaining gap is tracked as a follow-up, not implemented here.

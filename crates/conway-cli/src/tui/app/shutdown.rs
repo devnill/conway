@@ -16,6 +16,18 @@
 //! it (see that method's own doc for why attempting to would reproduce the
 //! exact `RuntimeError::Store(StoreError::NotRemovable)`/"agent is still
 //! running" error).
+//!
+//! **Board item `01M3WJ7906NP3P2ZNVDK549T1Q` (round 2):
+//! [`App::purge_open_ask_modal`] now takes a `reason` and, before anything
+//! else, ABORTS (never cancels/terminates) the root's and every known
+//! non-ephemeral subagent's current turn, bound-awaiting each back to idle
+//! -- see [`App::abort_in_flight_turns`]'s own doc for why `abort_turn`
+//! (the non-terminal, per-turn primitive `Ctrl-C`'s first press already
+//! uses), not `cancel` (which would end the session with a terminal
+//! result, breaking `--resume`/`--continue`'s "a `keep_alive` root stays
+//! resumable" contract), is the right primitive here, and for why it
+//! still reaches an in-flight model `bash` tool call's own `kill_group`
+//! (previously nothing on any quit path reached it at all).
 
 use std::time::{Duration, Instant};
 
@@ -78,7 +90,7 @@ impl App {
             if now.duration_since(prev) <= DOUBLE_CTRL_C_WINDOW {
                 // B5: exiting with the /ask modal open purges its child
                 // first, exactly like `Action::Quit` (see that arm).
-                self.purge_open_ask_modal().await;
+                self.purge_open_ask_modal("tui quit (double ctrl-c)").await;
                 return Ok(Some(ExitCode::Interrupted));
             }
         }
@@ -183,7 +195,24 @@ impl App {
     /// branch of this method already leans on for a purge failure. The
     /// process is exiting either way; there is nothing left in THIS run to
     /// wait for the cancellation to land.
-    pub(super) async fn purge_open_ask_modal(&mut self) {
+    ///
+    /// **Board item `01M3WJ7906NP3P2ZNVDK549T1Q` (round 2): the root's and
+    /// every known subagent's CURRENT TURN is aborted and bound-awaited back
+    /// to idle FIRST, now -- see [`App::abort_in_flight_turns`]'s own doc
+    /// for the full mechanism, why `abort_turn` (non-terminal) and not
+    /// `cancel` (terminal) is the one this method calls, and the gap this
+    /// closes (an in-flight model `bash` tool call's process group was
+    /// previously never killed on any quit path at all). `reason` is the
+    /// `Event::TurnAbortedByUser`/`AgentResult`'s own abort-reason text, so
+    /// `/quit` and the SIGTERM/SIGHUP path (`app/run.rs`'s
+    /// `termination.notified()` arm) each leave a reason an operator can
+    /// actually read back (`"tui quit"`, or `cause.reason()`'s `"signal:
+    /// SIGTERM"`/`"signal: SIGHUP"`, matching `oneshot::run`'s own
+    /// convention for the text, even though the MECHANISM here is the
+    /// non-terminal abort, not that function's terminal cancel).
+    pub(super) async fn purge_open_ask_modal(&mut self, reason: &str) {
+        self.abort_in_flight_turns(reason).await;
+
         // The modal is either live (`Mode::AskModal`) or parked in
         // `pending_ask_modal` while a permission prompt is showing; take
         // the child from whichever holds it. Without the parked arm,
@@ -302,13 +331,143 @@ impl App {
         // process exits, with nothing left to ever clean it up.
         self.kill_shell_command_for_quit().await;
     }
+
+    /// Board item `01M3WJ7906NP3P2ZNVDK549T1Q` (round 2): aborts the
+    /// CURRENT turn of the root and of every non-ephemeral subagent this
+    /// TUI knows about (`AppState::tree`, below), then bound-awaits each
+    /// one back to idle -- called from [`Self::purge_open_ask_modal`],
+    /// before anything else it does.
+    ///
+    /// **Why `abort_turn`, not `cancel`.** `SessionHandle::cancel`
+    /// (`CancelMode::Immediate`) ends the target outright, publishing a
+    /// TERMINAL `AgentResult` (`ResultStatus::Cancelled`) to its own
+    /// persisted session log. For the root -- `keep_alive: true`, meant to
+    /// be reattached by `--resume`/`/resume` across TUI restarts -- that is
+    /// exactly wrong: a session whose log ends in a terminal record is
+    /// precisely what `--resume` must NOT see for an ordinary quit (see
+    /// `docs/sessions.md`'s own resume semantics; a terminal root may
+    /// refuse to resume, or resume as if already dead). `SessionHandle::
+    /// abort_turn` (`conway-runtime/src/tree.rs:608`'s own doc: "the
+    /// non-terminal sibling of `cancel`") is the one `Ctrl-C`'s FIRST press
+    /// already uses for exactly this reason (`Self::handle_ctrl_c`, this
+    /// file) -- it trips only the agent's CURRENT TURN's own child token
+    /// (`turn_abort`/`turn_cancel`), leaving the agent and its own
+    /// `CancellationToken` subtree alive, and for a `keep_alive` agent
+    /// returns it to idling at its resume gate with its conversation
+    /// intact, never publishing anything terminal.
+    ///
+    /// **Verified this still reaches an in-flight `bash` call's own
+    /// `kill_group` (file:line, not inferred from a name).**
+    /// `crates/conway-runtime/src/agent_loop.rs:1752`:
+    /// `let turn_cancel = self.cancel.child_token();`, then
+    /// `agent_loop.rs:1754-1755`:
+    /// `.set_turn_abort_token(self.agent_id, turn_cancel.clone())` --
+    /// registering THIS EXACT `turn_cancel` value as the tree's own
+    /// `AgentTree::abort_turn` target (`conway-runtime/src/tree.rs:608-629`:
+    /// `abort_turn` looks up `entry.turn_abort`'s stored token and calls
+    /// `token.cancel()` on it). The SAME `turn_cancel` local is cloned into
+    /// `ToolBatchCtx.cancel` at `agent_loop.rs:2369`
+    /// (`cancel: turn_cancel.clone()`), which `conway-runtime/src/tools/
+    /// runner.rs:268` reads as `batch_cancel`, derives `call_cancel =
+    /// batch_cancel.child_token()` (`runner.rs:608`), and bridges
+    /// (`runner.rs:635-643`, a spawned task awaiting `watch.cancelled()`
+    /// then calling `core_cancel.cancel()`) into the poll-based
+    /// `conway_core::ports::plugin::CancellationToken` that becomes
+    /// `ToolCtx.cancel` (`runner.rs:645,653`) -- the exact flag `crates/
+    /// conway-tools/src/shell/bash.rs`'s run loop polls (`ctx.cancel.
+    /// is_cancelled()`, line 350) to decide whether to `kill_group` its
+    /// process group (lines 421/435/444). So `abort_turn(agent, reason)`
+    /// reaches the SAME `kill_group` call `cancel(agent, reason)` would
+    /// have, through the per-turn token rather than the whole-agent one --
+    /// the only difference is what happens to the AGENT once that tool
+    /// call resolves (idles again, vs. ends terminally), which is exactly
+    /// the behavior this fix needs.
+    ///
+    /// **Subagents, not just the root.** `abort_turn` is scoped to ONE
+    /// agent -- unlike `cancel`, it does NOT cascade to descendants
+    /// (`AgentTree::abort_turn`'s own doc: "the non-terminal sibling of
+    /// `cancel`... leaving the agent itself... untouched" says nothing
+    /// about descendants, because there is no structural cascade to speak
+    /// of -- each agent's `turn_abort` token is independent). A model-
+    /// issued `bash` call running inside a FORKED/SPAWNED subagent's own
+    /// turn (not the root's) would be missed entirely by aborting only the
+    /// root. This method therefore walks `AppState::tree`
+    /// (`AgentTreeView`, this crate's own event-sourced projection of the
+    /// session's agent tree -- `tui/state/agent_tree.rs`'s own doc: built
+    /// from `Event::AgentSpawned`/`Event::AgentFinished` alone, the
+    /// established pattern this crate already uses instead of calling
+    /// `SessionHandle::tree()` in production code, which returns the
+    /// runtime-WIDE snapshot, every other session included) and aborts
+    /// every node's turn, not only the root's.
+    ///
+    /// **Ephemeral forks (`/ask`, `/distill`, skill-propose) are
+    /// deliberately EXCLUDED** (`TreeNode::ephemeral`) -- each already has
+    /// its own dedicated, more careful cleanup elsewhere in `Self::
+    /// purge_open_ask_modal` (cancel-then-purge, or a parked-card drain),
+    /// built around the specific shape of ITS OWN residue; aborting them
+    /// here too would be redundant at best and could race that dedicated
+    /// handling at worst. A real, non-ephemeral subagent (`/fork`,
+    /// `/spawn`, or the model's own `conway_fork`/`conway_spawn`) has no
+    /// such separate handling and needs this one.
+    ///
+    /// **Bound-awaiting `awaiting_prompt(agent) || agent finished`, not
+    /// `await_agent`.** `await_agent` waits for a TERMINAL result, which a
+    /// `keep_alive` agent successfully returned to idle will now never
+    /// produce -- waiting for one would simply burn the whole bound every
+    /// time. `SessionHandle::awaiting_prompt` is the genuinely correct
+    /// "back to idle" signal for a `keep_alive` agent (mirrors `App::
+    /// interrupt_and_send`'s own identical `abort_turn` + bounded
+    /// `awaiting_prompt` poll, `app.rs`, for `tui.busy_input = "interrupt"`/
+    /// `prompt.send_now`) -- but it is permanently `false` for a
+    /// non-`keep_alive` agent (an ordinary subagent), which never reaches a
+    /// resume gate at all (`SessionHandle::awaiting_prompt`'s own doc).
+    /// `Self::agent_is_finished` (`app/busy_input.rs`, a non-blocking peek
+    /// at `await_agent`'s own result channel) covers that case: a
+    /// non-`keep_alive` subagent's own `abort_turn` DOES end it terminally
+    /// (`agent_loop.rs:2465-2470`: `turn_cancel.is_cancelled()` with
+    /// `!self.spec.keep_alive` finishes the agent, unlike the root's own
+    /// `keep_alive: true` branch just above it, which does not) -- exactly
+    /// the same terminal `Cancelled` state ANY one-shot-shaped agent
+    /// (including a SIGINT-cancelled `conway -p` run) already ends up in
+    /// routinely, so this is not a new or fragile state for THAT class of
+    /// agent -- the keep-alive root is the only agent kind this whole
+    /// method exists to protect from exactly that.
+    pub(super) async fn abort_in_flight_turns(&mut self, reason: &str) {
+        let root = self.handle.root();
+        let mut agents = vec![root];
+        for node in &self.state.tree.nodes {
+            if !node.ephemeral && node.agent_id != root {
+                agents.push(node.agent_id);
+            }
+        }
+        for &agent in &agents {
+            let _ = self.handle.abort_turn(agent, reason).await;
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let mut all_settled = true;
+                for &agent in &agents {
+                    if !self.handle.awaiting_prompt(agent) && !self.agent_is_finished(agent).await
+                    {
+                        all_settled = false;
+                        break;
+                    }
+                }
+                if all_settled {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use super::super::fixtures::{echo_conway_and_store, minimal_cli};
+    use super::super::fixtures::{echo_conway_and_store, echo_conway_over, minimal_cli};
     use super::super::App;
     use crate::tui::state::Entry;
 
@@ -447,6 +606,89 @@ mod tests {
                 .any(|e| matches!(e, Entry::Notice { text } if text.contains("queued message"))),
             "an empty queue must produce no queue-discard notice at all: {:?}",
             app.state.transcript
+        );
+    }
+
+    /// **Board item `01M3WJ7906NP3P2ZNVDK549T1Q` (round 2), the regression
+    /// guard a review finding on this fix's own first draft exists for.**
+    /// That first draft called `SessionHandle::cancel` (terminal) from
+    /// `purge_open_ask_modal`, which would have made THIS test fail: a
+    /// `keep_alive` root quit that way ends up with a terminal
+    /// `AgentResultRecord` as the last line of its own persisted log,
+    /// which is exactly what `--resume`/`/resume` must never see for an
+    /// ordinary quit. `Self::abort_in_flight_turns`'s own doc has the full
+    /// reasoning for why `abort_turn` (non-terminal) is the fix instead.
+    ///
+    /// Proves the claim at the ONLY level that actually matters: not that
+    /// `SessionHandle` merely reports the root as non-terminal in memory,
+    /// but that the real, PERSISTED log -- read back through a SECOND,
+    /// wholly independent `Conway`/`Runtime` over the SAME store (the
+    /// "simulated restart" shape `app/new_session.rs`'s own
+    /// `new_starts_a_fresh_session_and_leaves_the_old_one_resumable` test
+    /// already establishes) -- carries no `AgentResultRecord` at all, and
+    /// that `Conway::resume` against it still succeeds.
+    #[tokio::test]
+    async fn quitting_leaves_no_terminal_result_and_the_session_stays_resumable() {
+        let (conway, store) = echo_conway_and_store();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+        let session = app.handle.id();
+
+        app.submit("hello before quitting".to_string())
+            .await
+            .expect("submit should not error");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !app.handle.awaiting_prompt(root) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the turn must settle before quitting");
+
+        // The exact funnel every quit path in `app/run.rs` calls.
+        app.purge_open_ask_modal("test quit").await;
+
+        assert!(
+            !app.agent_is_finished(root).await,
+            "quitting must not publish a terminal AgentResult for a keep_alive root"
+        );
+        assert!(
+            app.handle.awaiting_prompt(root),
+            "the root must be left idle at its resume gate, ready for a later --resume"
+        );
+
+        // Simulated restart: a SECOND, independent `Conway` over the SAME
+        // store -- `Conway::resume` must succeed, and the resumed
+        // session's own transcript must carry NO `AgentResultRecord` at
+        // all. This is the real, on-disk proof; the in-memory assertions
+        // above alone could not rule out a terminal record that merely
+        // hadn't been observed yet.
+        let restarted = echo_conway_over(store);
+        let resumed = restarted
+            .resume(session)
+            .await
+            .expect("a quit session must still be resumable after a simulated restart");
+        let records = resumed
+            .transcript(root)
+            .await
+            .expect("transcript must be readable");
+        assert!(
+            records
+                .iter()
+                .all(|r| !matches!(r, conway::LogRecord::AgentResultRecord { .. })),
+            "quitting must never write a terminal AgentResultRecord into the root's own log: \
+             {records:?}"
+        );
+        // The pre-quit history is still there too -- quitting discarded
+        // nothing, it only ended the TUI's own attachment to a live turn.
+        assert!(
+            records.iter().any(
+                |r| matches!(r, conway::LogRecord::UserTurn { text, .. } if text == "hello before quitting")
+            ),
+            "the session's own history must survive a quit: {records:?}"
         );
     }
 }
