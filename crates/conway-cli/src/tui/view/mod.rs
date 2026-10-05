@@ -665,13 +665,44 @@ fn draw_permission_overlay(
         // scope honestly rather than guessing at its breadth.
         _ => "a custom scope",
     };
+    // Board item `01M3TEK20AERQNZRVY7G5F50VJ` (RULING
+    // `01M4654R10FGT9Y0FPNBN5DKPF`, point 2): `[a]` keeps its narrow,
+    // byte-identical-arguments meaning (`PermissionBroker`'s own `CacheKey`
+    // hashes the call's full `arguments`, never just its tool name -- see
+    // `docs/permissions.md`'s `a` row) for EVERY render kind, including a
+    // shell command (its `arguments` carries `command`/`cwd`/`timeout_ms`,
+    // so "exact command" is the honest, user-facing name for that same
+    // byte-identical match). `grant_noun` states that specificity once, so
+    // both lines below agree rather than one of them implying a broader
+    // match than `[a]` actually grants. Kept SHORT deliberately -- both
+    // call sites share `PERMISSION_FOOTER_ROWS`'s fixed row budget with the
+    // decision-key hint and (for a `ShellCommand` prompt) the shell-prefix
+    // preview line, and that line's own doc already warns that a footer
+    // line long enough to wrap onto a second physical row blows that
+    // budget out (narrow terminals lose the lowest lines first).
+    let grant_noun = if shell_prefix_offered {
+        "exact command"
+    } else {
+        "exact args"
+    };
     if confirm_always {
+        // Fixed, post-review: this used to read "would allow EVERY future
+        // call like this for: {scope}" -- true about the WHO axis
+        // (`scope_words`) but overstated the WHICH-CALLS axis: `[a]` never
+        // covers "every call like this", only a later call whose arguments
+        // are byte-identical to this one (a different argument asks
+        // again). The confirm screen is the one surface `a` cannot be
+        // un-pressed from without a second keystroke (board item
+        // `01M44PK089DF2M9TM3C4P5CKMZ`, "no single stray key can grant
+        // beyond once" -- `input.rs::handle_permission_key`'s own doc),
+        // so it is the one place this must be stated precisely, not just
+        // the key hint above it.
         footer_lines.push(Line::from(format!(
-            "  would allow EVERY future call like this for: {scope_words}"
+            "  [a] grants {grant_noun} again, for: {scope_words}"
         )));
     } else {
         footer_lines.push(Line::from(format!(
-            "  [a]/[p] remember for: {scope_words}  ([s] cycles)"
+            "  [a]={grant_noun}; remember for: {scope_words}  ([s] cycles)"
         )));
     }
     if body_max_scroll > 0 {
@@ -3622,9 +3653,9 @@ mod tests {
         let text = render_text(&state, 100, 24);
 
         // The OFFER markers specifically: the hint's `[p] pattern` key and
-        // the `[p] grants:` breadth line. (The scope line's `[a]/[p]`
-        // mention is always present -- it describes what the keys remember
-        // at, not an offer.)
+        // the `[p] grants:` breadth line. (The scope line's `[a]=...`
+        // mention is always present -- it describes what `[a]` remembers
+        // and at what scope, not an offer.)
         assert!(
             !text.contains("[p] pattern") && !text.contains("[p] grants:"),
             "a chained command must not be offered a pattern grant: {text}"
@@ -3851,6 +3882,58 @@ mod tests {
             state.permission_grant_scope,
             conway::PermissionScope::Session,
             "a third `s` press wraps back to the session default"
+        );
+    }
+
+    /// Board item `01M3TEK20AERQNZRVY7G5F50VJ` (RULING
+    /// `01M4654R10FGT9Y0FPNBN5DKPF`, point 2): the footer states `[a]`'s
+    /// real specificity -- "exact command" for a `ShellCommand` prompt,
+    /// "exact args" for a `Structured` one -- rather than leaving it
+    /// unstated. BREAK-THE-GUARD TARGET: stubbing `grant_noun` in
+    /// `draw_permission_overlay` to always return `"exact args"` made the
+    /// shell assertion below fail; restored and confirmed clean via `git
+    /// diff`.
+    #[test]
+    fn the_prompt_states_what_a_would_grant_by_render_kind() {
+        let shell_state = awaiting_permission("git status --short");
+        let shell_text = render_text(&shell_state, 100, 24);
+        assert!(
+            shell_text.contains("[a]=exact command; remember for: this session"),
+            "a shell call's [a] must be named \"exact command\": {shell_text}"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "alpha\n").expect("seed file");
+        let path_str = path.to_string_lossy().to_string();
+        let structured_state = awaiting_edit_permission(&path_str, "alpha", "ALPHA");
+        let structured_text = render_text(&structured_state, 100, 24);
+        assert!(
+            structured_text.contains("[a]=exact args; remember for: this session"),
+            "a structured call's [a] must be named \"exact args\": {structured_text}"
+        );
+    }
+
+    /// The CONFIRM screen (armed by a first `[a]` press, board item
+    /// `01M44PK089DF2M9TM3C4P5CKMZ`) must state what pressing `[a]`/`Enter`
+    /// again would actually grant, not a broader-sounding claim -- this
+    /// used to read "would allow EVERY future call like this," which
+    /// overstated the match (`[a]` only ever matches a later call whose
+    /// arguments are byte-identical to this one).
+    #[test]
+    fn the_confirm_screen_states_the_real_grant_not_every_future_call() {
+        let mut state = awaiting_permission("git status --short");
+        state.permission_confirm_always = true;
+
+        let text = render_text(&state, 100, 24);
+
+        assert!(
+            text.contains("[a] grants exact command again, for: this session"),
+            "the confirm screen must name the real grant: {text}"
+        );
+        assert!(
+            !text.contains("EVERY future call"),
+            "the confirm screen must not overstate [a]'s breadth: {text}"
         );
     }
 

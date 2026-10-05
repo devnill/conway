@@ -203,9 +203,20 @@ explicitly, as shown above.
 
 ## Trust
 
-No new trust mechanism — `describe_tool` is `PermissionClass::Safe` (a pure
-read of an already-compiled tool spec), and the hook only rewrites the
+No new trust mechanism for the hook itself — it only rewrites the
 already-assembled tool announcement, the same seam every other
-`ContextHook` runs through. See
-[`trust-and-security.md`](trust-and-security.md) for what a trusted plugin
-can and cannot do more generally.
+`ContextHook` runs through.
+
+`describe_tool` itself never shows a permission prompt, in any permission
+mode (board item `01M3TEK20AERQNZRVY7G5F50VJ`, decision
+`01M4654R10FGT9Y0FPNBN5DKPF`): it is on the permission broker's own fixed,
+first-party allowlist of harness-introspection tools, the SAME broker-owned
+decision described in [`permissions.md`](../permissions.md)'s
+"Harness-introspection tools never prompt." It is declared
+`PermissionClass::Safe` too, but that declaration is not what exempts it —
+`PermissionClass` is informational metadata the broker does not consult for
+this decision; a tool cannot grant itself this exemption by declaring
+itself `Safe`, only the broker's own allowlist can. Every operator `deny`/
+`prompt` rule still overrides the allowlist exactly as it would any other
+default. See [`trust-and-security.md`](trust-and-security.md) for what a
+trusted plugin can and cannot do more generally.
