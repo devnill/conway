@@ -247,7 +247,14 @@ conway-plugin-toolindex = { path = "../conway-plugin-toolindex" }
 # the "weakest form of compaction" caveat this entry carries.
 conway-plugin-compaction = { path = "../conway-plugin-compaction" }
 clap = { workspace = true, features = ["derive", "env"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+# "io-std"/"io-util" (board item 01M1YVWPXWTPZT73R9AK1TVG1M): `oneshot::
+# run_driven`'s `--input-format jsonl` reads stdin line-by-line, async,
+# alongside the event-stream select loop (`tokio::io::{stdin, BufReader,
+# AsyncBufReadExt}`) -- not a new dependency (C-04), just two more Cargo
+# features on the `tokio` line already here; `tests/common/mock_backend.rs`
+# already enables both as dev-dependency-only features (below), this makes
+# them real shipped-binary features too.
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "io-std", "io-util"] }
 async-trait = { workspace = true }
 futures = { workspace = true }
 # `unstable-rendered-line-info`: `Paragraph::line_count(width)`, used by

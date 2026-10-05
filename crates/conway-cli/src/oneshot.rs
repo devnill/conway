@@ -346,7 +346,68 @@
 //!     "a real race is not a concern this single-shot CLI invocation needs
 //!     to close" tradeoff the pre-existing id-collision probe above already
 //!     accepts, applied to the new bind step.
+//! 13. **`--input-format jsonl` (board item `01M1YVWPXWTPZT73R9AK1TVG1M`): the
+//!     persistent half of one-shot mode.** Everything above this entry
+//!     describes [`run`]'s single-prompt-then-exit body; this flag
+//!     dispatches to [`run_driven`] instead, which keeps the process open
+//!     and reads newline-delimited JSON from stdin, one input per turn/
+//!     operator action, until an explicit `{"type":"end"}` or EOF. Several
+//!     scope decisions, each disclosed rather than silently assumed:
+//!     - **Only the flag-free session arm is supported.** `--session`/
+//!       `--resume`/`--fork-from` are refused as usage errors with
+//!       `--input-format jsonl` ([`resolve_driven_session`]) -- every one of
+//!       them resolves to a handle with `keep_alive: false`
+//!       (`resolve_session`'s own flag-free/`--session` arms;
+//!       `Conway::resume_with` hardcodes it; `Conway::fork_from` has no
+//!       `ForkSpec` field to carry it either), and a second
+//!       `SessionHandle::prompt` on a non-`keep_alive` handle silently runs
+//!       no turn at all (`SessionSpec::keep_alive`'s own doc) -- exactly
+//!       the failure mode a persistent driver exists to not have. Widening
+//!       to the other three needs each one to grow a caller-supplied
+//!       `keep_alive`, left as a follow-up.
+//!     - **A `"prompt"` line that arrives while a turn is already running is
+//!       QUEUED, not rejected or run concurrently.** `SessionHandle::
+//!       prompt`'s own doc warns that two `prompt` calls racing the same
+//!       agent only coalesce the wake signal into the SAME turn rather than
+//!       starting two -- so [`run_driven`] never calls `prompt` again until
+//!       the prior turn's own root `Event::AgentFinished` has actually
+//!       landed, holding any input that arrives in between in a bounded, in
+//!       memory FIFO. `docs/scripting.md` states this as the documented
+//!       ordering guarantee.
+//!     - **`"steer"`/`"cancel"` are dispatched immediately** (both are
+//!       fire-and-forget signals into the runtime, not long-running calls);
+//!       **`"await"` is spawned onto a background task**, never awaited
+//!       inline in the select loop, so a long-running wait can never stall
+//!       this function's own event forwarding -- see [`run_driven`]'s own
+//!       doc for why its completion needs no separate output line (the
+//!       awaited agent's own `agent_finished` already reaches this stream,
+//!       per the pre-existing cross-session lifecycle bypass `docs/
+//!       scripting.md`'s `jsonl` section documents).
+//!     - **`conway.skills`' automatic propose-at-the-end trigger
+//!       ([`maybe_propose_skill`]) does not run in driven mode.** Its whole
+//!       premise is "the operator's task just ended" -- true for the
+//!       single-prompt path's own terminal `AgentFinished`, not true for
+//!       ANY one turn inside a long-lived driven session. Out of scope for
+//!       this item; not silently dropped, since it never ran for this path
+//!       at all before it existed.
+//!     - **No 300-second default deadline.** `resolve_budget`'s own `(None,
+//!       0)` fallback (reconciliation #9, `DEFAULT_ONE_SHOT_DEADLINE_SECS`)
+//!       is a SESSION-lifetime cutoff counted from session start -- exactly
+//!       right for a session that runs one turn and exits, exactly wrong
+//!       for a `keep_alive` session meant to stay open across many turns.
+//!       [`resolve_driven_session`] calls its own [`resolve_driven_budget`]
+//!       instead, which defers to `[limits].deadline_secs` (`0` = unbounded)
+//!       when `--max-seconds` is absent -- the same default the TUI's own
+//!       `keep_alive` root already relies on.
+//!
+//!     **`--permission-prompts jsonl` (an interactive-permission wire
+//!     protocol for THIS mode) is a named follow-up, not part of this
+//!     item.** Today's `--input-format jsonl` fails closed on a tool call
+//!     exactly as the flag-free one-shot path already does (`--allowed-
+//!     tools`/[`build_gate`]) -- there is no new permission-prompt
+//!     mechanism here.
 
+use std::collections::VecDeque;
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -359,8 +420,9 @@ use conway::{
 };
 use futures::StreamExt;
 use schemars::schema::RootSchema;
+use tokio::io::AsyncBufReadExt;
 
-use crate::cli::{Cli, OneShotPermissionMode, OutputFormat};
+use crate::cli::{Cli, InputFormat, OneShotPermissionMode, OutputFormat};
 use crate::exit::ExitCode;
 use crate::model_pin::{parse_model_pin, usage_error};
 use crate::session_names::{self, NamesStore};
@@ -429,11 +491,29 @@ fn is_reasonless_permission_denial(event: &Event) -> bool {
 /// this function, after the run's own terminal result lands, is where that
 /// evidence is finally ripe to act on. See `maybe_propose_skill`'s own
 /// doc for what "act on it" means for a non-interactive dispatch target.
+///
+/// **`cli.input_format == Jsonl` dispatches to [`run_driven`] instead,
+/// before any of the single-prompt machinery below ever runs** -- see this
+/// module's doc comment, reconciliation #13, for the persistent driver that
+/// function implements and the scope it deliberately leaves out (including
+/// why `skills_plugin`, still a required parameter so this function's call
+/// site in `main.rs` stays uniform, is simply unused on that path).
 pub async fn run(
     cli: &Cli,
     conway: Conway,
     skills_plugin: Arc<conway_plugin_skills::SkillsPlugin>,
 ) -> conway::Result<ExitCode> {
+    if cli.input_format == InputFormat::Jsonl {
+        if cli.output_format != OutputFormat::Jsonl {
+            return Err(usage_error(
+                "--input-format jsonl requires --output-format jsonl: the driver's per-turn \
+                 envelopes, including a seq that keeps climbing across turns, only make sense \
+                 paired with the full per-event jsonl stream back",
+            ));
+        }
+        return run_driven(cli, conway).await;
+    }
+
     let text = read_prompt(cli)?;
     let images = load_images(cli)?;
 
@@ -739,6 +819,474 @@ pub async fn run(
         }
     };
     Ok(code)
+}
+
+/// `--input-format jsonl`'s own entry point -- dispatched from [`run`]
+/// instead of its single-prompt-then-exit body. See this module's doc
+/// comment, reconciliation #13, for the scope decisions, and
+/// `docs/scripting.md`'s "Driving conway as a persistent process" section
+/// for the protocol a driver script sees.
+///
+/// **One renderer for the whole process, not one per turn.** [`render::make`]
+/// is called exactly once, up front; every turn this process ever runs
+/// streams through that SAME instance, over the SAME `handle.events()`
+/// subscription taken out before anything is ever prompted -- `seq` keeps
+/// climbing across turns because it is the session's own live event
+/// counter, never reset by this function. A `"prompt"` line requesting a
+/// new turn just calls `SessionHandle::prompt` again on the identical
+/// `keep_alive` handle [`resolve_driven_session`] built; the existing
+/// `tokio::select!` loop below picks up that turn's events the same way it
+/// picked up the first.
+///
+/// **Reading stdin never blocks the event stream.** The `tokio::io::BufReader`
+/// line cursor is polled in the SAME `select!` as `events.next()`, not
+/// drained to completion first -- an idle `next_line()` simply never
+/// resolves until a line (or EOF) arrives, so a turn's own events keep
+/// flushing to stdout while this function waits for the next line, and a
+/// `"steer"`/`"cancel"` line typed mid-turn reaches its target without
+/// waiting for that turn to finish first.
+async fn run_driven(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
+    let handle = resolve_driven_session(cli, &conway).await?;
+    let root = handle.root();
+
+    let mut renderer = render::make(
+        cli.output_format,
+        Box::new(std::io::BufWriter::new(std::io::stdout())),
+    );
+    renderer.set_root(root);
+
+    // Subscribed once, before the first prompt -- the same subscribe-
+    // before-act ordering `SessionHandle::prompt`'s own doc requires,
+    // covering every turn this process goes on to run, not just the first.
+    let mut events = handle.events();
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+
+    let sigint = signal::install();
+    let termination = signal::install_termination();
+
+    let mut turn_in_flight = false;
+    let mut pending_prompts: VecDeque<String> = VecDeque::new();
+    let mut final_result: Option<AgentResult> = None;
+    // Set once stdin has reached EOF (or errored) -- `lines.next_line()` is
+    // only polled while this is `false`, so a closed stdin cannot spin this
+    // loop.
+    let mut stdin_closed = false;
+    // Set by an explicit `{"type":"end"}` line OR by stdin reaching EOF --
+    // this module's doc comment states why the two are deliberately
+    // identical (`docs/scripting.md` too). Once `true`, no further
+    // `"prompt"` line can ever arrive (stdin is done either way), so the
+    // loop's only remaining job is to drain whatever turn is still running
+    // (if any) and then exit.
+    let mut ending = false;
+    let mut grace_deadline: Option<tokio::time::Instant> = None;
+    let mut term_cause: Option<signal::TermSignal> = None;
+
+    loop {
+        let grace = async {
+            match grace_deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            maybe_env = events.next() => {
+                let Some(env) = maybe_env else { break };
+                if let Event::Lagged { skipped } = &env.event {
+                    diag::warn(format!("event stream lagged: {skipped} event(s) dropped"));
+                    continue;
+                }
+                renderer.on_event(&env)?;
+                // `Event::AgentFinished` is the root's NATURAL end-of-turn
+                // (and, for a non-`keep_alive` agent, end of the whole
+                // session too -- never reached here, since
+                // `resolve_driven_session` always sets `keep_alive: true`).
+                // `TurnAborted`/`TurnAbortedByUser` are the harness-FORCED
+                // turn boundary (a turn-scoped budget dimension tripping, or
+                // an operator abort) -- both "end the turn, not the
+                // session" for a `keep_alive` agent (their own doc) and
+                // return it to idling for the next prompt exactly like a
+                // natural completion does, so this driver reacts to all
+                // three identically via [`advance_driven_turn`].
+                let stopping = grace_deadline.is_some();
+                let turn_boundary = match &env.event {
+                    Event::AgentFinished { result, .. } if env.agent == root => {
+                        final_result = Some(result.clone());
+                        true
+                    }
+                    Event::TurnAborted { agent_id, .. } if *agent_id == root => true,
+                    Event::TurnAbortedByUser { agent_id, .. } if *agent_id == root => true,
+                    _ => false,
+                };
+                if turn_boundary
+                    && advance_driven_turn(
+                        &handle,
+                        &mut pending_prompts,
+                        &mut turn_in_flight,
+                        ending,
+                        stopping,
+                    )
+                    .await?
+                {
+                    break;
+                }
+            }
+            line = lines.next_line(), if !stdin_closed => {
+                match line {
+                    Ok(Some(raw)) => {
+                        if raw.trim().is_empty() {
+                            continue;
+                        }
+                        match parse_driver_input(&raw) {
+                            Ok(DriverInput::Prompt(text)) => {
+                                if turn_in_flight {
+                                    pending_prompts.push_back(text);
+                                } else {
+                                    handle.prompt(text).await?;
+                                    turn_in_flight = true;
+                                }
+                            }
+                            Ok(DriverInput::Steer { agent, text }) => {
+                                match agent.parse::<conway::AgentId>() {
+                                    Ok(aid) => {
+                                        if let Err(e) = handle.steer(aid, text).await {
+                                            let _ = write_driver_error(format!(
+                                                "steer {agent}: {e}"
+                                            ));
+                                        }
+                                    }
+                                    Err(_) => {
+                                        let _ = write_driver_error(format!(
+                                            "steer: {agent:?} is not a valid agent id"
+                                        ));
+                                    }
+                                }
+                            }
+                            Ok(DriverInput::Cancel { agent, reason }) => {
+                                match agent.parse::<conway::AgentId>() {
+                                    Ok(aid) => {
+                                        let reason = reason
+                                            .unwrap_or_else(|| "cancelled by driver".to_string());
+                                        if let Err(e) = handle.cancel(aid, &reason).await {
+                                            let _ = write_driver_error(format!(
+                                                "cancel {agent}: {e}"
+                                            ));
+                                        }
+                                    }
+                                    Err(_) => {
+                                        let _ = write_driver_error(format!(
+                                            "cancel: {agent:?} is not a valid agent id"
+                                        ));
+                                    }
+                                }
+                            }
+                            Ok(DriverInput::Await { agent }) => {
+                                // Spawned, not awaited inline here, so a
+                                // long-running wait can never stall this
+                                // loop's own event forwarding -- see this
+                                // module's doc comment, reconciliation #13.
+                                // The awaited agent's own `agent_finished`
+                                // already reaches `events` above (every
+                                // agent's lifecycle bypasses the session
+                                // filter); this only ever reports a PROBLEM.
+                                match agent.parse::<conway::AgentId>() {
+                                    Ok(aid) => {
+                                        let awaited = handle.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = awaited.await_agent(aid).await {
+                                                let _ = write_driver_error(format!(
+                                                    "await {agent}: {e}"
+                                                ));
+                                            }
+                                        });
+                                    }
+                                    Err(_) => {
+                                        let _ = write_driver_error(format!(
+                                            "await: {agent:?} is not a valid agent id"
+                                        ));
+                                    }
+                                }
+                            }
+                            Ok(DriverInput::End) => {
+                                ending = true;
+                                if !turn_in_flight && pending_prompts.is_empty() {
+                                    break;
+                                }
+                            }
+                            Err(reason) => {
+                                let _ = write_driver_error(reason);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // EOF: documented (`docs/scripting.md`) to behave
+                        // exactly like an explicit `{"type":"end"}` line.
+                        stdin_closed = true;
+                        ending = true;
+                        if !turn_in_flight && pending_prompts.is_empty() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = write_driver_error(format!("stdin read error: {e}"));
+                        stdin_closed = true;
+                    }
+                }
+            }
+            _ = sigint.notified(), if grace_deadline.is_none() => {
+                let _ = handle.cancel(root, "sigint").await;
+                grace_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+            }
+            _ = termination.notified(), if grace_deadline.is_none() => {
+                let cause = termination
+                    .observed()
+                    .expect("notified() only resolves after a signal was recorded");
+                term_cause = Some(cause);
+                let _ = handle.cancel(root, cause.reason()).await;
+                grace_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+            }
+            _ = grace, if grace_deadline.is_some() => {
+                diag::warn("no terminal result within the signal grace window; exiting");
+                break;
+            }
+        }
+    }
+
+    renderer.finish(final_result.as_ref())?;
+
+    let sigint_seen = sigint.hits() > 0;
+    let code = match (&final_result, term_cause) {
+        (Some(result), Some(cause)) => ExitCode::from_result_with_signal(result, Some(cause)),
+        (Some(result), None) => ExitCode::from_result_with_sigint(result, sigint_seen),
+        (None, Some(cause)) => match cause {
+            signal::TermSignal::Term => ExitCode::TerminatedBySigterm,
+            signal::TermSignal::Hup => ExitCode::TerminatedBySighup,
+        },
+        (None, None) if sigint_seen => ExitCode::Interrupted,
+        // No turn ever ran before an `end`/EOF -- a clean, successful
+        // no-op (this driver was asked to do nothing further and did
+        // nothing further), never a failure.
+        (None, None) => ExitCode::Completed,
+    };
+    Ok(code)
+}
+
+/// [`run_driven`]'s own reaction, common to EITHER the root's natural
+/// end-of-turn (`Event::AgentFinished`) or a harness-forced turn boundary
+/// (`Event::TurnAborted`/`Event::TurnAbortedByUser` -- a turn-scoped budget
+/// dimension tripping, or an operator abort; both variants' own doc: "ends
+/// the turn, not the session," returning a `keep_alive` agent to idling for
+/// the next prompt exactly like a natural completion does): dispatches the
+/// next queued `"prompt"`, if any, else reports whether the caller's own
+/// select loop should stop. `stopping` is `true` once a signal has already
+/// asked this run to end (`run_driven`'s own `grace_deadline`) -- in that
+/// case this always reports "stop," since whatever queued prompt remains is
+/// no longer going to run.
+async fn advance_driven_turn(
+    handle: &SessionHandle,
+    pending_prompts: &mut VecDeque<String>,
+    turn_in_flight: &mut bool,
+    ending: bool,
+    stopping: bool,
+) -> conway::Result<bool> {
+    *turn_in_flight = false;
+    if stopping {
+        return Ok(true);
+    }
+    match pending_prompts.pop_front() {
+        Some(next) => {
+            handle.prompt(next).await?;
+            *turn_in_flight = true;
+            Ok(false)
+        }
+        None => Ok(ending),
+    }
+}
+
+/// `--input-format jsonl`'s own session resolution -- deliberately narrower
+/// than [`resolve_session`] above. See this module's doc comment,
+/// reconciliation #13, for why `--session`/`--resume`/`--fork-from` are
+/// refused here rather than silently reused: every one of them resolves to
+/// a handle with `keep_alive: false`, and a SECOND `SessionHandle::prompt`
+/// on such a handle silently runs no turn at all (`SessionSpec::
+/// keep_alive`'s own doc) -- exactly the failure mode this driver's whole
+/// multi-turn premise would otherwise hit, silently, on its second
+/// `"prompt"` line.
+async fn resolve_driven_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHandle> {
+    if cli.session.is_some() || cli.resume.is_some() || cli.fork_from.is_some() {
+        return Err(usage_error(
+            "--input-format jsonl does not support --session/--resume/--fork-from yet: none of \
+             the three can be driven multi-turn today (each resolves to a session that is not \
+             keep_alive), so a second \"prompt\" line would silently run no turn",
+        ));
+    }
+    let agent_def = load_agent_def(cli, conway)?;
+    let output_schema = load_output_schema(cli)?;
+    let system_prompt_override =
+        resolve_system_prompt_override(cli, agent_def.as_ref(), output_schema.as_ref());
+    let result_contract = resolve_result_contract(output_schema, agent_def.as_ref());
+    let budget = resolve_driven_budget(cli, conway);
+    let tools = resolve_tools(cli, agent_def.as_ref());
+    let role = cli
+        .role_override
+        .as_ref()
+        .map(|r| RoleAlias::new(r.clone()));
+    let model = parse_model_pin(cli)?;
+    let spec = SessionSpec {
+        role,
+        cwd: cli.cwd.clone(),
+        model,
+        agent_def: cli.agent.clone(),
+        system_prompt_override,
+        budget,
+        result_contract,
+        tools,
+        keep_alive: true,
+        ..SessionSpec::default()
+    };
+    conway.new_session(spec).await
+}
+
+/// [`resolve_budget`]'s own driven-mode counterpart -- identical in every
+/// respect EXCEPT the deadline fallback. `resolve_budget`'s `(None, 0)` arm
+/// applies [`DEFAULT_ONE_SHOT_DEADLINE_SECS`] (300s) specifically because a
+/// bare single-shot run with no configured deadline previously hung
+/// silently (board item `01M1WVK9PF5G57Y6R36B94S0RB`, this module's doc
+/// comment reconciliation #9) -- that default is a SESSION-LIFETIME cutoff
+/// (`Budget::deadline`'s own doc), counted from session start, which is
+/// exactly correct for a session that runs ONE turn and exits, and exactly
+/// WRONG for `--input-format jsonl`'s own `keep_alive: true` session, which
+/// is meant to stay open across many turns for as long as the operator
+/// keeps driving it. This function defers to `[limits].deadline_secs`
+/// unconditionally when `--max-seconds` is absent -- `0` there means
+/// unbounded, the SAME default the TUI's own `keep_alive` root already
+/// relies on (reconciliation #9's own contrast). An explicit `--max-seconds`
+/// still applies as a hard ceiling across the WHOLE driven session, exactly
+/// as it does for the flag-free one-shot path.
+fn resolve_driven_budget(cli: &Cli, conway: &Conway) -> Option<Budget> {
+    let limits = &conway.config().limits;
+    let now = chrono::Utc::now();
+    let mut budget = Budget {
+        max_steps: limits.max_steps,
+        deadline: match (cli.max_seconds, limits.deadline_secs) {
+            (Some(secs), _) => Some(now + chrono::Duration::seconds(secs as i64)),
+            (None, 0) => None,
+            (None, secs) => Some(now + chrono::Duration::seconds(secs as i64)),
+        },
+        max_tokens: if limits.max_tokens == 0 {
+            None
+        } else {
+            Some(limits.max_tokens)
+        },
+        max_tool_calls: if limits.max_tool_calls == 0 {
+            None
+        } else {
+            Some(limits.max_tool_calls)
+        },
+    };
+    if let Some(turns) = cli.max_turns {
+        budget.max_steps = turns;
+    }
+    if let Some(tokens) = cli.max_tokens {
+        budget.max_tokens = Some(tokens);
+    }
+    Some(budget)
+}
+
+/// One line of `--input-format jsonl`'s own input vocabulary --
+/// `docs/scripting.md`'s "Driving conway as a persistent process" section
+/// names this as the whole contract a driver script needs. Parsed by
+/// [`parse_driver_input`] from a bare [`serde_json::Value`] rather than a
+/// derived `Deserialize` impl, so a malformed line's reported reason can
+/// name exactly what's wrong (bad JSON syntax, an unrecognized or missing
+/// `"type"`, a missing field for the type it named) instead of a tagged
+/// enum's own generic `serde_json` message.
+enum DriverInput {
+    /// `{"type":"prompt","text":"..."}` -- runs a turn on the session's
+    /// ROOT agent. There is no `"agent"` field: this driver only ever
+    /// prompts the root directly -- a subagent's own turn is something the
+    /// root itself forks/spawns, never something a driver script starts.
+    Prompt(String),
+    /// `{"type":"steer","agent":"<id>","text":"..."}` --
+    /// `SessionHandle::steer`'s own doc: wakes a PARKED agent for a
+    /// follow-up turn with `text` appended to its own conversation.
+    Steer { agent: String, text: String },
+    /// `{"type":"cancel","agent":"<id>","reason":"..."}` -- `"reason"` is
+    /// optional; when absent, a generic driver-attributed reason is used.
+    Cancel { agent: String, reason: Option<String> },
+    /// `{"type":"await","agent":"<id>"}` -- waits (on a background task,
+    /// never this function's own select loop -- see [`run_driven`]'s own
+    /// doc) until `agent` reaches a terminal result. The result itself is
+    /// never re-emitted by this input: it already reaches the stream as
+    /// that agent's own `agent_finished` envelope (every agent's lifecycle
+    /// events bypass the session filter, `docs/scripting.md`'s `jsonl`
+    /// section) -- `"await"` only ever reports a PROBLEM (an unknown agent
+    /// id), via a driver `error` line.
+    Await { agent: String },
+    /// `{"type":"end"}` -- see [`run_driven`]'s own doc for why EOF is
+    /// treated identically.
+    End,
+}
+
+/// Parses one raw stdin line into a [`DriverInput`], or a human-readable
+/// reason it could not be -- never a panic, and never silently skipped: the
+/// caller ([`run_driven`]) turns every `Err` into a driver `error` line on
+/// stdout and keeps reading the next line regardless.
+fn parse_driver_input(line: &str) -> Result<DriverInput, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| format!("invalid JSON: {e}"))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "expected a JSON object, got a different kind of JSON value".to_string())?;
+    let ty = obj
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "missing or non-string \"type\" field".to_string())?;
+    let string_field = |name: &str| -> Result<String, String> {
+        obj.get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("\"{ty}\": missing or non-string \"{name}\" field"))
+    };
+    match ty {
+        "prompt" => Ok(DriverInput::Prompt(string_field("text")?)),
+        "steer" => Ok(DriverInput::Steer {
+            agent: string_field("agent")?,
+            text: string_field("text")?,
+        }),
+        "cancel" => Ok(DriverInput::Cancel {
+            agent: string_field("agent")?,
+            reason: obj
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        }),
+        "await" => Ok(DriverInput::Await {
+            agent: string_field("agent")?,
+        }),
+        "end" => Ok(DriverInput::End),
+        other => Err(format!("unknown \"type\": {other:?}")),
+    }
+}
+
+/// Writes one driver-level `{"type":"error","message":"..."}` line directly
+/// to stdout -- a malformed input line or a failed `"steer"`/`"cancel"`/
+/// `"await"` action, never a per-event `Envelope`, so this deliberately does
+/// not go through the [`render::Renderer`] (whose contract is "one call per
+/// `Envelope`"). Interleaves safely with the renderer's own writes to the
+/// identical underlying `stdout`, including from the background task
+/// [`run_driven`]'s own `"await"` handling spawns: the WHOLE line (JSON plus
+/// its trailing newline) is assembled into one owned `String` first, then
+/// written in exactly one [`Write::write_all`] call -- `std::io::Stdout`
+/// internally serializes each such call against every other writer sharing
+/// it (a reentrant, per-call lock), the same atomicity every renderer in
+/// `render::` already relies on for its own buffered flush.
+fn write_driver_error(message: impl std::fmt::Display) -> std::io::Result<()> {
+    let mut line = serde_json::json!({ "type": "error", "message": message.to_string() })
+        .to_string();
+    line.push('\n');
+    let mut out = std::io::stdout();
+    out.write_all(line.as_bytes())?;
+    out.flush()
 }
 
 /// Resolves the instant EITHER a SIGINT or a termination-class signal
@@ -1989,6 +2537,7 @@ mod tests {
             print: Some("hi".into()),
             image: Vec::new(),
             output_format: OutputFormat::Text,
+            input_format: InputFormat::Text,
             allowed_tools: allowed,
             deny_tools: denied,
             permission_mode: mode,

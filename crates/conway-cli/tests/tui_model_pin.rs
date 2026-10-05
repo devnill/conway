@@ -48,7 +48,7 @@ use std::str::FromStr;
 
 use conway::test_support::{base_config, build_conway_with_echo_backend};
 use conway::ModelRef;
-use conway_cli::cli::{Cli, OneShotPermissionMode, OutputFormat};
+use conway_cli::cli::{Cli, InputFormat, OneShotPermissionMode, OutputFormat};
 use conway_cli::exit::ExitCode;
 use conway_cli::tui::app::App;
 use conway_testkit::FakeStore;
@@ -62,6 +62,7 @@ fn minimal_cli() -> Cli {
         print: None,
         image: Vec::new(),
         output_format: OutputFormat::Text,
+        input_format: InputFormat::Text,
         allowed_tools: Vec::new(),
         deny_tools: Vec::new(),
         permission_mode: OneShotPermissionMode::Allowlist,

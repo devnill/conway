@@ -65,6 +65,22 @@ pub struct Cli {
     #[arg(long, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
 
+    /// `text` (the default): read one prompt (`--print`'s value and/or
+    /// piped stdin -- see `--print`'s own doc) and exit after one turn,
+    /// exactly as `-p` has always behaved. `jsonl` turns `-p` into a
+    /// persistent driver instead: stdin is read line by line, each line a
+    /// newline-delimited JSON object (`{"type":"prompt","text":...}` runs a
+    /// turn; `"steer"`/`"cancel"`/`"await"` map to the matching
+    /// `SessionHandle` operator actions; `{"type":"end"}` or EOF ends the
+    /// session) -- see `docs/scripting.md`'s "Driving conway as a
+    /// persistent process" section for the full protocol. Requires
+    /// `--output-format jsonl` (a usage error otherwise): the driver's
+    /// per-turn envelopes, including a `seq` that keeps climbing across
+    /// turns, only make sense paired with the full per-event stream back.
+    /// Ignored by the TUI.
+    #[arg(long, value_enum, default_value = "text")]
+    pub input_format: InputFormat,
+
     /// Tools the agent may call, by exact name, comma-separated. One-shot
     /// mode cannot ask an operator for permission, so it fails closed:
     /// leaving this empty denies every tool rather than allowing them all.
@@ -371,6 +387,16 @@ pub enum Command {
 pub enum OutputFormat {
     Text,
     Json,
+    Jsonl,
+}
+
+/// `--input-format`: whether `-p` reads one prompt and exits (`Text`, the
+/// default) or becomes a persistent, stdin-driven session (`Jsonl`) -- see
+/// `Cli::input_format`'s own doc for the protocol and `oneshot::run_driven`
+/// for the implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum InputFormat {
+    Text,
     Jsonl,
 }
 
