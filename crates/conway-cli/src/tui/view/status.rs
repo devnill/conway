@@ -1212,6 +1212,16 @@ fn activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
     if state.ask_in_flight {
         return ask_activity_ladder(state, theme);
     }
+    // Board item `01M3SJC96P99V9KNT7TDJBWZ66` (DOGFOOD 2 finding 2):
+    // `/conway.skills.propose` used to give no sign it was running at all --
+    // `state.skill_propose_in_flight` had no reader anywhere in `view/`,
+    // exactly the gap `ask_in_flight` used to have before the fix documented
+    // immediately above. Mirrors that fix's own shape: takes the `activity`
+    // field over outright (the proposal's own ephemeral fork is never the
+    // focused agent either) rather than folding in alongside it.
+    if state.skill_propose_in_flight {
+        return skill_propose_activity_ladder(state, theme);
+    }
     if !should_animate(&state.activity) {
         return vec![vec![Span::raw("idle")], vec![]];
     }
@@ -1317,6 +1327,27 @@ fn ask_activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>
             Span::styled(format!(" {elapsed}s"), theme.status_dim),
         ],
         vec![Span::styled(format!("{glyph} asking…"), style)],
+        vec![],
+    ]
+}
+
+/// The `activity` field's ladder while a `/conway.skills.propose` (or an
+/// automatic proposal trigger) ephemeral fork is in flight (board item
+/// `01M3SJC96P99V9KNT7TDJBWZ66`) -- same spinner-glyph visual language as
+/// [`ask_activity_ladder`], just that call's own phrase. Unlike `/ask`,
+/// `AppState` carries no `skill_propose_started_at` clock, so there is no
+/// elapsed-seconds half to show or degrade away: both rungs above the floor
+/// are identical.
+fn skill_propose_activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
+    let style = theme.spinner;
+    let glyph = SPINNER_FRAMES
+        .get(state.spinner_frame % SPINNER_FRAMES.len())
+        .copied()
+        .unwrap_or("");
+    let phrase = format!("{glyph} proposing a skill…");
+    vec![
+        vec![Span::styled(phrase.clone(), style)],
+        vec![Span::styled(phrase, style)],
         vec![],
     ]
 }
@@ -1587,6 +1618,31 @@ mod tests {
             !line.contains("ready"),
             "mid-turn, `mode` must never read ready -- that is the exact \
              lie a watcher could not see past: {line}"
+        );
+    }
+
+    /// Board item `01M3SJC96P99V9KNT7TDJBWZ66` (DOGFOOD 2 finding 2):
+    /// `/conway.skills.propose` used to leave the status line reading
+    /// plain `idle` for the whole ~2 minutes its ephemeral fork ran --
+    /// the operator had no sign anything was happening at all. Once
+    /// `skill_propose_in_flight` is set (exactly what `commands::execute`'s
+    /// `SlashCommand::SkillsPropose` arm does before returning its
+    /// `Effect::RunSkillPropose`), the status line must say so, mirroring
+    /// `/ask`'s own `asking…` indicator.
+    #[test]
+    fn status_line_shows_a_skill_proposal_in_flight() {
+        let mut state = AppState::new(AgentId::new());
+        let before = status_line(&state);
+        assert!(
+            !before.contains("proposing"),
+            "idle, with no proposal running: {before}"
+        );
+        state.skill_propose_in_flight = true;
+        let line = status_line(&state);
+        assert!(
+            line.contains("proposing a skill"),
+            "an in-flight skill proposal must show on the status line, not \
+             read as plain idle: {line}"
         );
     }
 

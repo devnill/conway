@@ -90,7 +90,16 @@ pub enum SessionsAction {
         /// (whichever is checked first wins; `show` never combines the two
         /// output shapes) -- matches how this subcommand already treats
         /// `--json` as an output-shape switch, not an additive flag.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Print the cumulative diff of every path this session's root agent \
+                    edited or wrote",
+            long_help = "Print the cumulative diff of every path this session's root agent \
+                         edited/wrote, against the bytes each path had the first time this \
+                         session touched it. Root agent only -- a subagent's own \
+                         edit/write calls are not included. Mutually exclusive in effect \
+                         with --json/--cost."
+        )]
         diff: bool,
         /// Board item `01M1YVRS0K284H9QB32ZZW6D5G`: print this session's
         /// per-turn cost (one line per `LogRecord::Assistant` record) and a
@@ -101,7 +110,14 @@ pub enum SessionsAction {
         /// than being silently omitted or priced as zero. Checked before
         /// `--diff`/`--json` -- the three are mutually exclusive output
         /// modes, like `--diff` already is with `--json`.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Print this session's per-turn cost and a total broken down by model",
+            long_help = "Print this session's per-turn cost (one line per assistant turn) \
+                         and a total broken down by model. A model with no price \
+                         configured names that explicitly rather than being priced as \
+                         zero. Mutually exclusive in effect with --diff/--json."
+        )]
         cost: bool,
     },
     /// Print a session's fork tree.
@@ -121,6 +137,14 @@ pub enum SessionsAction {
     /// under `--format jsonl` (JSONL already carries the full, untruncated
     /// result). Markdown rendering performs no redaction of sensitive tool
     /// output -- see `docs/sessions.md`'s own note.
+    #[command(
+        about = "Export a session's ancestry-resolved transcript",
+        long_about = "Export a session's ancestry-resolved transcript. `--format jsonl` \
+                      (the default) writes one compact JSON object per record; \
+                      `--format markdown` instead renders a header, user turns, \
+                      assistant text, tool calls, and notices as readable Markdown. \
+                      Markdown rendering performs no redaction of sensitive tool output."
+    )]
     Export {
         id: String,
         #[arg(long = "out")]

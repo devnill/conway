@@ -796,10 +796,7 @@ fn draw_permission_overlay(
 /// comfortably.
 fn permission_body_lines(req: &conway::PermissionRequest, theme: &Theme) -> Vec<Line<'static>> {
     let Some(diff_text) = permission_diff_text(req) else {
-        return vec![Line::from(Span::styled(
-            req.rendered.clone(),
-            theme.emphasized,
-        ))];
+        return permission_command_lines(req, theme);
     };
     let mut lines: Vec<Line<'static>> = diff_text
         .split('\n')
@@ -820,6 +817,64 @@ fn permission_body_lines(req: &conway::PermissionRequest, theme: &Theme) -> Vec<
         lines.push(Line::from(Span::styled(line.to_string(), theme.dim)));
     }
     lines
+}
+
+/// The primary command/summary block [`permission_body_lines`] falls back
+/// to when there is no diff to show instead (`permission_diff_text`
+/// returned `None`) -- a bare `req.rendered.clone()` for every render kind
+/// except a multi-line `RenderKind::ShellCommand` call, where DOGFOOD 2
+/// found a heredoc rendering as a single line with every embedded newline
+/// replaced by `�`.
+///
+/// **Why `req.rendered` alone cannot show real line breaks here.**
+/// `req.rendered` already passed through `conway_runtime::tools::runner::
+/// sanitize_rendered` on its way from the tool call to this request --
+/// before this function ever sees it, every `\n` it carried is ALREADY the
+/// placeholder glyph (`conway::sanitize_control_chars`'s own doc: a real
+/// newline IS a `Cc` control character), so there is no `\n` left in
+/// `req.rendered` to split on at all. This mirrors `shell_cmd.rs`'s own
+/// `!cmd` output bug exactly (board item `01M44PK089DF2M9TM3C4P5CKMZ`,
+/// `view/transcript.rs::shell_lines`'s own doc, "sanitizing the whole
+/// multi-line output BEFORE splitting replaced every line break with the
+/// placeholder") -- except here the fix cannot be "split before sanitizing
+/// the SAME string" (the splittable, line-break-carrying string no longer
+/// exists by this point): the raw command, newlines intact, is recovered
+/// instead from `req.arguments` (the call's own unsanitized JSON --
+/// `PermissionRequest::arguments`'s own doc, and `conway_runtime::
+/// permission`'s construction site, `arguments: call.arguments.clone()`,
+/// taken before `render_call`'s `sanitize_rendered` ever runs). Splitting
+/// THAT raw text on `\n` first, then sanitizing each resulting line
+/// independently, keeps every genuine line break as a real line break
+/// while still replacing every OTHER control character (a stray `\r`, an
+/// ANSI escape mid-line, a smuggled second command hidden in a control
+/// trick, ...) with the same evidence-preserving placeholder as before --
+/// the sanitizer's own "no control char reaches the terminal" guarantee
+/// holds per-line, unchanged.
+///
+/// A single-line command, or any other render kind, takes the ORIGINAL
+/// one-`Span`-per-request path unchanged: `req.rendered` is already exactly
+/// right for those, and this only ever special-cases the one shape that
+/// was actually broken.
+fn permission_command_lines(req: &conway::PermissionRequest, theme: &Theme) -> Vec<Line<'static>> {
+    if req.render_kind == conway::RenderKind::ShellCommand {
+        if let Some(raw_command) = req.arguments.get("command").and_then(|v| v.as_str()) {
+            if raw_command.contains('\n') {
+                return raw_command
+                    .split('\n')
+                    .map(|line| {
+                        Line::from(Span::styled(
+                            conway::sanitize_control_chars(line),
+                            theme.emphasized,
+                        ))
+                    })
+                    .collect();
+            }
+        }
+    }
+    vec![Line::from(Span::styled(
+        req.rendered.clone(),
+        theme.emphasized,
+    ))]
 }
 
 /// Computes the diff [`permission_body_lines`] shows for a pending
@@ -2476,6 +2531,46 @@ mod tests {
         assert!(
             matches!(state.mode, Mode::Normal),
             "resolving the decision must return to Mode::Normal"
+        );
+    }
+
+    /// DOGFOOD 2 finding 4 (board item `01M3SJC96P99V9KNT7TDJBWZ66`): a
+    /// multi-line bash command (a heredoc folded into one `command`
+    /// argument) used to render as a single line with every embedded
+    /// newline replaced by `\u{FFFD}` -- `rendered` here stands in for what
+    /// `conway_runtime::tools::runner::sanitize_rendered` actually produces
+    /// for a multi-line command (every `\n` already laundered into the
+    /// placeholder by the time the request reaches the TUI at all). The
+    /// prompt's command block must recover the real line breaks from
+    /// `req.arguments` (never sanitized) instead, showing each command
+    /// line on its own row with no replacement glyph anywhere in the
+    /// block.
+    #[test]
+    fn permission_overlay_shows_real_line_breaks_for_a_multiline_shell_command() {
+        let raw_command = "cat <<'EOF' > out.txt\nline one\nline two\nEOF";
+        let sanitized_rendered = conway::sanitize_control_chars(raw_command);
+        assert!(
+            sanitized_rendered.contains('\u{FFFD}'),
+            "sanity: the fixture's `rendered` must reproduce the laundered-newline shape \
+             production actually sends: {sanitized_rendered:?}"
+        );
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let request = PermissionRequest {
+            arguments: serde_json::json!({ "command": raw_command }),
+            rendered: sanitized_rendered,
+            ..sample_request("placeholder")
+        };
+        let (prompt, _rx) = PendingPrompt::new_for_test(request);
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        let text = render_text(&state, 80, 24);
+        assert!(text.contains("cat <<'EOF' > out.txt"), "{text}");
+        assert!(text.contains("line one"), "{text}");
+        assert!(text.contains("line two"), "{text}");
+        assert!(
+            !text.contains('\u{FFFD}'),
+            "no replacement glyph should stand in for a real line break: {text}"
         );
     }
 

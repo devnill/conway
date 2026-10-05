@@ -110,7 +110,18 @@ pub struct Cli {
     /// flags cannot share a name). `None` (the default): the TUI starts in
     /// whichever mode `permissions.default_mode` resolves to (`prompt` if
     /// unset).
-    #[arg(long, value_enum)]
+    #[arg(
+        long,
+        value_enum,
+        help = "Override the TUI's starting permission mode for this one launch",
+        long_help = "Overrides the TUI's STARTING permission mode for this one launch -- \
+                      mirrors `permissions.default_mode` in settings.json, taking \
+                      precedence over it. Distinct from Shift-Tab/`/settings -> \
+                      permissions`, which still cycle the session's current mode after \
+                      startup -- this flag only ever sets where the session BEGINS. \
+                      Ignored by one-shot (-p). Default: whichever mode \
+                      `permissions.default_mode` resolves to (`prompt` if unset)."
+    )]
     pub default_permission_mode: Option<TuiPermissionMode>,
 
     /// Run the root agent under this role instead of the configured
@@ -179,7 +190,11 @@ pub struct Cli {
     /// deadline_secs`'s own config-wide default (still `0`/unbounded,
     /// which continues to govern the interactive TUI and any other
     /// caller). Same `--resume`/`--fork-from` restriction as `--max-turns`.
-    #[arg(long, value_name = "SECONDS")]
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        help = "Wall-clock ceiling for this run, in seconds (default: 300 for one-shot)"
+    )]
     pub max_seconds: Option<u64>,
 
     /// Constrain the run's structured result to a JSON Schema document read
@@ -220,7 +235,16 @@ pub struct Cli {
     /// extend this one): the TUI has no "create with this exact id" use
     /// case the way a script does, so `--session` at TUI startup keeps the
     /// refusal `--resume`/`--fork-from`/`--continue` just below shed.
-    #[arg(long, conflicts_with_all = ["resume", "fork_from", "continue_session"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["resume", "fork_from", "continue_session"],
+        help = "Use (creating if new) a specific session id or name",
+        long_help = "Use (creating if new) a specific session id. Also accepts an \
+                      operator-chosen name (`conway sessions name`) wherever it accepts an \
+                      id. An unclaimed name creates a fresh session and binds the name to \
+                      it in this same invocation; an id or an already-bound name resolves \
+                      to the \"already exists, use --resume instead\" usage error."
+    )]
     pub session: Option<String>,
 
     /// Reattach to a persisted session and continue its transcript. Also
@@ -234,7 +258,15 @@ pub struct Cli {
     /// `tui::app::startup::App::resolve_handle`'s own doc for the
     /// resulting flag interactions (budget/prompt flags still refused
     /// alongside it, matching one-shot's own `resolve_session`).
-    #[arg(long, conflicts_with_all = ["session", "fork_from", "continue_session"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["session", "fork_from", "continue_session"],
+        help = "Reattach to a persisted session and continue its transcript",
+        long_help = "Reattach to a persisted session and continue its transcript. Also \
+                      accepts an operator-chosen name (`conway sessions name`) wherever it \
+                      accepts an id. Honored at TUI startup too, not just by one-shot -- \
+                      opens the TUI on the named session with its history backfilled."
+    )]
     pub resume: Option<String>,
 
     /// Branch a new session from `<session-id-or-name>[@<seq>]`.
@@ -245,7 +277,11 @@ pub struct Cli {
     #[arg(
         long,
         value_name = "SID[@SEQ]",
-        conflicts_with_all = ["session", "resume", "continue_session"]
+        conflicts_with_all = ["session", "resume", "continue_session"],
+        help = "Branch a new session from <session-id-or-name>[@<seq>]",
+        long_help = "Branch a new session from `<session-id-or-name>[@<seq>]`. Honored at \
+                      TUI startup too, not just by one-shot -- see `--resume`'s own help \
+                      for what that means for the TUI specifically."
     )]
     pub fork_from: Option<String>,
 
@@ -268,7 +304,12 @@ pub struct Cli {
     #[arg(
         short = 'c',
         long = "continue",
-        conflicts_with_all = ["session", "resume", "fork_from"]
+        conflicts_with_all = ["session", "resume", "fork_from"],
+        help = "Resume the most recently written-to session for this project",
+        long_help = "Resume the most recently WRITTEN-TO session for this project (the \
+                      same project-keyed directory `--resume`/`--session` already scope \
+                      to) -- \"pick up where I left off,\" with no id to look up first. \
+                      TUI-only in this release."
     )]
     pub continue_session: bool,
 
@@ -320,6 +361,11 @@ pub enum Command {
     /// why this exists alongside the plugin-declared `conway
     /// conway.memory.list`/`conway.memory.forget` path, which already
     /// works and is left untouched.
+    #[command(
+        about = "Audit and remove what the model has remembered",
+        long_about = "List what the model has chosen to remember, or remove an entry from \
+                      it."
+    )]
     Memory(MemoryArgs),
     /// `conway plugin list|install|remove` (board item
     /// `01M1FSDRF20E2EGHCG3RK28DKH`): the headless half of the interactive
@@ -330,6 +376,11 @@ pub enum Command {
     /// before `External`'s own catch-all ever sees it, exactly like
     /// `sessions`/`routes`/`tools` above. See `commands::plugin`'s own
     /// module doc for the `list`/`install`/`remove` surface itself.
+    #[command(
+        about = "List, install, or remove plugins",
+        long_about = "List, install, or remove plugins -- the headless half of the \
+                      interactive `/plugin` command."
+    )]
     Plugin(PluginArgs),
     /// `conway trust settings|list|revoke` (board item
     /// `01M2TTWSQ53CDWB9VRGSX05XNQ`): the headless half of consent for a
@@ -346,6 +397,12 @@ pub enum Command {
     /// see `commands::trust`'s own module doc for why waiting until the
     /// ordinary dispatch point would make this command unreachable in the
     /// one situation it exists for.
+    #[command(
+        about = "Review and manage trust for a project-scoped settings file",
+        long_about = "Review, list, or revoke trust for a project-scoped `.conway/\
+                      settings.json` -- the headless half of consent, reachable even \
+                      where conway itself would otherwise refuse to start."
+    )]
     Trust(TrustArgs),
     /// `conway doctor [--json]` (board item `01M1YVXNPTBNH18ZEWFM18F00T`):
     /// runs the checks a first-week operator would otherwise diagnose by
@@ -364,6 +421,14 @@ pub enum Command {
     /// would refuse to build a `Conway` at all. See `commands::doctor::run`'s
     /// own doc for why it takes `env`/`--config`/`--root` directly rather
     /// than a built `Conway`.
+    #[command(
+        about = "Diagnose config, backend, routing, and plugin problems",
+        long_about = "Runs the checks a first-week operator would otherwise diagnose by \
+                      hand one error message at a time -- config loads, every configured \
+                      backend is reachable, every routing chain's context window resolves, \
+                      every installed plugin actually constructs, required binaries are on \
+                      PATH -- and reports each as pass/warn/fail with a one-line fix."
+    )]
     Doctor(DoctorArgs),
     /// Anything that is not one of the built-in subcommands above falls
     /// through here instead of failing to parse -- clap's own

@@ -158,6 +158,59 @@ fn routes_help_lists_explain() {
         .stdout(predicate::str::contains("explain"));
 }
 
+/// DOGFOOD 2 finding 5 (board item `01M3SJC96P99V9KNT7TDJBWZ66`): `conway
+/// --help` and several subcommands' `--help` used to print board item ids
+/// (clap derives `about`/`long_help` straight from the rustdoc doc
+/// comment, which cites them freely) and internal module references (e.g.
+/// `--default-permission-mode` citing
+/// `conway::config::schema::PermissionsConfig::default_mode`) -- neither
+/// is operator-facing. Every affected field/variant now carries an
+/// explicit, short `help`/`long_help`/`about`/`long_about` clap attribute
+/// instead, leaving the rustdoc itself untouched. Checked against the
+/// REAL compiled binary's actual `--help` output, for the top level and
+/// every built-in subcommand one level down -- the exact surfaces the
+/// dogfood finding named.
+#[test]
+fn help_output_names_no_board_item_or_ulid() {
+    let ulid_pattern = predicate::str::is_match(r"01M[0-9A-Z]{23}")
+        .expect("the ULID pattern must compile as a regex");
+    for args in [
+        vec!["--help"],
+        vec!["sessions", "--help"],
+        vec!["sessions", "show", "--help"],
+        vec!["sessions", "export", "--help"],
+        vec!["routes", "--help"],
+        vec!["routes", "explain", "--help"],
+        vec!["tools", "--help"],
+        vec!["memory", "--help"],
+        vec!["plugin", "--help"],
+        vec!["plugin", "list", "--help"],
+        vec!["plugin", "install", "--help"],
+        vec!["trust", "--help"],
+        vec!["trust", "project", "--help"],
+        vec!["doctor", "--help"],
+    ] {
+        let output = bin()
+            .args(&args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let text = String::from_utf8(output).expect("--help output must be valid UTF-8");
+        assert!(
+            !text.to_lowercase().contains("board item"),
+            "`conway {}` must not print a board item citation: {text}",
+            args.join(" ")
+        );
+        assert!(
+            !ulid_pattern.eval(&text),
+            "`conway {}` must not print a literal ULID: {text}",
+            args.join(" ")
+        );
+    }
+}
+
 #[test]
 fn unknown_flag_exits_usage_with_empty_stdout() {
     bin()
