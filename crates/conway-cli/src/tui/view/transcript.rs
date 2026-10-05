@@ -460,16 +460,19 @@ pub fn entry_lines(
         }
         // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review):
         // deliberately NOT `theme.error`/`theme.fatal_error`, or any other
-        // field read from the passed-in `theme` at all -- see
+        // PER-SLOT field read from the passed-in `theme` -- see
         // `Entry::SecurityNotice`'s own doc for why.
-        // `super::theme::Theme::security_notice_style` returns a style no
-        // `[tui.theme]` override can ever reach, regardless of its
-        // content: no config, trusted or not, can make this notice
-        // invisible. (Not an inline literal here, on purpose -- that
-        // function's own doc explains how it still honors this module's
-        // T1 convention that `theme.rs` alone constructs styles.)
+        // `theme.security_notice_style()` returns a style no `[tui.theme]`
+        // override can ever reach, regardless of its content: no
+        // `[tui.theme]`/`[tui.theme_overrides]` config, trusted or not, can
+        // make this notice invisible. (Not an inline literal here, on
+        // purpose -- that method's own doc explains how it still honors
+        // this module's T1 convention that `theme.rs` alone constructs
+        // styles, and why reading `theme.color_enabled` -- `NO_COLOR`/
+        // `tui.color`, board item `01M1YVX43MABAVX491HQ5ZCC2M` -- is a
+        // different, still-safe exposure.)
         Entry::SecurityNotice { text } => {
-            let style = super::theme::Theme::security_notice_style();
+            let style = theme.security_notice_style();
             text.split('\n')
                 .map(|line| Line::from(Span::styled(line.to_string(), style)))
                 .collect()
@@ -1536,7 +1539,7 @@ mod tests {
 
     /// **Security review finding, closed (board item
     /// `01M3TJQGJHFFPWE2YYN60WN1XB`)**: `Entry::SecurityNotice` renders in
-    /// `Theme::security_notice_style()`, NEVER the passed-in `theme`'s own
+    /// `theme.security_notice_style()`, NEVER the passed-in `theme`'s own
     /// `error`/`fatal_error` slots -- built a hostile theme whose `error`
     /// carries the `HIDDEN` modifier and confirms the rendered style
     /// carries neither that modifier nor that theme's color. **Fails
@@ -1578,6 +1581,37 @@ mod tests {
             Some(Color::Red),
             "must render in its own fixed red, not theme.error's configured \
              color: {:?}",
+            lines[0].spans[0].style
+        );
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: under `NO_COLOR`/
+    /// `tui.color = false` (`Theme::color_enabled == false`), this entry's
+    /// fixed red drops too -- `theme.security_notice_style()`'s own doc:
+    /// honoring `color_enabled` here is a global, environment-level
+    /// toggle, not a `[tui.theme]` override reaching the "no config can
+    /// hide this" style the test immediately above pins.
+    #[test]
+    fn security_notice_entry_style_drops_color_under_no_color() {
+        use ratatui::style::Color;
+
+        let no_color_theme = Theme::default().into_no_color();
+        let lines = entry_lines(
+            &Entry::SecurityNotice {
+                text: "project config ignored: /repo/.conway/settings.json".to_string(),
+            },
+            3,
+            false,
+            &ctrl_o(),
+            &no_color_theme,
+        );
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0].spans[0].style.fg,
+            None,
+            "NO_COLOR must strip even this unreachable-by-config style's \
+             fixed color: {:?}",
             lines[0].spans[0].style
         );
     }

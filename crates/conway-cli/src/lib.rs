@@ -41,6 +41,7 @@ mod model_pin;
 pub mod oneshot;
 mod plugin_rows;
 pub mod render;
+pub mod session_markdown;
 pub mod session_names;
 pub mod session_ref;
 pub mod signal;

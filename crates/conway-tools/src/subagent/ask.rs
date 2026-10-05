@@ -53,27 +53,17 @@ const DEFAULT_ASK_DEADLINE_SECS: u64 = 120;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AskArgs {
-    /// The prompt to run in the ephemeral fork. The child inherits this
-    /// agent's full context and effective role (fork semantics), AND this
-    /// agent's agent_def -- a parent def's tools selector, system prompt,
-    /// and model pin all apply to the child, exactly like an ordinary fork.
-    /// The one exception: a def-declared result_contract never applies to
-    /// this child (the reply is always plain text; there is no structured
-    /// field for a contract to validate).
+    // Full rationale lives in this module's own doc above (board item
+    // 01M41BC4KJAE8J1X3GAA36ZW6Y shortened these to the model-facing
+    // contract alone -- the prose doc comments the schema used to carry
+    // cost ~2.6k tokens on every single turn, fork/spawn/ask/steer/await/
+    // cancel included, whether or not a session ever delegates).
+    /// Prompt for the fork; inherits context, role, and agent_def (except
+    /// result_contract).
     prompt: String,
     #[serde(default)]
     budget: Option<BudgetArg>,
-    /// Selects which of the registered tools are announced to the ephemeral
-    /// child (`ToolSelector::Only`, the same mapping `conway_fork`/
-    /// `conway_spawn`'s `tools` arg uses), replacing whatever the child
-    /// would otherwise inherit (its own def's selector, if any) rather than
-    /// narrowing it: this selects what
-    /// the model is offered, it is NOT a capability restriction, so it can
-    /// name a tool an inherited def excludes -- the permission gate and the
-    /// confinement root are what actually bound what the child may execute.
-    /// Optional, so an older serialized call still reads: absent means the
-    /// child inherits the full set, as
-    /// before.
+    /// Tool names announced to the child; not a capability restriction.
     #[serde(default)]
     tools: Option<Vec<String>>,
 }
@@ -143,7 +133,7 @@ impl Tool for AskTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_ask"),
-            description: "Run a prompt in an ephemeral fork of this agent and return the child's full reply text. Use this to draft or curate context for a fresh spawn out-of-band, keeping the curation reasoning out of this agent's context window. Pass `tools` to select which tools are announced to the child; it does not restrict what the child may execute -- the permission gate and confinement root are the capability boundary, not this argument.".into(),
+            description: "Run a prompt in an ephemeral fork and return the child's full reply text.".into(),
             schema: schemars::schema_for!(AskArgs),
             category: ToolCategory::Delegate,
             // The child inherits AT MOST the caller's requested tool set

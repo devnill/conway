@@ -28,20 +28,20 @@ pub(super) struct AwaitArgs {
     agent_id: String,
 }
 
-/// The model-facing shape of [`CancelMode`] -- a local, `JsonSchema`-deriving enum the tool
-/// layer owns, mapped onto the domain type at `invoke` time rather than
-/// deriving `JsonSchema` on `conway_core::agent::CancelMode` itself.
+// The model-facing shape of `CancelMode` -- a local, `JsonSchema`-deriving
+// enum the tool layer owns, mapped onto the domain type at `invoke` time
+// rather than deriving `JsonSchema` on `conway_core::agent::CancelMode`
+// itself. Deliberately no doc comments on this enum or its variants:
+// `CancelTool::spec()`'s own top-level description (below) is the one
+// place `immediate`/`graceful` semantics are stated for the model -- a
+// per-variant doc here would only duplicate that at JSON-schema cost
+// (board item 01M41BC4KJAE8J1X3GAA36ZW6Y: the subagent tools' description/
+// schema prose cost ~2.6k tokens on every single turn).
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum CancelModeArg {
-    /// Stops now; does not wait for the current turn to finish, and
-    /// propagates to the whole subtree. The default.
     #[default]
     Immediate,
-    /// Lets the target finish its in-flight turn, then stops at the next
-    /// turn boundary. Stops only the named agent -- descendants are
-    /// unaffected. Does not reach an idle `keep_alive` agent parked at the
-    /// resume gate between turns; use `immediate` for that case.
     Graceful,
 }
 
@@ -58,22 +58,9 @@ impl From<CancelModeArg> for CancelMode {
 #[serde(deny_unknown_fields)]
 pub(super) struct CancelArgs {
     agent_id: String,
-    /// Why `agent_id` is being cancelled. Reaches `agent_id`'s OWN terminal
-    /// result (`AgentResult.status`'s `Cancelled { reason }`) on BOTH modes
-    /// -- but in `immediate` mode, which propagates to the whole subtree
-    /// structurally, only `agent_id` itself carries this reason; a
-    /// descendant swept up by the same cancellation was never itself named
-    /// here, so its own result falls back to a generic reason instead of
-    /// misattributing this one to it. Defaults to "cancelled by parent
-    /// agent" when omitted.
+    /// Default: "cancelled by parent agent".
     #[serde(default)]
     reason: Option<String>,
-    /// `immediate` (default) stops now and propagates to the whole subtree.
-    /// `graceful` lets the target finish its in-flight turn, then stops
-    /// only the named agent -- it does not itself cancel descendants, and
-    /// it cannot reach an idle `keep_alive` agent parked at the resume gate
-    /// between turns (that agent is not mid-turn to finish; use `immediate`
-    /// instead).
     #[serde(default)]
     mode: CancelModeArg,
 }
@@ -105,14 +92,9 @@ impl Tool for SteerTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_steer"),
-            description: "Send `text` to a running child agent, to redirect it or hand it \
-                information it did not have when it started. `agent_id` must be the id a \
-                prior `conway_fork`/`conway_spawn` call returned -- there is no other way \
-                to name a child. The message is delivered at the child's next turn \
-                boundary: it is queued, not injected immediately, so it never interrupts a \
-                tool call already in flight (a child mid-`bash` finishes that call first). \
-                Prefer `conway_cancel` instead when the child should stop entirely rather \
-                than keep going on new information."
+            description: "Send `text` to a running child agent; lands at its next turn \
+                boundary, never mid-tool-call. Use `conway_cancel` to stop it entirely \
+                instead."
                 .into(),
             schema: schemars::schema_for!(SteerArgs),
             category: ToolCategory::Delegate,
@@ -159,14 +141,9 @@ impl Tool for AwaitTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_await"),
-            description: "Blocks this turn until the named child agent finishes, then \
-                returns its terminal result: summary, any typed facts and artifacts it \
-                reported, any structured output, and its terminal status (completed, \
-                failed, cancelled, or budget-exceeded). If the child already finished \
-                before this call, it returns immediately with that same result -- waiting \
-                never blocks longer than the child actually ran. To fan out several \
-                children, keep working (or fire more forks/spawns) instead of awaiting \
-                each one right away; await each only once you actually need its result."
+            description: "Blocks until the named child finishes, returning its result: \
+                summary, facts, artifacts, structured output, status. Returns immediately \
+                if finished; never waits longer than the child ran."
                 .into(),
             schema: schemars::schema_for!(AwaitArgs),
             category: ToolCategory::Delegate,
@@ -209,12 +186,9 @@ impl Tool for CancelTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_cancel"),
-            description: "Cancel a running child agent. `mode` defaults to `immediate`: \
-                stops now and propagates to the whole subtree. `graceful` instead lets \
-                the target finish its in-flight turn, then stops only the named agent \
-                (descendants are unaffected); it cannot reach an idle keep_alive agent \
-                waiting between turns, since that agent has no in-flight turn to finish \
-                -- use `immediate` for that case."
+            description: "Cancel a running child. `immediate` (default) stops now, \
+                subtree-wide. `graceful` finishes the current turn, then stops only that \
+                agent; it can't reach an idle keep_alive agent between turns."
                 .into(),
             schema: schemars::schema_for!(CancelArgs),
             category: ToolCategory::Delegate,

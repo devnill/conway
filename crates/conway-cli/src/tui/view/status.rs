@@ -886,7 +886,7 @@ fn mode_label(mode: &Mode, activity: &Activity) -> String {
 /// ignored (`resolve_fields` only ever ADDS the field, never refuses one
 /// already there), and this is the one place that would otherwise render
 /// a false "ignored" marker on an ordinary, fully-trusted project.
-fn trust_ladder(state: &AppState, _theme: &Theme) -> Vec<Vec<Span<'static>>> {
+fn trust_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
     if !state.project_config_ignored {
         // Nothing was ignored: this field renders nothing at all, even if
         // an operator's own `fields` list names `trust` explicitly --
@@ -896,20 +896,23 @@ fn trust_ladder(state: &AppState, _theme: &Theme) -> Vec<Vec<Span<'static>>> {
         // appear on an ordinary, fully-trusted project.
         return vec![vec![]];
     }
-    // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review):
-    // deliberately `_theme: &Theme` above, UNUSED -- this marker must never
-    // read `theme.error` (or any other themed slot). An untrusted project
-    // `settings.json` could otherwise set `{"theme":{"error":{"modifiers":
-    // ["hidden"]}}}` and make the very marker naming it disappear (closed
-    // independently by `tui::config::load_from_options` trust-gating
-    // `[tui]` itself; this is the floor under that gate, not a substitute
-    // for it -- mirrors `Entry::SecurityNotice`'s own doc in
-    // `tui::state::transcript`). `Theme::security_notice_style` returns a
-    // style no `[tui.theme]` override can ever reach, regardless of its
-    // content -- not an inline literal here, on purpose, so this module
-    // keeps its own T1 convention (`theme.rs` alone constructs styles; see
-    // that function's own doc).
-    let fixed_style = Theme::security_notice_style();
+    // Board item `01M3TJQGJHFFPWE2YYN60WN1XB` (security review): this
+    // marker must never read `theme.error` (or any other PER-SLOT themed
+    // field). An untrusted project `settings.json` could otherwise set
+    // `{"theme":{"error":{"modifiers":["hidden"]}}}` and make the very
+    // marker naming it disappear (closed independently by
+    // `tui::config::load_from_options` trust-gating `[tui]` itself; this
+    // is the floor under that gate, not a substitute for it -- mirrors
+    // `Entry::SecurityNotice`'s own doc in `tui::state::transcript`).
+    // `theme.security_notice_style()` returns a style no `[tui.theme]`
+    // override can ever reach, regardless of its content -- not an inline
+    // literal here, on purpose, so this module keeps its own T1 convention
+    // (`theme.rs` alone constructs styles; see that method's own doc). It
+    // DOES read `theme.color_enabled` (`NO_COLOR`/`tui.color` -- board item
+    // `01M1YVX43MABAVX491HQ5ZCC2M`), a global toggle no `[tui.theme]`
+    // value can set either -- see that method's own doc for why this is a
+    // different exposure than the one this paragraph forecloses.
+    let fixed_style = theme.security_notice_style();
     vec![
         vec![Span::styled(
             "project config ignored".to_string(),

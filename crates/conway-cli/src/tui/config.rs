@@ -1,5 +1,6 @@
 //! The TUI's own presentation config: `[tui]` in `settings.json`
-//! (`TuiSection`, `ThemeConfig`, `ThemeStyleConfig`, `StatusLineConfig`).
+//! (`TuiSection`, `ThemeSetting`, `ThemeConfig`, `ThemeStyleConfig`,
+//! `StatusLineConfig`).
 //!
 //! **Stage 2a: moved here from `conway::config::schema`, verbatim in shape.**
 //! `conway`, the facade, is what a headless service or IDE embedding conway
@@ -47,8 +48,41 @@ use crate::cli::Cli;
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TuiSection {
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: either a built-in/custom
+    /// PRESET name (the new string shape) or the per-slot override table
+    /// this key has always been (unchanged -- see [`ThemeSetting`]'s own
+    /// doc for why the field stays named `theme`, and why this is an
+    /// `#[serde(untagged)]` enum rather than a second, differently-named
+    /// field). `crate::tui::view::theme::Theme::resolve` is what reads
+    /// this (and [`Self::theme_overrides`]/[`Self::color`]) into a built
+    /// [`crate::tui::view::theme::Theme`] -- `app/startup.rs` calls it
+    /// instead of `Theme::from_config` directly.
     #[serde(default)]
-    pub theme: ThemeConfig,
+    pub theme: ThemeSetting,
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: per-slot overrides applied
+    /// ON TOP of whatever [`Self::theme`] resolves to (a built-in preset, a
+    /// custom theme file, or -- the legacy shape -- [`Self::theme`] itself
+    /// already being the override table). The spec's own worked example
+    /// (`tui.theme = "light"` plus `tui.theme_overrides.<slot>`) is this
+    /// field; see [`ThemeSetting`]'s own doc for the full shape decision.
+    /// Same schema as the object form of [`Self::theme`] -- one override
+    /// schema, whether it arrives inline as the legacy `tui.theme` object
+    /// or here, alongside a preset name.
+    #[serde(default)]
+    pub theme_overrides: ThemeConfig,
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: `Some(false)` renders
+    /// without color (fg/bg), same as the `NO_COLOR` environment variable
+    /// (per no-color.org: present and non-empty) -- either disables it.
+    /// `None` (the default) and `Some(true)` both mean "on", mirroring
+    /// [`Self::tool_preview_lines`]'s own `Option<u32>` "`None` means the
+    /// built-in default" shape rather than `bool`'s own `#[derive(Default)]`
+    /// (which would default to `false`, the wrong way round for a feature
+    /// that must stay on unless something turns it off). See
+    /// `crate::tui::view::theme::Theme::resolve`/`Theme::into_no_color` for
+    /// what "without color" keeps (modifiers that carry meaning on their
+    /// own, like `REVERSED`/`BOLD`, stay; only `fg`/`bg` are stripped).
+    #[serde(default)]
+    pub color: Option<bool>,
     /// `[tui.status_line]`: declarative status-line field order +
     /// visibility. `fields` is the ordered list of field names to render; a
     /// field absent from the list is hidden, and the list's order is the
@@ -254,6 +288,101 @@ impl Default for StatusLineConfig {
     }
 }
 
+/// `[tui.theme]`'s value shape (board item `01M1YVX43MABAVX491HQ5ZCC2M`):
+/// either a plain string naming a PRESET -- one of `Theme`'s six built-ins
+/// (`"system"`, `"dark"`, `"light"`, `"solarized_dark"`, `"gruvbox"`,
+/// `"nord"`) or a custom theme's name (a file at
+/// `<config dir>/themes/<name>.json`, same shape as [`ThemeConfig`] --
+/// `crate::tui::view::theme::Theme::resolve` tries built-ins first, then
+/// that file) -- or [`ThemeConfig`] directly, the per-slot override table
+/// this key has ALWAYS been.
+///
+/// **Shape decision, and why: `#[serde(untagged)]` on the SAME key, not a
+/// second field.** The spec's own two worked alternatives were `tui.theme =
+/// "light"` plus a sibling `tui.theme_overrides.<slot>`, or `tui.theme.preset
+/// = "light"` alongside slot keys nested one level deeper. This picks the
+/// FIRST shape, but keeps it anchored on `tui.theme` itself staying the
+/// well-known key name (not renamed to, say, `tui.theme_name`): every
+/// existing `settings.json` with `"theme": {"user": {...}, ...}` (an
+/// object) keeps parsing EXACTLY as [`ThemeConfig`] today, byte for byte,
+/// because `untagged` tries [`ThemeSetting::Preset`] (a bare JSON string)
+/// first and falls through to [`ThemeSetting::Overrides`] (any JSON
+/// object) -- an existing config's shape never changes, so "keep existing
+/// per-slot configs working unchanged" holds by construction, not by a
+/// migration step. The second shape (`tui.theme.preset`) was rejected
+/// because it would have forced TODAY's per-slot keys down one more
+/// nesting level (`tui.theme.theme.user`, or a parallel `tui.theme.slots.*`
+/// -- either way, a breaking rename for every existing config), the exact
+/// thing the first shape's `theme_overrides` sibling avoids.
+///
+/// `CONWAY_TUI__THEME=dark` (item 3's own required env override) falls out
+/// of this for free: `conway::config::merge`'s env layer writes a bare JSON
+/// string at `tui.theme`, which `untagged` resolves to
+/// [`ThemeSetting::Preset`] exactly like a `settings.json` string would --
+/// no special-cased env handling needed, the SAME layered precedence (env
+/// over file) `CONWAY_TUI__TOOL_PREVIEW_LINES` and friends already have.
+/// Setting it alongside an existing object-shaped `tui.theme` in a
+/// LOWER-precedence source is not a composition this needs to resolve: env
+/// always wins outright at that leaf path, same as any other scalar
+/// `CONWAY_TUI__*` override of an object-shaped key would.
+///
+/// **`#[serde(untagged)]` on [`Serialize`](serde::Serialize) only -- NOT on
+/// [`Deserialize`](serde::Deserialize), which this type implements by hand
+/// below.** Serde's derived untagged `Deserialize` buffers the input and
+/// tries each variant in turn, discarding every variant's own error on
+/// failure and reporting only a generic "data did not match any variant"
+/// once all have failed -- which would have silently swallowed
+/// `a_typo_inside_tui_theme_is_a_surfaced_parse_error`'s own requirement
+/// that a typo'd slot name inside the object shape still names itself in
+/// the error. The hand-written impl below dispatches on the JSON value's
+/// own shape FIRST (string vs. object) rather than trying both blindly, so
+/// the object arm's `serde_json::from_value::<ThemeConfig>` failure -- with
+/// `#[serde(deny_unknown_fields)]`'s own specific, field-naming message --
+/// passes straight through untouched.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(untagged)]
+pub enum ThemeSetting {
+    /// A preset or custom-theme NAME -- resolved against `Theme`'s six
+    /// built-ins first, then `<config dir>/themes/<name>.json`, by
+    /// `crate::tui::view::theme::Theme::resolve`. An unresolvable name
+    /// falls back to the `"system"` default there (config is untrusted
+    /// input, never a panic) with a non-fatal startup notice naming it --
+    /// never surfaced here, since this type has no way to perform that
+    /// file-system lookup itself (it has no `env`/config-dir access, only
+    /// the raw deserialized string).
+    Preset(String),
+    /// The per-slot override table -- unchanged from before this board
+    /// item; see [`ThemeConfig`]'s own doc.
+    Overrides(ThemeConfig),
+}
+
+impl<'de> serde::Deserialize<'de> for ThemeSetting {
+    /// See this type's own doc for why this is hand-written rather than
+    /// `#[derive(Deserialize)]` + `#[serde(untagged)]`.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(name) => Ok(ThemeSetting::Preset(name)),
+            other => serde_json::from_value(other)
+                .map(ThemeSetting::Overrides)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+impl Default for ThemeSetting {
+    /// The ordinary unconfigured case (`[tui.theme]` absent entirely):
+    /// an empty override table, resolving to the `"system"` preset with no
+    /// overrides -- bit-for-bit what `[tui]` absent always rendered before
+    /// this board item.
+    fn default() -> Self {
+        ThemeSetting::Overrides(ThemeConfig::default())
+    }
+}
+
 /// `[tui.theme]`: a per-named-style override table. Each entry is an
 /// `Option<ThemeStyleConfig>` -- `None` (the default for every slot) means
 /// "use the TUI's built-in default for this named style"; `Some` overlays
@@ -264,7 +393,9 @@ impl Default for StatusLineConfig {
 /// can override just one named style without restating the rest.
 ///
 /// Field names match the `Theme` slot names in
-/// `crates/conway-cli/src/tui/view/theme.rs` one-for-one.
+/// `crates/conway-cli/src/tui/view/theme.rs` one-for-one. Also the exact
+/// shape a custom theme file (`<config dir>/themes/<name>.json`) uses --
+/// see [`ThemeSetting`]'s own doc.
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ThemeConfig {
@@ -387,6 +518,19 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// Test helper: every fixture in this module writes `[tui.theme]` as
+    /// the legacy per-slot OBJECT shape, never the new preset-string shape
+    /// -- so every one of them resolves to [`ThemeSetting::Overrides`].
+    /// Panics (with the actual value) if that ever stops being true, so a
+    /// future edit that changes a fixture's shape fails loudly here rather
+    /// than via a confusing downstream assertion mismatch.
+    fn theme_overrides(tui: &TuiSection) -> &ThemeConfig {
+        match &tui.theme {
+            ThemeSetting::Overrides(cfg) => cfg,
+            other => panic!("expected the legacy object shape, got {other:?}"),
+        }
+    }
+
     /// A `settings.json` with no `[tui]` key at all loads to every
     /// built-in default -- the ordinary, unconfigured case.
     #[test]
@@ -459,7 +603,7 @@ mod tests {
         let tui = load_from_options(options).expect("load must succeed");
 
         assert_eq!(
-            tui.theme.user,
+            theme_overrides(&tui).user,
             Some(ThemeStyleConfig {
                 fg: Some("cyan".to_string()),
                 bg: None,
@@ -467,7 +611,7 @@ mod tests {
             })
         );
         assert_eq!(
-            tui.theme.error,
+            theme_overrides(&tui).error,
             Some(ThemeStyleConfig {
                 fg: Some("red".to_string()),
                 bg: Some("black".to_string()),
@@ -541,7 +685,7 @@ mod tests {
         let tui = load_from_options(options).expect("load must succeed");
         assert_eq!(tui.tool_preview_lines, Some(999));
         assert_eq!(
-            tui.theme.error,
+            theme_overrides(&tui).error,
             Some(ThemeStyleConfig {
                 fg: Some("red".to_string()),
                 bg: None,
@@ -740,6 +884,150 @@ mod tests {
         let tui = load_from_options(options).expect("a supported value must load");
 
         assert_eq!(tui.editor_mode, EditorMode::Vim);
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: `tui.theme = "dark"` (the
+    /// NEW string shape) loads as [`ThemeSetting::Preset`], not
+    /// [`ThemeSetting::Overrides`] -- the `#[serde(untagged)]` enum's first
+    /// variant wins for a bare JSON string.
+    #[test]
+    fn theme_preset_string_loads_as_a_preset_name() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}},
+                "tui": {"theme": "dark"}
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("a preset-name string must load");
+
+        assert_eq!(tui.theme, ThemeSetting::Preset("dark".to_string()));
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: the spec's own worked
+    /// example -- `tui.theme = "light"` plus `tui.theme_overrides.<slot>` --
+    /// loads both halves, independently of each other.
+    #[test]
+    fn theme_preset_plus_theme_overrides_both_load() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}},
+                "tui": {
+                    "theme": "light",
+                    "theme_overrides": {"notice": {"fg": "magenta"}}
+                }
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("preset + overrides must load");
+
+        assert_eq!(tui.theme, ThemeSetting::Preset("light".to_string()));
+        assert_eq!(
+            tui.theme_overrides.notice,
+            Some(ThemeStyleConfig {
+                fg: Some("magenta".to_string()),
+                bg: None,
+                modifiers: vec![],
+            })
+        );
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: `tui.color = false` loads
+    /// as `Some(false)`; the key's absence loads as `None`, the "on unless
+    /// told otherwise" default -- see [`TuiSection::color`]'s own doc for
+    /// why this is `Option<bool>`, not plain `bool`.
+    #[test]
+    fn tui_color_false_loads_and_absence_defaults_to_none() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}},
+                "tui": {"color": false}
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("tui.color = false must load");
+        assert_eq!(tui.color, Some(false));
+        assert_eq!(TuiSection::default().color, None);
+    }
+
+    /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: `CONWAY_TUI__THEME`
+    /// reaches `tui.theme` as a [`ThemeSetting::Preset`] through the SAME
+    /// env layer `CONWAY_TUI__STATUS_LINE__FIELDS` already proves (test
+    /// immediately below) -- no special-cased env handling needed, see
+    /// [`ThemeSetting`]'s own doc.
+    #[test]
+    fn conway_tui_theme_env_var_sets_a_preset_name() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        env.insert("CONWAY_TUI__THEME".to_string(), "nord".to_string());
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: None,
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("load must succeed");
+        assert_eq!(tui.theme, ThemeSetting::Preset("nord".to_string()));
     }
 
     /// The `CONWAY_TUI__STATUS_LINE__FIELDS` env override reaches this

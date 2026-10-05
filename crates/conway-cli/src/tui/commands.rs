@@ -148,6 +148,18 @@ pub enum SlashCommand {
     /// `AppState` read (`state.transcript`/`state.diff_track`), no facade
     /// call -- same shape as [`SlashCommand::Tree`] immediately above.
     Diff,
+    /// `/export [<path>]` (board item `01M1YVW7JEYZ9VPR5FX3CZN7WQ`): writes
+    /// this session's Markdown transcript to `path`, or to a default name
+    /// (`export_default_path`'s own doc: `./conway-<session-short-id>.md`
+    /// in the current directory) when `path` is omitted. An ACTION,
+    /// singular -- like [`SlashCommand::Diff`] immediately above, this
+    /// takes no sub-form and produces one `Entry::Notice` naming what
+    /// happened. `execute`'s own arm never overwrites an existing file at
+    /// the resolved path (default or explicit alike) -- see its own doc
+    /// for why that is the one refusal this command has.
+    Export {
+        path: Option<String>,
+    },
     /// `agent` is `None` for a bare `/context` (board item
     /// `01M0RWKJD04JBR5NCVKBQXYHV4`: the only way to learn an id from the
     /// TUI was a wrong-on-purpose prefix guess) -- `execute` then resolves
@@ -544,6 +556,12 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             usage: "/diff",
             description: "show the cumulative diff of every file this session has edited/written",
         },
+        SlashCommand::Export { .. } => CommandSpec {
+            name: "/export",
+            usage: "/export [<path>]",
+            description: "write this session's transcript to a Markdown file (never overwrites \
+                           an existing one)",
+        },
         SlashCommand::Fork { .. } => CommandSpec {
             name: "/fork",
             usage: "/fork [--role <alias>|--model <backend/model>] [<text>] | @<agent> <directive>",
@@ -650,6 +668,7 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
         SlashCommand::Context { agent: None },
         SlashCommand::Tree,
         SlashCommand::Diff,
+        SlashCommand::Export { path: None },
         SlashCommand::Why,
         SlashCommand::Fork {
             agent: None,
@@ -766,6 +785,18 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/diff" => {
             parse_no_arg(rest, "/diff")?;
             Ok(SlashCommand::Diff)
+        }
+        "/export" => {
+            // `<path>` is optional free text, exactly like `/context`'s own
+            // bare-defaults form immediately below -- `execute` supplies
+            // the default name when this is `None`.
+            let value = rest.trim();
+            let path = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+            Ok(SlashCommand::Export { path })
         }
         "/why" => {
             parse_no_arg(rest, "/why")?;
@@ -1447,6 +1478,15 @@ pub trait Host {
     /// fact a caller may want on its own (e.g. "what session did this run
     /// begin as").
     fn session_id(&self) -> SessionId;
+    /// `/export`'s header: the operator-bound name (`conway sessions
+    /// name`) for THIS host's own [`Self::session_id`], if any -- the same
+    /// `conway.names` sidecar lookup `conway sessions list`'s `NAME`
+    /// column uses, narrowed to one session rather than scanning every
+    /// row. `None` when unbound (never a synthesized placeholder).
+    /// Synchronous: `NamesStore::load` is a small JSON file read with no
+    /// `SessionHandle`/`Conway` facade call behind it, mirroring [`Self::
+    /// tool_specs`]'s own "sync, not async" reasoning.
+    fn session_name(&self) -> Option<String>;
     /// Resolves `agent` to the `SessionId` of the session whose own
     /// append-only log is `agent`'s own (`SessionId`'s own doc) -- a thin
     /// passthrough to `SessionHandle::resolve_agent_session`. This is the
@@ -1780,6 +1820,14 @@ impl Host for LiveHost<'_> {
 
     fn session_id(&self) -> SessionId {
         self.handle.id()
+    }
+
+    fn session_name(&self) -> Option<String> {
+        let names = crate::session_names::NamesStore::load(&crate::session_names::session_root(
+            self.conway,
+        ))
+        .ok()?;
+        names.name_of(self.session_id()).map(|n| n.to_string())
     }
 
     async fn session_for(&self, agent: AgentId) -> conway::Result<SessionId> {
@@ -3054,6 +3102,10 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             render_diff_snapshot(state);
             Effect::None
         }
+        SlashCommand::Export { path } => {
+            run_export(state, host, path).await;
+            Effect::None
+        }
         SlashCommand::Fork {
             agent,
             directive,
@@ -4190,6 +4242,71 @@ fn render_diff_snapshot(state: &mut AppState) {
         let mut section = format!("## {path}\n");
         section.push_str(&diff_text);
         notice(state, section);
+    }
+}
+
+/// `/export`'s default output path when the operator gives none:
+/// `conway-<short-id>.md` under `cwd` -- the short id (`fmt::id_short`,
+/// board item `01M0V03FQGJ8C375QJDD75YH41`'s own carve-out for "one thing,
+/// not a choice among visible rows") is fine here precisely because this
+/// names ONE file for the one session this TUI process has open, never a
+/// row the operator must tell apart from a sibling on screen.
+fn export_default_path(cwd: &std::path::Path, sid: SessionId) -> std::path::PathBuf {
+    cwd.join(format!("conway-{}.md", crate::commands::fmt::id_short(sid)))
+}
+
+/// Board item `01M1YVW7JEYZ9VPR5FX3CZN7WQ`: `/export`'s own implementation.
+/// Resolves the output path (`path`, or [`export_default_path`] under the
+/// process's current directory), reads this session's own ancestry-
+/// resolved transcript (`host.transcript(host.root())` -- the SAME call
+/// `/context`/`conway sessions export` make), and writes its
+/// `crate::session_markdown::render`ing to disk.
+///
+/// **Never overwrites an existing file**, at EITHER the default path or an
+/// explicit one -- decided, not merely defaulted: a silent clobber of a
+/// file an operator may have already pasted into an editor, or a second
+/// `/export` run moments apart landing on the SAME default name, would
+/// destroy work with no undo. Refusing is a one-line `Entry::Notice`
+/// naming the path that already exists; the operator re-runs `/export`
+/// with a different path to proceed, never automatic renaming.
+async fn run_export<H: Host>(state: &mut AppState, host: &H, path: Option<String>) {
+    let out_path = match path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            export_default_path(&cwd, host.session_id())
+        }
+    };
+    if out_path.exists() {
+        notice(
+            state,
+            format!(
+                "{} already exists -- /export never overwrites; pass a different path",
+                out_path.display()
+            ),
+        );
+        return;
+    }
+
+    let records = match host.transcript(host.root()).await {
+        Ok(records) => records,
+        Err(e) => {
+            notice(state, format!("export failed: {e}"));
+            return;
+        }
+    };
+    let header = crate::session_markdown::Header {
+        session_id: host.session_id(),
+        name: host.session_name(),
+        models: crate::session_markdown::models_from_records(&records),
+        usage: crate::session_markdown::usage_from_records(&records),
+    };
+    let entries = backfill_entries(&records);
+    let markdown = crate::session_markdown::render(&entries, &header, state.tool_preview_lines);
+
+    match std::fs::write(&out_path, markdown) {
+        Ok(()) => notice(state, format!("wrote {}", out_path.display())),
+        Err(e) => notice(state, format!("export failed: {e}")),
     }
 }
 
@@ -5996,6 +6113,10 @@ mod tests {
         /// exercised by `bare_resume_with_no_sessions_gives_a_clear_
         /// notice`), `None` fails with `fake_error()`.
         resumable_sessions_result: Option<Vec<session_picker::ResumableSessionRow>>,
+        /// `Host::session_name`'s scripted response -- `None` by default
+        /// (an unnamed session, the common case). See
+        /// [`Self::with_session_name`].
+        session_name: Option<String>,
         /// Slice 2 (board item `01M3DTT078W25MD2S4527R0WAV`): `Host::
         /// skills_write_approval`'s scripted response -- `Ask` by default
         /// (`FakeHost::new`), the same default `conway_plugin_skills::
@@ -6032,6 +6153,7 @@ mod tests {
                 tool_plugin_ids: HashMap::new(),
                 resumable_sessions_result: None,
                 skills_write_approval: conway_plugin_skills::WriteApproval::Ask,
+                session_name: None,
             }
         }
 
@@ -6124,6 +6246,13 @@ mod tests {
             self
         }
 
+        /// Scripts `Host::session_name` to answer `Some(name)` -- see that
+        /// field's own doc.
+        fn with_session_name(mut self, name: impl Into<String>) -> Self {
+            self.session_name = Some(name.into());
+            self
+        }
+
         /// Scripts `cancel` to succeed -- see the `cancel_ok` field's own doc.
         fn with_cancel_ok(mut self) -> Self {
             self.cancel_ok = true;
@@ -6166,6 +6295,10 @@ mod tests {
 
         fn session_id(&self) -> SessionId {
             self.session
+        }
+
+        fn session_name(&self) -> Option<String> {
+            self.session_name.clone()
         }
 
         async fn session_for(&self, agent: AgentId) -> conway::Result<SessionId> {
@@ -8181,6 +8314,136 @@ mod tests {
         assert!(
             combined.contains("no files edited or written"),
             "a failed call must not count as a touch: {combined}"
+        );
+    }
+
+    /// A minimal, realistic one-assistant-turn fixture, used by every
+    /// `sessions_export_*` test below -- just enough for the Markdown
+    /// renderer's header (one model, non-zero usage) and body (one user
+    /// turn, one assistant reply) to have real content to prove against.
+    fn export_fixture_records() -> Vec<conway::LogRecord> {
+        vec![
+            conway::LogRecord::UserTurn {
+                seq: conway::LogSeq(0),
+                ts: chrono::Utc::now(),
+                text: "hello".to_string(),
+                prov: conway::Provenance::UserPrompt,
+            },
+            conway::LogRecord::Assistant {
+                seq: conway::LogSeq(1),
+                ts: chrono::Utc::now(),
+                content: vec![conway::plugin::ContentBlock::Text {
+                    text: "hi there".to_string(),
+                }],
+                model: ModelRef {
+                    backend: conway_core::ids::BackendId::new("anthropic"),
+                    model: conway::backend::ModelId::new("claude-test"),
+                },
+                route_reason: serde_json::json!({}),
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                    cache_accounting: Default::default(),
+                },
+                stop: conway::backend::StopReason::EndTurn,
+            },
+        ]
+    }
+
+    /// Board item `01M1YVW7JEYZ9VPR5FX3CZN7WQ`: `/export <path>` writes the
+    /// session's Markdown transcript to the given path, reading through
+    /// `Host::transcript`/`Host::session_name` -- never `state.transcript`
+    /// directly (a resumed session's live pane and its on-disk log can
+    /// legitimately differ in what `backfill_entries` produces for replayed
+    /// vs. live entries, and `/export` must answer for the durable log).
+    #[tokio::test]
+    async fn sessions_export_writes_markdown_file_to_given_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out_path = dir.path().join("out.md");
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root).with_session_name("my-session");
+        host.transcript = export_fixture_records();
+
+        execute(
+            SlashCommand::Export {
+                path: Some(out_path.to_string_lossy().to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let written = std::fs::read_to_string(&out_path).expect("export wrote the file");
+        assert!(written.contains(&format!("# Session {}", host.session_id())));
+        assert!(written.contains("- name: my-session"), "{written}");
+        assert!(written.contains("anthropic/claude-test"), "{written}");
+        assert!(written.contains("## User"), "{written}");
+        assert!(written.contains("hello"), "{written}");
+        assert!(written.contains("## Assistant"), "{written}");
+        assert!(written.contains("hi there"), "{written}");
+        let combined = notice_lines(&state).join("\n");
+        assert!(combined.contains("wrote"), "{combined}");
+        assert!(
+            combined.contains(&out_path.to_string_lossy().to_string()),
+            "{combined}"
+        );
+    }
+
+    /// The one refusal `/export` has: an existing file at the resolved path
+    /// is never overwritten, and the operator is told exactly why nothing
+    /// happened.
+    #[tokio::test]
+    async fn sessions_export_refuses_to_overwrite_an_existing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out_path = dir.path().join("out.md");
+        std::fs::write(&out_path, "pre-existing content\n").expect("seed");
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        host.transcript = export_fixture_records();
+
+        execute(
+            SlashCommand::Export {
+                path: Some(out_path.to_string_lossy().to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        // Untouched -- not merely "still exists", but byte-identical to
+        // what was there before `/export` ran.
+        assert_eq!(
+            std::fs::read_to_string(&out_path).expect("read back"),
+            "pre-existing content\n"
+        );
+        let combined = notice_lines(&state).join("\n");
+        assert!(combined.contains("already exists"), "{combined}");
+        assert!(combined.contains("never overwrites"), "{combined}");
+        assert!(
+            host.calls().is_empty(),
+            "the existing-file refusal must happen before any facade call: {:?}",
+            host.calls()
+        );
+    }
+
+    /// [`export_default_path`] in isolation -- the bare-`/export` case
+    /// `execute`'s own arm defers to when no path is given. Pure, no
+    /// `Host`/`AppState` involved.
+    #[test]
+    fn sessions_export_default_path_embeds_the_short_session_id() {
+        let sid = SessionId::new();
+        let cwd = std::path::Path::new("/tmp/wherever");
+
+        let got = export_default_path(cwd, sid);
+
+        assert_eq!(
+            got,
+            cwd.join(format!("conway-{}.md", crate::commands::fmt::id_short(sid)))
         );
     }
 

@@ -368,7 +368,7 @@ note.
 | `sessions show <id-or-name> [--json]` | Prints that session's ancestry-resolved transcript — its own records plus, if it's a fork child, everything it inherited. Default output is one `--- <kind> seq=<n> ---` block per record in Rust debug form; `--json` prints one compact JSON object per line (JSONL), the same wire shape the log itself uses. |
 | `sessions show <id-or-name> --diff` | Prints the cumulative diff of every path this session's own root agent edited or wrote, one `## <path>` section per path, instead of the ordinary record dump — the headless counterpart of the TUI's `/diff` command (`docs/interactive.md`'s "Diffs, not raw JSON"); both fold the same ordered sequence of successful `edit`/`write` calls through one shared reconstruction. Any `edit`/`write` call this session proposed and never logged a *result* for — the shape a kill mid-edit leaves behind — is listed separately under `## unfinished`, never folded into the diffs above it. See the notes below the table for what the reconstructed baseline can and cannot promise, and for why "root agent only" is a smaller limitation than it sounds. |
 | `sessions tree <id-or-name>` | Prints the session's fork/spawn tree as indented text: one line per node (role), starting from `<id-or-name>` itself and indenting each descendant under its parent. |
-| `sessions export <id-or-name> [--out PATH]` | Writes the ancestry-resolved transcript as JSONL — to `PATH` if given, else stdout. Same content as `show --json`, without the interleaved per-line inspection framing. |
+| `sessions export <id-or-name> [--out PATH] [--format jsonl\|markdown] [--tool-lines N]` | Writes the ancestry-resolved transcript — to `PATH` if given, else stdout. `--format jsonl` (the default, unchanged) is the same content as `show --json`, without the interleaved per-line inspection framing. `--format markdown` (below) renders the same transcript as readable Markdown instead. |
 | `sessions name <id-or-name> <name>` | Attaches `<name>` to a session, or — if `<id-or-name>` is itself an existing name — renames it. Refuses a `<name>` that parses as a valid ULID, and refuses one already bound to a *different* session, naming which session holds it — never a silent overwrite. A session carries at most one name; naming an already-named session moves its one name rather than adding a second. |
 | `sessions unname <id-or-name>` | Removes whichever name is bound to the resolved session. The session and its transcript are entirely unaffected — see [Where a name lives](#where-a-name-lives) below. |
 | `sessions label <id-or-name> <label>` | Attaches `<label>` to a session's own `SessionMeta.labels` — what `sessions list --label`/`conway.discover`'s `label` parameter match against. A session may carry any number of labels; attaching one it already has is a no-op success, not a refusal (unlike `name`'s ULID-shape/collision refusals — a label is not a bijective identifier). |
@@ -431,6 +431,42 @@ A few things worth knowing before you rely on the output:
   either a full ULID or an operator-chosen name (below) — never a
   shortened/prefix id, even though `list`/`tree`'s own table output
   truncates ids for display.
+
+### Markdown export
+
+A JSONL export (board item `01M1YVW7JEYZ9VPR5FX3CZN7WQ`) is right for a
+machine or for forking a session back open — it is wrong for pasting into a
+PR description, a chat message, or a note. `sessions export <id-or-name>
+--format markdown` renders the identical transcript the TUI's own pane
+shows (and the TUI's own `/export` writes — see
+[`interactive.md`](interactive.md)) as one Markdown document instead:
+
+- A header: the session id, its operator-bound name if one is set, every
+  model that served an `assistant` turn (in the order it was used), and
+  the session's cumulative token spend.
+- Each user turn, each assistant reply, and each tool call — a tool call's
+  output is folded to its first `--tool-lines` lines (default 3, matching
+  `[tui.tool_preview_lines]`'s own default; a line count outside `1..=200`
+  falls back to that default the same way the TUI's own setting does),
+  with a trailing note naming how many lines were hidden.
+- Notices (forked-child directives, parent steers, a runtime-authored
+  system note, a child's terminal result, and so on).
+
+Tool output and model text are untrusted strings that may themselves
+contain backtick fences — each fenced block in the rendered Markdown is
+sized to the longest run of backticks already present in its own content
+(at least one longer, floor three), so that content can never prematurely
+close the fence around it. Every string is also run through the same
+control-character sanitizer the TUI's transcript pane uses, so a raw ANSI
+escape sequence embedded in tool output cannot reach the rendered file as
+a live control byte.
+
+**Redaction is out of scope.** Markdown rendering shows exactly what the
+transcript already holds — the same policy `show`/`export --format
+jsonl` and the TUI pane itself already have. If a tool's output ever
+included a credential or token, it is in the rendered Markdown too;
+review before pasting a session export anywhere, the same as you would a
+terminal scrollback.
 
 ### Where a name lives
 
