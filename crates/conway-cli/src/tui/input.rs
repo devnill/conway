@@ -1634,6 +1634,35 @@ fn permission_typeahead_intercepts(
 }
 
 fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
+    // Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`, checked before even the
+    // typeahead guard immediately below (though that guard's own
+    // `!key.modifiers.is_empty()` bare-Char check already never matches a
+    // chorded key -- this is checked first anyway, so a future edit to that
+    // predicate can never accidentally swallow it again): every OTHER
+    // modal-bearing surface's own key handler lets the quit keys
+    // (`Ctrl-C`/`Ctrl-D`) pass through as `Action::CtrlC`/`Action::Quit`
+    // (see `Mode`'s own doc) -- this one used to be the one exception,
+    // falling through to the bare-keypress guard a few lines down
+    // (`if !key.modifiers.is_empty() { return Action::None; }`), which
+    // swallowed `Ctrl-C` along with every other chord. The operator's
+    // universal "stop this" gesture did nothing while a permission prompt
+    // was up, no matter how long it sat there. `Ctrl-C` here is NOT a bare
+    // pass-through, unlike every other surface's: `App::handle_ctrl_c`
+    // (`tui/app/shutdown.rs`) denies the pending call (and anything queued
+    // behind it for the SAME agent) in addition to its own ordinary
+    // root-turn abort -- see that method's own doc for the sequence.
+    // `Ctrl-D` passes through as a bare `Action::Quit` exactly like every
+    // other surface; quitting with a prompt still open needs no special
+    // handling here -- the whole process exits, dropping the `PendingPrompt`
+    // (and its reply channel) along with it, [`crate::tui::gate::TuiGate`]'s
+    // own documented fail-closed fallback for exactly that case.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
     // Board item `01M44PK089DF2M9TM3C4P5CKMZ`, checked FIRST, ahead of even
     // the scroll keys: "typed input never answers a permission prompt" is
     // unconditional for the duration of the window -- see

@@ -3313,6 +3313,62 @@ impl PermissionBroker {
         PermissionOutcome::from(decision)
     }
 
+    /// Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`: resolves `call` as denied
+    /// because its own turn was aborted while [`Self::decide`] was still
+    /// awaiting an answer -- `crate::tools::runner::execute_one` races
+    /// `Self::decide` against the SAME per-turn `CancellationToken`
+    /// `SessionHandle::abort_turn` trips (`ToolBatchCtx::cancel`, forwarded
+    /// through unchanged from `AgentLoop::run_inner`'s own `turn_cancel`),
+    /// and calls this method in the branch that race loses, instead of
+    /// leaving the dropped `Self::decide` future's own `PermissionGate`
+    /// wait as the call's only (never-to-arrive) resolution.
+    ///
+    /// **Why this is not just `Self::decide` taking a cancellation
+    /// parameter.** `Self::decide` has on the order of a hundred existing
+    /// call sites across this crate's own tests and `conway-runtime/tests/
+    /// permission_broker.rs`, none of which have any reason to supply one --
+    /// widening its signature would mean teaching every one of them to pass
+    /// an inert token for a path they do not exercise. Racing at the single
+    /// production call site, and recording the loss here, keeps that whole
+    /// surface untouched.
+    ///
+    /// **Why `Deny`/`Denied`, not a new [`PermissionDecisionRecordKind`]/
+    /// [`PermissionDecisionKind`] variant.** An aborted call never runs --
+    /// exactly the observable outcome a live operator `n` already produces
+    /// (`PermissionDecisionKind::Denied` is what `AppState::apply_event`'s
+    /// `Event::PermissionResolved` arm already keys the TUI's "tool call
+    /// denied" notice and rung-clearing off, in `conway-cli`) -- so reusing
+    /// it needs no new reader to learn a fourth outcome. What differs is
+    /// WHO/WHAT decided it: [`PermissionDecisionSource::Abort`] (its own doc
+    /// has the full reasoning for why none of the pre-existing sources fit).
+    pub(crate) async fn record_turn_aborted(
+        &self,
+        ctx: &PermissionCtx,
+        call: &AuthorizedCall,
+    ) -> PermissionOutcome {
+        self.emit(
+            ctx,
+            Event::PermissionResolved {
+                call_id: call.call_id.clone(),
+                decision: PermissionDecisionKind::Denied,
+            },
+        );
+        let rendered_error = format!(
+            "`{}` was not authorized: its turn was aborted while awaiting a decision",
+            call.tool.as_str()
+        );
+        self.record_decision(
+            ctx,
+            call,
+            PermissionDecisionRecordKind::Deny,
+            PermissionDecisionSource::Abort,
+            None,
+            Some(rendered_error.clone()),
+        )
+        .await;
+        PermissionOutcome::Deny { rendered_error }
+    }
+
     fn cached_grant_covers(&self, key: &CacheKey, ctx: &PermissionCtx) -> bool {
         let cache = self.cache.read().expect("permission cache poisoned");
         cache

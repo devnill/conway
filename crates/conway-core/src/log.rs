@@ -389,6 +389,23 @@ pub enum PermissionDecisionSource {
     /// ([`PermissionDecisionRecordKind::DefaultInProjectRead`]) -- no
     /// operator-authored rule, cached grant, or mode fallback was consulted.
     Default,
+    /// Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`: resolved because the call's
+    /// own turn was aborted (`conway_runtime::tree::AgentTree::abort_turn`,
+    /// reached by `Ctrl-C`'s first press, `/quit`, a SIGTERM/SIGHUP shutdown,
+    /// or any other caller of that primitive) while
+    /// `conway_runtime::permission::PermissionBroker::decide` was still
+    /// awaiting an answer -- no `PermissionGate::check` reply ever arrived
+    /// for this call. Deliberately NOT [`Self::Operator`]: an abort is not
+    /// necessarily the operator's own deliberate "no" (a background
+    /// subagent's turn can be aborted by a quit the operator aimed at a
+    /// DIFFERENT agent entirely), and none of `Rule`/`Hook`/`Mode`/
+    /// `DefaultInProjectRead` describe "cancelled out from under a pending
+    /// wait" either -- every one of those resolves BEFORE the gate is ever
+    /// reached, while this resolves a call that already reached it. Paired
+    /// with [`PermissionDecisionRecordKind::Deny`] (the same bare-reason
+    /// `Deny` a confinement-root refusal already reuses): an aborted call
+    /// never runs, the identical observable outcome a live `n` produces.
+    Abort,
 }
 
 /// Filter for session listing.

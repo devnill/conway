@@ -550,7 +550,28 @@ async fn execute_one(
         default_read_root,
     };
 
-    match broker.decide(&perm_ctx, &authorized).await {
+    // Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`: raced against `batch_cancel`
+    // -- `broker.decide` previously ran unraced, ahead of even this
+    // function's OWN cancel-racing `tokio::select!` further down (the
+    // `call_cancel` one, just below) -- so a call sitting in `decide`'s own
+    // blocking wait on `PermissionGate::check` (the TUI's permission prompt,
+    // in production) could not be interrupted by `SessionHandle::abort_turn`
+    // at all: the turn's `CancellationToken` ticked over, but nothing
+    // downstream of it was listening yet. `biased`, matching the later
+    // select: a cancellation already observed when this is first polled
+    // wins outright rather than racing a `decide` that has not even started
+    // its own first `.await`. The losing branch here is `broker.decide`
+    // itself -- dropped mid-flight, which in turn drops whatever
+    // `PermissionGate::check` future it was awaiting (the TUI's own pending
+    // prompt reply channel, in production); `PermissionBroker::
+    // record_turn_aborted`'s own doc has the full reasoning for why THIS
+    // call records the resolution instead.
+    let decision = tokio::select! {
+        biased;
+        _ = batch_cancel.cancelled() => broker.record_turn_aborted(&perm_ctx, &authorized).await,
+        outcome = broker.decide(&perm_ctx, &authorized) => outcome,
+    };
+    match decision {
         PermissionOutcome::Allow => {}
         // A denial is model-visible feedback, never an abort: no
         // `ToolCallStarted` is emitted and `invoke` is never called.

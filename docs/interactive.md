@@ -177,7 +177,7 @@ while you're composing:
 | `Ctrl-G` | Edit the current input in `$VISUAL`/`$EDITOR` (falling back to `vi`) — see "Keybindings" below. |
 | `Home` / `End` | With the input box empty, jump the transcript to the top/tail instead of moving the cursor. |
 | `PageUp` / `PageDown` | Scroll the transcript a page at a time. |
-| `Ctrl-C` | Abort the session's current reply, in place — the session stays live, and it accepts and answers your next message normally. Pressed with nothing running, it does nothing destructive at all (just a quiet notice that a second press is what quits). Also abandons an in-flight `/ask` or `/distill`, if one is running — see below. |
+| `Ctrl-C` | Abort the session's current reply, in place — the session stays live, and it accepts and answers your next message normally. Pressed with nothing running, it does nothing destructive at all (just a quiet notice that a second press is what quits). Also abandons an in-flight `/ask` or `/distill`, if one is running, and denies a pending permission prompt, if one is showing — see below, and "The permission prompt" below. |
 | `Ctrl-D` | Quit, when the input box is empty. |
 | `@` + a few letters | Open a file-mention completion list — see "Mentioning files," below. |
 | `Tab` | Inside an open mention list, insert the highlighted candidate; otherwise, complete the path-shaped word under the cursor. |
@@ -734,6 +734,19 @@ Your options:
 | `n` | Deny this call. |
 | `Esc` | Deny this call, and tell the model to try a different approach. |
 | `PageUp` / `PageDown` | Scroll a long command's own display. |
+| `Ctrl-C` | Deny this call AND abort the session's current reply — see "`Ctrl-C` stops this too," below. |
+
+**`Ctrl-C` stops this too.** Every other key above only ever decides the ONE
+call on screen; `Ctrl-C` is conway's universal "stop this" gesture, and a
+permission prompt sitting on screen no longer blocks it. Pressing it here
+denies the pending call (the prompt closes, and the tool never runs — the
+model sees a plain denial, the same as `n`) and also aborts the session's
+current reply, exactly as it would with no prompt open at all (the session
+stays live; see the keyboard table above). Any OTHER prompt still queued
+behind this one for the SAME call's agent is denied too, rather than left to
+surface next for a turn that no longer exists — a queued prompt from a
+DIFFERENT agent is unaffected. The second `Ctrl-C` within the usual window
+still quits, same as always.
 
 **`a` needs a deliberate second keystroke.** The first `[a]` does not grant
 anything yet — it arms a confirmation, and the prompt's own hint line
@@ -753,7 +766,10 @@ the prompt appearing, or while the input box already held a draft at that
 instant, is treated as ongoing typing and goes into the draft instead —
 never into a decision — for a window that widens automatically if you were
 already mid-draft when the prompt interrupted you. `y`/`n`/`a`/`p`/`s` all
-answer normally again, as single keys, once that window closes.
+answer normally again, as single keys, once that window closes. `Ctrl-C` is
+never subject to this window at all — it is never typeahead, by
+construction, so it denies the pending call (see above) the instant it is
+pressed, mid-sentence or not.
 
 The guard is vim-aware: with `tui.editor_mode = "vim"` (see "Vim editing
 mode," above) in NORMAL mode, a key inside the window runs as its own vim

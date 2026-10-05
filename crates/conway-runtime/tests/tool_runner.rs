@@ -339,6 +339,30 @@ fn runner_with_gate(
     (ToolRunner::new(registry, broker, bus.clone()), bus)
 }
 
+/// A `PermissionGate` that never answers -- `PermissionGate`'s own doc:
+/// "the gate may block indefinitely", which production relies on being true
+/// of a REAL operator who has not yet looked at the prompt. Used by board
+/// item `01M3YPYDAMR7KPN2WH9RS8TRC7`'s own acceptance test, below, to prove
+/// `ToolRunner`'s cancellation race around `PermissionBroker::decide`
+/// (`conway_runtime::tools::runner::execute_one`, this crate's own private
+/// call site) bounds a call stuck here, rather than only a call stuck on a
+/// gate that eventually (if slowly) answers.
+struct HangingGate;
+
+#[async_trait]
+impl conway_core::ports::PermissionGate for HangingGate {
+    async fn check(&self, _req: conway_core::agent::PermissionRequest) -> PermissionDecision {
+        std::future::pending().await
+    }
+}
+
+fn runner_with_hanging_gate(registry: Arc<PluginRegistry>) -> (ToolRunner, Arc<EventBus>) {
+    let bus = EventBus::new(1024);
+    let gate: Arc<dyn conway_core::ports::PermissionGate> = Arc::new(HangingGate);
+    let broker = Arc::new(PermissionBroker::new(gate, bus.clone()));
+    (ToolRunner::new(registry, broker, bus.clone()), bus)
+}
+
 fn batch_ctx(max_parallel_tools: usize) -> ToolBatchCtx {
     batch_ctx_with_chdir(max_parallel_tools, CwdHandle::new(PathBuf::from("/tmp")))
 }
@@ -745,6 +769,90 @@ async fn batch_cancellation_returns_within_100ms_with_cancelled_outcomes() {
     for outcome in &outcomes {
         assert!(text_of(outcome).contains("cancelled"), "{outcome:?}");
     }
+}
+
+/// **Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`'s own acceptance test: an
+/// abort during a call still PENDING its permission decision resolves
+/// within a bound, never leaves the batch's own caller hanging.** Before
+/// that item, `PermissionBroker::decide` ran unraced, ahead of even this
+/// batch's own cancel-racing `tokio::select!`
+/// (`batch_cancellation_returns_within_100ms_with_cancelled_outcomes`,
+/// immediately above -- that test's own tool is already running by the time
+/// its cancellation fires; THIS one fires while the call has not even
+/// reached the tool yet, still blocked on [`HangingGate`], which never
+/// answers at all) -- so nothing downstream of `ctx.cancel` was listening
+/// yet for a call in that state, and `run_batch` would have hung for the
+/// FULL `tokio::time::timeout` bound below, every time, rather than
+/// resolving promptly. Wrapped in `tokio::time::timeout` per that item's own
+/// acceptance criterion ("wrap in `tokio::time::timeout`"); the elapsed-time
+/// assertion pins "promptly," not merely "eventually," matching the sibling
+/// test's own `100ms` bound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn permission_decision_aborted_by_turn_cancel_resolves_within_a_bound() {
+    let reg = registry(vec![Arc::new(EchoTool(ToolName::new("read")))]);
+    let (runner, bus) = runner_with_hanging_gate(reg);
+    let mut stream = bus.subscribe();
+    let mut ctx = batch_ctx(2);
+    let cancel = CancellationToken::new();
+    ctx.cancel = cancel.clone();
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cancel.cancel();
+    });
+
+    let start = Instant::now();
+    let outcomes = tokio::time::timeout(
+        Duration::from_secs(5),
+        runner.run_batch(&ctx, vec![call("c1", "read", serde_json::json!({}))]),
+    )
+    .await
+    .expect(
+        "LOAD-BEARING: run_batch must resolve within the bound even though the gate it is \
+         blocked on never answers at all -- a timeout here means the turn's own abort still \
+         cannot interrupt a pending permission decision",
+    );
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "the race must resolve promptly once cancelled, not merely eventually: {elapsed:?}"
+    );
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        outcomes[0].is_error,
+        "an aborted permission decision must deny the call, never run it: {:?}",
+        outcomes[0]
+    );
+
+    // Drain every envelope emitted for this call: `ToolCallStarted` must
+    // never appear (the call never ran), and the persisted-decision-facing
+    // `Event::PermissionDecision` must name its own distinct source -- see
+    // `PermissionDecisionSource::Abort`'s own doc for why neither `Operator`
+    // nor any pre-existing source fits a call no live gate reply ever
+    // resolved.
+    let mut tags = Vec::new();
+    let mut source = None;
+    while let Ok(Some(envelope)) = tokio::time::timeout(
+        Duration::from_millis(200),
+        futures::StreamExt::next(&mut stream),
+    )
+    .await
+    {
+        if let Event::PermissionDecision { source: s, .. } = &envelope.event {
+            source = Some(*s);
+        }
+        tags.push(event_tag(&envelope.event));
+    }
+    assert!(!tags.contains(&"tool_call_started"), "{tags:?}");
+    assert!(tags.contains(&"permission_requested"), "{tags:?}");
+    assert!(tags.contains(&"permission_resolved"), "{tags:?}");
+    assert_eq!(
+        source,
+        Some(conway_core::log::PermissionDecisionSource::Abort),
+        "the persisted decision must name the abort as its source, not the operator or any \
+         rule/hook/mode step -- none of those ever ran for this call"
+    );
 }
 
 /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`, review round 2: an

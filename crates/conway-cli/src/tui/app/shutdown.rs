@@ -129,6 +129,22 @@ impl App {
         // being independent of it (both best-effort, both checked before
         // the root-turn cancel below).
         self.abandon_distill();
+        // Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`: a no-op when `mode` is
+        // not `AwaitingPermission` (`AppState::
+        // deny_current_permission_for_ctrl_c`'s own guard) -- mirrors
+        // `abandon_ask`/`abandon_distill` immediately above, independent of
+        // both (a permission prompt can be showing with neither an ask nor
+        // a `/distill` in flight, and vice versa). Checked before the
+        // root-turn abort below for the same reason those two are: the
+        // prompt's own "operator pressed Ctrl-C" denial should already be
+        // recorded before whatever the abort reports. `Ctrl-C` used to do
+        // nothing at all while a permission prompt was up (`input.rs::
+        // handle_permission_key` swallowed it before it ever became
+        // `Action::CtrlC`) -- the operator's universal "stop this" gesture
+        // reaching this method at all is board item
+        // `01M3YPYDAMR7KPN2WH9RS8TRC7`'s own `input.rs` half; this is the
+        // other half, the actual stop.
+        self.state.deny_current_permission_for_ctrl_c();
         // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: `abort_turn`, not
         // `cancel` -- stops only the root's current turn (if any), leaving
         // the agent itself, and the session, alive. `Ok(true)` means a live
@@ -465,11 +481,231 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
-    use super::super::fixtures::{echo_conway_and_store, echo_conway_over, minimal_cli};
+    use async_trait::async_trait;
+    use conway::test_support::test_builder;
+    use conway::{Conway, PermissionGate, Plugin, Tool};
+    use conway_core::content::{
+        ContentBlock, PermissionClass, StopReason, ToolCall, ToolCategory, ToolSpec,
+        TruncationPolicy, Usage,
+    };
+    use conway_core::error::ToolError;
+    use conway_core::ids::{BackendId, ToolName};
+    use conway_core::ports::{GenerateResponse, PluginManifest, ToolCtx, ToolOutput};
+    use conway_testkit::{text_response, ScriptedBackend, ScriptedTurn};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::super::fixtures::{base_config, echo_conway_and_store, echo_conway_over, minimal_cli};
     use super::super::App;
-    use crate::tui::state::Entry;
+    use crate::tui::gate::{GateReceiver, TuiGate};
+    use crate::tui::input::{self, Action};
+    use crate::tui::state::{Entry, Mode};
+
+    /// Bounds every `tokio::time::timeout` in this module's own `Ctrl-C`
+    /// permission-prompt test -- a hang detector only, mirroring `tui::app::
+    /// ask`'s own `HANG_TIMEOUT` (that module's own doc has the full
+    /// reasoning for why this must stay generous rather than tuned near an
+    /// uncontended duration).
+    const HANG_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// A trivial always-succeeds tool whose invocation is directly
+    /// observable (`invoked`, flipped `true` the one time `invoke` actually
+    /// runs) -- only its INVOCABILITY (which requires a permission decision
+    /// under `base_config`'s default `Prompt` mode) matters to this module's
+    /// own test, never its output. Mirrors `tui::app::ask`'s own
+    /// `MarkerTool` (that module's own doc: a separate, not-reusable-from-
+    /// here private fixture) with the one addition this test needs: a live
+    /// "did this actually run" flag, so "the tool not run" is a direct
+    /// observation rather than an inference from the absence of a later
+    /// event.
+    struct MarkerTool {
+        invoked: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Tool for MarkerTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: ToolName::new("marker"),
+                description: "test-only marker tool".into(),
+                schema: serde_json::from_value(serde_json::json!({"type": "object"})).unwrap(),
+                category: ToolCategory::Read,
+                permission: PermissionClass::Safe,
+            }
+        }
+
+        async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+            self.invoked.store(true, Ordering::SeqCst);
+            Ok(ToolOutput {
+                blocks: vec![ContentBlock::Text {
+                    text: "marked".into(),
+                }],
+                is_error: false,
+                truncation: TruncationPolicy::None,
+                artifacts: vec![],
+            })
+        }
+    }
+
+    struct MarkerPlugin {
+        invoked: Arc<AtomicBool>,
+    }
+
+    impl Plugin for MarkerPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: "test.marker".to_string(),
+                version: "0.0.0".to_string(),
+                tools: vec![ToolName::new("marker")],
+                required_host_caps: vec![],
+                optional_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![Arc::new(MarkerTool {
+                invoked: self.invoked.clone(),
+            })]
+        }
+    }
+
+    fn tool_call_response(call_id: &str, tool: &str) -> GenerateResponse {
+        GenerateResponse {
+            content: vec![],
+            tool_calls: vec![ToolCall {
+                call_id: call_id.to_string(),
+                name: ToolName::new(tool),
+                arguments: serde_json::json!({}),
+            }],
+            stop: StopReason::ToolUse,
+            usage: Usage::default(),
+        }
+    }
+
+    /// A real `TuiGate` (not a fake double -- production wiring, `main.rs`'s
+    /// own shape) wired into a fresh `Conway` whose backend scripts the
+    /// ROOT's own first turn as ONE tool call (`marker`, which needs a
+    /// permission decision under the default `Prompt` mode) followed by a
+    /// final text reply the root's turn is never expected to reach in THIS
+    /// module's own `permission_prompt_ctrl_c_denies_the_call_and_aborts_
+    /// the_turn_keeping_the_session_live` test (this function's one caller):
+    /// an aborted turn's own tool outcomes are dropped before any later
+    /// backend turn is ever requested (`conway-runtime/src/agent_loop.rs`'s
+    /// `turn_cancel.is_cancelled()` branch), so this second scripted turn is
+    /// deliberately never consumed. Returns the matching `GateReceiver` and
+    /// the `invoked` flag so the test can play the operator and then prove
+    /// the call never ran.
+    fn conway_with_real_gate() -> (Conway, GateReceiver, Arc<AtomicBool>) {
+        let (gate, gate_rx) = TuiGate::channel();
+        let gate: Arc<dyn PermissionGate> = Arc::new(gate);
+        let invoked = Arc::new(AtomicBool::new(false));
+        let backend = Arc::new(
+            ScriptedBackend::new(vec![
+                ScriptedTurn::Respond(tool_call_response("call_1", "marker")),
+                ScriptedTurn::Respond(text_response("should never be reached")),
+            ])
+            .with_id(BackendId::new("fake")),
+        );
+        let conway = test_builder(base_config())
+            .with_backend(backend)
+            .with_permission_gate(gate)
+            .with_plugin(Arc::new(MarkerPlugin {
+                invoked: invoked.clone(),
+            }))
+            .build()
+            .expect("build should succeed with every port injected");
+        (conway, gate_rx, invoked)
+    }
+
+    /// **Acceptance test (board item `01M3YPYDAMR7KPN2WH9RS8TRC7`): a
+    /// pending permission prompt + `Ctrl-C` leaves the session live, the
+    /// turn aborted, the prompt gone, and the tool never run.** Drives the
+    /// REAL key router (`input::handle_key`) first -- pinning the `input.rs`
+    /// half of the fix (`Mode::AwaitingPermission`'s own key handler used to
+    /// swallow `Ctrl-C` before it ever became `Action::CtrlC`) -- then
+    /// dispatches through `App::handle_ctrl_c` exactly as `app/run.rs`'s own
+    /// `Action::CtrlC` arm does, pinning the `shutdown.rs` half.
+    #[tokio::test]
+    async fn permission_prompt_ctrl_c_denies_the_call_and_aborts_the_turn_keeping_the_session_live(
+    ) {
+        let (conway, mut gate_rx, invoked) = conway_with_real_gate();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+
+        app.submit("please use the marker tool".to_string())
+            .await
+            .expect("submit should not error");
+
+        let prompt = tokio::time::timeout(HANG_TIMEOUT, gate_rx.recv())
+            .await
+            .expect("the tool call must reach the gate promptly")
+            .expect("TuiGate's sender half is alive");
+        app.state.offer_prompt(prompt);
+        assert!(
+            matches!(app.state.mode, Mode::AwaitingPermission(_)),
+            "offer_prompt must promote the freshly-arrived request to AwaitingPermission, got: \
+             {:?}",
+            app.state.mode
+        );
+        // This test's own subject is `Ctrl-C`, not the typeahead guard --
+        // clear the just-armed window (see `input.rs::handle_permission_key`'s
+        // own doc) so this is unambiguous either way; `Ctrl-C` bypasses that
+        // guard by construction regardless (it is never a bare `Char` key).
+        app.state.permission_prompt_armed_at = None;
+
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(
+            input::handle_key(&mut app.state, ctrl_c),
+            Action::CtrlC,
+            "Ctrl-C while a permission prompt is showing must reach Action::CtrlC -- \
+             input.rs::handle_permission_key swallowing it here is the exact defect board item \
+             01M3YPYDAMR7KPN2WH9RS8TRC7 fixes"
+        );
+
+        let mut last_ctrl_c = None;
+        let outcome = app
+            .handle_ctrl_c(&mut last_ctrl_c)
+            .await
+            .expect("handle_ctrl_c should not error");
+        assert!(
+            outcome.is_none(),
+            "a single Ctrl-C press must never exit the process on its own: {outcome:?}"
+        );
+
+        assert!(
+            !matches!(app.state.mode, Mode::AwaitingPermission(_)),
+            "Ctrl-C must deny the pending call and close the prompt, not leave it showing: {:?}",
+            app.state.mode
+        );
+
+        tokio::time::timeout(HANG_TIMEOUT, async {
+            while !app.handle.awaiting_prompt(root) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect(
+            "the root's turn must abort and return it to its resume gate within the bound -- a \
+             timeout here means the permission decision or the abort never actually landed",
+        );
+        assert!(
+            !app.agent_is_finished(root).await,
+            "the session must stay live -- a keep_alive root must never end terminally from a \
+             single Ctrl-C press, prompt or no prompt"
+        );
+        assert!(
+            !invoked.load(Ordering::SeqCst),
+            "the denied tool must never actually execute"
+        );
+    }
 
     /// **Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: this test used to be named
     /// `..._ends_the_session` and proved the opposite of what it proves

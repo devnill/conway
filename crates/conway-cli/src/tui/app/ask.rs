@@ -234,26 +234,34 @@ mod tests {
     //!    lets the ask reach a resolution. **There is no mode-stacking
     //!    deadlock** -- the hypothesis flagged as "verify before fixing"
     //!    does not hold.
-    //! 2. [`cancelling_an_in_flight_ask_does_not_unblock_a_child_stuck_on_
-    //!    the_gate_today`] is the REAL mechanism: `SessionHandle::cancel`
-    //!    (even `CancelMode::Immediate`) only trips a `CancellationToken`
-    //!    that the agent loop checks cooperatively at specific points
-    //!    (`conway-runtime/src/agent_loop.rs`) -- and the call site that
-    //!    blocks on a permission decision
+    //! 2. [`cancelling_an_in_flight_ask_now_unblocks_a_child_stuck_on_the_
+    //!    gate`] was the REAL mechanism, AT THE TIME this doc was written:
+    //!    `SessionHandle::cancel` (even `CancelMode::Immediate`) only tripped
+    //!    a `CancellationToken` that the agent loop checked cooperatively at
+    //!    specific points (`conway-runtime/src/agent_loop.rs`), and the call
+    //!    site that blocks on a permission decision
     //!    (`conway-runtime/src/tools/runner.rs`'s `broker.decide(..).await`,
     //!    BEFORE the `tokio::select!` that races the tool's own `invoke`
-    //!    against cancellation) is never one of them. A child parked
-    //!    awaiting the gate's reply is untouched by cancellation and stays
+    //!    against cancellation) was never one of them. A child parked
+    //!    awaiting the gate's reply was untouched by cancellation and stayed
     //!    running -- which is exactly why `purge` (which refuses a running
-    //!    agent) produces the reported error. The only thing that unblocks
-    //!    it today is answering the prompt, or dropping its reply sender
+    //!    agent) produced the reported error. The only thing that unblocked
+    //!    it then was answering the prompt, or dropping its reply sender
     //!    (`TuiGate::check`'s own fail-closed `Deny { reason: "cancelled"
-    //!    }` fallback).
+    //!    }` fallback). **Board item `01M3YPYDAMR7KPN2WH9RS8TRC7` closed
+    //!    that gap directly at its source** -- `broker.decide` is now raced
+    //!    against the same per-turn token at its one production call site,
+    //!    so `cancel`/`abort_turn` alone unblocks a child parked there,
+    //!    without needing its pending prompt separately discarded. That
+    //!    test's own doc has the full before/after.
     //!
-    //! Together: an in-flight ask is not doomed by mode-stacking, but
-    //! abandoning one that is waiting on a tool permission needs more than
-    //! `cancel()` -- it needs the pending prompt discarded too. That is
-    //! what `App::abandon_ask`/`App`'s quit path (`shutdown.rs`) now do.
+    //! Together: an in-flight ask was never doomed by mode-stacking, and
+    //! abandoning one that is waiting on a tool permission no longer needs
+    //! more than `cancel()` to actually finish the child -- though `App::
+    //! abandon_ask`/`App`'s quit path (`shutdown.rs`) still discard the
+    //! pending prompt too, synchronously, rather than depending on that
+    //! race's other side to notice and reschedule (see `AppState::
+    //! discard_prompts_for_agent`'s own doc).
 
     use std::sync::Arc;
     use std::time::Duration;
@@ -500,33 +508,29 @@ mod tests {
         );
     }
 
-    /// **Reproduction 2 (the real defect): `SessionHandle::cancel` alone
-    /// does not unblock a child parked on the gate.** Submits `/ask`,
-    /// captures the `PendingPrompt` that reaches `gate_rx` WITHOUT
-    /// resolving it (its reply sender is kept alive in `_prompt` for the
-    /// whole test -- dropping it early would take the OTHER, already-known
-    /// escape hatch: `TuiGate::check`'s fail-closed `Deny {reason:
-    /// "cancelled"}` on a dropped reply channel), then calls
-    /// `SessionHandle::cancel` (immediate mode, the pre-existing
-    /// primitive) on the child and waits, bounded,
-    /// for it to actually finish.
+    /// **Reproduction 2, UPDATED by board item `01M3YPYDAMR7KPN2WH9RS8TRC7`:
+    /// `SessionHandle::cancel` alone now DOES unblock a child parked on the
+    /// gate.** This test used to be named `..._does_not_unblock_a_child_
+    /// stuck_on_the_gate_today` and proved the opposite of what it proves
+    /// now -- deliberately, as "evidence for a separately-filed item" (this
+    /// one): `PermissionBroker::decide` ran unraced, ahead of even
+    /// `ToolRunner::execute_one`'s own cancel-racing `tokio::select!`
+    /// further down (the one that later races the tool's own `invoke`
+    /// against cancellation), so nothing downstream of a turn's
+    /// `CancellationToken` was listening yet while a call sat in `decide`'s
+    /// blocking wait on `PermissionGate::check`. `decide` is now raced
+    /// against that same token at its one production call site
+    /// (`crate::tools::runner::execute_one`, in `conway-runtime`) --
+    /// `PermissionBroker::record_turn_aborted`'s own doc has the mechanism.
     ///
-    /// **Written and run against unmodified code first,
-    /// and it genuinely times out**: `cancel` only trips
-    /// a `CancellationToken` the agent loop checks cooperatively at
-    /// specific points (`conway-runtime/src/agent_loop.rs`); the call site
-    /// blocked on a permission decision
-    /// (`conway-runtime/src/tools/runner.rs`'s `broker.decide(..).await`,
-    /// BEFORE the `tokio::select!` that later races the tool's own
-    /// `invoke` against cancellation) is not one of them. A child parked
-    /// there stays running no matter how many times it is cancelled --
-    /// which is exactly why `purge` (which refuses a running agent)
-    /// produces the reported "agent is still running" error. The second
-    /// half proves what DOES unblock it: dropping the pending prompt's
-    /// reply sender (`TuiGate`'s own fail-closed fallback) -- the
-    /// ingredient `cancel` alone was missing.
+    /// Submits `/ask`, captures the `PendingPrompt` that reaches `gate_rx`
+    /// WITHOUT resolving OR dropping it (`prompt`'s reply sender is kept
+    /// alive for the whole test -- this is deliberate: the point is that
+    /// `cancel` alone, with NO further action on the prompt at all, is now
+    /// enough), then calls `SessionHandle::cancel` (immediate mode) on the
+    /// child and waits, bounded, for it to actually finish.
     #[tokio::test]
-    async fn cancelling_an_in_flight_ask_does_not_unblock_a_child_stuck_on_the_gate_today() {
+    async fn cancelling_an_in_flight_ask_now_unblocks_a_child_stuck_on_the_gate() {
         let (conway, mut gate_rx, _backend) = conway_with_real_gate();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
@@ -544,57 +548,35 @@ mod tests {
         let child = prompt.request.agent_id;
 
         // The pre-existing primitive -- immediate
-        // cancellation, applied to exactly the stuck child.
+        // cancellation, applied to exactly the stuck child. `prompt` is
+        // still alive, untouched, at this point -- nothing has discarded or
+        // answered it.
         app.handle
             .cancel(child, "ask abandoned")
             .await
             .expect("cancel should be accepted");
 
-        // NOT a `HANG_TIMEOUT` site (see this module's own doc on that
-        // constant): this bound is not converting a hang into a message,
-        // it is a probe for the ABSENCE of completion within a window --
-        // structurally, `await_agent` cannot resolve here no matter how
-        // much CPU time this process is given, since `child` is blocked on
-        // a permission decision this test has not yet answered or dropped
-        // (the very next statement below). A slow/starved scheduler can
-        // only make `timeout` fire LATER after more real time has already
-        // elapsed while still correctly observing "not yet done" --
-        // `Elapsed(())` is what this assertion wants, on any schedule --
-        // so, unlike every `HANG_TIMEOUT` site, widening this one buys
-        // nothing and shortening it risks nothing this test depends on.
-        let cancel_alone_result =
-            tokio::time::timeout(Duration::from_millis(500), app.handle.await_agent(child)).await;
-        assert!(
-            cancel_alone_result.is_err(),
-            "LOAD-BEARING (this is the reproduction): `cancel` alone must NOT unblock a child \
-             parked on the gate today -- a child that actually finished here means either the \
-             gate/agent-loop wiring changed underneath this test, or something else besides \
-             `cancel` resolved it; got {cancel_alone_result:?}"
-        );
-
-        // What DOES unblock it, today: discarding the pending prompt.
-        // Dropping `prompt` drops its `oneshot::Sender`, which is exactly
-        // `TuiGate::check`'s own documented fail-closed fallback --
-        // `reply_rx.await.unwrap_or(Deny { reason: "cancelled" })`.
-        drop(prompt);
-
-        let after_drop = tokio::time::timeout(HANG_TIMEOUT, app.handle.await_agent(child))
+        let after_cancel = tokio::time::timeout(HANG_TIMEOUT, app.handle.await_agent(child))
             .await
             .expect(
-                "once the pending prompt is discarded, the already-tripped cancellation token \
-                 must let the child actually finish -- a timeout here would mean even dropping \
-                 the prompt cannot free it, which is a stronger and different defect",
+                "LOAD-BEARING (this is the fix): `cancel` alone, with the pending prompt never \
+                 dropped or answered, must now let the child actually finish -- a timeout here \
+                 would mean `PermissionBroker::decide`'s own cancellation race regressed",
             )
             .expect("await_agent should resolve to a terminal AgentResult, not error");
         assert!(
             matches!(
-                after_drop.status,
+                after_cancel.status,
                 conway_core::agent::ResultStatus::Cancelled { .. }
             ),
-            "the child's terminal status should reflect the cancellation once it can finally \
-             land, got: {:?}",
-            after_drop.status
+            "the child's terminal status should reflect the cancellation, got: {:?}",
+            after_cancel.status
         );
+
+        // `prompt` (and its reply sender) is still alive here, proven never
+        // to have been needed -- dropped only now, at the end, to make that
+        // explicit rather than relying on an implicit end-of-test drop.
+        drop(prompt);
     }
 
     /// **The fix, end to end.** Drives `/ask` through `App::submit` exactly
