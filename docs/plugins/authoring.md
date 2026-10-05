@@ -1135,9 +1135,23 @@ receives — `&mut self`, not `&self`, is what makes that ordering possible.
 your plugin's own `bundle` entry constructed and, for each one an
 operator's `plugins.config` table names, calls `configure` before
 `ConwayBuilder::install_selected` filters down to what was actually asked
-for — a malformed value fails the build whether or not the plugin ends up
-selected, the same fail-closed posture every other "selected but broken"
-resolver in that file already takes.
+for.
+
+**Fail-closed, but only for a plugin that is actually installed.** A
+malformed value for a plugin NAMED in `[plugins].install` fails the whole
+build — the same fail-closed posture every other "selected but broken"
+resolver in that file already takes. A malformed value for a plugin that
+is *not* in `[plugins].install` — including an id that matches no
+compiled-in plugin at all, a typo above all — degrades instead: the block
+is ignored, that candidate (if it exists) stays on its own compiled-in
+defaults, and conway starts with a named, one-line warning on the ordinary
+config-warning channel (`Conway::warnings()`, the TUI's transcript, or
+stderr for a non-interactive run) rather than refusing to start. The
+reasoning is operator-facing, not merely lenient: nothing running in that
+process was ever going to read a value belonging to a plugin it never
+installed, so refusing to start over it would stop a session the block
+cannot possibly affect — distinct from the fail-closed case immediately
+above, where the broken value WOULD have governed something real.
 
 **Refuse an unknown key by name, always.** A key your plugin does not
 recognize — a typo, a renamed field, a key pasted in from a different

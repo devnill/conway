@@ -708,6 +708,7 @@ fn browser_entries(
         memory_store,
         env,
         &conway.config().plugins.config,
+        install_ids,
     )?
     .iter()
     .map(|p| {
@@ -769,51 +770,6 @@ fn unknown_id_message(id: &str, entries: &[PluginBrowserEntry]) -> String {
     )
 }
 
-/// The provenance half of board item `01M2VA3ARE8RGRZ40VDC349HVK`: once
-/// [`browser_entries`] renders a plugin's EFFECTIVE configuration, a reader
-/// still cannot tell an operator-set value from a compiled-in default by
-/// looking at it -- `you get ... older than 3 turns ...` reads identically
-/// whether `settings.json` said `3` or the plugin's default happened to be
-/// `3`.
-///
-/// **The ruling: state provenance at the TABLE, never per value.** A line
-/// naming the `[plugins.config."<id>"]` entry that was applied (with the
-/// keys conway actually accepted), or saying plainly that there is none, is
-/// answerable from what this command already has in hand. Tagging each
-/// individual number `(default)`/`(configured)` is not: `Plugin::
-/// description()` returns free prose, so there is no structured value for a
-/// renderer to tag, and inventing one would mean a per-field provenance API
-/// on every plugin -- a far larger change than the reporting defect that
-/// prompted it.
-///
-/// This also covers the silent-fallback case the item names. A mistyped
-/// KEY inside a table is already a hard error (`Plugin::configure` refuses
-/// an unknown key by name, failing the build); a mistyped plugin ID is not
-/// -- `apply_plugin_config` walks candidates and simply never finds a table
-/// that names nothing. With this line, `conway plugin list --verbose` says
-/// `defaults -- no [plugins.config."conway.trim"] entry` for exactly that
-/// case, so the operator sees their table did not land instead of guessing
-/// from an unchanged number.
-///
-/// Printed only in the verbose/detail block, beside the `you get` line
-/// whose contents it explains -- the terse one-line-per-row table stays one
-/// line per row.
-fn config_line(id: &str, config: Option<&serde_json::Value>) -> String {
-    let Some(value) = config else {
-        return format!("defaults -- no [plugins.config.\"{id}\"] entry in settings.json");
-    };
-    let rendered = match value.as_object() {
-        Some(map) if map.is_empty() => "(empty table)".to_string(),
-        Some(map) => map
-            .iter()
-            .map(|(key, v)| format!("{key} = {v}"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        None => value.to_string(),
-    };
-    format!("{rendered} -- from [plugins.config.\"{id}\"] in settings.json")
-}
-
 /// `events` is this plugin's own declared hook events (board item
 /// `01M250HW1186RKZRNS3DQAMFYW`) -- printed as its own labelled section,
 /// same indent as `you get`/`you lose`/`costs` above it, but only when
@@ -845,7 +801,10 @@ fn print_row(
                 "    costs     {}",
                 crate::plugin_rows::non_empty_or(&description.costs, "none")
             );
-            println!("    config    {}", config_line(&row.id, config));
+            println!(
+                "    config    {}",
+                crate::plugin_rows::config_line(&row.id, config)
+            );
         }
         if !events.is_empty() {
             println!("    events");

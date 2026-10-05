@@ -206,6 +206,35 @@ pub enum WarningCode {
     /// guard_untrusted_project_settings` for the trust computation and
     /// `config::merge::load_impl`'s own doc for the skip.
     UntrustedProjectConfigIgnored,
+    /// A `[plugins.config."<id>"]` table failed to apply -- either its
+    /// own plugin's `Plugin::configure` refused it (an unknown key, an
+    /// out-of-range value), or `<id>` names no compiled-in plugin this
+    /// binary links at all -- for a plugin that is NOT a member of the
+    /// final `[plugins].install` set. `message` names the id, and (for the
+    /// `configure`-refused case) the underlying error.
+    ///
+    /// Board item `01M3TJHCFA3R9PDVZHQTKKVWNR`, the ruling recorded under
+    /// DOGFOOD 3 `01M1YYB8STS6NDGR254YZ76XKJ`: `[plugins.config.<id>]`
+    /// stays an opaque block its own plugin owns, validated strictly --
+    /// but a bad block for a plugin the operator never installed can
+    /// never have been read by anything running in this process, so
+    /// refusing to start over it would stop a session the block cannot
+    /// possibly affect. This warns and ignores the block instead, leaving
+    /// the named plugin (if it exists at all) on its compiled-in defaults
+    /// -- NOT produced by `config::load` (this needs the final installed
+    /// set, decided only once `ConwayBuilder::build` runs) -- raised by
+    /// `conway-cli`'s own `first_party_plugins::install`, on the same
+    /// "raised in conway-cli, before `ConwayBuilder::build`, via
+    /// `ConwayBuilder::with_warning`" footing [`Self::McpServerFailed`]
+    /// already documents.
+    ///
+    /// **An INSTALLED plugin's own bad block is unaffected by this
+    /// variant and still fails the build exactly as before** -- this
+    /// warning only ever fires for the "never reached" case; a block for
+    /// a plugin the running session actually uses stays a hard
+    /// `FacadeError::Build`, fail-closed, same as every other "selected
+    /// but broken" resolver in `first_party_plugins`.
+    PluginConfigIgnored,
 }
 
 #[cfg(test)]

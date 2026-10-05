@@ -1454,15 +1454,20 @@ included):
   via `[plugins].install`. The only origin with a real ON/OFF switch:
   each row is a checkbox-style `[x]`/`[ ]` box, its id, and a one-line
   summary; pressing `Enter` flips it. Selecting the row opens a detail
-  panel below the list with that plugin's own status plus three rows in
+  panel below the list with that plugin's own status plus four rows in
   the operator's own framing — **you get** (what turning it ON adds),
-  **you lose** (what's different with it OFF), and **costs** (its
-  ongoing cost, if any). A flip writes `~/.conway/settings.json`'s
-  `plugins.install` array directly (or `$CONWAY_CONFIG_DIR/settings.json`
-  when that's set) — the SAME writer, and the SAME restart-to-apply
-  contract, `/settings`' own plugins section used before this command
-  existed: the change applies on your NEXT restart, not immediately, and
-  the footer says so.
+  **you lose** (what's different with it OFF), **costs** (its ongoing
+  cost, if any), and **config** (this plugin's EFFECTIVE `[plugins.config.
+  "<id>"]` table, if it has one that applied: the accepted keys and
+  values, and the table they came from — or `defaults` when no table
+  named this id). The `config` row is the same value/source pair `conway
+  plugin list --verbose` prints for this id, never a second,
+  independently-worded rendering of it. A flip writes `~/.conway/
+  settings.json`'s `plugins.install` array directly (or
+  `$CONWAY_CONFIG_DIR/settings.json` when that's set) — the SAME writer,
+  and the SAME restart-to-apply contract, `/settings`' own plugins section
+  used before this command existed: the change applies on your NEXT
+  restart, not immediately, and the footer says so.
 - **subprocess** — a `[plugins].subprocess[]` entry: an operator-named
   command speaking conway's own wire protocol. Every configured entry is
   spawned unconditionally — there is no candidate set to toggle, so the
@@ -1486,6 +1491,15 @@ This is a listing surface, not a config editor: `Up`/`Down` move,
 `Esc` closes. There is deliberately no way to add, remove, or reconfigure
 a subprocess/MCP entry from here — edit `settings.json` by hand for
 that.
+
+**A broken `[plugins.config."<id>"]` table only stops conway from starting
+when `<id>` is actually installed.** A bad block for a plugin you have
+since turned off, or a typo'd id that never matched one at all, instead
+starts conway normally and shows a one-line warning naming the plugin,
+the offending key, and why it was ignored — the same channel a
+misconfigured headroom or a failed MCP handshake already use. Only a bad
+block for an INSTALLED plugin still refuses to start, exactly as before:
+that one WOULD have governed this session.
 
 The **hooks** section lists every configured `hooks.rules[]` entry whose
 event can currently deny something — `pre_tool_use` (narrows a tool call)

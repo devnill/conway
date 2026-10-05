@@ -556,12 +556,36 @@ fn bundle(
 /// this call; caught as a named `FacadeError::Build` rather than a panic,
 /// since a config-application failure is exactly the kind of build-time
 /// error this whole seam otherwise reports.
+///
+/// **`install_ids` decides fail-closed vs. warn-and-ignore (board item
+/// `01M3TJHCFA3R9PDVZHQTKKVWNR`, the ruling recorded under DOGFOOD 3
+/// `01M1YYB8STS6NDGR254YZ76XKJ`).** `plugins` is always the UNFILTERED
+/// candidate set (every caller below passes `bundle`'s own Vec, minus at
+/// most `conway.skills`, handled separately) -- so a `value` naming a
+/// candidate here may belong to a plugin that never ends up in
+/// `[plugins].install` at all. For THAT candidate, a `configure` refusal
+/// degrades to a [`conway::config::WarningCode::PluginConfigIgnored`]
+/// warning rather than a build failure: nothing running in this process
+/// was ever going to read that value anyway, so refusing to start over it
+/// would stop a session the block cannot possibly affect. A candidate
+/// NAMED in `install_ids`, by contrast, still fails exactly as before --
+/// unchanged fail-closed behavior for the one case that matters, a block
+/// that WOULD have governed this session's real plugin.
+///
+/// **The other half of the same ruling: an id in `config` that matches NO
+/// candidate in `plugins` at all** (a typo, or a plugin this binary never
+/// linked) gets the identical warn-not-fail treatment -- there is no
+/// plugin here to even validate against, let alone refuse to start over.
 fn apply_plugin_config(
     plugins: &mut [Arc<dyn Plugin>],
     config: &std::collections::BTreeMap<String, serde_json::Value>,
-) -> Result<(), FacadeError> {
+    install_ids: &[String],
+) -> Result<Vec<conway::config::ConfigWarning>, FacadeError> {
+    let mut warnings = Vec::new();
+    let mut known_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for plugin in plugins.iter_mut() {
         let id = plugin.manifest().id;
+        known_ids.insert(id.clone());
         let Some(value) = config.get(&id) else {
             continue;
         };
@@ -571,11 +595,54 @@ fn apply_plugin_config(
                  own [plugins.config.\"{id}\"] value"
             ),
         })?;
-        exclusive.configure(value).map_err(|e| FacadeError::Build {
-            message: format!("[plugins.config.\"{id}\"]: {e}"),
-        })?;
+        if let Err(e) = exclusive.configure(value) {
+            if install_ids.contains(&id) {
+                return Err(FacadeError::Build {
+                    message: format!("[plugins.config.\"{id}\"]: {e}"),
+                });
+            }
+            warnings.push(plugin_config_invalid_but_uninstalled_warning(&id, &e.to_string()));
+        }
     }
-    Ok(())
+    for id in config.keys() {
+        if !known_ids.contains(id) {
+            warnings.push(plugin_config_unknown_plugin_warning(id));
+        }
+    }
+    Ok(warnings)
+}
+
+/// One half of [`apply_plugin_config`]'s own ruling: `id`'s own
+/// `[plugins.config."<id>"]` table failed `Plugin::configure` (`error`),
+/// but `id` is not in `[plugins].install` -- so the value never reached a
+/// running plugin in the first place. Named so an operator reads WHY it
+/// was ignored (not installed), not just THAT it was.
+fn plugin_config_invalid_but_uninstalled_warning(
+    id: &str,
+    error: &str,
+) -> conway::config::ConfigWarning {
+    conway::config::ConfigWarning {
+        code: conway::config::WarningCode::PluginConfigIgnored,
+        message: format!(
+            "[plugins.config.\"{id}\"] is invalid and was ignored -- \"{id}\" is not in \
+             [plugins].install, so this value never reached a running plugin: {error}"
+        ),
+    }
+}
+
+/// The other half: `id` in `[plugins.config]` names no compiled-in plugin
+/// this binary links at all (recommended answer to this item's own open
+/// question -- see [`apply_plugin_config`]'s own doc for why the SAME
+/// warn-not-fail treatment applies here: there is no plugin to validate
+/// against, let alone refuse to start over).
+fn plugin_config_unknown_plugin_warning(id: &str) -> conway::config::ConfigWarning {
+    conway::config::ConfigWarning {
+        code: conway::config::WarningCode::PluginConfigIgnored,
+        message: format!(
+            "[plugins.config.\"{id}\"] names no plugin this binary links -- ignored; `conway \
+             plugin list` prints every id it knows"
+        ),
+    }
 }
 
 /// Every first-party `Plugin` this binary links, REGARDLESS of
@@ -691,14 +758,21 @@ pub fn all_bundle_plugins(
 /// for the same reason it holds in its other two callers: `all_bundle_
 /// plugins` hands back `bundle`'s `Vec` untouched, so every `Arc` in it is
 /// still uniquely owned when this line runs.
+///
+/// `install_ids` is forwarded to [`apply_plugin_config`] unchanged -- see
+/// that function's own doc for why a browser render needs it too: without
+/// it, an uninstalled candidate's own invalid block would fail THIS call
+/// (and therefore the whole listing) over a value that was never going to
+/// govern a running session either way.
 pub fn configured_bundle_plugins(
     cwd: &std::path::Path,
     memory_store: Arc<dyn MemoryStore>,
     env: &HashMap<String, String>,
     config: &std::collections::BTreeMap<String, serde_json::Value>,
+    install_ids: &[String],
 ) -> Result<Vec<Arc<dyn Plugin>>, FacadeError> {
     let mut plugins = all_bundle_plugins(cwd, memory_store, env);
-    apply_plugin_config(&mut plugins, config)?;
+    apply_plugin_config(&mut plugins, config, install_ids)?;
     Ok(plugins)
 }
 
@@ -1165,25 +1239,38 @@ pub async fn install(
 > {
     let cwd = builder.config().cwd.clone();
     let plugin_config = builder.config().plugins.config.clone();
+    let install_ids = builder.config().plugins.install.clone();
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
     let agent_names = resolve_agent_names(&builder.config().plugins.install)?;
     let idiom_plugin = resolve_idiom_plugin(&cwd, env)?;
     let confine_plugin = resolve_confine_plugin(&builder.config().plugins.install)?;
 
+    // Board item `01M3TJHCFA3R9PDVZHQTKKVWNR`: collected here, folded onto
+    // `builder` below once it exists -- see `apply_plugin_config`'s own doc
+    // for the ruling this and the `conway.skills` special case right below
+    // both implement (a bad block for a plugin NOT in `install_ids` warns;
+    // one for a plugin that IS still fails the build, unchanged).
+    let mut config_warnings: Vec<conway::config::ConfigWarning> = Vec::new();
+
     let mut skills_plugin = resolve_skills_plugin_typed(&cwd);
     if let Some(value) = plugin_config.get(conway_plugin_skills::PLUGIN_ID) {
-        Arc::get_mut(&mut skills_plugin)
-            .expect(
-                "skills_plugin is freshly constructed above and not yet cloned -- exclusively \
-                 owned",
-            )
-            .configure(value)
-            .map_err(|e| FacadeError::Build {
-                message: format!(
-                    "[plugins.config.\"{}\"]: {e}",
-                    conway_plugin_skills::PLUGIN_ID
-                ),
-            })?;
+        let exclusive = Arc::get_mut(&mut skills_plugin).expect(
+            "skills_plugin is freshly constructed above and not yet cloned -- exclusively owned",
+        );
+        if let Err(e) = exclusive.configure(value) {
+            if install_ids.contains(&conway_plugin_skills::PLUGIN_ID.to_string()) {
+                return Err(FacadeError::Build {
+                    message: format!(
+                        "[plugins.config.\"{}\"]: {e}",
+                        conway_plugin_skills::PLUGIN_ID
+                    ),
+                });
+            }
+            config_warnings.push(plugin_config_invalid_but_uninstalled_warning(
+                conway_plugin_skills::PLUGIN_ID,
+                &e.to_string(),
+            ));
+        }
     }
     let skills_plugin_handle = skills_plugin.clone();
 
@@ -1202,8 +1289,15 @@ pub async fn install(
     // created (see this function's own doc).
     let mut remaining_config = plugin_config.clone();
     remaining_config.remove(conway_plugin_skills::PLUGIN_ID);
-    apply_plugin_config(&mut plugins, &remaining_config)?;
-    let builder = builder.install_selected(plugins, router_bundle(), backend_bundle())?;
+    config_warnings.extend(apply_plugin_config(
+        &mut plugins,
+        &remaining_config,
+        &install_ids,
+    )?);
+    let mut builder = builder.install_selected(plugins, router_bundle(), backend_bundle())?;
+    for warning in config_warnings {
+        builder = builder.with_warning(warning);
+    }
     let builder = warn_if_no_plugin_opinion(builder, env);
     Ok((builder, memory_store, agent_names, skills_plugin_handle))
 }
@@ -1360,7 +1454,7 @@ pub fn installed_plugins(
     // `apply_plugin_config` takes, so `conway plugin list`'s own re-check of
     // an already-built `Conway` cannot disagree with what the real build
     // already accepted or refused.
-    apply_plugin_config(&mut plugins, &conway.config().plugins.config)?;
+    apply_plugin_config(&mut plugins, &conway.config().plugins.config, install)?;
     let mut plugins: Vec<Arc<dyn Plugin>> = plugins
         .into_iter()
         .filter(|plugin| install.contains(&plugin.manifest().id))
@@ -1732,7 +1826,9 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        apply_plugin_config(&mut plugins, &config).expect("keep_turns=3 is a valid config value");
+        let install_ids = vec![conway_plugin_trim::PLUGIN_ID.to_string()];
+        apply_plugin_config(&mut plugins, &config, &install_ids)
+            .expect("keep_turns=3 is a valid config value");
         let trim = plugins
             .iter()
             .find(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID)
@@ -1768,7 +1864,8 @@ mod tests {
         .into_iter()
         .collect();
 
-        let plugins = configured_bundle_plugins(&cwd, memory_store, &env, &config)
+        let install_ids = vec![conway_plugin_trim::PLUGIN_ID.to_string()];
+        let plugins = configured_bundle_plugins(&cwd, memory_store, &env, &config, &install_ids)
             .expect("keep_turns=3 is a valid config value");
 
         // Unfiltered: nothing here was ever named in a `[plugins].install`
@@ -1803,16 +1900,21 @@ mod tests {
     /// The install-path half of the required pair (acceptance 1): an
     /// unknown key under `[plugins.config.conway.trim]` must fail
     /// `apply_plugin_config` -- naming the key -- rather than silently
-    /// installing `conway.trim` with its default window. **What a wrong
-    /// implementation this catches that the crate-level
-    /// `conway_plugin_trim::tests::configure_refuses_an_unknown_key_by_name`
-    /// does not:** this proves the CLI's own install path
-    /// (`apply_plugin_config`) actually calls `configure` and propagates
-    /// its `Err` rather than, say, swallowing it with an `unwrap_or_else`
-    /// fallback the way several OTHER candidates in `bundle` legitimately
-    /// do for a missing operator file.
+    /// installing `conway.trim` with its default window, WHEN
+    /// `conway.trim` is itself in `[plugins].install` (board item
+    /// `01M3TJHCFA3R9PDVZHQTKKVWNR` narrowed this fail-closed behavior to
+    /// exactly that case -- see [`apply_plugin_config_warns_instead_of_
+    /// failing_for_an_uninstalled_plugins_bad_block`] immediately below
+    /// for the other half). **What a wrong implementation this catches
+    /// that the crate-level `conway_plugin_trim::tests::
+    /// configure_refuses_an_unknown_key_by_name` does not:** this proves
+    /// the CLI's own install path (`apply_plugin_config`) actually calls
+    /// `configure` and propagates its `Err` rather than, say, swallowing
+    /// it with an `unwrap_or_else` fallback the way several OTHER
+    /// candidates in `bundle` legitimately do for a missing operator
+    /// file.
     #[test]
-    fn apply_plugin_config_refuses_an_unknown_key_by_name() {
+    fn apply_plugin_config_refuses_an_unknown_key_by_name_for_an_installed_plugin() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let mut plugins = bundle(
@@ -1830,12 +1932,114 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        let err = apply_plugin_config(&mut plugins, &config)
-            .expect_err("an unrecognized key must fail, not be silently ignored");
+        let install_ids = vec![conway_plugin_trim::PLUGIN_ID.to_string()];
+        let err = apply_plugin_config(&mut plugins, &config, &install_ids)
+            .expect_err("an unrecognized key for an INSTALLED plugin must fail, not warn");
         let message = err.to_string();
         assert!(
             message.contains("keep_tuns"),
             "the error must name the offending key, got: {message}"
+        );
+    }
+
+    /// Board item `01M3TJHCFA3R9PDVZHQTKKVWNR`, acceptance 2: the SAME bad
+    /// block, for a candidate that is NOT in `install_ids`, must not fail
+    /// at all -- it warns (naming the plugin and the underlying error) and
+    /// leaves that candidate on its compiled-in default instead.
+    /// BREAK-THE-GUARD note (for the orchestrator's stub run): revert the
+    /// `install_ids.contains(&id)` check in `apply_plugin_config` to
+    /// always return `Err` (i.e. delete the `if` and always propagate) --
+    /// this test goes red (`expect` panics on `Err`) while
+    /// `apply_plugin_config_refuses_an_unknown_key_by_name_for_an_
+    /// installed_plugin` above stays green, proving this test is the one
+    /// actually pinned on the new, narrower behavior. Restore afterward
+    /// and confirm with `git diff`.
+    #[test]
+    fn apply_plugin_config_warns_instead_of_failing_for_an_uninstalled_plugins_bad_block() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let mut plugins = bundle(
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(&cwd),
+            test_confine_plugin(),
+            None,
+            default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
+        );
+        let config: std::collections::BTreeMap<String, serde_json::Value> = [(
+            conway_plugin_trim::PLUGIN_ID.to_string(),
+            serde_json::json!({ "keep_tuns": 3 }),
+        )]
+        .into_iter()
+        .collect();
+        // `conway.trim` deliberately absent from `install_ids`.
+        let warnings = apply_plugin_config(&mut plugins, &config, &[])
+            .expect("an uninstalled plugin's bad block must warn, not fail");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            warnings[0].code,
+            conway::config::WarningCode::PluginConfigIgnored
+        );
+        assert!(
+            warnings[0].message.contains(conway_plugin_trim::PLUGIN_ID),
+            "{}",
+            warnings[0].message
+        );
+        assert!(
+            warnings[0].message.contains("keep_tuns"),
+            "the warning must still name the offending key: {}",
+            warnings[0].message
+        );
+        // And the candidate itself is left on its compiled-in default --
+        // the invalid value was never applied, merely ignored.
+        let trim = plugins
+            .iter()
+            .find(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID)
+            .expect("conway.trim is in the bundle");
+        let you_get = trim.description().you_get;
+        assert!(
+            you_get.contains(&conway_plugin_trim::DEFAULT_KEEP_TURNS.to_string()),
+            "conway.trim must stay on its default after an ignored bad block, got: {you_get}"
+        );
+    }
+
+    /// Board item `01M3TJHCFA3R9PDVZHQTKKVWNR`, the third case named in the
+    /// spec ("an id that names no known plugin at all"): resolved as "the
+    /// same warning, 'no such plugin'" -- there is no plugin here to even
+    /// validate against, so refusing to start over it would be strictly
+    /// worse than the uninstalled-but-real-plugin case just above, not
+    /// better.
+    #[test]
+    fn apply_plugin_config_warns_for_an_id_matching_no_known_plugin() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let mut plugins = bundle(
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(&cwd),
+            test_confine_plugin(),
+            None,
+            default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
+        );
+        let config: std::collections::BTreeMap<String, serde_json::Value> = [(
+            "conway.totally_unknown".to_string(),
+            serde_json::json!({ "anything": 1 }),
+        )]
+        .into_iter()
+        .collect();
+        let warnings = apply_plugin_config(&mut plugins, &config, &[])
+            .expect("an id naming no known plugin must warn, not fail");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            warnings[0].code,
+            conway::config::WarningCode::PluginConfigIgnored
+        );
+        assert!(
+            warnings[0].message.contains("conway.totally_unknown"),
+            "{}",
+            warnings[0].message
         );
     }
 

@@ -251,13 +251,37 @@ fn selected_plugin_row<'a>(tree: &MenuState, rows: &'a [PluginRow]) -> Option<&'
     rows.iter().find(|row| row.id == id)
 }
 
-const DETAIL_ROWS: u16 = 6;
+/// Board item `01M3TJHCFA3R9PDVZHQTKKVWNR` added the `config` line below
+/// (one more fixed row than the `5` this constant covered before it: the
+/// header, `you get`/`you lose`/`costs`, and the toggle line).
+const DETAIL_ROWS: u16 = 7;
 
 /// Renders the selected row's own detail: origin, active/toggle state, and
 /// either the full "you get"/"you lose"/"costs" breakdown (compiled-in) or
 /// the plain `contributes` line plus its read-only reason (subprocess/MCP)
 /// -- see this module's own doc, "Kinds 2 and 3 are honestly thinner".
-fn draw_plugin_detail(frame: &mut Frame, area: Rect, row: &PluginRow, theme: &Theme) {
+///
+/// `config` is `row.id`'s own `[plugins.config."<id>"]` table, if the
+/// operator wrote one (`AppState::plugin_config`) -- board item
+/// `01M3TJHCFA3R9PDVZHQTKKVWNR`. Rendered through `crate::plugin_rows::
+/// config_line` (private -- plain code span, not a doc link, on purpose),
+/// the SAME function `commands::plugin::print_row`'s `conway plugin list
+/// --verbose` block already calls, so the two surfaces can never disagree
+/// about which table (if any) produced this row's effective settings --
+/// see that function's own doc for the full provenance ruling. Only a
+/// compiled-in row ever reaches this branch at all in practice (the module
+/// doc below explains why: every
+/// `ReadOnly`/claude-compat row is a `MenuNode::Static` the cursor can never
+/// select), so printing it unconditionally alongside `you get`/`you lose`/
+/// `costs` never mislabels a subprocess/MCP/claude-compat row that has no
+/// `[plugins.config.<id>]` concept at all.
+fn draw_plugin_detail(
+    frame: &mut Frame,
+    area: Rect,
+    row: &PluginRow,
+    config: Option<&serde_json::Value>,
+    theme: &Theme,
+) {
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(theme.dim);
@@ -277,6 +301,10 @@ fn draw_plugin_detail(frame: &mut Frame, area: Rect, row: &PluginRow, theme: &Th
             lines.push(Line::from(format!("you get   {you_get}")));
             lines.push(Line::from(format!("you lose  {you_lose}")));
             lines.push(Line::from(format!("costs     {costs}")));
+            lines.push(Line::from(format!(
+                "config    {}",
+                crate::plugin_rows::config_line(&row.id, config)
+            )));
         }
         None => {
             lines.push(Line::from(format!("contributes  {}", row.contributes)));
@@ -403,7 +431,7 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &
                 Constraint::Length(FOOTER_ROWS.min(frame_areas.footer_area.height)),
             ])
             .split(frame_areas.footer_area);
-        draw_plugin_detail(frame, split[0], row, theme);
+        draw_plugin_detail(frame, split[0], row, state.plugin_config.get(&row.id), theme);
         split[1]
     } else {
         frame_areas.footer_area
@@ -870,6 +898,67 @@ mod tests {
         let text = render(&state, 120, 40);
         assert!(text.contains("you get"), "{text}");
         assert!(text.contains("you-get-text"), "{text}");
+        // With no `plugin_config` entry for this id, the `config` line
+        // (board item `01M3TJHCFA3R9PDVZHQTKKVWNR`) must say so plainly --
+        // the baseline the configured-table test immediately below
+        // falsifies, by configuring one and showing the line changes.
+        assert!(
+            text.contains("defaults -- no"),
+            "with no configured table, the config line must say so: {text}"
+        );
+    }
+
+    /// Board item `01M3TJHCFA3R9PDVZHQTKKVWNR`, acceptance 1: a compiled-in
+    /// plugin's EFFECTIVE configuration -- value and source -- appears in
+    /// the `/plugin` detail panel, through the real `conway_plugin_trim`
+    /// crate (not a hand-rolled `PluginDescription`, unlike every other
+    /// fixture in this file): `TrimPlugin::configure` is the real
+    /// production entry point every operator's own `[plugins.config.
+    /// "conway.trim"]` table reaches, and `TrimPlugin::description` is the
+    /// real production text `/plugin` renders -- a fixture field frozen at
+    /// a literal would prove nothing about whether this panel actually
+    /// reads `AppState::plugin_config` at all.
+    #[test]
+    fn a_configured_plugins_effective_settings_appear_in_the_detail_panel_with_value_and_source() {
+        let mut trim = conway_plugin_trim::TrimPlugin::new();
+        conway::plugin::Plugin::configure(&mut trim, &serde_json::json!({ "keep_turns": 3 }))
+            .expect("keep_turns=3 is a valid config value");
+        let description = conway::plugin::Plugin::description(&trim);
+
+        let mut state = AppState::new(AgentId::new());
+        state.plugin_browser = vec![PluginBrowserEntry {
+            id: conway_plugin_trim::PLUGIN_ID.to_string(),
+            version: "0.9.0".to_string(),
+            installed: true,
+            description,
+        }];
+        state.plugin_config = [(
+            conway_plugin_trim::PLUGIN_ID.to_string(),
+            serde_json::json!({ "keep_turns": 3 }),
+        )]
+        .into_iter()
+        .collect();
+
+        let idx = build_tree(&state)
+            .rows()
+            .iter()
+            .position(|r| r.label.contains(conway_plugin_trim::PLUGIN_ID))
+            .expect("row exists");
+        state.plugins_selected = idx;
+        let text = render(&state, 120, 40);
+        // The VALUE: the real, effective window, not the compiled-in
+        // default alongside it.
+        assert!(text.contains("you get"), "{text}");
+        assert!(text.contains("older than 3 turns"), "{text}");
+        // The SOURCE: which table produced it, naming the accepted key.
+        assert!(text.contains("keep_turns = 3"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "[plugins.config.\"{}\"]",
+                conway_plugin_trim::PLUGIN_ID
+            )),
+            "{text}"
+        );
     }
 
     /// No detail panel renders while the tree has no selectable row at all

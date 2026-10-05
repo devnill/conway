@@ -873,6 +873,7 @@ impl App {
             browse_memory_store.clone(),
             &env_vars,
             &conway.config().plugins.config,
+            install_ids,
         )
         .unwrap_or_else(|_| {
             crate::first_party_plugins::all_bundle_plugins(
@@ -893,6 +894,15 @@ impl App {
                 }
             })
             .collect();
+        // Board item `01M3TJHCFA3R9PDVZHQTKKVWNR`: the raw `[plugins.config.
+        // "<id>"]` tables themselves, read once here and mirrored onto
+        // `AppState` (which holds no live `Conway` of its own to read them
+        // from later) -- so `view/plugins.rs`'s own detail panel can name the
+        // table a compiled-in row's effective settings came from, through
+        // the SAME `crate::plugin_rows::config_line` renderer `commands::
+        // plugin::print_row`'s CLI-side `conway plugin list --verbose` block
+        // already calls, never a second, independently-worded surface.
+        state.plugin_config = conway.config().plugins.config.clone();
         // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the `/plugin` listing's
         // OTHER two sources -- read straight from config, never spawned
         // (`view/plugins.rs`'s own doc: "no candidate set to browse, so
