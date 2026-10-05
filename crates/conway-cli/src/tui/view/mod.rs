@@ -1585,7 +1585,8 @@ const EDITING_SHELL_PREFIX_FOOTER_ROWS: u16 = 2;
 /// Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`: the session-scoped shell-prefix
 /// grant editor (`Mode::EditingShellPrefix`) -- a single free-text line the
 /// operator can edit, seeded from [`conway::permission_pattern::
-/// default_shell_prefix`]'s own narrow two-token proposal. Renders
+/// default_shell_prefix`]'s own narrow, launcher-aware proposal (ordinarily
+/// two tokens; see that function's own doc for when it widens). Renders
 /// `ed.input` IN THE CLEAR (a shell-command prefix is not a secret, unlike
 /// [`draw_add_provider_credential`]'s masked input) with a `│` cursor
 /// marker at `ed.cursor`'s char position, mirroring how the main input box

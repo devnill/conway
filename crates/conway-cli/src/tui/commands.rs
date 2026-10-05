@@ -3023,6 +3023,23 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                         }
                         Err(e) => notice(state, e.to_string()),
                     }
+                    // Board item `01M44PK0HNKWBXK86PWTHD6N7C`: the backend's
+                    // cache-reporting fact (`"80% cached"`, or the
+                    // `"not reported"`/`"not supported"`/`"reporting
+                    // unknown"` family) used to repeat on every turn-end
+                    // summary line down the whole transcript. It no longer
+                    // does (`state::turn_summary::format_turn_summary`'s own
+                    // doc) -- `/context` is now one of the two places left
+                    // that still show it (the status line's `tokens` field
+                    // is the other), so looking it up is never a dead end.
+                    // `state.focused_agent_usage`/`focused_model_cache_
+                    // reporting` only ever track the FOCUSED agent, so this
+                    // is skipped for an explicit `/context <agent>` naming a
+                    // different one -- there is no cache figure for that
+                    // agent in this state to show.
+                    if agent_id == state.focused_agent {
+                        render_context_cache_line(state);
+                    }
                     render_permission_decision_count(agent_id, state, host).await;
                 }
                 Err(e) => notice(state, e),
@@ -4697,6 +4714,44 @@ fn render_context_report(
             );
         }
     }
+}
+
+/// Board item `01M44PK0HNKWBXK86PWTHD6N7C`: the `/context` half of moving
+/// the backend's cache-reporting fact off the per-turn summary line (see
+/// `state::turn_summary::format_turn_summary`'s own doc) onto a surface
+/// that states it once. Reuses
+/// [`crate::tui::usage_format::cache_suffix`] -- the SAME formatter the
+/// status line's `tokens` field and the (now-trimmed) turn-end summary both
+/// call -- over the focused agent's CUMULATIVE session usage
+/// (`AppState::focused_agent_usage`), not any one turn's, since this is a
+/// standing fact about the session, asked for on demand rather than pushed
+/// on every reply. A no-op (no line at all) when `cache_suffix` itself
+/// returns empty (`CacheAccounting::Reported` with nothing cache-relevant
+/// processed yet -- the same "nothing to compute a rate over" case that
+/// surface already treats as silent).
+fn render_context_cache_line(state: &mut AppState) {
+    let suffix = crate::tui::usage_format::cache_suffix(
+        &state.focused_agent_usage,
+        state.focused_model.as_deref(),
+        state.focused_model_cache_reporting,
+    );
+    if suffix.is_empty() {
+        return;
+    }
+    // `suffix` is `cache_suffix`'s own `" (...)"` wrapper, e.g. `"
+    // (80% cached)"` or `" (cache: reporting unknown for ollama)"`. Strip
+    // the wrapper and always prefix with a single `"cache: "` label: the
+    // `NotReported` family already names itself `"cache: ..."` inside the
+    // parens (left as-is), a `Reported` percentage does not (gains the
+    // label here) -- either way the line reads as one labeled fact, never
+    // `"cache: cache: ..."`.
+    let inner = suffix.trim().trim_start_matches('(').trim_end_matches(')');
+    let line = if inner.starts_with("cache:") {
+        inner.to_string()
+    } else {
+        format!("cache: {inner}")
+    };
+    notice(state, line);
 }
 
 /// `/context`'s own permission-decision count -- a durable audit fact, read
@@ -11165,6 +11220,115 @@ mod tests {
             state.transcript.last(),
             Some(Entry::Notice { text }) if text == "permission decisions: 0"
         ));
+    }
+
+    /// Board item `01M44PK0HNKWBXK86PWTHD6N7C`: `/context` is now one of the
+    /// two surfaces that still state the backend's cache-reporting fact
+    /// (the turn-end summary line no longer does -- see
+    /// `state::turn_summary::format_turn_summary`'s own doc) -- querying the
+    /// FOCUSED agent renders it, labeled `cache: ...`, before the trailing
+    /// permission-decision count.
+    #[tokio::test]
+    async fn context_shows_the_cache_line_for_the_focused_agent() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.focused_model = Some("ollama_cloud/glm-5.2".to_string());
+        state.focused_model_cache_reporting = None;
+        state.focused_agent_usage = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_accounting: conway::CacheAccounting::NotReported,
+            ..Usage::default()
+        };
+        let mut host = FakeHost::new(root);
+        host.context = Some(ContextReport {
+            agent_id: root,
+            turn: 1,
+            tokenizer: "heuristic-chars4".to_string(),
+            segments: Vec::new(),
+            total_tokens_est: 0,
+            dropped: Vec::new(),
+            curator_failed: None,
+            instruction_fragments: Vec::new(),
+            not_admitted: Vec::new(),
+        });
+
+        execute(
+            SlashCommand::Context {
+                agent: Some(root.to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let lines: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines
+                .iter()
+                .any(|l| *l == "cache: reporting unknown for ollama_cloud"),
+            "expected a labeled cache line: {lines:?}"
+        );
+        assert_eq!(
+            lines.last().copied(),
+            Some("permission decisions: 0"),
+            "the cache line must still leave the permission-decision count trailing: {lines:?}"
+        );
+    }
+
+    /// Scoping companion: `state.focused_agent_usage`/`focused_model_cache_
+    /// reporting` only ever track the FOCUSED agent, so an explicit
+    /// `/context <agent>` naming a DIFFERENT, non-focused agent must not
+    /// show a cache line sourced from state that is not about it.
+    #[tokio::test]
+    async fn context_omits_the_cache_line_for_a_non_focused_agent() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let other = AgentId::new();
+        state.focused_model = Some("ollama_cloud/glm-5.2".to_string());
+        state.focused_agent_usage = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_accounting: conway::CacheAccounting::NotReported,
+            ..Usage::default()
+        };
+        let mut host = FakeHost::new(root);
+        host.context = Some(ContextReport {
+            agent_id: other,
+            turn: 1,
+            tokenizer: "heuristic-chars4".to_string(),
+            segments: Vec::new(),
+            total_tokens_est: 0,
+            dropped: Vec::new(),
+            curator_failed: None,
+            instruction_fragments: Vec::new(),
+            not_admitted: Vec::new(),
+        });
+
+        execute(
+            SlashCommand::Context {
+                agent: Some(other.to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(
+            !state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text.starts_with("cache:"))),
+            "a non-focused agent's /context must not show the focused agent's cache line: {:?}",
+            state.transcript
+        );
     }
 
     /// Board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`, acceptance-level: `/context`

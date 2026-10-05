@@ -667,7 +667,7 @@ Your options:
 | `y` | Allow this one call. |
 | `a` | Arms a confirmation — see "`a` needs a deliberate second keystroke," below. |
 | `p` (structured tool) | Opens a field editor over the call's structured arguments — every field starts wildcard; `space` pins the selected field to its exact value, `↑`/`↓`/`tab` move, `s` cycles the grant scope, `Enter` installs an allow rule covering future calls whose pinned fields match (unpinned fields stay wildcard) and allows this call, `Esc` cancels back to this prompt. Granting with nothing pinned is the broadest offer — any call to that tool. |
-| `p` (shell command) | Opens a free-text editor seeded with a narrow, two-token default (e.g. `git status` from `git status --short`, never the bare `git`) — type to widen or narrow it, `Ctrl-S` cycles the grant scope, `Enter` grants a **session-scoped, in-memory-only** prefix covering future shell commands sharing it and allows this call, `Esc` cancels back to this prompt. See "The shell-prefix grant" below. |
+| `p` (shell command) | Opens a free-text editor seeded with a narrow default — ordinarily two tokens (e.g. `git status` from `git status --short`, never the bare `git`), governed by three invariants for a recognized interpreter/launcher or wrapper head (never ends on a flag or a bare selector when a target follows; a wrapper like `sudo`/`env` always proposes the whole command; any flag this function would otherwise have to guess the arity of also falls back to the whole command) — see "The shell-prefix grant" below for the full rule — type to widen or narrow it, `Ctrl-S` cycles the grant scope, `Enter` grants a **session-scoped, in-memory-only** prefix covering future shell commands sharing it and allows this call, `Esc` cancels back to this prompt. |
 | `n` | Deny this call. |
 | `Esc` | Deny this call, and tell the model to try a different approach. |
 | `PageUp` / `PageDown` | Scroll a long command's own display. |
@@ -734,9 +734,47 @@ chose (including a spawned subagent under an `AgentSubtree` grant). It:
   grants" row clears every one. A revoked grant cannot come back on its
   own — the next matching command prompts again.
 - **Is exactly as narrow as what you see on screen.** The editor never
-  proposes anything broader than the two-token default, and never installs
-  anything other than the text you left in the editor when you pressed
-  `Enter` — narrow it further, or widen it, before accepting.
+  installs anything other than the text you left in the editor when you
+  pressed `Enter` — narrow it further, or widen it, before accepting. The
+  seeded default is ordinarily two tokens; board item
+  `01M44PK0HNKWBXK86PWTHD6N7C` governs the exceptions with three
+  invariants, replacing an earlier shape-by-shape table a follow-up review
+  found holes in (a flag mixed into `env`'s own assignments still matched
+  ANY later command; a flag right after `run` in `uv run --with pandas`/`go
+  run -race ./cmd` got swept into the proposal instead of blocking it; an
+  interpreter flag before `-m` in `python3 -u -m pytest` produced the exact
+  wildcard this item exists to close):
+  - **The proposal never ends on a flag, or on a launcher's own selector
+    (`-m` for python, `run` for `uv`/`go`/`cargo`/`bun`/`deno`, `dlx`/`exec`
+    for `pnpm`) when a target follows it.** It either extends past the
+    selector to the token that actually names the target (`python3 -m
+    pytest`, `uv run pytest`, `go run ./cmd`), or it does not extend at
+    all.
+  - **A WRAPPER head that re-executes some OTHER command verbatim without
+    naming anything itself** — `sudo`, `doas`, `env` carrying any flag of
+    its own, `time`, `nice`, `nohup`, `timeout`, `stdbuf`, `xargs`,
+    `command`, `exec`, `caffeinate` — **always proposes the WHOLE command.**
+    A plain `env NAME=VALUE ...` run (no flag of `env`'s own) is the one
+    exception: the assignments are skipped when judging the command they
+    precede, but stay verbatim at the front of the proposal.
+  - **Any flag this function would otherwise have to guess the arity of
+    also falls back to the WHOLE command**, rather than a fixed-width
+    guess: an interpreter flag before the selector (`python3 -u -m
+    pytest`), a flag right after a subcommand selector (`uv run --with
+    pandas`, `go run -race ./cmd`, `cargo run --bin x`), or a
+    script-literal (`bash -c`, `sh -c`, `node -e`) — the payload after one
+    of those is an entire embedded script or arbitrary argument, not a
+    nameable target.
+
+  Every command that is neither a recognized launcher nor a wrapper keeps
+  the ordinary two-token default, unchanged — so does a launcher whose
+  second token already names the real target with nothing to skip past,
+  like `npx eslint` or `node script.js`. **A WHOLE-command proposal is not
+  "only this one invocation," precisely stated:** accepting it still
+  authorizes a LATER command that starts with these same tokens and
+  appends more, exactly like any shorter proposal — it is simply the
+  narrowest proposal left once no shorter prefix still distinguishes this
+  command from an unrelated one sharing its first tokens.
 - **Never covers a compound command.** `git status` covers `git status
   --short`, but never `git status && rm -rf /`, `git status | sh`, `git
   status; rm -rf /`, a trailing `git status &`, an embedded newline, `git
