@@ -168,9 +168,11 @@ context compaction, memory, skills, and MCP support are the ones named in
 and each lands as its own crate under `crates/` as it is built — a capability
 being common does not make it neutral, so conway ships these as things you
 install rather than behavior you inherit. Routing, the provider adapters,
-session rewind/mask/checkout, step-guarding, skills, memory, and MCP support
-(plus the out-of-process subprocess plugin host, which the list above does
-not name) are the occupants today; compaction remains unbuilt.
+session rewind/mask/checkout, step-guarding, skills, memory, compaction, and
+MCP support (plus the out-of-process subprocess plugin host, which the list
+above does not name) are the occupants today — compaction
+(`conway.compaction`) is deliberately the weakest, non-persistent form of
+the feature; see [`docs/plugins/compaction.md`](docs/plugins/compaction.md).
 
 **The `conway` binary is a different case.** Its guided first-run setup
 installs six of these — `conway.idiom`, `conway.stepguard`, `conway.skills`,
@@ -256,17 +258,21 @@ boundary rather than a path-argument convention plain `bash` (`conway.shell`)
 has always been outside of — see `docs/plugins/confine.md`. Reads and
 network are not confined by it, only writes, and it refuses to run at all
 without a configured `--root` or a present primitive binary — never a
-silent fall-through to an unconfined command. Three more ship beside it:
+silent fall-through to an unconfined command. Four more ship beside it:
 `crates/conway-plugin-checkpoint` (`conway.checkpoint`), shadow snapshots
 around every `write`/`edit` with `/conway.checkpoint.diff|rollback|list`,
 the one member of this list in the default opinion set;
 `crates/conway-plugin-web` (`conway.web`), an opt-in `web_fetch`/
 `web_search` and the only first-party tool that reaches the network on the
-model's behalf; and `crates/conway-plugin-toolindex`
+model's behalf; `crates/conway-plugin-toolindex`
 (`conway.toolindex`), an opt-in context hook that defers a tool's schema to
-a one-line index until `describe_tool` asks for it.
-Compaction remains the one first-party-plugin-tier capability still unbuilt
-(`/checkout`/`ContextMask` are built, above, in `conway-plugin-history`);
+a one-line index until `describe_tool` asks for it; and
+`crates/conway-plugin-compaction` (`conway.compaction`), an opt-in,
+ephemeral context hook that folds old tool results into one labeled summary
+segment, recomputed every turn, nothing persisted — deliberately the
+weakest form of what "compaction" usually means (see
+[`docs/plugins/compaction.md`](docs/plugins/compaction.md)'s own caveat).
+`/checkout`/`ContextMask` are built, above, in `conway-plugin-history`;
 conway-plugin-routing is not
 "dynamic routing" in the learned/adaptive sense PHILOSOPHY.md describes
 elsewhere — no classifier, no embedding model, ever — it is the same purely

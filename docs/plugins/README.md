@@ -28,6 +28,7 @@ a summary pointing somewhere else.
 | [`skills.md`](skills.md) — `conway.skills` | What does progressive skill disclosure narrow, and what does `read_skill` cost? | You have full-body skills in context and want to try narrowing them to a one-line index. |
 | [`names.md`](names.md) — `conway.names` | What does naming an agent actually change, and how does a name interact with the id and short-id it sits alongside? | You are steering more than a couple of agents by id and want a handle you remember instead. |
 | [`trim.md`](trim.md) — `conway.trim` | What does dropping old tool call/result round-trips actually do, and how do you set the window it drops them by? | You have a long session accumulating context it no longer needs, or you're evaluating what a curator like this one may and may not touch. |
+| [`compaction.md`](compaction.md) — `conway.compaction` | What does the ephemeral tool-result-folding hook actually do, why is it explicitly the weakest form of "compaction", and how do you set `fold_after_turns`? | You want condensing beyond what `conway.trim` drops, or you're evaluating why this entry is deliberately not marketed as "conway has compaction." |
 | [`mcp.md`](mcp.md) — the MCP client | How do I bring an existing MCP server's tools into conway, and what is conway's own MCP client (not server) posture? | You have an MCP server already and want its tools available to the model, or you're evaluating what naming one in `[plugins].mcp` actually trusts. |
 | [`claude-compat.md`](claude-compat.md) — Claude Code plugin compatibility | I have a Claude Code plugin directory already on disk — what does conway actually do with it, and what does it name but not use? | You want to point conway at an existing Claude Code plugin, or you're deciding whether its MCP-only, read-at-runtime scope is enough for what you have. |
 | [`marketplace.md`](marketplace.md) — installing a plugin from a marketplace | How do I fetch a plugin from a marketplace instead of cloning it myself, where does conway put it, and what does the trust ruling say about a fetched artifact? | You want conway to fetch a plugin for you rather than pointing it at a directory you already prepared, or you're evaluating what naming a marketplace URL actually trusts. |
@@ -70,7 +71,7 @@ full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
 
-## Fifteen shipped first-party plugins
+## Sixteen shipped first-party plugins
 
 **The membership rule for this section:** every id
 [`first_party_plugins::bundle()`](../../crates/conway-cli/src/first_party_plugins.rs)
@@ -97,11 +98,12 @@ table, validated and applied by the plugin itself through
 `Plugin::configure`, never interpreted by this schema) are all it accepts;
 anything else still fails `#[serde(deny_unknown_fields)]`, unchanged. See
 [`authoring.md`](authoring.md)'s "Configuration" section for the mechanism
-itself and [`trim.md`](trim.md) for the one shipped consumer
-(`conway.trim`'s `keep_turns`) — most ids below still have no settings of
-their own, because no OTHER first-party plugin has adopted this mechanism
-for its own constants yet, not because the mechanism itself remains
-closed. Per-agent plugin configuration is a DIFFERENT, separate mechanism
+itself and [`trim.md`](trim.md)/[`compaction.md`](compaction.md) for its two
+shipped consumers (`conway.trim`'s `keep_turns`, `conway.compaction`'s
+`fold_after_turns`) — most ids below still have no settings of their own,
+because most other first-party plugins have not adopted this mechanism for
+their own constants, not because the mechanism itself remains closed.
+Per-agent plugin configuration is a DIFFERENT, separate mechanism
 answering a different question (`conway_core::ports::PluginConfig`,
 narrowed down a subagent tree via `Plugin::narrowable_keys`, `conway.fs`'s
 `root` key its one production consumer today) — how a CHILD agent's config
@@ -115,7 +117,7 @@ individually" — the list below decides which plugins ship, which remains a
 separate question from what an operator may configure inside one they
 chose to install.
 
-Fifteen capabilities beyond the mechanism itself now ship, each installable
+Sixteen capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild.
 
 Run `conway plugin list` to see this exact table (`[x]`/`[ ]`, id, and a
@@ -173,9 +175,17 @@ routes` — see [`sessions.md`](../sessions.md) and
   call/result round-trips older than `keep_turns` turns (default 8),
   keeping context small as a session grows long. `keep_turns` is
   operator-configurable via `[plugins.config.conway.trim]` (board item
-  `01M1YVM9CHFCJ6112XDYHCFS84`) — the first, and as of this writing only,
-  first-party plugin to adopt the `[plugins.config.<id>]` mechanism
-  described above for its own settings.
+  `01M1YVM9CHFCJ6112XDYHCFS84`) — the first first-party plugin to adopt the
+  `[plugins.config.<id>]` mechanism described above for its own settings;
+  `conway.compaction` below is the second.
+- [`compaction.md`](compaction.md) — `conway.compaction`, a `ContextHook`
+  that folds `ToolResult` segments older than `fold_after_turns` into one
+  labeled, ephemeral summary segment, recomputed every turn — the weakest,
+  non-persistent form of "compaction" (see that page's own caveat, copied
+  verbatim from `docs/vision/CATALOGUE.md`). NOT in the default opinion
+  set. `fold_after_turns` is operator-configurable via
+  `[plugins.config.conway.compaction]`, the SAME `[plugins.config.<id>]`
+  mechanism `conway.trim` already adopted.
 - `conway.history` — `/conway.history.rewind <seq>`/`.mask`/`.checkout`:
   forks the calling session at a sequence number, masks a record out of
   future context, or checks out a prior session as the active one. No

@@ -285,9 +285,18 @@ Members today:
   reveals the real schema on demand and keeps it revealed. The tool stays
   ANNOUNCED throughout, so the wire never offers a name it would then
   refuse. Built-in tools are never narrowed.
-
-Compaction remains separate, later work — the sole member of this list not
-yet written; see `PHILOSOPHY.md` §6's own "Where the tree is today" note.
+- **`crates/conway-plugin-compaction`** (`conway.compaction`) — an opt-in,
+  ephemeral `ContextHook` that folds `ToolResult` segments beyond the most
+  recent `fold_after_turns` into one labeled summary segment, recomputed
+  from scratch on every single turn. Packages
+  `docs/plugins/cookbook.md` example 2's `CompactOldToolResultsHook`
+  as an installable plugin rather than reimplementing it. Deliberately the
+  weakest form of what "compaction" usually means: nothing persists the
+  fold (`LogRecord::ContextMask` still has no producer anywhere in the
+  tree), no user/assistant text is summarized, and no model call is
+  involved -- see `docs/plugins/compaction.md`'s own caveat, copied
+  verbatim from `docs/vision/CATALOGUE.md`, and `PHILOSOPHY.md` §6's own
+  "Where the tree is today" note.
 
 The layout is one crate per plugin, under `crates/` like everything else.
 A single crate holding several would couple members that are meant to be

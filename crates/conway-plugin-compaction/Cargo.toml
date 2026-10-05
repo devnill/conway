@@ -1,0 +1,35 @@
+[package]
+name = "conway-plugin-compaction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin (board item 01M1YVMTDJYEFC5PKSQHDRASJX), `conway.compaction`: packages the cookbook's ephemeral tool-result-folding ContextHook as an installable, off-by-default plugin -- the weakest form of 'compaction', recomputed every turn, nothing persisted"
+
+# Versioned WITH the workspace, like every other first-party plugin -- see
+# `conway-plugin-trim`/`conway-plugin-toolindex`'s own Cargo.toml doc
+# comments for the full reasoning, restated there rather than re-derived
+# here: this crate carries none of `conway-core`'s strict-semver discipline
+# (ARCHITECTURE.md §2), because that discipline exists for the crate
+# third-party plugins depend on, and this is, from `conway`'s own point of
+# view, just another consumer of the public `conway`/`conway::plugin`
+# surface.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets. `Plugin`, `ContextHook`,
+# `ContextHookCtx`, `ContextPayload`, `PromptSegment`, `Provenance`,
+# `ContentBlock`, `Role` are all reachable through `conway::plugin` alone --
+# the same surface `docs/plugins/cookbook.md`'s example 2 compiles against,
+# which is exactly the point: this crate packages that example, it does not
+# reimplement it against a wider one.
+conway = { path = "../conway" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Workspace default features (`rt`, `macros`, among others) already cover
+# `#[tokio::test]`'s single-threaded runtime -- no multi-thread flavor is
+# needed, this crate's tests never spawn.
+tokio = { workspace = true }

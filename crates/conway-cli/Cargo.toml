@@ -236,6 +236,16 @@ conway-plugin-web = { path = "../conway-plugin-web" }
 # `conway-plugin-toolindex/src/lib.rs`'s own "Default set or opt-in" section
 # for the full reasoning.
 conway-plugin-toolindex = { path = "../conway-plugin-toolindex" }
+# Board item 01M1YVMTDJYEFC5PKSQHDRASJX: `conway.compaction`, an ephemeral
+# ContextHook that folds old tool results into one labeled summary segment,
+# recomputed every turn -- packages `docs/plugins/cookbook.md` example 2 as
+# an installable plugin. Resolved through the SAME
+# `[plugins].install`/`src/first_party_plugins.rs` choke point every other
+# tool-contributing entry above uses; NOT installed by default and NOT in
+# `DEFAULT_OPINION_SET` -- see this crate's own `first_party_plugins.rs`
+# bundle doc and `conway-plugin-compaction/src/lib.rs`'s own module doc for
+# the "weakest form of compaction" caveat this entry carries.
+conway-plugin-compaction = { path = "../conway-plugin-compaction" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }
