@@ -683,9 +683,29 @@ pub struct AgentLoop {
 /// immediately. This is what makes `Runtime::prompt` safe to call without
 /// coordinating with the resumed/idling task's own scheduling (it may not
 /// have polled even once yet).
+///
+/// `armed_head` (board item `01M44PK089DF2M9TM3C4P5CKMZ`): the session's own
+/// `SessionStore::head` at the EXACT moment `awaiting_prompt` was set `true`
+/// -- captured by whoever arms the gate (`Runtime::start_root`/`resume_root`,
+/// `subagent.rs`'s fork/spawn launch, and `AgentLoop::end_keep_alive_turn`),
+/// never lazily inside the wait itself. [`AgentLoop::wait_for_resume`]
+/// compares against THIS value, not a fresh read taken when it happens to
+/// start waiting: a fresh read would race a caller who sends a genuine
+/// prompt/steer BEFORE the newly armed/resumed task is ever polled for the
+/// first time (entirely possible -- `tokio::spawn` makes no scheduling
+/// promise) -- by the time such a lazy read ran, it would already observe
+/// the caller's own append, indistinguishable from "nothing new happened,"
+/// and `wait_for_resume` would then wait forever for a notify permit that
+/// was already spent arming it. Capturing the baseline at arm time, before
+/// the caller could possibly have acted (every arm site reads this
+/// synchronously within the same function that sets `awaiting_prompt`,
+/// before returning control to any caller that could send a prompt/steer),
+/// closes that race by construction. Meaningless (never read) while
+/// `awaiting_prompt` is `false`.
 #[derive(Clone)]
 pub struct ResumeGate {
     pub awaiting_prompt: bool,
+    pub armed_head: LogSeq,
     pub notify: Arc<tokio::sync::Notify>,
 }
 
@@ -693,9 +713,29 @@ impl Default for ResumeGate {
     fn default() -> Self {
         Self {
             awaiting_prompt: false,
+            armed_head: LogSeq::ZERO,
             notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
+}
+
+/// What, if anything, justified waking a `keep_alive` agent parked at its
+/// own [`ResumeGate`] -- the outcome of [`AgentLoop::wait_for_resume`].
+///
+/// Board item `01M44PK089DF2M9TM3C4P5CKMZ`: deliberately NOT produced by the
+/// mere fact that `ResumeGate::notify.notified()` resolved -- see that
+/// method's own doc for why a bare wake is not, by itself, proof that
+/// anything is actually pending.
+#[derive(Debug)]
+enum ResumeWait {
+    /// A genuine steer (freshly drained from the inbox) or prompt (the
+    /// session log's own head moved since this wait began) is now durably
+    /// on the log. The caller should clear the gate and proceed.
+    Resumed,
+    /// This agent's own `CancellationToken` tripped while parked.
+    Cancelled,
+    /// `AgentSpec::budget.deadline` elapsed while parked.
+    BudgetExceeded { limit: String },
 }
 
 /// Per-turn accumulator: turns executed and usage accrued so far. `Clone`
@@ -1000,6 +1040,77 @@ impl AgentLoop {
             return Err(err);
         }
         Ok(steer_persisted)
+    }
+
+    /// Parks at [`ResumeGate::notify`] until there is a genuine reason to
+    /// resume -- board item `01M44PK089DF2M9TM3C4P5CKMZ`, "condition-
+    /// variable discipline."
+    ///
+    /// `tokio::sync::Notify` stores at most one permit: a `notify_one()`
+    /// issued while nothing is parked is buffered and silently consumed by
+    /// the very next `notified().await`, WHICHEVER caller that happens to
+    /// be -- `ResumeGate`'s own doc calls this out as the intended
+    /// mechanism for the ordinary case (a prompt that beats the task to its
+    /// first poll). The hazard is the SAME mechanism misfiring: `subagent.
+    /// rs`'s `steer` calls `notify_one()` after finding `agent_awaiting_
+    /// prompt(target)` true, but `run_inner`'s own same-pass fast path
+    /// (`steer_landed_this_pass`, that branch's own doc) can clear the gate
+    /// for that exact steer WITHOUT ever consuming `notify` -- leaving an
+    /// orphaned permit that the next, wholly unrelated time this agent
+    /// parks here would otherwise consume immediately, resuming into a
+    /// turn with nothing new to say.
+    ///
+    /// The fix is to never trust a wake on its own: every time `notify`
+    /// resolves, re-check the actual predicate -- a steer freshly drained
+    /// from the inbox, or the session log's own head having moved past
+    /// [`ResumeGate::armed_head`] (a genuine `Runtime::prompt`/`prompt_with_
+    /// images` appends its `UserTurn` directly to the store, never through
+    /// the mailbox, so `drain_inbox` alone cannot see it -- the store's head
+    /// is the one signal both paths funnel through). Neither holds, loop
+    /// back and wait again: this makes any stray permit, however it was
+    /// produced, harmless by construction, without needing to special-case
+    /// where it came from.
+    ///
+    /// Deliberately compares against `self.resume_gate.armed_head` --
+    /// captured by whoever armed the gate, BEFORE this function ever ran --
+    /// rather than a head read taken here, fresh, the first time this
+    /// function happens to be polled: see that field's own doc for the race
+    /// a fresh-here read would reopen (a caller's prompt/steer landing
+    /// before this task's very first poll, which a lazily-captured baseline
+    /// could not tell apart from "nothing new").
+    async fn wait_for_resume(&mut self) -> Result<ResumeWait, RuntimeError> {
+        let head_before = self.resume_gate.armed_head;
+        loop {
+            match self.spec.budget.deadline {
+                Some(deadline) => {
+                    let remaining = (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+                    tokio::select! {
+                        biased;
+                        () = self.cancel.cancelled() => return Ok(ResumeWait::Cancelled),
+                        () = tokio::time::sleep(remaining) => {
+                            return Ok(ResumeWait::BudgetExceeded {
+                                limit: format!("deadline={deadline}"),
+                            });
+                        }
+                        () = self.resume_gate.notify.notified() => {}
+                    }
+                }
+                None => {
+                    tokio::select! {
+                        biased;
+                        () = self.cancel.cancelled() => return Ok(ResumeWait::Cancelled),
+                        () = self.resume_gate.notify.notified() => {}
+                    }
+                }
+            }
+            let steer_landed = self.drain_inbox().await?;
+            let head_now = self.deps.store.head(&self.session).await?;
+            if steer_landed || head_now != head_before {
+                return Ok(ResumeWait::Resumed);
+            }
+            // Stray wake: nothing is actually pending yet. Go back to sleep
+            // rather than resuming into a spurious turn.
+        }
     }
 
     /// Routes and attempts the given (already `ContextHook::before_request`-
@@ -1525,10 +1636,14 @@ impl AgentLoop {
                             steps_this_turn,
                         },
                     );
-                    self.end_keep_alive_turn(
-                        &mut state,
-                        &mut result_builder,
-                        &mut contract_retried,
+                    try_rt!(
+                        state,
+                        self.end_keep_alive_turn(
+                            &mut state,
+                            &mut result_builder,
+                            &mut contract_retried,
+                        )
+                        .await
                     );
                     continue;
                 }
@@ -1575,53 +1690,46 @@ impl AgentLoop {
             // gate was never shut) is already delivered by the pre-existing
             // per-step `drain_inbox` polling alone and never reaches this
             // branch at all.
+            //
+            // The `notify.notified()` wait itself lives in
+            // `Self::wait_for_resume`, below: that method's own doc covers
+            // the OTHER half of this fix -- a `notify_one()` fired for a
+            // steer this same-pass branch above already consumed (without
+            // ever touching `notify`) leaves an orphaned permit that would
+            // otherwise resolve some later, unrelated wait with nothing
+            // pending. `wait_for_resume` never trusts a bare wake; it only
+            // ever returns `ResumeWait::Resumed` once it has re-confirmed
+            // something genuine (a freshly drained steer, or the log's own
+            // head having moved) actually landed.
             if self.resume_gate.awaiting_prompt && steer_landed_this_pass {
                 self.resume_gate.awaiting_prompt = false;
                 self.deps.tree.mark_awaiting_prompt(self.agent_id, false);
             } else if self.resume_gate.awaiting_prompt {
-                match self.spec.budget.deadline {
-                    Some(deadline) => {
-                        let remaining = (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO);
-                        tokio::select! {
-                            biased;
-                            () = self.cancel.cancelled() => {
-                                return Ok(self.finish_cancelled(&state, &result_builder).await);
-                            }
-                            () = tokio::time::sleep(remaining) => {
-                                let limit = format!("deadline={deadline}");
-                                let account = self.budget_account(&state, &result_builder, &limit);
-                                return Ok(self.finish(
-                                    ResultStatus::BudgetExceeded { limit },
-                                    account,
-                                    state.usage,
-                                    state.turn,
-                                    state.turn_steps,
-                                    &result_builder,
-                                ).await);
-                            }
-                            () = self.resume_gate.notify.notified() => {
-                                self.resume_gate.awaiting_prompt = false;
-                                // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`
-                                // round 2: mirrors the real gate field on
-                                // the tree, the same way `mark_turn_started`
-                                // mirrors `Event::TurnStarted`'s own
-                                // emission -- see `AgentTree::
-                                // awaiting_prompt`'s own doc.
-                                self.deps.tree.mark_awaiting_prompt(self.agent_id, false);
-                            }
-                        }
+                match try_rt!(state, self.wait_for_resume().await) {
+                    ResumeWait::Cancelled => {
+                        return Ok(self.finish_cancelled(&state, &result_builder).await);
                     }
-                    None => {
-                        tokio::select! {
-                            biased;
-                            () = self.cancel.cancelled() => {
-                                return Ok(self.finish_cancelled(&state, &result_builder).await);
-                            }
-                            () = self.resume_gate.notify.notified() => {
-                                self.resume_gate.awaiting_prompt = false;
-                                self.deps.tree.mark_awaiting_prompt(self.agent_id, false);
-                            }
-                        }
+                    ResumeWait::BudgetExceeded { limit } => {
+                        let account = self.budget_account(&state, &result_builder, &limit);
+                        return Ok(self
+                            .finish(
+                                ResultStatus::BudgetExceeded { limit },
+                                account,
+                                state.usage,
+                                state.turn,
+                                state.turn_steps,
+                                &result_builder,
+                            )
+                            .await);
+                    }
+                    ResumeWait::Resumed => {
+                        self.resume_gate.awaiting_prompt = false;
+                        // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` round 2:
+                        // mirrors the real gate field on the tree, the same
+                        // way `mark_turn_started` mirrors `Event::
+                        // TurnStarted`'s own emission -- see `AgentTree::
+                        // awaiting_prompt`'s own doc.
+                        self.deps.tree.mark_awaiting_prompt(self.agent_id, false);
                     }
                 }
                 continue;
@@ -2221,10 +2329,14 @@ impl AgentLoop {
                     // `BudgetCheck::TurnAborted` arm above) must not
                     // double-count it.
                     state.turn += 1;
-                    self.end_keep_alive_turn(
-                        &mut state,
-                        &mut result_builder,
-                        &mut contract_retried,
+                    try_rt!(
+                        state,
+                        self.end_keep_alive_turn(
+                            &mut state,
+                            &mut result_builder,
+                            &mut contract_retried,
+                        )
+                        .await
                     );
                     continue;
                 }
@@ -2702,12 +2814,21 @@ impl AgentLoop {
     /// `seen_segments` (owned by `run_inner` itself, not `LoopState`) and
     /// `state.usage` are deliberately left untouched by this fn -- both must
     /// persist across the whole keep-alive session.
-    fn end_keep_alive_turn(
+    ///
+    /// Now `async`, fallibly (board item `01M44PK089DF2M9TM3C4P5CKMZ`): the
+    /// resume gate's `armed_head` must be snapshotted HERE, synchronously
+    /// with arming `awaiting_prompt`, never lazily inside `wait_for_resume`
+    /// itself -- see [`ResumeGate::armed_head`]'s own doc for the race a
+    /// later read would reopen. Every caller already runs inside `run_inner`
+    /// (itself `async`), so this costs no call site a new, separate error
+    /// path -- all three already propagate a `RuntimeError` one way or
+    /// another.
+    async fn end_keep_alive_turn(
         &mut self,
         state: &mut LoopState,
         result_builder: &mut ResultBuilder,
         contract_retried: &mut bool,
-    ) {
+    ) -> Result<(), RuntimeError> {
         // `= 0` (not `+= 1`): the turn that just ended -- naturally or by
         // this trip -- needs no further budget check, and the next one
         // hasn't taken a step yet (see `LoopState::turn_steps`'s own doc).
@@ -2723,10 +2844,17 @@ impl AgentLoop {
         *contract_retried = false;
         state.runway.reset_turn_scoped();
         self.resume_gate.awaiting_prompt = true;
+        self.resume_gate.armed_head = self.deps.store.head(&self.session).await?;
         // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX` round 2: mirrors the real
         // gate field on the tree -- see `AgentTree::awaiting_prompt`'s own
         // doc for why this is the honest "busy" signal a facade caller
-        // outside this loop's own live subscribers can read.
+        // outside this loop's own live subscribers can read. Deliberately
+        // AFTER the `armed_head` snapshot just above: any caller that
+        // defers to this tree flag before sending a plain (non-steer,
+        // non-queued) `Runtime::prompt` -- the documented convention every
+        // in-tree caller follows -- can therefore never observe "idle"
+        // before the baseline it will be compared against already covers
+        // its own eventual append.
         self.deps.tree.mark_awaiting_prompt(self.agent_id, true);
         // Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the just-ended turn's own
         // abort token (if any -- a natural completion and a budget trip
@@ -2736,6 +2864,7 @@ impl AgentLoop {
         // it here, in the ONE shared "end a keep_alive turn" implementation,
         // is what makes `AgentTree::abort_turn` a safe no-op while idle.
         self.deps.tree.clear_turn_abort_token(self.agent_id);
+        Ok(())
     }
 
     /// Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: the operator-abort
@@ -2791,7 +2920,8 @@ impl AgentLoop {
                 reason,
             },
         );
-        self.end_keep_alive_turn(state, result_builder, contract_retried);
+        self.end_keep_alive_turn(state, result_builder, contract_retried)
+            .await?;
         Ok(())
     }
 
@@ -3413,11 +3543,17 @@ mod tests {
     /// other `LoopDeps` dependency a fake that is never actually invoked --
     /// `persist` reads only `self.deps.store` and `self.session`, so
     /// everything else here only needs to type-check, not do real work.
+    ///
+    /// Also returns the `MailboxSender` paired with the loop's own `inbox`
+    /// -- `persist`-only callers ignore it, but `wait_for_resume`'s own
+    /// tests (board item `01M44PK089DF2M9TM3C4P5CKMZ`) need it to deliver a
+    /// real `AgentMessage::Steer` the same way `subagent.rs`'s `steer`
+    /// does.
     async fn test_loop(
         store: Arc<dyn SessionStore>,
         session: SessionId,
         agent: AgentId,
-    ) -> AgentLoop {
+    ) -> (AgentLoop, MailboxSender) {
         let bus = EventBus::new(16);
         let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
         let attempt = Arc::new(AttemptEngine::new(HashMap::new(), health, bus.clone()));
@@ -3468,24 +3604,27 @@ mod tests {
             tag: None,
         };
 
-        let (_tx, inbox) = mailbox::Mailbox::new(8);
-        AgentLoop {
-            agent_id: agent,
-            session,
-            parent: None,
-            agent_path: vec![agent],
-            cwd: PathBuf::from("/tmp"),
-            root: None,
-            plugin_config: Arc::new(PluginConfig::default()),
-            deps,
-            spec,
-            cancel: CancellationToken::new(),
-            inherited: None,
-            inbox,
-            parent_mailbox: None,
-            pending_cancel: None,
-            resume_gate: ResumeGate::default(),
-        }
+        let (tx, inbox) = mailbox::Mailbox::new(8);
+        (
+            AgentLoop {
+                agent_id: agent,
+                session,
+                parent: None,
+                agent_path: vec![agent],
+                cwd: PathBuf::from("/tmp"),
+                root: None,
+                plugin_config: Arc::new(PluginConfig::default()),
+                deps,
+                spec,
+                cancel: CancellationToken::new(),
+                inherited: None,
+                inbox,
+                parent_mailbox: None,
+                pending_cancel: None,
+                resume_gate: ResumeGate::default(),
+            },
+            tx,
+        )
     }
 
     async fn seeded_session(store: &dyn SessionStore, agent: AgentId) -> SessionId {
@@ -3532,7 +3671,7 @@ mod tests {
         let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
         let agent = AgentId::new();
         let session = seeded_session(store.as_ref(), agent).await;
-        let agent_loop = test_loop(store.clone(), session, agent).await;
+        let (agent_loop, _steer_tx) = test_loop(store.clone(), session, agent).await;
 
         let head_before = store
             .head(&session)
@@ -3566,7 +3705,7 @@ mod tests {
         let agent = AgentId::new();
         let session = seeded_session(store.as_ref(), agent).await;
         let store_dyn: Arc<dyn SessionStore> = store.clone();
-        let agent_loop = test_loop(store_dyn, session, agent).await;
+        let (agent_loop, _steer_tx) = test_loop(store_dyn, session, agent).await;
 
         store.fail_nth_append(
             1,
@@ -3587,6 +3726,88 @@ mod tests {
             0,
             "a failed persist must append nothing"
         );
+    }
+
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (review round): a `notify_
+    /// one()` fired with NOTHING actually pending -- exactly the orphaned
+    /// permit `subagent.rs`'s `steer` can leave behind when `run_inner`'s
+    /// own same-pass fast path (`steer_landed_this_pass`) clears the gate
+    /// for a steer without ever consuming `notify` -- must never resume a
+    /// LATER, unrelated wait on its own. Planted directly here (`notify_
+    /// one()` with no steer queued and no store append), rather than
+    /// reproducing the exact production race, per `wait_for_resume`'s own
+    /// doc: the fix makes ANY stray permit harmless by re-checking the real
+    /// predicate on every wake, so where the permit came from does not
+    /// matter to this test.
+    #[tokio::test]
+    async fn a_stray_resume_permit_alone_never_resumes_but_a_real_steer_does() {
+        let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+        let agent = AgentId::new();
+        let caller = AgentId::new();
+        let session = seeded_session(store.as_ref(), agent).await;
+        let (mut agent_loop, steer_tx) = test_loop(store.clone(), session, agent).await;
+
+        let notify = agent_loop.resume_gate.notify.clone();
+        notify.notify_one();
+
+        let mut handle = tokio::spawn(async move { agent_loop.wait_for_resume().await });
+
+        // The stray permit alone must NEVER resume the agent -- by design,
+        // a correct `wait_for_resume` blocks forever here (nothing is
+        // pending), so the ONLY sound way to assert "never resolves"
+        // without this test itself being able to hang is a bounded
+        // `timeout`: if it times out, the guard held; if it resolves at
+        // all within the window, the guard has already failed. Polling
+        // through `&mut handle` (never consuming it) lets the SAME
+        // `JoinHandle` be awaited again below once a real steer lands.
+        let premature =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut handle).await;
+        assert!(
+            premature.is_err(),
+            "a stray notify permit with nothing pending must not resume the agent \
+             (it resolved early: {premature:?})"
+        );
+
+        // The SAME two-step sequence `subagent.rs`'s `steer` uses: enqueue
+        // the message, then wake.
+        steer_tx.send(AgentMessage::Steer {
+            from: caller,
+            text: "keep going".to_string(),
+            at_parent_seq: LogSeq::ZERO,
+        });
+        notify.notify_one();
+
+        // Bounded again: a real steer must resume within a few seconds, not
+        // hang either.
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("wait_for_resume must resolve once a real steer lands behind a stray wake")
+            .expect("the spawned task must not panic");
+        let outcome =
+            joined.expect("wait_for_resume must not error against a healthy, unfailing store");
+        assert!(
+            matches!(outcome, ResumeWait::Resumed),
+            "a real steer delivered after a stray wake must resume exactly once: {outcome:?}"
+        );
+
+        let records = store
+            .read(&session, SeqRange::full())
+            .await
+            .expect("read back the session");
+        assert_eq!(
+            records
+                .iter()
+                .filter(|r| matches!(r, LogRecord::ParentSteer { .. }))
+                .count(),
+            1,
+            "exactly one ParentSteer record, persisted exactly once: {records:?}"
+        );
+        // Cleanup: nothing beyond the above holds any resource outside this
+        // test's own locals -- `store`/`session`/`agent` are `FakeStore`/
+        // in-memory only (no files, no live `Runtime`, no background task
+        // left running: the spawned task above already ran to completion,
+        // awaited by `handle` just above) -- dropped automatically when
+        // this function returns.
     }
 
     /// `segments_carry_an_image`: the pure trigger `route_and_attempt` uses

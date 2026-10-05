@@ -1007,6 +1007,14 @@ impl SubagentHost for Runtime {
                 .append(&session_id, head_record)
                 .await?;
         }
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: the resume gate's
+        // `armed_head` baseline for a `starts_idle` child, captured HERE,
+        // before this child's `agent_id` is ever returned to the caller --
+        // see `ResumeGate::armed_head`'s own doc for the race a lazy read
+        // inside `AgentLoop::wait_for_resume` would reopen. Read
+        // unconditionally: meaningless when `!starts_idle` (the gate is
+        // never armed then).
+        let armed_head = self.loop_deps().store.head(&session_id).await?;
 
         let cancel = self.tree_ref().child_cancel_token(parent)?;
         let last_report = Arc::new(Mutex::new(None));
@@ -1089,6 +1097,7 @@ impl SubagentHost for Runtime {
             resume_gate: if starts_idle {
                 crate::agent_loop::ResumeGate {
                     awaiting_prompt: true,
+                    armed_head,
                     ..Default::default()
                 }
             } else {

@@ -692,6 +692,18 @@ never into a decision — for a window that widens automatically if you were
 already mid-draft when the prompt interrupted you. `y`/`n`/`a`/`p`/`s` all
 answer normally again, as single keys, once that window closes.
 
+The guard is vim-aware: with `tui.editor_mode = "vim"` (see "Vim editing
+mode," above) in NORMAL mode, a key inside the window runs as its own vim
+command against the draft — an operator like `d`, a motion, or a mode
+switch like `i` — rather than being inserted as a literal character, and a
+pending operator (`d` waiting on its motion) survives across the window
+exactly as it would mid-sentence in `emacs` mode.
+
+A bracketed paste follows the identical rule, but with no window at all: it
+lands in the draft, never as an answer, at any time the prompt is showing
+— a paste is a deliberate block of text, never itself one of the single-key
+decisions, so there is nothing for it to collide with.
+
 `[p]`'s field editor, project-file trust, and how grants persist and get
 revoked are covered in full in [`permissions.md`](permissions.md) — this
 prompt is the one place you'll meet them, but that page is where the

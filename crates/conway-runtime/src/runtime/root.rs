@@ -626,6 +626,17 @@ impl Runtime {
                 },
             );
         }
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: the resume gate's
+        // `armed_head` baseline, captured HERE -- synchronously, before
+        // returning `agent_id` to the caller -- rather than lazily inside
+        // `AgentLoop::wait_for_resume` itself. A prompt-less root's caller
+        // cannot possibly call `Runtime::prompt` before THIS function
+        // returns, so reading the head now is race-free by construction;
+        // see `ResumeGate::armed_head`'s own doc for the race a later read
+        // would reopen. Read unconditionally (cheap, and correct either
+        // way): meaningless when `spec.prompt` was `Some` above, since the
+        // gate is never armed in that case.
+        let armed_head = self.store.head(&session_id).await?;
 
         let last_report = Arc::new(Mutex::new(None));
         let agent_spec = AgentSpec {
@@ -710,6 +721,7 @@ impl Runtime {
             // `run_inner` re-arms this same gate at each turn boundary.
             resume_gate: crate::agent_loop::ResumeGate {
                 awaiting_prompt: spec.prompt.is_none(),
+                armed_head,
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
         };
@@ -1096,6 +1108,17 @@ impl Runtime {
                 })?,
         );
 
+        // Board item `01M44PK089DF2M9TM3C4P5CKMZ`: the resume gate's
+        // `armed_head` baseline, captured HERE -- before `agent_id` is ever
+        // returned to the caller, so a `Runtime::prompt` sent the instant
+        // this call resolves cannot possibly race it. Nothing above this
+        // point appends to `spec.session`'s own log (every `.await` so far
+        // only reads `meta`/resolves definitions/validates config), so this
+        // read is exactly "the head as it stood when this resume began."
+        // See `ResumeGate::armed_head`'s own doc for the race a lazy read
+        // inside `AgentLoop::wait_for_resume` itself would reopen.
+        let armed_head = self.store.head(&spec.session).await?;
+
         let last_report = Arc::new(Mutex::new(None));
         let agent_spec = AgentSpec {
             system_prompt,
@@ -1178,6 +1201,7 @@ impl Runtime {
             // spawned task, which is what `Runtime::prompt` signals below.
             resume_gate: crate::agent_loop::ResumeGate {
                 awaiting_prompt: true,
+                armed_head,
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
         };

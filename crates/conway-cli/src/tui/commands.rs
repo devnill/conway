@@ -11271,9 +11271,7 @@ mod tests {
             })
             .collect();
         assert!(
-            lines
-                .iter()
-                .any(|l| *l == "cache: reporting unknown for ollama_cloud"),
+            lines.contains(&"cache: reporting unknown for ollama_cloud"),
             "expected a labeled cache line: {lines:?}"
         );
         assert_eq!(

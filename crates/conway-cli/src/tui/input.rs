@@ -1615,11 +1615,16 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
     // the prompt rather than being silently swallowed.
     if let Some((shown_at, draft_was_nonempty)) = state.permission_prompt_armed_at {
         if permission_typeahead_intercepts(shown_at.elapsed(), draft_was_nonempty, key) {
-            if let KeyCode::Char(c) = key.code {
-                let idx = byte_index(&state.input, state.cursor);
-                state.input.insert(idx, c);
-                state.cursor += 1;
-            }
+            // Board item `01M44PK089DF2M9TM3C4P5CKMZ` (review round): route
+            // through the SAME draft-input seam ordinary compose-mode
+            // editing uses (`apply_draft_char`, vim-aware when
+            // `editor_mode` is `Vim`) instead of inserting the raw
+            // character directly -- the earlier version of this guard
+            // bypassed the vim engine entirely, so a NORMAL-mode key like
+            // `d`/`x`/`i` landed as literal text in the draft, and any
+            // pending operator (a lone `d` waiting on its motion) went
+            // stale.
+            apply_draft_char(state, key);
             return Action::None;
         }
     }
@@ -2134,11 +2139,15 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         {
             Action::None
         }
-        KeyCode::Char(c) => {
-            let idx = byte_index(&state.input, state.cursor);
-            state.input.insert(idx, c);
-            state.cursor += 1;
-            state.sync_palette_stem();
+        KeyCode::Char(_) => {
+            // `apply_draft_char` here is the SAME seam the permission-
+            // prompt typeahead intercept shares -- this arm is only ever
+            // reached in `emacs` mode (a vim-claimed `Char` already
+            // returned via `handle_vim_key`, above), so this is still an
+            // ordinary literal insert either way; routing through the
+            // shared function keeps there being exactly one place that
+            // does it.
+            apply_draft_char(state, key);
             Action::None
         }
         _ => Action::None,
@@ -2171,6 +2180,33 @@ fn handle_vim_key(state: &mut AppState, key: KeyEvent) -> bool {
     state.cursor = cursor;
     state.sync_palette_stem();
     true
+}
+
+/// Applies a single plain `Char` keystroke to the draft (`state.input`/
+/// `cursor`, and in `vim` mode `state.vim` too) through the SAME seam
+/// ordinary compose-mode editing already uses: [`handle_vim_key`] first
+/// when `editor_mode` is `Vim` (so a NORMAL-mode command -- an operator
+/// like `d`, a motion like `h`/`l`/`w`, a mode switch like `i`/`a`/`o` --
+/// runs as its own vim command against the draft, with a pending operator
+/// surviving across calls, rather than being inserted literally), the
+/// ordinary insert-at-cursor otherwise -- byte-for-byte [`handle_normal_
+/// key`]'s own fixed-chain `KeyCode::Char` arm, below, which also routes
+/// through this function so there is exactly one place that does it.
+///
+/// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (review round): the permission-
+/// prompt typeahead intercept (`handle_permission_key`) shares this
+/// function too, so a prompt appearing mid-vim-command never bypasses the
+/// vim engine into literal insertion.
+fn apply_draft_char(state: &mut AppState, key: KeyEvent) {
+    if matches!(state.editor_mode, EditorMode::Vim) && handle_vim_key(state, key) {
+        return;
+    }
+    if let KeyCode::Char(c) = key.code {
+        let idx = byte_index(&state.input, state.cursor);
+        state.input.insert(idx, c);
+        state.cursor += 1;
+        state.sync_palette_stem();
+    }
 }
 
 /// Resolves `key` against the rebindable keymap (board item
@@ -2608,12 +2644,21 @@ fn insert_newline(state: &mut AppState) {
 
 /// Inserts a whole pasted block as ONE edit at the cursor (bracketed
 /// paste, `CEvent::Paste` -- wired from `app.rs`, not through
-/// [`handle_key`], since a paste is not a `KeyEvent`). Swallowed while any
-/// modal-bearing surface is showing (`Mode` other than `Normal`) -- the
-/// input line is inert there exactly as it is for ordinary typing (see
-/// `handle_ask_modal_key`/`handle_intent_confirm_key`'s own "input line is
-/// inert" docs) -- and, T7, while the `/help` overlay is open, for the same
-/// reason `handle_help_key` swallows ordinary keys.
+/// [`handle_key`], since a paste is not a `KeyEvent`). Lands in the draft
+/// for every `Mode` [`paste_targets_the_draft`] says has one -- see that
+/// function's own doc for the rule, mode by mode. Also swallowed, T7,
+/// while the `/help` overlay is open, for the same reason `handle_help_key`
+/// swallows ordinary keys.
+///
+/// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (review round): [`Mode::
+/// AwaitingPermission`] joining [`Mode::Normal`] here is the SAME operator
+/// ruling the permission-prompt typeahead guard already applies to typed
+/// characters ("typed input goes to the draft, never answers a prompt") --
+/// a paste is never itself a decision (there is no `y`/`n`/`a` for a whole
+/// block of pasted text to collide with the way one keystroke can), so
+/// there is no bounded "window" here either: a paste lands in the draft at
+/// ANY time the prompt is showing, never only within the typeahead
+/// guard's own few seconds.
 ///
 /// One `String::insert_str` call, not a loop over `handle_key` per
 /// character: looping would (a) fire `sync_palette_stem`/history-adjacent
@@ -2622,7 +2667,7 @@ fn insert_newline(state: &mut AppState) {
 /// character key rather than as literal text, which is exactly the
 /// char-by-char-arrival bug this avoids.
 pub fn handle_paste(state: &mut AppState, text: &str) {
-    if !matches!(state.mode, Mode::Normal) || state.help_open {
+    if !paste_targets_the_draft(&state.mode) || state.help_open {
         return;
     }
     if text.is_empty() {
@@ -2638,6 +2683,33 @@ pub fn handle_paste(state: &mut AppState, text: &str) {
     // See `AppState::sync_palette_stem_after_paste`/`mention_blocks_enter_
     // accept`'s own docs.
     state.sync_palette_stem_after_paste();
+}
+
+/// Whether a paste while `mode` is current should land in the draft at all
+/// -- board item `01M44PK089DF2M9TM3C4P5CKMZ` (review round). [`Mode::
+/// Normal`] obviously does (it IS the draft); [`Mode::AwaitingPermission`]
+/// joins it per [`handle_paste`]'s own doc. Every OTHER modal-bearing mode
+/// keeps dropping a paste outright, for one of two distinct reasons:
+///
+/// - [`Mode::EditingPattern`], [`Mode::EditingShellPrefix`], [`Mode::
+///   AddProviderCredential`], [`Mode::AddProviderContextWindow`], [`Mode::
+///   EditingDenyFeedback`] each already have their OWN dedicated text-entry
+///   field, separate from `AppState::input` -- their own key handlers edit
+///   a field on their own modal struct, never `AppState::input` (see e.g.
+///   `handle_deny_feedback_key`'s own doc, "deliberately never touching
+///   `AppState::input`"). Landing a paste in `AppState::input` while one of
+///   these is open would be worse than dropping it: the text would pile up
+///   invisibly in a buffer that is not even the one on screen. Wiring a
+///   paste into each of these fields instead is a real, separate feature,
+///   not attempted here.
+/// - [`Mode::AskModal`], [`Mode::IntentConfirm`], [`Mode::TrustPreview`],
+///   [`Mode::UiForm`], [`Mode::SkillProposal`], [`Mode::Distill`] offer no
+///   text entry at all while showing -- only fate/decision keys -- so there
+///   is no draft for a paste to be "typing underneath" in the first place;
+///   unlike `AwaitingPermission`, none of these carries a ruling that its
+///   underlying input line keeps accepting typed text while the card is up.
+fn paste_targets_the_draft(mode: &Mode) -> bool {
+    matches!(mode, Mode::Normal | Mode::AwaitingPermission(_))
 }
 
 /// `Up`/`Down` within a multi-line draft: moves the cursor to the
@@ -4357,6 +4429,90 @@ mod tests {
         );
     }
 
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (review round): the
+    /// typeahead intercept must route through the vim engine, not insert
+    /// the raw character, while `tui.editor_mode = vim` is in NORMAL mode
+    /// -- `x` deletes under the cursor (a vim command), it is never typed
+    /// literally.
+    #[test]
+    fn typeahead_in_vim_normal_mode_runs_as_a_vim_command_not_literal_insert() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = EditorMode::Vim;
+        state.input = "hello".to_string();
+        state.cursor = 0;
+        handle_key(&mut state, key(KeyCode::Esc)); // INSERT -> NORMAL
+        assert_eq!(state.vim.mode_label(), "NORMAL", "precondition");
+        state.permission_prompt_armed_at = Some((std::time::Instant::now(), true));
+
+        let action = handle_permission_key(&mut state, key(KeyCode::Char('x')));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            state.input, "ello",
+            "a vim NORMAL `x` arriving inside the typeahead window must delete from the \
+             draft through the vim engine, never insert the literal character"
+        );
+    }
+
+    /// The other half of the same bug: `i` must switch to INSERT (a vim
+    /// command) rather than being typed, and letters pressed AFTERWARD must
+    /// then insert normally -- both still inside the same typeahead window.
+    #[test]
+    fn typeahead_in_vim_normal_mode_i_enters_insert_then_types_normally() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = EditorMode::Vim;
+        state.input = "ello".to_string();
+        state.cursor = 0;
+        handle_key(&mut state, key(KeyCode::Esc)); // INSERT -> NORMAL
+        assert_eq!(state.vim.mode_label(), "NORMAL", "precondition");
+        state.permission_prompt_armed_at = Some((std::time::Instant::now(), true));
+
+        let action = handle_permission_key(&mut state, key(KeyCode::Char('i')));
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            state.input, "ello",
+            "`i` itself must never be inserted as text"
+        );
+        assert_eq!(state.vim.mode_label(), "INSERT");
+
+        let action = handle_permission_key(&mut state, key(KeyCode::Char('z')));
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            state.input, "zello",
+            "once in INSERT, a letter inserts normally"
+        );
+    }
+
+    /// A pending vim operator must survive ACROSS typeahead keystrokes --
+    /// `d` alone (inside the window) must not edit anything yet, and the
+    /// following `w` (also inside the window) must complete the SAME
+    /// `dw` command, not be evaluated on its own or inserted literally.
+    #[test]
+    fn typeahead_in_vim_normal_mode_a_pending_operator_survives_across_keystrokes() {
+        let mut state = AppState::new(AgentId::new());
+        state.editor_mode = EditorMode::Vim;
+        state.input = "hello world".to_string();
+        state.cursor = 0;
+        handle_key(&mut state, key(KeyCode::Esc)); // INSERT -> NORMAL
+        state.permission_prompt_armed_at = Some((std::time::Instant::now(), true));
+
+        let action = handle_permission_key(&mut state, key(KeyCode::Char('d')));
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            state.input, "hello world",
+            "a pending operator alone must not edit anything yet, and must not be inserted \
+             as a literal 'd' either"
+        );
+
+        let action = handle_permission_key(&mut state, key(KeyCode::Char('w')));
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            state.input, "world",
+            "`d` then `w`, both typed inside the window, must complete as one vim \
+             word-delete, not two unrelated literal characters"
+        );
+    }
+
     /// Axis B: the prompt can produce
     /// a per-agent and a per-subtree grant. The `s` key cycles the scope
     /// and BOTH remembered-grant keys honor it -- `a` through the gate
@@ -5880,8 +6036,12 @@ mod tests {
         assert_eq!(state.cursor, 1 + "PASTED\ntext".chars().count());
     }
 
+    /// Board item `01M44PK089DF2M9TM3C4P5CKMZ` (review round): a permission
+    /// prompt now joins `Mode::Normal` as a mode a paste lands in the draft
+    /// for -- see `paste_targets_the_draft`'s own doc for the rule and
+    /// `handle_paste`'s own doc for the operator ruling this implements.
     #[test]
-    fn paste_is_swallowed_while_a_modal_bearing_surface_is_open() {
+    fn paste_lands_in_the_draft_while_a_permission_prompt_is_showing() {
         let mut state = AppState::new(AgentId::new());
         state.input = "before".to_string();
         state.cursor = 6;
@@ -5901,8 +6061,38 @@ mod tests {
         handle_paste(&mut state, "sneaky");
 
         assert_eq!(
+            state.input, "beforesneaky",
+            "a paste while a permission prompt is showing must land in the draft, exactly \
+             like ongoing typeahead, never vanish"
+        );
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "the paste must never itself answer the prompt"
+        );
+    }
+
+    /// The `/ask` modal is one of the modal-bearing surfaces with NO text
+    /// entry of its own at all (only fate keys) -- `paste_targets_the_
+    /// draft`'s own doc names this as a mode that still drops a paste
+    /// outright, unlike `AwaitingPermission`.
+    #[test]
+    fn paste_is_still_swallowed_for_a_modal_with_no_draft_of_its_own() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "before".to_string();
+        state.cursor = 6;
+        state.offer_ask_modal(crate::tui::state::AskModal {
+            question: "q".to_string(),
+            child: AgentId::new(),
+            answer: "a".to_string(),
+            error: None,
+        });
+
+        handle_paste(&mut state, "sneaky");
+
+        assert_eq!(
             state.input, "before",
-            "a paste while the input line is inert must not mutate it"
+            "the /ask modal offers no text entry at all while showing; a paste has nowhere \
+             meaningful to go"
         );
     }
 

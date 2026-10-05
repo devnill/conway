@@ -1783,7 +1783,9 @@ fn is_env_assignment(token: &str) -> bool {
     match token.split_once('=') {
         Some((key, _)) if !key.is_empty() => {
             let mut chars = key.chars();
-            chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
                 && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
         }
         _ => false,
@@ -2746,7 +2748,10 @@ mod store_tests {
             ("deno run script.ts", "deno run script.ts"),
             ("pnpm dlx vitest run", "pnpm dlx vitest"),
             ("pnpm exec eslint .", "pnpm exec eslint"),
-            ("env FOO=1 python3 -m pytest -q", "env FOO=1 python3 -m pytest"),
+            (
+                "env FOO=1 python3 -m pytest -q",
+                "env FOO=1 python3 -m pytest",
+            ),
             (
                 "env FOO=1 BAR=2 python3 -m pytest -q",
                 "env FOO=1 BAR=2 python3 -m pytest",
