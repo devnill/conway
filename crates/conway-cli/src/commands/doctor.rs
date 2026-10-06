@@ -61,6 +61,49 @@
 //! wrote into `settings.json`). No telemetry: nothing this module computes
 //! leaves the process except what `--json`/the text report print to stdout.
 //!
+//! # On-disk side effects -- closed for `conway.memory`, still open for two others
+//!
+//! `build_full_conway` (below) reuses `main.rs`'s own tiered plugin-install
+//! pipeline (this doc's own first section) precisely so doctor's checks
+//! never drift from what a live session actually does -- but that pipeline
+//! was written for a process that is ABOUT to run a session, and two of its
+//! steps perform real disk I/O as a result, which doctor inherits just by
+//! calling it:
+//!
+//! - **`conway.memory`** (in `first_party_plugins::DEFAULT_OPINION_SET`, so
+//!   an ordinary project hits this): closed. `build_full_conway` passes
+//!   `first_party_plugins::install` a fresh `conway_plugin_memory::
+//!   InMemoryMemoryStore` override rather than letting it call
+//!   `resolve_memory_store`, which would otherwise `create_dir_all(".conway/
+//!   memory/memories")` the moment doctor ran.
+//! - **`conway.checkpoint`** (also in `DEFAULT_OPINION_SET`): NOT closed.
+//!   `first_party_plugins::checkpoint_plugin` calls `CheckpointPlugin::
+//!   with_root`, which unconditionally `create_dir_all`s its shadow-store
+//!   root (by default under the operator's OWN config directory, e.g.
+//!   `~/.conway/checkpoints/<project-key>`, never inside the project --
+//!   `conway::config::discovery::checkpoint_store_root`'s own doc) and
+//!   writes a self-ignoring `.gitignore` into it, every time this pipeline
+//!   runs, regardless of whether `"conway.checkpoint"` is actually selected
+//!   for this project.
+//! - **The session store**: NOT closed. `ConwayBuilder::build()` (the last
+//!   stage `build_full_conway` runs) calls `build_default_store` whenever no
+//!   store was injected, which `create_dir_all`s the resolved session root
+//!   (`conway::config::discovery::session_root`, the directory
+//!   `session.project_key` below already just READS the location of).
+//!
+//! Closing the latter two is real further work, deliberately left to a
+//! follow-up rather than attempted here: `conway_core::ports::SessionStore`
+//! is a large, concurrency-sensitive trait (fork/remove guarantees in
+//! particular) with no existing non-test, zero-I/O implementation this
+//! crate could borrow the way `conway_plugin_memory::InMemoryMemoryStore`
+//! already existed for `conway.memory`, and the checkpoint migration/
+//! `.gitignore` write happens inside `CheckpointPlugin::with_root` itself,
+//! unconditionally, with no override seam yet. Both are at most a small,
+//! OS-visible side effect (a directory and a two-line `.gitignore`, never
+//! session/task data), unlike the `conway.memory` case this item closes,
+//! which would have written a durable memory file the first time an
+//! operator who had never run a session at all ran `conway doctor`.
+//!
 //! # `--json`
 //!
 //! `{"checks":[{"id","status":"pass"|"warn"|"fail","summary","fix"},...],
@@ -291,8 +334,18 @@ async fn build_full_conway(
         None => builder,
     };
     let builder = builder.with_builtin_plugins(conway::PluginSelection::All);
+    // A fresh, non-durable `InMemoryMemoryStore` -- NEVER `resolve_memory_
+    // store`'s own `FsMemoryStore::open`, which `create_dir_all`s
+    // `.conway/memory/memories` the moment it runs. `conway.memory` is in
+    // `DEFAULT_OPINION_SET`, so an ordinary project hits this path on
+    // every `conway doctor` run; this module's own top doc promises no
+    // side effects, and this override (`first_party_plugins::install`'s
+    // own doc, "memory_store_override") is what keeps that true regardless
+    // of whether `conway.memory` is installed.
+    let memory_store_override: Arc<dyn conway::plugin::MemoryStore> =
+        Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
     let (builder, _memory_store, _agent_names, _skills_plugin) =
-        crate::first_party_plugins::install(builder, env, None)
+        crate::first_party_plugins::install(builder, env, None, Some(memory_store_override))
             .await
             .map_err(|error| PluginBuildFailure {
                 stage: "plugins.first_party",

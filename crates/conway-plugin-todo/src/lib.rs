@@ -48,16 +48,44 @@
 //! exists in this crate; it is entirely the established tool-observer note
 //! plus the context builder's own unconditional log replay.
 //!
+//! # Context cost stays flat, no matter how many `todo_write` calls ran
+//!
+//! Every successful `todo_write` persists its own `LogRecord::SystemNote`
+//! (the mechanism just above), and context assembly replays EVERY past
+//! `SystemNote` back as its own segment on every later request -- that
+//! replay is unconditional and belongs to context assembly generically, not
+//! to this plugin. Left alone, a session with N `todo_write` calls would
+//! carry N copies of (an earlier version of) the list into every request
+//! from the N-th call onward, each one a little more stale than the last.
+//! `TodoContextHook::before_request` closes that off itself, in the one
+//! place it owns: before appending its own freshly rendered segment, it
+//! removes every segment whose `Provenance::SystemNote` reason is exactly
+//! [`NOTE_REASON`] (shared with `TodoNoteObserver`, the one writer, so the
+//! two can never drift onto two different strings) from the payload it was
+//! handed. One request therefore ever carries at most ONE `conway.todo`
+//! segment -- the one this method itself appends -- regardless of how many
+//! `todo_write` calls preceded it.
+//!
+//! This removal happens on EVERY request, including the very first one
+//! built after a `todo_write` call's own note was persisted -- there is no
+//! "let it through once, then start filtering" transition. A persisted note
+//! is therefore never actually part of ANY request payload a backend ever
+//! sees, and never part of what a backend might cache about the request
+//! either: removing something that was never sent cannot invalidate a
+//! cache of what was. See "The segment never churns the cached prefix"
+//! below for the complementary half of that claim (the one segment this
+//! method DOES add).
+//!
 //! # The segment never churns the cached prefix
 //!
-//! `TodoContextHook::before_request` only ever appends one segment to the
-//! very end of the already-assembled list, and otherwise returns every
-//! existing segment byte-for-byte unchanged, in the same order -- never
-//! inserted earlier, never used to replace or edit anything already there.
-//! A list that changes turn to turn is exactly the kind of volatile content
-//! that must sit after the inherited prefix and this session's own turn
-//! records, not among them, so the part of the request a backend might
-//! cache never moves.
+//! Past its own removal of stale `conway.todo` notes (above), this method
+//! only ever APPENDS one segment, to the very end of the list, and
+//! otherwise returns every remaining segment byte-for-byte unchanged, in
+//! the same order -- never inserted earlier, never used to replace or edit
+//! anything else that was there. A list that changes turn to turn is
+//! exactly the kind of volatile content that must sit after the inherited
+//! prefix and this session's own turn records, not among them, so the part
+//! of the request a backend might cache never moves.
 //!
 //! # What this plugin does NOT do
 //!
@@ -197,29 +225,42 @@ struct TodoState {
 /// `conway-plugin-stepguard`'s own per-agent ring state takes.
 type Shared = Arc<Mutex<TodoState>>;
 
-/// Scans `segments` for the LAST one carrying `Provenance::SystemNote {
-/// reason }` with `reason == NOTE_REASON` -- the shape context assembly
-/// replays a past [`NOTE_REASON`]-tagged system-note record into, on every
-/// request including the first one after a resume (see this crate's own
-/// module doc, "How state survives a process restart") -- and decodes its
-/// text back into the list it was serialized from. `None` when no such
-/// segment exists (a brand new session, or one that never called
-/// `todo_write`) or the one found fails to decode (a foreign or malformed
-/// note somehow sharing this reason) -- either way, nothing to reconstruct,
-/// never a panic.
+/// True when `segment` is a PERSISTED `conway.todo` note -- carries
+/// `Provenance::SystemNote { reason }` with `reason` exactly [`NOTE_REASON`],
+/// the one string `TodoNoteObserver` ever writes it under. Shared by
+/// [`reconstruct_from_history`] (which reads the most recent one) and
+/// `TodoContextHook::before_request` (which removes every one of them from
+/// the payload before appending its own freshly rendered segment -- see
+/// this crate's own module doc, "Context cost stays flat") -- one predicate,
+/// so the two halves of that mechanism can never drift onto two different
+/// notions of "is this one of ours."
+fn is_persisted_note(segment: &PromptSegment) -> bool {
+    matches!(
+        &segment.provenance,
+        Provenance::SystemNote { reason } if reason == NOTE_REASON
+    )
+}
+
+/// Scans `segments` for the LAST one [`is_persisted_note`] accepts -- the
+/// shape context assembly replays a past [`NOTE_REASON`]-tagged system-note
+/// record into, on every request including the first one after a resume
+/// (see this crate's own module doc, "How state survives a process
+/// restart") -- and decodes its text back into the list it was serialized
+/// from. `None` when no such segment exists (a brand new session, or one
+/// that never called `todo_write`) or the one found fails to decode (a
+/// foreign or malformed note somehow sharing this reason) -- either way,
+/// nothing to reconstruct, never a panic.
 fn reconstruct_from_history(segments: &[PromptSegment]) -> Option<Vec<TodoItem>> {
-    segments.iter().rev().find_map(|segment| {
-        let Provenance::SystemNote { reason } = &segment.provenance else {
-            return None;
-        };
-        if reason != NOTE_REASON {
-            return None;
-        }
-        let ContentBlock::Text { text } = segment.content.first()? else {
-            return None;
-        };
-        serde_json::from_str::<Vec<TodoItem>>(text).ok()
-    })
+    segments
+        .iter()
+        .rev()
+        .filter(|segment| is_persisted_note(segment))
+        .find_map(|segment| {
+            let ContentBlock::Text { text } = segment.content.first()? else {
+                return None;
+            };
+            serde_json::from_str::<Vec<TodoItem>>(text).ok()
+        })
 }
 
 /// Reads the current list for `agent_id`: the in-memory cache when present,
@@ -292,6 +333,30 @@ impl Tool for TodoWriteTool {
             serde_json::from_value(call.arguments).map_err(|e| ToolError::InvalidArguments {
                 detail: e.to_string(),
             })?;
+
+        // Reject a duplicate EXPLICIT id within this one call, before
+        // anything else about it is acted on. Two items sharing an id is
+        // never a legitimate "whole-list replace" -- the model named the
+        // SAME item twice in what claims to be a flat list -- and letting it
+        // through would silently decide a winner (whichever survives into
+        // `state.lists`) rather than surfacing the model's own mistake.
+        // Minted ids (an omitted `id`) are excluded: those are THIS
+        // method's own choice, made fresh below, never the model's.
+        let mut seen_explicit_ids = std::collections::HashSet::new();
+        for item in &args.items {
+            let Some(id) = item.id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            if !seen_explicit_ids.insert(id.to_string()) {
+                return Err(ToolError::InvalidArguments {
+                    detail: format!(
+                        "duplicate id `{id}` in one todo_write call -- each item's id must be \
+                         unique within the call"
+                    ),
+                });
+            }
+        }
+
         let items: Vec<TodoItem> = args
             .items
             .into_iter()
@@ -423,10 +488,13 @@ impl ToolObserver for TodoNoteObserver {
     }
 }
 
-/// Renders the current list as one compact segment, appended after every
-/// already-assembled segment -- see this crate's own module doc, "The
-/// segment never churns the cached prefix", for why this is strictly an
-/// append and never a mutation of anything already there.
+/// Removes every stale `conway.todo` note, then renders the current list
+/// as one compact segment, appended after every segment that remains --
+/// see this crate's own module doc, "Context cost stays flat" and "The
+/// segment never churns the cached prefix", for why a PERSISTED note is
+/// never left in the payload this hands onward, and why the one segment
+/// this method does add is strictly an append and never a mutation of
+/// anything else that was there.
 struct TodoContextHook {
     state: Shared,
 }
@@ -438,9 +506,27 @@ impl ContextHook for TodoContextHook {
         ctx: &ContextHookCtx,
         payload: ContextPayload,
     ) -> ContextPayload {
+        // Reads whichever persisted note matters BEFORE the filter below
+        // removes it from the payload -- `resolve_current`'s own
+        // `reconstruct_from_history` call needs the UNFILTERED segments to
+        // find it at all.
         let items = resolve_current(&self.state, ctx.agent_id, &payload.segments);
+        let ContextPayload { segments, tools } = payload;
+        // Strip every PERSISTED `conway.todo` note already in the payload
+        // (one per past `todo_write` call -- see this crate's own module
+        // doc, "Context cost stays flat") so the segment appended below is
+        // the ONLY `conway.todo` segment this request ever carries, no
+        // matter how many `todo_write` calls preceded it. This can never
+        // orphan a tool call/result pair: a persisted note's `ContentBlock`
+        // is always a single `Text` block (see `TodoNoteObserver`), never a
+        // `ToolUse`/`ToolResultBlock`, so removing one never touches either
+        // half of a call/result pairing.
+        let mut segments: Vec<PromptSegment> = segments
+            .into_iter()
+            .filter(|segment| !is_persisted_note(segment))
+            .collect();
         if items.is_empty() {
-            return payload;
+            return ContextPayload { segments, tools };
         }
         let (done, total) = counts(&items);
         let segment = PromptSegment::new(
@@ -449,15 +535,16 @@ impl ContextHook for TodoContextHook {
                 text: describe(&items),
             }],
             // Names the plugin AND the count, mirroring `conway.compaction`'s
-            // own `SystemNote` reason -- never an anonymous note.
+            // own `SystemNote` reason -- never an anonymous note. Not
+            // `NOTE_REASON` itself: that string is reserved for the
+            // PERSISTED per-write note `is_persisted_note` filters out
+            // above, so this freshly rendered segment is never mistaken for
+            // (and re-filtered as) one of those on a later call within the
+            // same request-building pass.
             Provenance::SystemNote {
                 reason: format!("conway.todo: {done}/{total} done"),
             },
         );
-        let ContextPayload {
-            mut segments,
-            tools,
-        } = payload;
         segments.push(segment);
         ContextPayload { segments, tools }
     }
@@ -536,8 +623,10 @@ impl Plugin for TodoPlugin {
             you_lose: "nothing else -- with this uninstalled, no task-list segment is ever \
                        added and neither tool exists"
                 .to_string(),
-            costs: "one short extra segment near the end of every request once a list exists; \
-                    one system-note record persisted per todo_write call"
+            costs: "exactly one short extra segment near the end of every request once a list \
+                    exists -- never more, no matter how many todo_write calls preceded it; one \
+                    system-note record persisted per todo_write call (for resume, not replayed \
+                    into requests as more than that one segment)"
                 .to_string(),
         }
     }
@@ -960,10 +1049,11 @@ mod tests {
 
         assert_eq!(
             out.segments.len(),
-            2,
-            "the historical note stays, plus one freshly rendered segment"
+            1,
+            "the historical PERSISTED note is removed -- only the one freshly rendered segment \
+             remains (see this crate's own module doc, \"Context cost stays flat\")"
         );
-        let ContentBlock::Text { text } = &out.segments[1].content[0] else {
+        let ContentBlock::Text { text } = &out.segments[0].content[0] else {
             panic!("expected a text block");
         };
         assert!(text.contains("write tests") && text.contains("ship it"));
@@ -980,6 +1070,246 @@ mod tests {
             panic!("expected a text block");
         };
         assert!(text.contains("write tests") && text.contains("ship it"));
+    }
+
+    // ------------------------------------------------------------------
+    // Context cost stays flat: N persisted notes, ONE segment per request.
+    // ------------------------------------------------------------------
+
+    /// The core regression this item exists for: a session carrying N
+    /// PERSISTED `conway.todo` notes in its history (one per past
+    /// `todo_write` call -- exactly what context assembly's own
+    /// unconditional `SystemNote` replay hands this hook) must still see
+    /// exactly ONE `conway.todo` segment in the request this hook builds,
+    /// regardless of N.
+    #[tokio::test]
+    async fn n_persisted_notes_still_produce_exactly_one_todo_segment() {
+        fn persisted_note(n: usize) -> PromptSegment {
+            let items = vec![TodoItem {
+                id: "t1".to_string(),
+                text: format!("revision {n}"),
+                status: TodoStatus::Pending,
+            }];
+            PromptSegment::new(
+                Role::System,
+                vec![ContentBlock::Text {
+                    text: serde_json::to_string(&items).unwrap(),
+                }],
+                Provenance::SystemNote {
+                    reason: NOTE_REASON.to_string(),
+                },
+            )
+        }
+
+        // A brand new plugin instance (no in-memory cache) with FIVE
+        // historical notes already in the payload's history -- the shape
+        // five past `todo_write` calls leave behind.
+        let plugin = TodoPlugin::new();
+        let agent = AgentId::new();
+        let hook = &plugin.context_hooks()[0];
+        let history: Vec<PromptSegment> = (0..5).map(persisted_note).collect();
+        let payload = ContextPayload {
+            segments: history,
+            tools: vec![],
+        };
+        let out = hook.before_request(&hook_ctx(agent), payload).await;
+
+        let todo_segments: Vec<&PromptSegment> = out
+            .segments
+            .iter()
+            .filter(|s| matches!(&s.provenance, Provenance::SystemNote { reason } if reason.contains("conway.todo")))
+            .collect();
+        assert_eq!(
+            todo_segments.len(),
+            1,
+            "exactly one conway.todo segment must survive, regardless of how many persisted \
+             notes preceded it: {:?}",
+            out.segments
+        );
+        // The one segment that remains reflects the MOST RECENT note (the
+        // last one `reconstruct_from_history` finds scanning in reverse),
+        // not an earlier, staler revision.
+        let ContentBlock::Text { text } = &todo_segments[0].content[0] else {
+            panic!("expected a text block");
+        };
+        assert!(
+            text.contains("revision 4"),
+            "must reflect the MOST RECENT persisted note: {text}"
+        );
+    }
+
+    /// The persisted note is filtered out of EVERY request's payload,
+    /// including the very first one built right after it was written --
+    /// there is no "let it through once" transition, so the cached prefix
+    /// never contains it and therefore never churns when a later request
+    /// removes it (see this crate's own module doc).
+    #[tokio::test]
+    async fn the_persisted_note_never_survives_into_any_requests_payload_not_even_the_first() {
+        let plugin = TodoPlugin::new();
+        let agent = AgentId::new();
+        find_tool(&plugin, WRITE_TOOL_NAME)
+            .invoke(
+                call(
+                    WRITE_TOOL_NAME,
+                    serde_json::json!({ "items": [ {"text": "a", "status": "pending"} ] }),
+                ),
+                tool_ctx(agent),
+            )
+            .await
+            .unwrap();
+        let observer = TodoNoteObserver {
+            state: plugin.state.clone(),
+        };
+        let note = observer
+            .after_tool_call(&observer_ctx(), &observed(agent, WRITE_TOOL_NAME, false))
+            .await
+            .notes
+            .remove(0);
+        // The exact persisted segment the FIRST request built after this
+        // write would carry, per context assembly's own unconditional
+        // `SystemNote` replay.
+        let freshly_persisted = PromptSegment::new(
+            Role::System,
+            vec![ContentBlock::Text { text: note.text }],
+            Provenance::SystemNote { reason: note.reason },
+        );
+
+        let hook = &plugin.context_hooks()[0];
+        let payload = ContextPayload {
+            segments: vec![user_prompt("hello"), freshly_persisted],
+            tools: vec![],
+        };
+        let out = hook.before_request(&hook_ctx(agent), payload).await;
+
+        assert!(
+            !out
+                .segments
+                .iter()
+                .any(|s| matches!(&s.provenance, Provenance::SystemNote { reason } if reason == NOTE_REASON)),
+            "the persisted note must never survive into ANY request's payload, including the \
+             very first one built after it was written: {:?}",
+            out.segments
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Removing persisted notes can never orphan a tool call/result pair.
+    // ------------------------------------------------------------------
+
+    /// `GuardedContextHook`'s own coherence check
+    /// (`conway_runtime::context::hook_guard`) is `pub(crate)` to that crate
+    /// and unreachable from this one (this plugin depends only on the
+    /// public `conway`/`conway::plugin` facade -- see this crate's own
+    /// Cargo.toml doc comment), so this test re-asserts the same invariant
+    /// by hand: a `ToolUse`/`ToolResultBlock` pair interleaved with several
+    /// persisted `conway.todo` notes must come out the other side with
+    /// BOTH halves of the pair still present and still matched by
+    /// `call_id`, proving the note-removal filter never touches a segment
+    /// that isn't itself a persisted note.
+    #[tokio::test]
+    async fn removing_persisted_notes_leaves_every_tool_call_result_pair_intact() {
+        fn persisted_note(text: &str) -> PromptSegment {
+            let items = vec![TodoItem {
+                id: "t1".to_string(),
+                text: text.to_string(),
+                status: TodoStatus::Pending,
+            }];
+            PromptSegment::new(
+                Role::System,
+                vec![ContentBlock::Text {
+                    text: serde_json::to_string(&items).unwrap(),
+                }],
+                Provenance::SystemNote {
+                    reason: NOTE_REASON.to_string(),
+                },
+            )
+        }
+        fn tool_use(call_id: &str) -> PromptSegment {
+            PromptSegment::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    call_id: call_id.to_string(),
+                    name: ToolName::new("read"),
+                    arguments: serde_json::json!({}),
+                }],
+                Provenance::Assistant,
+            )
+        }
+        fn tool_result(call_id: &str) -> PromptSegment {
+            PromptSegment::new(
+                Role::ToolResult,
+                vec![ContentBlock::ToolResultBlock {
+                    call_id: call_id.to_string(),
+                    blocks: vec![ContentBlock::Text {
+                        text: "contents".to_string(),
+                    }],
+                    is_error: false,
+                }],
+                Provenance::ToolResult {
+                    call_id: call_id.to_string(),
+                    tool: ToolName::new("read"),
+                },
+            )
+        }
+
+        let plugin = TodoPlugin::new();
+        let agent = AgentId::new();
+        find_tool(&plugin, WRITE_TOOL_NAME)
+            .invoke(
+                call(
+                    WRITE_TOOL_NAME,
+                    serde_json::json!({ "items": [ {"text": "a", "status": "pending"} ] }),
+                ),
+                tool_ctx(agent),
+            )
+            .await
+            .unwrap();
+
+        let hook = &plugin.context_hooks()[0];
+        let payload = ContextPayload {
+            segments: vec![
+                persisted_note("old revision 1"),
+                tool_use("a"),
+                persisted_note("old revision 2"),
+                tool_result("a"),
+                persisted_note("old revision 3"),
+            ],
+            tools: vec![],
+        };
+        let out = hook.before_request(&hook_ctx(agent), payload).await;
+
+        let call_ids: Vec<&str> = out
+            .segments
+            .iter()
+            .filter_map(|s| {
+                s.content.iter().find_map(|b| match b {
+                    ContentBlock::ToolUse { call_id, .. } => Some(call_id.as_str()),
+                    _ => None,
+                })
+            })
+            .collect();
+        let result_ids: Vec<&str> = out
+            .segments
+            .iter()
+            .filter_map(|s| {
+                s.content.iter().find_map(|b| match b {
+                    ContentBlock::ToolResultBlock { call_id, .. } => Some(call_id.as_str()),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(
+            call_ids,
+            vec!["a"],
+            "the tool-use segment must survive the note-removal filter untouched: {:?}",
+            out.segments
+        );
+        assert_eq!(
+            result_ids,
+            vec!["a"],
+            "the tool-result segment must survive the note-removal filter untouched: {:?}",
+            out.segments
+        );
     }
 
     // ------------------------------------------------------------------
@@ -1000,6 +1330,65 @@ mod tests {
             .await
             .expect_err("an unrecognized status must fail argument parsing");
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
+
+    // ------------------------------------------------------------------
+    // A duplicate explicit id within one call is rejected.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rejects_a_duplicate_explicit_id_within_one_call() {
+        let state = shared();
+        let tool = TodoWriteTool {
+            state: state.clone(),
+        };
+        let err = tool
+            .invoke(
+                call(
+                    WRITE_TOOL_NAME,
+                    serde_json::json!({
+                        "items": [
+                            {"id": "dup", "text": "a", "status": "pending"},
+                            {"id": "dup", "text": "b", "status": "pending"},
+                        ]
+                    }),
+                ),
+                tool_ctx(AgentId::new()),
+            )
+            .await
+            .expect_err("two items sharing an explicit id in one call must be rejected");
+        assert!(matches!(err, ToolError::InvalidArguments { .. }));
+
+        // The rejected call must never have taken effect -- no half-applied
+        // state left behind for a call that failed argument validation.
+        assert!(
+            state.lock().unwrap().lists.is_empty(),
+            "a rejected todo_write must not mutate state"
+        );
+    }
+
+    #[tokio::test]
+    async fn omitted_ids_never_collide_with_the_duplicate_check() {
+        // Two items with NO id at all -- each mints its own fresh one below
+        // (`ulid::Ulid::new()`), which must never be mistaken for the
+        // "duplicate explicit id" case, since neither item named one.
+        let tool = TodoWriteTool { state: shared() };
+        let out = tool
+            .invoke(
+                call(
+                    WRITE_TOOL_NAME,
+                    serde_json::json!({
+                        "items": [
+                            {"text": "a", "status": "pending"},
+                            {"text": "b", "status": "pending"},
+                        ]
+                    }),
+                ),
+                tool_ctx(AgentId::new()),
+            )
+            .await
+            .expect("two items with no id at all must succeed");
+        assert!(!out.is_error);
     }
 
     // ------------------------------------------------------------------

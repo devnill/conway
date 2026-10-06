@@ -1237,10 +1237,24 @@ fn resolve_agent_names(install_ids: &[String]) -> Result<Arc<dyn AgentNames>, Fa
 /// properties true: the operator's own config value still applies, loudly
 /// refusing an invalid one exactly as `apply_plugin_config` would have, and
 /// the caller still gets a live, typed handle.
+///
+/// `memory_store_override`, when `Some`, is used VERBATIM in place of
+/// [`resolve_memory_store`]'s own resolution -- never falling through to it,
+/// not even to validate anything first. The one caller that passes `Some`
+/// is `conway doctor` (`commands::doctor::build_full_conway`), which hands
+/// in a fresh [`conway_plugin_memory::InMemoryMemoryStore`] so that a
+/// `conway.memory`-installed project (the common case: it is in
+/// [`DEFAULT_OPINION_SET`]) can be inspected without `resolve_memory_store`
+/// ever calling `FsMemoryStore::open`, which would `create_dir_all` the
+/// on-disk store the moment doctor ran, contradicting this module's own
+/// `doctor`'s documented "no side effects" contract. `main.rs`'s own
+/// production call always passes `None`, so a live session's own resolution
+/// is completely unchanged by this parameter existing.
 pub async fn install(
     builder: ConwayBuilder,
     env: &HashMap<String, String>,
     form_surface: Option<Arc<dyn conway_plugin_ui::FormSurface>>,
+    memory_store_override: Option<Arc<dyn MemoryStore>>,
 ) -> Result<
     (
         ConwayBuilder,
@@ -1259,7 +1273,10 @@ pub async fn install(
     // see `PluginsConfig::installed_ids`'s own doc for the bug this closes
     // (board item `01M3TJHCFA3R9PDVZHQTKKVWNR`).
     let install_ids = builder.config().plugins.installed_ids();
-    let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
+    let memory_store = match memory_store_override {
+        Some(store) => store,
+        None => resolve_memory_store(&cwd, &builder.config().plugins.install).await?,
+    };
     let agent_names = resolve_agent_names(&builder.config().plugins.install)?;
     let idiom_plugin = resolve_idiom_plugin(&cwd, env)?;
     let confine_plugin = resolve_confine_plugin(&builder.config().plugins.install)?;

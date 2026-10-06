@@ -103,13 +103,28 @@ const BASELINE_TOTAL_CHARS: usize = 11_379;
 const MIN_REDUCTION_CHARS: usize = 6_000;
 
 /// Per-tool ceilings -- see this file's own module doc, point 1.
+///
+/// `conway_await`'s own budget was raised from 600 to 620 (post-merge
+/// review fix, board item `01M41BC4KJAE8J1X3GAA36ZW6Y`'s own follow-up):
+/// `AwaitTool::spec`'s description restores one short fan-out clause
+/// ("Fan out: start several before awaiting any.") that the original
+/// shortening pass had dropped, while shortening the sentence it replaces
+/// ("Returns immediately if finished; never waits longer than the child
+/// ran." -> "Returns immediately if finished.") in the same edit, so the
+/// net change to the description string is +5 chars (191 vs. the prior
+/// 186), computed by hand by counting both substrings directly -- plain
+/// ASCII, no `"`/`\` needing JSON escaping, so the serialized wire delta
+/// equals that character count exactly, not merely approximately. +20 is
+/// added to the budget (not just +5) to keep a few spare characters of
+/// headroom for the schema/scaffolding bytes `wire_json_chars` also
+/// counts, which this hand count does not re-derive.
 const BUDGETS: [(&str, usize); 6] = [
     ("conway_fork", 1_600),
     ("conway_ask", 1_300),
     ("conway_cancel", 1_000),
     ("conway_spawn", 1_600),
     ("conway_steer", 600),
-    ("conway_await", 600),
+    ("conway_await", 620),
 ];
 
 #[test]

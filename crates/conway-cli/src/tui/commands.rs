@@ -4255,6 +4255,36 @@ fn export_default_path(cwd: &std::path::Path, sid: SessionId) -> std::path::Path
     cwd.join(format!("conway-{}.md", crate::commands::fmt::id_short(sid)))
 }
 
+/// Board item `01M1YVW7JEYZ9VPR5FX3CZN7WQ`, post-merge review fix: expands
+/// a leading `~` (the whole argument) or `~/` (a prefix) to the process's
+/// home directory, the same bare-tilde/`~/`-prefix rule
+/// `conway_core::containment::resolve_candidate` already applies to every
+/// fs/shell tool argument -- see `docs/interactive.md`'s own "`/export`"
+/// section. An unexpanded `~bob/...`-style form is deliberately NOT handled
+/// here either, matching that rule exactly, and is passed through as a
+/// literal path component, same as before this fix: `/export` has no
+/// tool-result error channel to refuse through the way a `read` call does,
+/// so an unexpandable or unresolvable path still surfaces through
+/// [`run_export`]'s own existing `std::fs::write` error handling, unchanged.
+///
+/// Uses [`conway::config::discovery::home_dir`], the codebase's one
+/// existing home-directory lookup reachable from this crate's own facade-
+/// only dependency on `conway` -- never a new `directories`/`dirs` crate
+/// dependency of this crate's own, and never a hand-rolled `$HOME` read
+/// that would disagree with it on some platform.
+fn expand_export_path(raw: &str) -> std::path::PathBuf {
+    if raw == "~" {
+        if let Some(home) = conway::config::discovery::home_dir() {
+            return home;
+        }
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = conway::config::discovery::home_dir() {
+            return home.join(rest.trim_start_matches('/'));
+        }
+    }
+    std::path::PathBuf::from(raw)
+}
+
 /// Board item `01M1YVW7JEYZ9VPR5FX3CZN7WQ`: `/export`'s own implementation.
 /// Resolves the output path (`path`, or [`export_default_path`] under the
 /// process's current directory), reads this session's own ancestry-
@@ -4271,7 +4301,7 @@ fn export_default_path(cwd: &std::path::Path, sid: SessionId) -> std::path::Path
 /// with a different path to proceed, never automatic renaming.
 async fn run_export<H: Host>(state: &mut AppState, host: &H, path: Option<String>) {
     let out_path = match path {
-        Some(p) => std::path::PathBuf::from(p),
+        Some(p) => expand_export_path(&p),
         None => {
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             export_default_path(&cwd, host.session_id())
@@ -8442,6 +8472,51 @@ mod tests {
             host.calls().is_empty(),
             "the existing-file refusal must happen before any facade call: {:?}",
             host.calls()
+        );
+    }
+
+    /// Board item `01M1YVW7JEYZ9VPR5FX3CZN7WQ`, post-merge review fix:
+    /// `/export ~/notes.md` expands against the REAL environment's home
+    /// directory -- compared against the same `directories::BaseDirs`
+    /// lookup [`conway::config::discovery::home_dir`] uses, rather than
+    /// mutating `HOME`/`USERPROFILE` in-process: this test file runs
+    /// alongside every other `conway-cli` unit test in one binary, and
+    /// mutating a process-global env var here could race a concurrently
+    /// running test -- the same posture `conway-core`'s own
+    /// `resolve_candidate_expands_a_leading_tilde_slash_onto_the_home_directory`
+    /// takes for the identical reason.
+    #[test]
+    fn expand_export_path_expands_a_leading_tilde_slash_onto_the_home_directory() {
+        let home = conway::config::discovery::home_dir()
+            .expect("test environment must have a discoverable home directory");
+
+        assert_eq!(
+            expand_export_path("~/notes.md"),
+            home.join("notes.md"),
+            "a leading `~/` must expand against the real home directory"
+        );
+        assert_eq!(
+            expand_export_path("~"),
+            home,
+            "a bare `~` must expand to the home directory itself"
+        );
+    }
+
+    /// The anchored-prefix-only half of the SAME rule
+    /// `conway_core::containment::resolve_candidate` applies: a `~` that is
+    /// not the leading character of the whole argument is carried through
+    /// byte-for-byte, never expanded -- and an explicit, non-`~` absolute
+    /// path is untouched too, proving this function does not touch a path
+    /// that already needed no expansion.
+    #[test]
+    fn expand_export_path_does_not_touch_a_non_leading_or_absolute_path() {
+        assert_eq!(
+            expand_export_path("notes/~archive.md"),
+            std::path::PathBuf::from("notes/~archive.md")
+        );
+        assert_eq!(
+            expand_export_path("/tmp/wherever/out.md"),
+            std::path::PathBuf::from("/tmp/wherever/out.md")
         );
     }
 

@@ -348,3 +348,57 @@ fn doctor_json_report_has_the_documented_top_level_shape() {
         "--json's exit code must still be nonzero when any check is fail"
     );
 }
+
+/// `[plugins].install` naming `conway.memory` explicitly -- the same shape
+/// `flaky_backend_settings` already establishes (a dead-port backend, so
+/// this still produces a `fail` check and a nonzero exit), with a
+/// `conway.memory` entry added so `build_full_conway`'s own plugin-install
+/// pipeline resolves that candidate rather than skipping it for want of
+/// selection.
+fn settings_with_memory_plugin_installed() -> String {
+    serde_json::json!({
+        "default_role": "default",
+        "roles": { "default": { "chain": ["flaky/some-model"] } },
+        "backends": {
+            "flaky": { "kind": "openai-compat", "base_url": DEAD_PORT }
+        },
+        "plugins": { "install": ["conway.memory"] }
+    })
+    .to_string()
+}
+
+/// Board item `01M1YVXNPTBNH18ZEWFM18F00T`'s own module doc promises `conway
+/// doctor` has no on-disk side effects -- but `conway.memory` is in
+/// `first_party_plugins::DEFAULT_OPINION_SET`, the common case, and the
+/// install pipeline `build_full_conway` reuses used to call
+/// `resolve_memory_store`, which `create_dir_all`s a durable store the
+/// moment it ran. This is the regression test: with `conway.memory`
+/// EXPLICITLY installed, running `conway doctor` against a brand new
+/// project must never create `.conway/memory` at all.
+#[test]
+fn doctor_never_creates_a_memory_store_directory_even_with_conway_memory_installed() {
+    let project = Project::with_settings(&settings_with_memory_plugin_installed());
+    let memory_dir = project.root().join(".conway").join("memory");
+    assert!(
+        !memory_dir.exists(),
+        "sanity: the fixture itself must not have pre-created this directory"
+    );
+
+    let out = project.run(&["doctor"]);
+
+    assert!(
+        !memory_dir.exists(),
+        "conway doctor must never create {} -- this module's own doc promises no on-disk \
+         side effects, even with conway.memory installed: stdout: {}",
+        memory_dir.display(),
+        stdout(&out)
+    );
+    // The fixture's dead-port backend still produces its own `fail` check
+    // regardless -- this test is about the memory directory, not about
+    // making the run succeed.
+    assert!(
+        stdout(&out).contains("backends.flaky.reachable"),
+        "sanity: this must still be the same dead-port fixture: {}",
+        stdout(&out)
+    );
+}

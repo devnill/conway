@@ -1814,6 +1814,105 @@ async fn oneshot_input_jsonl_eof_without_end_behaves_as_end() {
     );
 }
 
+/// A stdin read error (invalid UTF-8, the one way `lines.next_line()` can
+/// fail) must behave exactly like EOF -- reported as a driver `error` line,
+/// then the process exits bounded with the documented "no turn ever ran"
+/// exit code, never hanging forever waiting on a reader that can only ever
+/// error again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oneshot_input_jsonl_invalid_utf8_stdin_behaves_as_end() {
+    let mock = MockBackend::start(Script(vec![])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    // An invalid UTF-8 byte sequence, newline-terminated so
+    // `AsyncBufReadExt::lines()` actually resolves against it rather than
+    // waiting for more bytes.
+    let stdin: &[u8] = &[0xFF, 0xFE, b'\n'];
+
+    let out = run_driven_piped(&[], &fixture, stdin, Duration::from_secs(20)).expect(
+        "conway must exit within the bound on an invalid UTF-8 stdin line, never hang forever",
+    );
+
+    assert!(
+        out.status.success(),
+        "an unreadable stdin line must behave like EOF, not fail the process: stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "no turn ever ran before the unreadable line -- the documented Completed/no-op code"
+    );
+
+    let lines = jsonl_lines(&out.stdout);
+    assert!(
+        lines.iter().any(|v| v["type"] == "error"
+            && v["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("stdin read error")),
+        "a stdin read error must be reported as a driver error line: {lines:?}"
+    );
+    assert!(
+        mock.requests().is_empty(),
+        "no turn ever ran before the unreadable stdin line"
+    );
+}
+
+/// A line written AFTER an explicit `{"type":"end"}` (stdin stays open past
+/// it) is rejected outright -- a driver `error` line naming "input after
+/// end" -- and never runs, while a prompt queued BEFORE `"end"` still
+/// drains normally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oneshot_input_jsonl_rejects_input_after_end() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("ok"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let stdin = concat!(
+        r#"{"type":"prompt","text":"hi"}"#,
+        "\n",
+        r#"{"type":"end"}"#,
+        "\n",
+        // Written AFTER `"end"` -- must be rejected, never run.
+        r#"{"type":"prompt","text":"should never run"}"#,
+        "\n",
+    );
+
+    let out = run_driven_piped(&[], &fixture, stdin.as_bytes(), Duration::from_secs(20))
+        .expect("conway must exit within the bound");
+
+    assert!(
+        out.status.success(),
+        "input after end must not fail the process: stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lines = jsonl_lines(&out.stdout);
+    assert!(
+        lines
+            .iter()
+            .any(|v| v["type"] == "error" && v["message"] == "input after end"),
+        "a line written after `end` must be rejected with an `input after end` error: {lines:?}"
+    );
+    let finishes: Vec<&Value> = lines
+        .iter()
+        .filter(|v| v["event"] == "turn_finished")
+        .collect();
+    assert_eq!(
+        finishes.len(),
+        1,
+        "the prompt queued BEFORE `end` must still drain, and the rejected one after it must \
+         never start a second turn: {lines:?}"
+    );
+    assert_eq!(
+        mock.requests().len(),
+        1,
+        "exactly one /chat/completions request -- the prompt after `end` must never reach a \
+         backend"
+    );
+}
+
 /// `--input-format jsonl` without `--output-format jsonl` is a usage error
 /// (exit 2), caught before a backend is ever reached.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

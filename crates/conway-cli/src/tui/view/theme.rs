@@ -117,7 +117,7 @@
 //! alive without color.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -290,8 +290,9 @@ pub struct Theme {
     /// built WITH color -- `true` for every preset/`from_config` build
     /// ([`Theme::default`]/[`Theme::from_preset`]/[`Theme::from_config`]
     /// all set it `true`); `false` only after [`Theme::into_no_color`],
-    /// which [`Theme::resolve`] applies when `NO_COLOR` (non-empty) or
-    /// `tui.color = false`. Not reachable through [`Theme::overlay`]/
+    /// which [`Theme::resolve`] applies when `NO_COLOR` is present at all
+    /// (no-color.org: presence alone disables color, regardless of value)
+    /// or `tui.color = false`. Not reachable through [`Theme::overlay`]/
     /// `[tui.theme]`'s per-slot table at all -- there is no `color_enabled`
     /// slot in [`ThemeConfig`] for an override to name. Read by
     /// [`Theme::security_notice_style`] so that style degrades the SAME
@@ -578,7 +579,9 @@ impl Theme {
     /// own per-slot top-up, or a second pass over the legacy shape, which
     /// is a harmless no-op for every existing config since nothing wrote
     /// `theme_overrides` before this board item); (4) strip color
-    /// entirely if `NO_COLOR` (non-empty) or `tui.color == Some(false)`.
+    /// entirely if `NO_COLOR` is present at all (no-color.org: presence
+    /// alone disables color, regardless of value -- even `NO_COLOR=""`)
+    /// or `tui.color == Some(false)`.
     ///
     /// Returns the built theme and an optional load warning -- an unknown
     /// preset/custom-theme name, or a custom theme file that exists but
@@ -599,7 +602,9 @@ impl Theme {
         }
         theme = theme.overlay(&tui.theme_overrides);
 
-        let no_color_env = env.get("NO_COLOR").map(|v| !v.is_empty()).unwrap_or(false);
+        // no-color.org: presence alone disables color -- `NO_COLOR=""` (set,
+        // but empty) still disables it, exactly like `NO_COLOR=1`.
+        let no_color_env = env.contains_key("NO_COLOR");
         if no_color_env || tui.color == Some(false) {
             theme = theme.into_no_color();
         }
@@ -885,10 +890,56 @@ fn palette_for(preset: ThemePreset) -> Palette {
 /// `conway::config::discovery::user_config_path` resolves `settings.json`
 /// into, so `CONWAY_CONFIG_DIR` relocates it exactly as it relocates
 /// `history`/`keybindings.json` -- see those two resolvers' own doc for the
-/// identical shape). `None` only when that function is (no resolvable home
-/// directory and `CONWAY_CONFIG_DIR` unset).
+/// identical shape). `None` when that function is (no resolvable home
+/// directory and `CONWAY_CONFIG_DIR` unset) -- **and also when `name` is not
+/// a safe plain file stem** (see [`is_safe_theme_name`]'s own doc).
+/// `tui.theme` is settable from a project's own (lower-trust)
+/// `settings.json`, and `name` reaches this function unvalidated from
+/// there, so a name like `"../../x"` must never escape `<config
+/// dir>/themes/` -- callers (`load_custom_theme_file`) already treat `None`
+/// as "fall back to the system default, with a non-fatal warning," the
+/// exact same path an unresolvable/unknown name already took, so an unsafe
+/// name needs no new error variant of its own. Belt-and-suspenders: even
+/// after validating `name` makes a traversal unreachable by construction,
+/// the resolved path's own parent is checked against `dir` before this
+/// function returns it, so a future change to how the two are joined can
+/// never silently reopen the escape this validation closes today.
 pub fn custom_theme_path(env: &HashMap<String, String>, name: &str) -> Option<PathBuf> {
-    themes_dir(env).map(|dir| dir.join(format!("{name}.json")))
+    if !is_safe_theme_name(name) {
+        return None;
+    }
+    let dir = themes_dir(env)?;
+    let candidate = dir.join(format!("{name}.json"));
+    if candidate.parent() != Some(dir.as_path()) {
+        return None;
+    }
+    Some(candidate)
+}
+
+/// Whether `name` is safe to join onto `<config dir>/themes/` as
+/// `<name>.json` without escaping that directory: non-empty, no NUL byte,
+/// no path separator of either kind (`/` -- the one this platform's `Path`
+/// component splitting already honors -- and `\\`, checked literally too,
+/// since a `tui.theme` value naming a backslash-separated escape must be
+/// refused on every platform this binary runs on, not only the one where
+/// `Path` treats it as a separator), not `.`/`..`, not absolute, and --
+/// as a final defense-in-depth pass over the literal checks above, not a
+/// replacement for them, since a literal check is easier to read and audit
+/// than reasoning about every platform's own component-splitting rules --
+/// resolves to exactly one [`Component::Normal`] when parsed as a `Path`.
+fn is_safe_theme_name(name: &str) -> bool {
+    if name.is_empty() || name.contains('\0') || name.contains('/') || name.contains('\\') {
+        return false;
+    }
+    if name == "." || name == ".." {
+        return false;
+    }
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return false;
+    }
+    let components: Vec<Component> = path.components().collect();
+    matches!(components.as_slice(), [Component::Normal(_)])
 }
 
 /// The `<config dir>/themes/` directory itself -- the same directory
@@ -2112,6 +2163,86 @@ mod tests {
         );
     }
 
+    /// Board item (post-merge review fix): `tui.theme` is settable from a
+    /// project's own, lower-trust `settings.json`, so a traversal name must
+    /// be refused rather than joined onto `<config dir>/themes/` raw --
+    /// `custom_theme_path` is the one seam, exercised directly (not through
+    /// `Theme::resolve`, which this module's own
+    /// `resolve_a_name_that_escapes_the_themes_directory_falls_back_with_a_warning`
+    /// covers end to end).
+    #[test]
+    fn custom_theme_path_refuses_every_traversal_or_malformed_name() {
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/tmp/does-not-need-to-exist-for-this-check".to_string(),
+        );
+        for name in [
+            "../escape",
+            "../../etc/passwd",
+            "..",
+            ".",
+            "",
+            "a/b",
+            "a\\b",
+            "/etc/passwd",
+        ] {
+            assert!(
+                custom_theme_path(&env, name).is_none(),
+                "{name:?} must be refused, not resolved to a path"
+            );
+        }
+        // A NUL byte: not expressible in a `&str` literal directly, built
+        // from a byte vec instead.
+        let nul_name = String::from_utf8(vec![b'a', 0u8, b'b']).expect("valid utf8 with a NUL");
+        assert!(custom_theme_path(&env, &nul_name).is_none());
+
+        // An ordinary, safe name still resolves, proving the checks above
+        // reject by SHAPE, not by refusing every name outright.
+        assert!(custom_theme_path(&env, "my-custom-theme").is_some());
+    }
+
+    /// The end-to-end proof: a `tui.theme` value shaped like a traversal,
+    /// with a real file actually sitting at the escaped location, still
+    /// never loads that file -- it degrades to the SAME non-fatal "unknown
+    /// theme" warning path an ordinary unresolvable name already takes
+    /// (`resolve_an_unknown_name_falls_back_to_system_with_a_named_warning`,
+    /// nearby), never a silent read of a file outside `<config
+    /// dir>/themes/`.
+    #[test]
+    fn resolve_a_name_that_escapes_the_themes_directory_falls_back_with_a_warning() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let themes_dir = config_dir.path().join("themes");
+        std::fs::create_dir_all(&themes_dir).expect("mkdir themes");
+        // Sitting OUTSIDE `themes/`, one level up -- exactly where
+        // `"../escape"` would resolve if `custom_theme_path` joined it
+        // unvalidated.
+        std::fs::write(
+            config_dir.path().join("escape.json"),
+            r#"{"notice": {"fg": "magenta"}}"#,
+        )
+        .expect("write the file sitting at the escape target");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.path().to_string_lossy().to_string(),
+        );
+        let tui = tui_section_with_theme(ThemeSetting::Preset("../escape".to_string()));
+        let (theme, warning) = Theme::resolve(&tui, &env);
+
+        assert_eq!(
+            theme,
+            Theme::default(),
+            "a traversal name must never load the file sitting at its escape target"
+        );
+        let warning = warning.expect("a refused traversal name must warn, not silently default");
+        assert!(
+            warning.contains("../escape"),
+            "the warning must name the refused value: {warning}"
+        );
+    }
+
     #[test]
     fn resolve_layers_theme_overrides_on_top_of_a_preset() {
         let mut tui = tui_section_with_theme(ThemeSetting::Preset("dark".to_string()));
@@ -2154,11 +2285,11 @@ mod tests {
         assert_eq!(theme.notice.fg, None);
     }
 
-    /// no-color.org: `NO_COLOR` disables color when it is present AND
-    /// non-empty -- an EMPTY `NO_COLOR` (set, but `""`) must NOT disable
-    /// it.
+    /// no-color.org: `NO_COLOR` disables color when it is merely PRESENT,
+    /// regardless of its value -- an EMPTY `NO_COLOR` (set, but `""`) must
+    /// disable color exactly the same as `NO_COLOR=1` does.
     #[test]
-    fn resolve_honors_no_color_env_present_and_non_empty_only() {
+    fn resolve_honors_no_color_env_on_presence_alone() {
         let mut env = HashMap::new();
         env.insert("NO_COLOR".to_string(), "1".to_string());
         let (theme, _) = Theme::resolve(&crate::tui::config::TuiSection::default(), &env);
@@ -2169,10 +2300,11 @@ mod tests {
         empty_env.insert("NO_COLOR".to_string(), String::new());
         let (theme, _) = Theme::resolve(&crate::tui::config::TuiSection::default(), &empty_env);
         assert!(
-            theme.color_enabled,
-            "an empty NO_COLOR must not disable color"
+            !theme.color_enabled,
+            "an empty-but-present NO_COLOR must still disable color (no-color.org: presence \
+             alone is the signal)"
         );
-        assert_eq!(theme.notice.fg, Some(Color::Cyan));
+        assert_eq!(theme.notice.fg, None);
     }
 
     // ---- Theme::into_no_color ----
