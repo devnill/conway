@@ -1310,9 +1310,18 @@ impl AppState {
     /// cancel_editing_pattern` and friends) is deliberately NOT one of
     /// these two call sites, since that is the SAME prompt the operator was
     /// already looking at, not a fresh ambush.
+    ///
+    /// Terminal attention notifications: this is also the ONE funnel both
+    /// callers already share for "a prompt just became visible", so it is
+    /// where [`Self::pending_attention`] gets `AttentionEvent::
+    /// PermissionPending` pushed -- `App::drain_attention_queue` (`app/
+    /// run.rs`) is what actually turns that into bytes, applying
+    /// `AppState::attention`'s configured method/`when`/`events` gate.
     pub(super) fn arm_permission_typeahead_guard(&mut self) {
         self.permission_prompt_armed_at = Some((std::time::Instant::now(), !self.input.is_empty()));
         self.permission_confirm_always = false;
+        self.pending_attention
+            .push_back(super::super::config::AttentionEvent::PermissionPending);
     }
 
     /// Cycles the scope the prompt's remembered-grant keys (`a`/`p`) grant

@@ -44,6 +44,7 @@ use crate::tui::state::{AppState, Entry};
 use crate::tui::view::Theme;
 
 mod ask;
+mod attention;
 mod await_cmd;
 mod busy_input;
 mod checkpoint_focus;
@@ -255,6 +256,18 @@ pub struct App {
     /// `Action::Quit`), so a shared local would have to be threaded
     /// through both instead of living on `self` once.
     quit_queue_warned_at: Option<std::time::Instant>,
+    /// Terminal attention notifications: where `App::drain_attention_queue`
+    /// (`app/attention.rs`) actually writes the bytes `crate::tui::
+    /// attention::emit_bytes` builds. `Box<dyn ...>` (not a generic `App<W>`
+    /// parameter) for the same reason `history_path`/`env`/`cwd` above are
+    /// plain fields rather than new `App::new` parameters: ~40 existing call
+    /// sites construct `App::new` directly, almost none of which cares
+    /// about this seam. Production gets `crate::tui::attention::
+    /// StdoutWriter`; a test overrides this field directly after
+    /// construction (same private-field-access convention `env`/`cwd`'s own
+    /// doc already states) with a `Vec<u8>`-backed sink to assert exact
+    /// bytes.
+    attention_writer: Box<dyn crate::tui::attention::AttentionWriter>,
 }
 
 /// What `App::submit` learned the app loop must additionally do, beyond the
