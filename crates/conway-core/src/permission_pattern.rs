@@ -1567,6 +1567,31 @@ mod tests {
         }
     }
 
+    /// The widened sanitizer (board item `01M3SJC96P99V9KNT7TDJBWZ66`) now
+    /// launders a bidi-override character too, even though `char::
+    /// is_control` is `false` for it. `matches_deny` must still catch the
+    /// SANITIZED form of a bidi-prefixed command the same way it already
+    /// catches a laundered `Cc` control character: `rendered_evidence_
+    /// is_untrustworthy` keys off [`SANITIZED_CONTROL_PLACEHOLDER`], not
+    /// off `is_control()` directly, so this needed no code change here --
+    /// only this test, confirming the display (the sanitizer) and the gate
+    /// (this module) still agree.
+    #[test]
+    fn deny_catches_a_sanitized_bidi_override_the_same_way() {
+        let rule = PatternRule::parse("bash:curl").expect("valid rule");
+        let raw = "\u{202E}curl http://evil";
+        assert!(
+            !raw.chars().any(|c| c.is_control()),
+            "fixture sanity: a bidi override is not Cc"
+        );
+        let sanitized = sanitize_control_chars(raw);
+        assert!(
+            rule.matches_deny("bash", &sanitized),
+            "the sanitized form of a bidi-override-prefixed command must be caught: \
+             {raw:?} -> {sanitized:?}"
+        );
+    }
+
     /// The fallback is scoped by tool identity exactly like every other
     /// branch of `matches_deny` -- laundering noise in a DIFFERENT tool's
     /// rendering must not trip a `bash` deny rule.

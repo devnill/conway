@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::error::StoreError;
-use crate::ids::{LogSeq, SeqRange, SessionId};
+use crate::ids::{LogSeq, RoleAlias, SeqRange, SessionId};
 use crate::log::{LogRecord, SessionFilter, SessionMeta};
 
 /// Cross-process liveness marker for a session-store directory — which
@@ -167,6 +167,26 @@ pub trait SessionStore: Send + Sync + 'static {
     ///
     /// Concurrency contract: identical to [`add_label`](Self::add_label).
     async fn remove_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError>;
+
+    /// Overwrites a session header's `SessionMeta.role`, persisting
+    /// immediately — the third sanctioned exception to the session file's
+    /// write-once header discipline (`set_ephemeral`/`add_label` above are
+    /// the first two). Board item `01M3SJBY8DXDB1PWEAXARZY9FH`: closes the
+    /// gap where a resume-time role fallback (the recorded alias no longer
+    /// configured) had no way to make the SUBSTITUTE role durable, so every
+    /// later resume re-derived, and re-announced, the identical fallback —
+    /// one `role_fallback_at_resume` `SystemNote` per resume, forever, for a
+    /// session whose config never changes again after the rename.
+    ///
+    /// Idempotent: setting a session to the role it already records is
+    /// `Ok(())` with no header rewrite — like [`add_label`](Self::add_label),
+    /// a redundant call is not a bug signal, unlike `set_ephemeral`'s
+    /// one-way-flip guard.
+    ///
+    /// Returns `StoreError::NotFound` if the session does not exist.
+    ///
+    /// Concurrency contract: identical to [`add_label`](Self::add_label).
+    async fn set_role(&self, sid: &SessionId, role: RoleAlias) -> Result<(), StoreError>;
 
     /// Reads this store directory's cross-process liveness marker — the
     /// [`LiveOwner`] a process published via [`touch_live_owner`], or `None`

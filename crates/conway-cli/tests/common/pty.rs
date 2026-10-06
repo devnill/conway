@@ -594,6 +594,23 @@ impl PtySession {
         let buf = self.output.lock().unwrap_or_else(|e| e.into_inner());
         strip_ansi(&buf)
     }
+
+    /// Whether `needle` (a raw escape sequence, e.g. crossterm's own
+    /// `LeaveAlternateScreen` encoding) has appeared ANYWHERE in the
+    /// captured output SO FAR, searched over the RAW, un-stripped bytes --
+    /// unlike [`Self::screen`], which exists specifically to discard
+    /// exactly this kind of sequence (this module's own top doc, "What
+    /// 'capture the rendered screen' means here"). For a test proving the
+    /// terminal was actually restored (raw mode left, the alternate screen
+    /// left) rather than merely that the process exited -- a child that
+    /// died without ever leaving the alternate screen would look identical
+    /// to one that restored it cleanly, if all a test checked was the exit
+    /// code.
+    #[allow(dead_code)]
+    pub fn raw_contains(&self, needle: &[u8]) -> bool {
+        let buf = self.output.lock().unwrap_or_else(|e| e.into_inner());
+        buf.windows(needle.len()).any(|w| w == needle)
+    }
 }
 
 impl Drop for PtySession {

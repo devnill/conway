@@ -1021,6 +1021,84 @@ fn default_in_project_read_allows(ctx: &PermissionCtx, call: &AuthorizedCall) ->
     paths_under_match(ctx, call, root)
 }
 
+/// Board item `01M3TEK20AERQNZRVY7G5F50VJ` (RULING
+/// `01M4654R10FGT9Y0FPNBN5DKPF`): the fixed, first-party allowlist of
+/// harness-introspection tool names [`PermissionBroker::decide`] exempts
+/// from every operator prompt, in EVERY [`PermissionMode`] -- the fix for
+/// DOGFOOD 3's finding that `conway.toolindex`'s `describe_tool` (a lookup
+/// of a schema conway's own process already holds, touching nothing) was
+/// prompted on the model's first use of every deferred tool, and that
+/// pressing `a` ("always") did not help: "always" on a structured tool
+/// grants only those exact arguments (see `docs/permissions.md`), and
+/// `describe_tool`'s `name` argument differs on every call.
+///
+/// **A BROKER-OWNED list, never a tool-declared property.** `ToolSpec`'s
+/// own `permission: PermissionClass` field (`conway_core::content::
+/// PermissionClass::Safe`, which `describe_tool` already declares) is NOT
+/// what this reads -- `PermissionClass` is "as declared by the tool
+/// itself" (that type's own doc), and if a `Safe` declaration alone were
+/// enough to skip the gate, any third-party plugin could self-declare its
+/// way out of every prompt. This list is the broker's own decision,
+/// independent of what any tool claims about itself.
+///
+/// # Admission rule for adding a name to this list
+/// A tool name belongs here ONLY if ALL of the following hold:
+/// 1. It returns data conway's own process already holds -- no new read
+///    of the workspace, the operator's files, the environment, or the
+///    network.
+/// 2. It has NO side effects: calling it, with any arguments, changes
+///    nothing about the agent's session, the workspace, or the operator's
+///    machine.
+/// 3. Its result depends only on conway's own already-announced state
+///    (e.g. the tool registry), never on a model-chosen value that could
+///    widen what the call reveals beyond what the model could already see
+///    unprompted.
+///
+/// # Matched by name only -- now sound, because the name is reserved
+///
+/// [`AuthorizedCall`] carries no plugin-id field: nothing between a
+/// resolved `Tool` and this broker threads a `PluginRegistry` owning-
+/// plugin identity through (`PluginRegistry::specs` returns bare
+/// `ToolSpec`s, documented as carrying no such field --
+/// `conway_plugin_toolindex`'s own module doc, "Which tools are
+/// deferrable"). Widening `AuthorizedCall`/`ToolRunner::execute_one` to
+/// carry one, purely so THIS broker could check it per call, is still out
+/// of scope -- but the broker does not need to any more: `conway_runtime::
+/// tools::registry::PluginRegistry::from_plugins` now REFUSES to register
+/// any tool whose name is on [`HARNESS_INTROSPECTION_TOOLS`] unless the
+/// registering plugin's own manifest id is [`HARNESS_INTROSPECTION_TOOLS_
+/// OWNER`] (`conway_plugin_toolindex::PLUGIN_ID`). A third-party plugin
+/// (first-party, subprocess, or an MCP server -- `conway_plugin_mcp`
+/// registers a remote server's tool names verbatim, through the identical
+/// `from_plugins` pass) that declares a tool under the exact name
+/// `describe_tool` is therefore refused at construction time, before this
+/// broker, or any call, ever runs -- closing what used to be a disclosed
+/// gap rather than merely documenting it. See that function's own doc for
+/// the refusal and why it applies uniformly (first-party or MCP) rather
+/// than degrading to a silent skip for one kind of plugin only.
+///
+/// This crate has no dependency on `conway-plugin-toolindex`
+/// (`no_forbidden_deps`), so the name below is a bare string literal, not
+/// a re-export of that crate's `TOOL_NAME` constant.
+pub(crate) const HARNESS_INTROSPECTION_TOOLS: &[&str] = &["describe_tool"];
+
+/// The single plugin id `crate::tools::registry::PluginRegistry::
+/// from_plugins` permits to register a tool whose name is on
+/// [`HARNESS_INTROSPECTION_TOOLS`] -- `conway_plugin_toolindex::
+/// PLUGIN_ID` (`"conway.toolindex"`), spelled as a bare string literal for
+/// the identical `no_forbidden_deps` reason [`HARNESS_INTROSPECTION_
+/// TOOLS`] itself is.
+pub(crate) const HARNESS_INTROSPECTION_TOOLS_OWNER: &str = "conway.toolindex";
+
+/// Whether `call` names a tool on [`HARNESS_INTROSPECTION_TOOLS`] -- see
+/// that constant's own doc for the admission rule. Sound by name alone:
+/// [`HARNESS_INTROSPECTION_TOOLS_OWNER`]'s own doc explains why no other
+/// plugin can ever have registered a tool under one of these names in the
+/// first place.
+fn is_harness_introspection_tool(call: &AuthorizedCall) -> bool {
+    HARNESS_INTROSPECTION_TOOLS.contains(&call.tool.as_str())
+}
+
 /// Whether an ALLOW [`Rule`] authorizes `(ctx, call)` -- the single allow
 /// evaluator the flat and structured forms share. Render-based `when`
 /// clauses (`Always`, `CommandPrefix`, `CategoryIn`) delegate to
@@ -3187,6 +3265,42 @@ impl PermissionBroker {
                 return PermissionOutcome::Allow;
             }
 
+            // Board item `01M3TEK20AERQNZRVY7G5F50VJ` (RULING
+            // `01M4654R10FGT9Y0FPNBN5DKPF`): the fixed harness-introspection
+            // allowlist. Checked at the SAME tier as
+            // `default_in_project_read_allows` immediately below -- after
+            // the cache, the shell-prefix grants, and every durable pattern
+            // grant, so an operator's own narrower mechanism always gets the
+            // chance to name a call first -- but, unlike that check, NOT
+            // restricted to `mode == Prompt`: asking the operator to approve
+            // a lookup of conway's own already-held tool-schema data is
+            // exactly as uninformative in `AutoAllow` (which never asks
+            // anyway) as in `Prompt`, and `Plan`'s own category gate above
+            // already lets a `Read`-category call like this one reach this
+            // block at all. Because this whole block is skipped when
+            // `must_reach_gate` is set, an operator's own `deny`/`prompt`
+            // rule (checked far above, unconditionally) still overrides this
+            // default exactly as it overrides every other allow path here.
+            if is_harness_introspection_tool(call) {
+                self.emit(
+                    ctx,
+                    Event::PermissionResolved {
+                        call_id: call.call_id.clone(),
+                        decision: PermissionDecisionKind::Cached,
+                    },
+                );
+                self.record_decision(
+                    ctx,
+                    call,
+                    PermissionDecisionRecordKind::DefaultHarnessIntrospection,
+                    PermissionDecisionSource::Default,
+                    None,
+                    None,
+                )
+                .await;
+                return PermissionOutcome::Allow;
+            }
+
             // Board item `01M3TD844GXJFEVF69M0HH1X5Q` (RULING 2026-09-30):
             // `Prompt` mode's own built-in default -- an in-project,
             // read-only call is allowed without a prompt. Deliberately the
@@ -3311,6 +3425,62 @@ impl PermissionBroker {
         .await;
 
         PermissionOutcome::from(decision)
+    }
+
+    /// Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`: resolves `call` as denied
+    /// because its own turn was aborted while [`Self::decide`] was still
+    /// awaiting an answer -- `crate::tools::runner::execute_one` races
+    /// `Self::decide` against the SAME per-turn `CancellationToken`
+    /// `SessionHandle::abort_turn` trips (`ToolBatchCtx::cancel`, forwarded
+    /// through unchanged from `AgentLoop::run_inner`'s own `turn_cancel`),
+    /// and calls this method in the branch that race loses, instead of
+    /// leaving the dropped `Self::decide` future's own `PermissionGate`
+    /// wait as the call's only (never-to-arrive) resolution.
+    ///
+    /// **Why this is not just `Self::decide` taking a cancellation
+    /// parameter.** `Self::decide` has on the order of a hundred existing
+    /// call sites across this crate's own tests and `conway-runtime/tests/
+    /// permission_broker.rs`, none of which have any reason to supply one --
+    /// widening its signature would mean teaching every one of them to pass
+    /// an inert token for a path they do not exercise. Racing at the single
+    /// production call site, and recording the loss here, keeps that whole
+    /// surface untouched.
+    ///
+    /// **Why `Deny`/`Denied`, not a new [`PermissionDecisionRecordKind`]/
+    /// [`PermissionDecisionKind`] variant.** An aborted call never runs --
+    /// exactly the observable outcome a live operator `n` already produces
+    /// (`PermissionDecisionKind::Denied` is what `AppState::apply_event`'s
+    /// `Event::PermissionResolved` arm already keys the TUI's "tool call
+    /// denied" notice and rung-clearing off, in `conway-cli`) -- so reusing
+    /// it needs no new reader to learn a fourth outcome. What differs is
+    /// WHO/WHAT decided it: [`PermissionDecisionSource::Abort`] (its own doc
+    /// has the full reasoning for why none of the pre-existing sources fit).
+    pub(crate) async fn record_turn_aborted(
+        &self,
+        ctx: &PermissionCtx,
+        call: &AuthorizedCall,
+    ) -> PermissionOutcome {
+        self.emit(
+            ctx,
+            Event::PermissionResolved {
+                call_id: call.call_id.clone(),
+                decision: PermissionDecisionKind::Denied,
+            },
+        );
+        let rendered_error = format!(
+            "`{}` was not authorized: its turn was aborted while awaiting a decision",
+            call.tool.as_str()
+        );
+        self.record_decision(
+            ctx,
+            call,
+            PermissionDecisionRecordKind::Deny,
+            PermissionDecisionSource::Abort,
+            None,
+            Some(rendered_error.clone()),
+        )
+        .await;
+        PermissionOutcome::Deny { rendered_error }
     }
 
     fn cached_grant_covers(&self, key: &CacheKey, ctx: &PermissionCtx) -> bool {
@@ -4906,6 +5076,128 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------------
+    // Board item `01M3TEK20AERQNZRVY7G5F50VJ` (RULING
+    // `01M4654R10FGT9Y0FPNBN5DKPF`): the fixed harness-introspection
+    // allowlist -- `describe_tool` never reaches the operator's gate, in
+    // ANY permission mode, unless an operator's own `deny`/`prompt` rule
+    // names it. Every test below drives `PermissionBroker::decide` directly
+    // -- the production decision function the real tool runner calls --
+    // never a bare unit call to `is_harness_introspection_tool` alone.
+    // ---------------------------------------------------------------------
+
+    /// **Headline acceptance criterion.** A `describe_tool` call is
+    /// allowed without ever reaching the operator's gate, in every
+    /// `PermissionMode` that exists today: `Prompt` (the default) and
+    /// `AutoAllow` reach the new allowlist check directly; `Plan`'s own
+    /// category gate already lets this call through first
+    /// (`describe_tool` declares `ToolCategory::Read`, one of the three
+    /// categories `Plan` permits) -- all three end up never reaching the
+    /// gate.
+    #[tokio::test]
+    async fn describe_tool_is_allowed_without_a_prompt_in_every_mode() {
+        for mode in [
+            PermissionMode::Prompt,
+            PermissionMode::AutoAllow,
+            PermissionMode::Plan,
+        ] {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            broker.set_mode(mode);
+            let session = SessionId::new();
+            let agent = AgentId::new();
+            let ctx = test_ctx(agent, session);
+
+            let outcome = broker
+                .decide(&ctx, &call_for_tool("c1", "describe_tool"))
+                .await;
+
+            assert_eq!(
+                outcome,
+                PermissionOutcome::Allow,
+                "describe_tool must be allowed in {mode:?} mode"
+            );
+            assert_eq!(
+                gate.call_count(),
+                0,
+                "describe_tool must never reach the operator's gate in {mode:?} mode"
+            );
+        }
+    }
+
+    /// **An operator/plugin `prompt` rule still overrides the allowlist.**
+    /// Even though `describe_tool` is on the fixed allowlist, a `prompt`
+    /// rule naming it (the exact mechanism a plugin's declared-dangerous
+    /// verdict, or an operator's own interactive `p`, installs) still
+    /// forces the gate -- the allowlist is a DEFAULT that fills a gap,
+    /// never an unconditional exemption a narrower rule cannot override
+    /// (mirrors `plugin_prompt_forces_the_gate_even_under_autoallow`'s own
+    /// reasoning for `default_in_project_read_allows`'s sibling case).
+    #[tokio::test]
+    async fn describe_tool_still_reaches_the_gate_when_a_prompt_rule_names_it() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        assert!(
+            broker.remember_prompt_rule(
+                plugin_prompt_rule("describe_tool"),
+                PatternOrigin::Plugin,
+                Path::new("/"),
+            ),
+            "the prompt rule installs"
+        );
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker
+            .decide(&ctx, &call_for_tool("c1", "describe_tool"))
+            .await;
+
+        assert_eq!(
+            outcome,
+            PermissionOutcome::Allow,
+            "the gate's own AllowOnce still wins"
+        );
+        assert_eq!(
+            gate.call_count(),
+            1,
+            "a `prompt` rule naming describe_tool must still force the gate, even though it is \
+             on the fixed harness-introspection allowlist"
+        );
+    }
+
+    /// **A `deny` rule still overrides the allowlist too.** The same
+    /// subordination, for the `deny` half: a `deny` rule naming
+    /// `describe_tool` refuses the call outright -- `deny_matches` is
+    /// checked far above the allowlist step in `decide`, so the allowlist
+    /// is never even consulted.
+    #[tokio::test]
+    async fn describe_tool_is_still_denied_when_a_deny_rule_names_it() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        assert!(
+            broker.remember_deny_rule(
+                plugin_deny_rule("describe_tool"),
+                PatternOrigin::Plugin,
+                Path::new("/"),
+            ),
+            "the deny rule installs"
+        );
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker
+            .decide(&ctx, &call_for_tool("c1", "describe_tool"))
+            .await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "a deny rule naming describe_tool must still refuse it: {outcome:?}"
+        );
+        assert_eq!(gate.call_count(), 0, "a rule denial never reaches the gate");
+    }
+
     /// `01M1YS2ACS0TKJYKF8TBPESTTC`'s own `permission_decision` record --
     /// this module's own test doubles/helper for the tests immediately
     /// below.
@@ -5162,6 +5454,64 @@ mod tests {
 
             assert_eq!(outcome, PermissionOutcome::Allow);
             assert_eq!(gate.call_count(), 1);
+        }
+
+        /// Board item `01M3TEK20AERQNZRVY7G5F50VJ`: the harness-
+        /// introspection allowlist's own persisted record -- `decision:
+        /// DefaultHarnessIntrospection`, `source: Default`, no wait
+        /// (`decide` never reached the gate), mirroring
+        /// `decide_records_a_rule_denial_with_no_wait_and_the_rule_id`'s own
+        /// shape, on the allow side instead of the deny side.
+        #[tokio::test]
+        async fn decide_records_describe_tool_as_the_harness_introspection_default() {
+            let gate = RecordingGate::new();
+            let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+            let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+            let agent = AgentId::new();
+            let session = seeded_session(store.as_ref(), agent).await;
+            broker.set_store(store.clone());
+            let ctx = test_ctx(agent, session);
+
+            let outcome = broker
+                .decide(&ctx, &call_for_tool("c1", "describe_tool"))
+                .await;
+            assert_eq!(outcome, PermissionOutcome::Allow);
+            assert_eq!(
+                gate.call_count(),
+                0,
+                "the harness-introspection default must never reach the gate"
+            );
+
+            let records = store.read(&ctx.session, SeqRange::full()).await.unwrap();
+            let permission_records: Vec<&LogRecord> = records
+                .iter()
+                .filter(|r| r.kind_str() == "permission_decision")
+                .collect();
+            assert_eq!(permission_records.len(), 1, "{records:#?}");
+            match permission_records[0] {
+                LogRecord::PermissionDecisionRecord {
+                    tool,
+                    decision,
+                    source,
+                    waited_ms,
+                    feedback,
+                    ..
+                } => {
+                    assert_eq!(tool.as_str(), "describe_tool");
+                    assert_eq!(
+                        *decision,
+                        PermissionDecisionRecordKind::DefaultHarnessIntrospection
+                    );
+                    assert_eq!(*source, PermissionDecisionSource::Default);
+                    assert_eq!(
+                        *waited_ms, None,
+                        "the allowlist default never reached the gate, so it must record no \
+                         wait at all"
+                    );
+                    assert_eq!(*feedback, None);
+                }
+                other => panic!("expected a PermissionDecisionRecord, got {other:?}"),
+            }
         }
     }
 

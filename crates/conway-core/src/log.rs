@@ -355,6 +355,24 @@ pub enum PermissionDecisionRecordKind {
     /// default let this through" apart from "something I (or a file)
     /// configured did".
     DefaultInProjectRead,
+    /// Board item `01M3TEK20AERQNZRVY7G5F50VJ` (RULING
+    /// `01M4654R10FGT9Y0FPNBN5DKPF`): authorized by conway's own fixed,
+    /// first-party harness-introspection allowlist
+    /// (`conway_runtime::permission::HARNESS_INTROSPECTION_TOOLS`) --
+    /// today, exactly `describe_tool`. Unlike [`Self::DefaultInProjectRead`],
+    /// this default fires in EVERY [`crate::permission_mode::PermissionMode`],
+    /// not only `Prompt`: the broker's own admission rule
+    /// is that a tool on this list returns data conway already holds, reads
+    /// nothing from the workspace, and has no side effects, which is exactly
+    /// as uninformative an ask in `AutoAllow` as in `Prompt` (and in `Plan`,
+    /// where the category gate already lets a `Read`-category call like this
+    /// one through before this default is ever consulted). Deliberately its
+    /// own variant rather than folded into [`Self::DefaultInProjectRead`] or
+    /// [`Self::Auto`]: this is matched by the call's bare TOOL NAME against a
+    /// broker-owned allowlist, never by a path boundary or the session's
+    /// mode, and an operator reading the transcript should be able to tell
+    /// the two apart.
+    DefaultHarnessIntrospection,
 }
 
 /// WHO/WHAT resolved one call, as opposed to WHAT was decided
@@ -388,7 +406,30 @@ pub enum PermissionDecisionSource {
     /// [`crate::permission_mode::PermissionMode::Prompt`]
     /// ([`PermissionDecisionRecordKind::DefaultInProjectRead`]) -- no
     /// operator-authored rule, cached grant, or mode fallback was consulted.
+    /// Also reused, with the distinct
+    /// [`PermissionDecisionRecordKind::DefaultHarnessIntrospection`] kind, for
+    /// board item `01M3TEK20AERQNZRVY7G5F50VJ`'s fixed harness-introspection
+    /// allowlist, which is the same shape of decision (conway's own built-in
+    /// default, not an operator- or plugin-authored rule) resolved in any
+    /// permission mode, not only `Prompt`.
     Default,
+    /// Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`: resolved because the call's
+    /// own turn was aborted (`conway_runtime::tree::AgentTree::abort_turn`,
+    /// reached by `Ctrl-C`'s first press, `/quit`, a SIGTERM/SIGHUP shutdown,
+    /// or any other caller of that primitive) while
+    /// `conway_runtime::permission::PermissionBroker::decide` was still
+    /// awaiting an answer -- no `PermissionGate::check` reply ever arrived
+    /// for this call. Deliberately NOT [`Self::Operator`]: an abort is not
+    /// necessarily the operator's own deliberate "no" (a background
+    /// subagent's turn can be aborted by a quit the operator aimed at a
+    /// DIFFERENT agent entirely), and none of `Rule`/`Hook`/`Mode`/
+    /// `DefaultInProjectRead` describe "cancelled out from under a pending
+    /// wait" either -- every one of those resolves BEFORE the gate is ever
+    /// reached, while this resolves a call that already reached it. Paired
+    /// with [`PermissionDecisionRecordKind::Deny`] (the same bare-reason
+    /// `Deny` a confinement-root refusal already reuses): an aborted call
+    /// never runs, the identical observable outcome a live `n` produces.
+    Abort,
 }
 
 /// Filter for session listing.

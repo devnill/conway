@@ -665,13 +665,44 @@ fn draw_permission_overlay(
         // scope honestly rather than guessing at its breadth.
         _ => "a custom scope",
     };
+    // Board item `01M3TEK20AERQNZRVY7G5F50VJ` (RULING
+    // `01M4654R10FGT9Y0FPNBN5DKPF`, point 2): `[a]` keeps its narrow,
+    // byte-identical-arguments meaning (`PermissionBroker`'s own `CacheKey`
+    // hashes the call's full `arguments`, never just its tool name -- see
+    // `docs/permissions.md`'s `a` row) for EVERY render kind, including a
+    // shell command (its `arguments` carries `command`/`cwd`/`timeout_ms`,
+    // so "exact command" is the honest, user-facing name for that same
+    // byte-identical match). `grant_noun` states that specificity once, so
+    // both lines below agree rather than one of them implying a broader
+    // match than `[a]` actually grants. Kept SHORT deliberately -- both
+    // call sites share `PERMISSION_FOOTER_ROWS`'s fixed row budget with the
+    // decision-key hint and (for a `ShellCommand` prompt) the shell-prefix
+    // preview line, and that line's own doc already warns that a footer
+    // line long enough to wrap onto a second physical row blows that
+    // budget out (narrow terminals lose the lowest lines first).
+    let grant_noun = if shell_prefix_offered {
+        "exact command"
+    } else {
+        "exact args"
+    };
     if confirm_always {
+        // Fixed, post-review: this used to read "would allow EVERY future
+        // call like this for: {scope}" -- true about the WHO axis
+        // (`scope_words`) but overstated the WHICH-CALLS axis: `[a]` never
+        // covers "every call like this", only a later call whose arguments
+        // are byte-identical to this one (a different argument asks
+        // again). The confirm screen is the one surface `a` cannot be
+        // un-pressed from without a second keystroke (board item
+        // `01M44PK089DF2M9TM3C4P5CKMZ`, "no single stray key can grant
+        // beyond once" -- `input.rs::handle_permission_key`'s own doc),
+        // so it is the one place this must be stated precisely, not just
+        // the key hint above it.
         footer_lines.push(Line::from(format!(
-            "  would allow EVERY future call like this for: {scope_words}"
+            "  [a] grants {grant_noun} again, for: {scope_words}"
         )));
     } else {
         footer_lines.push(Line::from(format!(
-            "  [a]/[p] remember for: {scope_words}  ([s] cycles)"
+            "  [a]={grant_noun}; remember for: {scope_words}  ([s] cycles)"
         )));
     }
     if body_max_scroll > 0 {
@@ -765,10 +796,7 @@ fn draw_permission_overlay(
 /// comfortably.
 fn permission_body_lines(req: &conway::PermissionRequest, theme: &Theme) -> Vec<Line<'static>> {
     let Some(diff_text) = permission_diff_text(req) else {
-        return vec![Line::from(Span::styled(
-            req.rendered.clone(),
-            theme.emphasized,
-        ))];
+        return permission_command_lines(req, theme);
     };
     let mut lines: Vec<Line<'static>> = diff_text
         .split('\n')
@@ -789,6 +817,64 @@ fn permission_body_lines(req: &conway::PermissionRequest, theme: &Theme) -> Vec<
         lines.push(Line::from(Span::styled(line.to_string(), theme.dim)));
     }
     lines
+}
+
+/// The primary command/summary block [`permission_body_lines`] falls back
+/// to when there is no diff to show instead (`permission_diff_text`
+/// returned `None`) -- a bare `req.rendered.clone()` for every render kind
+/// except a multi-line `RenderKind::ShellCommand` call, where DOGFOOD 2
+/// found a heredoc rendering as a single line with every embedded newline
+/// replaced by `�`.
+///
+/// **Why `req.rendered` alone cannot show real line breaks here.**
+/// `req.rendered` already passed through `conway_runtime::tools::runner::
+/// sanitize_rendered` on its way from the tool call to this request --
+/// before this function ever sees it, every `\n` it carried is ALREADY the
+/// placeholder glyph (`conway::sanitize_control_chars`'s own doc: a real
+/// newline IS a `Cc` control character), so there is no `\n` left in
+/// `req.rendered` to split on at all. This mirrors `shell_cmd.rs`'s own
+/// `!cmd` output bug exactly (board item `01M44PK089DF2M9TM3C4P5CKMZ`,
+/// `view/transcript.rs::shell_lines`'s own doc, "sanitizing the whole
+/// multi-line output BEFORE splitting replaced every line break with the
+/// placeholder") -- except here the fix cannot be "split before sanitizing
+/// the SAME string" (the splittable, line-break-carrying string no longer
+/// exists by this point): the raw command, newlines intact, is recovered
+/// instead from `req.arguments` (the call's own unsanitized JSON --
+/// `PermissionRequest::arguments`'s own doc, and `conway_runtime::
+/// permission`'s construction site, `arguments: call.arguments.clone()`,
+/// taken before `render_call`'s `sanitize_rendered` ever runs). Splitting
+/// THAT raw text on `\n` first, then sanitizing each resulting line
+/// independently, keeps every genuine line break as a real line break
+/// while still replacing every OTHER control character (a stray `\r`, an
+/// ANSI escape mid-line, a smuggled second command hidden in a control
+/// trick, ...) with the same evidence-preserving placeholder as before --
+/// the sanitizer's own "no control char reaches the terminal" guarantee
+/// holds per-line, unchanged.
+///
+/// A single-line command, or any other render kind, takes the ORIGINAL
+/// one-`Span`-per-request path unchanged: `req.rendered` is already exactly
+/// right for those, and this only ever special-cases the one shape that
+/// was actually broken.
+fn permission_command_lines(req: &conway::PermissionRequest, theme: &Theme) -> Vec<Line<'static>> {
+    if req.render_kind == conway::RenderKind::ShellCommand {
+        if let Some(raw_command) = req.arguments.get("command").and_then(|v| v.as_str()) {
+            if raw_command.contains('\n') {
+                return raw_command
+                    .split('\n')
+                    .map(|line| {
+                        Line::from(Span::styled(
+                            conway::sanitize_control_chars(line),
+                            theme.emphasized,
+                        ))
+                    })
+                    .collect();
+            }
+        }
+    }
+    vec![Line::from(Span::styled(
+        req.rendered.clone(),
+        theme.emphasized,
+    ))]
 }
 
 /// Computes the diff [`permission_body_lines`] shows for a pending
@@ -2448,6 +2534,78 @@ mod tests {
         );
     }
 
+    /// DOGFOOD 2 finding 4 (board item `01M3SJC96P99V9KNT7TDJBWZ66`): a
+    /// multi-line bash command (a heredoc folded into one `command`
+    /// argument) used to render as a single line with every embedded
+    /// newline replaced by `\u{FFFD}` -- `rendered` here stands in for what
+    /// `conway_runtime::tools::runner::sanitize_rendered` actually produces
+    /// for a multi-line command (every `\n` already laundered into the
+    /// placeholder by the time the request reaches the TUI at all). The
+    /// prompt's command block must recover the real line breaks from
+    /// `req.arguments` (never sanitized) instead, showing each command
+    /// line on its own row with no replacement glyph anywhere in the
+    /// block.
+    #[test]
+    fn permission_overlay_shows_real_line_breaks_for_a_multiline_shell_command() {
+        let raw_command = "cat <<'EOF' > out.txt\nline one\nline two\nEOF";
+        let sanitized_rendered = conway::sanitize_control_chars(raw_command);
+        assert!(
+            sanitized_rendered.contains('\u{FFFD}'),
+            "sanity: the fixture's `rendered` must reproduce the laundered-newline shape \
+             production actually sends: {sanitized_rendered:?}"
+        );
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let request = PermissionRequest {
+            arguments: serde_json::json!({ "command": raw_command }),
+            rendered: sanitized_rendered,
+            ..sample_request("placeholder")
+        };
+        let (prompt, _rx) = PendingPrompt::new_for_test(request);
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        let text = render_text(&state, 80, 24);
+        assert!(text.contains("cat <<'EOF' > out.txt"), "{text}");
+        assert!(text.contains("line one"), "{text}");
+        assert!(text.contains("line two"), "{text}");
+        assert!(
+            !text.contains('\u{FFFD}'),
+            "no replacement glyph should stand in for a real line break: {text}"
+        );
+    }
+
+    /// The widened sanitizer (board item `01M3SJC96P99V9KNT7TDJBWZ66`): a
+    /// bidirectional-override character and a line-separator (`U+2028`),
+    /// neither of them `Cc`, both land here already laundered into the
+    /// placeholder -- `permission_command_lines`'s per-line path
+    /// (`conway::sanitize_control_chars` applied to each line recovered
+    /// from `req.arguments`) must show the SAME placeholder a real `Cc`
+    /// control byte gets, not the raw bidi/separator bytes.
+    #[test]
+    fn permission_overlay_launders_bidi_override_in_a_multiline_shell_command() {
+        let raw_command = "echo safe\u{202E}fr- mr\u{2066}\nsecond\u{2028}line";
+        let sanitized_rendered = conway::sanitize_control_chars(raw_command);
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let request = PermissionRequest {
+            arguments: serde_json::json!({ "command": raw_command }),
+            rendered: sanitized_rendered,
+            ..sample_request("placeholder")
+        };
+        let (prompt, _rx) = PendingPrompt::new_for_test(request);
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        let text = render_text(&state, 80, 24);
+        assert!(
+            !text.contains('\u{202E}') && !text.contains('\u{2066}') && !text.contains('\u{2028}'),
+            "no raw bidi-override/separator byte must reach the rendered prompt: {text}"
+        );
+        assert!(
+            text.contains('\u{FFFD}'),
+            "the laundered characters must still be EVIDENCE (replaced), not erased: {text}"
+        );
+    }
+
     // ---- B5: the /ask single-turn modal ----
 
     fn ask_modal_state(question: &str, answer: &str, error: Option<&str>) -> AppState {
@@ -3622,9 +3780,9 @@ mod tests {
         let text = render_text(&state, 100, 24);
 
         // The OFFER markers specifically: the hint's `[p] pattern` key and
-        // the `[p] grants:` breadth line. (The scope line's `[a]/[p]`
-        // mention is always present -- it describes what the keys remember
-        // at, not an offer.)
+        // the `[p] grants:` breadth line. (The scope line's `[a]=...`
+        // mention is always present -- it describes what `[a]` remembers
+        // and at what scope, not an offer.)
         assert!(
             !text.contains("[p] pattern") && !text.contains("[p] grants:"),
             "a chained command must not be offered a pattern grant: {text}"
@@ -3851,6 +4009,58 @@ mod tests {
             state.permission_grant_scope,
             conway::PermissionScope::Session,
             "a third `s` press wraps back to the session default"
+        );
+    }
+
+    /// Board item `01M3TEK20AERQNZRVY7G5F50VJ` (RULING
+    /// `01M4654R10FGT9Y0FPNBN5DKPF`, point 2): the footer states `[a]`'s
+    /// real specificity -- "exact command" for a `ShellCommand` prompt,
+    /// "exact args" for a `Structured` one -- rather than leaving it
+    /// unstated. BREAK-THE-GUARD TARGET: stubbing `grant_noun` in
+    /// `draw_permission_overlay` to always return `"exact args"` made the
+    /// shell assertion below fail; restored and confirmed clean via `git
+    /// diff`.
+    #[test]
+    fn the_prompt_states_what_a_would_grant_by_render_kind() {
+        let shell_state = awaiting_permission("git status --short");
+        let shell_text = render_text(&shell_state, 100, 24);
+        assert!(
+            shell_text.contains("[a]=exact command; remember for: this session"),
+            "a shell call's [a] must be named \"exact command\": {shell_text}"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "alpha\n").expect("seed file");
+        let path_str = path.to_string_lossy().to_string();
+        let structured_state = awaiting_edit_permission(&path_str, "alpha", "ALPHA");
+        let structured_text = render_text(&structured_state, 100, 24);
+        assert!(
+            structured_text.contains("[a]=exact args; remember for: this session"),
+            "a structured call's [a] must be named \"exact args\": {structured_text}"
+        );
+    }
+
+    /// The CONFIRM screen (armed by a first `[a]` press, board item
+    /// `01M44PK089DF2M9TM3C4P5CKMZ`) must state what pressing `[a]`/`Enter`
+    /// again would actually grant, not a broader-sounding claim -- this
+    /// used to read "would allow EVERY future call like this," which
+    /// overstated the match (`[a]` only ever matches a later call whose
+    /// arguments are byte-identical to this one).
+    #[test]
+    fn the_confirm_screen_states_the_real_grant_not_every_future_call() {
+        let mut state = awaiting_permission("git status --short");
+        state.permission_confirm_always = true;
+
+        let text = render_text(&state, 100, 24);
+
+        assert!(
+            text.contains("[a] grants exact command again, for: this session"),
+            "the confirm screen must name the real grant: {text}"
+        );
+        assert!(
+            !text.contains("EVERY future call"),
+            "the confirm screen must not overstate [a]'s breadth: {text}"
         );
     }
 

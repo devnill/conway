@@ -822,6 +822,18 @@ impl SessionStore for FakeStore {
         Ok(())
     }
 
+    /// Idempotent: setting a session to the role it already records is
+    /// `Ok(())` with no mutation, mirroring `JsonlSessionStore::set_role`'s
+    /// contract (board item `01M3SJBY8DXDB1PWEAXARZY9FH`).
+    async fn set_role(&self, sid: &SessionId, role: RoleAlias) -> Result<(), StoreError> {
+        let mut sessions = self.sessions.write().unwrap();
+        let session = sessions
+            .get_mut(sid)
+            .ok_or(StoreError::NotFound { session: *sid })?;
+        session.meta.role = Some(role);
+        Ok(())
+    }
+
     // The liveness marker is a plain in-memory cell here — `live_owner`
     // returns whatever a test (or `touch_live_owner`) last set, with no
     // freshness filtering; the sweep owns the threshold. A `FakeStore` never

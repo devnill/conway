@@ -111,6 +111,46 @@ file path the same as a directory path); nothing else is "beneath" a file
 in any sense this check recognizes, so it never accidentally widens to
 cover a sibling like `.env.example`.
 
+### Harness-introspection tools never prompt
+
+RULING (board item `01M3TEK20AERQNZRVY7G5F50VJ`, decision
+`01M4654R10FGT9Y0FPNBN5DKPF`): a small, FIXED, first-party allowlist of
+tool names — today, exactly `describe_tool` (`conway.toolindex`'s tool for
+fetching a deferred tool's full schema on demand) — is allowed in **every**
+permission mode, not only `Prompt`. This is a dogfooding fix: with
+`conway.toolindex` installed, the model's first call to each deferred tool
+used to be preceded by a prompt asking you to approve a lookup of a schema
+conway's own process already holds, touching nothing in your workspace —
+and pressing `a` ("always") did not help, because `a` grants only that
+exact lookup's exact arguments (the `name` field differs on every call).
+
+**The admission rule, so this cannot grow by accident.** A tool name
+belongs on this list only if it: (1) returns data conway's own process
+already holds — no new read of the workspace, your files, environment, or
+the network; (2) has no side effects whatsoever; (3) depends only on
+conway's own already-announced state, never a model-chosen value that
+could widen what it reveals. This is a decision the permission broker
+itself owns — never a property a tool can declare about itself (a
+third-party plugin's tool could otherwise self-declare its way out of
+every prompt).
+
+**Matched by tool name only — and the name is reserved, so that match is
+sound.** Nothing between a resolved tool and the broker threads the OWNING
+PLUGIN's identity through at *decision* time, so the broker itself still
+only ever compares a bare name. What closes the gap is earlier, at
+*registration*: conway refuses to register any tool under one of these
+names unless the registering plugin is the one that is supposed to own it
+(`conway.toolindex`, for `describe_tool`) — whether that other plugin is
+first-party, a subprocess plugin, or an MCP server exposing a remote tool
+under a colliding name. A third-party plugin can therefore never occupy one
+of these names in the first place, which is what makes the broker's later
+name-only match trustworthy.
+
+**Every operator rule still outranks this, exactly like the in-project-read
+default above:** a `deny` rule naming `describe_tool` refuses it outright;
+a `prompt` rule naming it still forces the ordinary ask, in every mode,
+including `AutoAllow`.
+
 ### Setting the starting mode: `permissions.default_mode`
 
 Which mode a new TUI session **starts** in is a separate question from
@@ -211,15 +251,20 @@ and the command as it would actually run:
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
 │read({"path":"src/main.rs"})                                     │
 │[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
-│  [a]/[p] remember for: this session  ([s] cycles)               │
+│  [a]=exact args; remember for: this session  ([s] cycles)       │
 │  [p] grants: any `read` call                                    │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
+The `[a]=exact args`/`[a]=exact command` phrase (structured tools say "exact
+args", a shell command says "exact command") is the one place the prompt
+itself states `a`'s narrow meaning before you press it — see the `a` row
+below for the full contract.
+
 | Key | Grants | Persistence |
 | --- | --- | --- |
 | `y` | This exact call, once. | Nothing — the identical call asks again next time. |
-| `a` | This exact call — same tool, byte-identical (canonicalized) arguments — remembered at the current grant scope (see `s` below). A different argument to the same tool is a different call and asks again. | Installed immediately at the current grant scope, and — at session scope only — appended to a file (board item `01M3TJQGJHFFPWE2YYN60WN1XB`: the operator's own user-scope, project-keyed grants store under conway's config directory, **never** the project's own `permissions.json` — a remembered prompt answer must never become a byte in the checkout, where a `git diff` could show it or a `git pull` could pick up someone else's). Best-effort, silent either way — a write failure loses only the file durability, never the in-session grant. A per-agent or per-subtree grant is never written to a file: it names live agent ids, meaningless at the next launch. |
+| `a` | This exact call — same tool, byte-identical (canonicalized) arguments — remembered at the current grant scope (see `s` below). A different argument to the same tool is a different call and asks again. **The first press only arms this** (board item `01M44PK089DF2M9TM3C4P5CKMZ`, "no single stray key can grant beyond once"): the footer switches to a CONFIRM screen naming exactly what pressing `a`/`Enter` again would grant (`[a] grants exact args again, for: ...`/`[a] grants exact command again, for: ...`) — any other key, including `Esc`, backs out without granting or denying anything. | Installed immediately at the current grant scope, and — at session scope only — appended to a file (board item `01M3TJQGJHFFPWE2YYN60WN1XB`: the operator's own user-scope, project-keyed grants store under conway's config directory, **never** the project's own `permissions.json` — a remembered prompt answer must never become a byte in the checkout, where a `git diff` could show it or a `git pull` could pick up someone else's). Best-effort, silent either way — a write failure loses only the file durability, never the in-session grant. A per-agent or per-subtree grant is never written to a file: it names live agent ids, meaningless at the next launch. |
 | `p` (structured tool) | Opens a field editor over the call's top-level structured argument fields (only offered when the tool's rendering is a structured JSON dump, not a shell command — `read`, `report`, `grep`, … ). Every field starts **wildcard**; `space` pins the selected field to its exact (canonicalized-JSON) value, `↑`/`↓`/`tab` move between fields, `s` cycles the grant scope (shared with `a` above), `Enter` builds an allow rule from the pinned fields — a pinned field must match exactly, an unpinned one is wildcard, and every field must match (AND) — grants it, and resolves this call as allowed; `Esc` cancels back to this prompt with no decision made. Granting with nothing pinned is the broadest the editor can produce: any call to that tool — the same breadth the old immediate `tool:*` grant offered, and what the footer's `[p] grants:` line states before you press anything. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the structured `rules` array of the SAME operator-owned, project-keyed grants file `[a]`'s row above writes to (best-effort, silent either way — a write failure loses only the file durability, never the in-session grant; matched by rule equality, so granting the identical rule twice never duplicates the entry). This file is always trusted by authorship (it is never something a checkout controls), so — unlike before board item `01M3TJQGJHFFPWE2YYN60WN1XB` — a remembered grant here needs no `/trust permissions` to take effect at the next launch. A per-agent or per-subtree grant is never written to a file, for the same reason as the flat form: it names live agent ids, meaningless at the next launch. |
 | `p` (shell command, e.g. `bash`) | Board item `01M32EBPWZZG6EA77ZG5KYC8KQ`. A **different** mechanism from the row above, not a smaller version of it: opens a free-text editor seeded with a narrow default — ordinarily two tokens (`git status` from `git status --short`; never the bare `git`), but governed by three invariants (board item `01M44PK0HNKWBXK86PWTHD6N7C`, which replaced an earlier shape-by-shape table a follow-up review found holes in) for a recognized interpreter/launcher or wrapper head: **(1)** the proposal never ends on a flag or on a launcher's own selector (`-m`, `run`, `dlx`/`exec`) when a target follows it — either it extends past the selector to the token that actually names the target (`python3 -m pytest`, `uv run pytest`), or it does not extend at all; **(2)** a WRAPPER head that re-executes some OTHER command verbatim without naming anything itself (`sudo`, `doas`, `env` with any flag of its own, `time`, `nice`, `nohup`, `timeout`, `stdbuf`, `xargs`, `command`, `exec`, `caffeinate`) always proposes the WHOLE command; **(3)** any flag this function would otherwise have to guess the arity of — an interpreter flag before the selector (`python3 -u -m`), a flag right after a subcommand selector (`uv run --with`, `go run -race`, `cargo run --bin`), or a script-literal (`bash -c`, `sh -c`, `node -e`) — also falls back to the WHOLE command rather than a fixed-width guess. See `default_shell_prefix`'s own doc in `conway-core` for the full launcher/wrapper lists and reasoning — type to widen or narrow it, `Ctrl-S` (not bare `s`, since the prefix text can itself contain the letter) cycles the grant scope, `Enter` grants it and resolves this call as allowed, `Esc` cancels back to this prompt. Accepting authorizes a LATER command whose text starts with the SAME whitespace-aligned tokens (`git status` covers `git status --short`, not `git push` or `git statusfoo`) — the identical token-alignment rule the durable mechanism's own `command_prefix` used before board `01KZDDPC5MMD49F6JPV9CW4TVM` closed that door for `ShellCommand` permanently. This is the SEPARATE, additive mechanism that door's own closure explicitly did not rule out: see "The shell-prefix grant" below. **A WHOLE-command proposal is not "only this one invocation," precisely stated:** accepting it still authorizes a LATER command that starts with these same tokens and appends more, exactly like any shorter proposal — it is simply the narrowest proposal left once no shorter prefix still distinguishes this command from an unrelated one sharing its first tokens. | **In memory only, for this class specifically, regardless of scope.** Never appended to `permissions.json`, at ANY scope — including `Session`, unlike the structured `[p]` row above. Gone the moment this process exits; nothing to `/trust`, nothing to revoke on disk. |
 | `s` | Not a decision — cycles the scope the remembered-grant keys (`a` and both `p` rows above) grant at: **this session** (the default; every agent in the session) → **this agent only** → **this agent and its subtree**. The prompt states the current scope in words next to the keys. The choice resets to *this session* for every new prompt, so narrowing is always a deliberate, per-prompt act. While the shell-prefix editor is open specifically, this is `Ctrl-S` rather than a bare `s` — see that row's own note. | n/a |
@@ -319,8 +364,8 @@ Each record carries:
 | --- | --- |
 | `call_id` | The tool call this decision resolved. |
 | `tool` | The tool name. |
-| `decision` | What was decided: `allow`, `allow_always`, `pattern`, `shell_prefix_grant` (the session-scoped shell-prefix mechanism above — deliberately distinct from `pattern`, which names the durable mechanism this one is not), `default_in_project_read` ("The default: in-project reads don't ask," above — deliberately distinct from `pattern`/`auto`: no operator-authored rule or cached grant was consulted), `deny`, `deny_with_feedback`, `auto`, `plan_denied`, `hook_denied`, or `rule` (naming the specific `deny` rule that matched). |
-| `source` | How it was resolved: `operator` (you were shown a prompt, just now), `rule` (a pattern grant, a cached "always allow" from earlier in the session, a session-scoped shell-prefix grant, or this agent's confinement root), `hook`, `mode` (`AutoAllow` authorizing, or `Plan` refusing a category it doesn't permit), or `default` (`Prompt` mode's own in-project-read default, above — paired only with `decision: default_in_project_read`). |
+| `decision` | What was decided: `allow`, `allow_always`, `pattern`, `shell_prefix_grant` (the session-scoped shell-prefix mechanism above — deliberately distinct from `pattern`, which names the durable mechanism this one is not), `default_in_project_read` ("The default: in-project reads don't ask," above — deliberately distinct from `pattern`/`auto`: no operator-authored rule or cached grant was consulted), `default_harness_introspection` ("Harness-introspection tools never prompt," above — the same shape of built-in default, resolved in every permission mode, not only `Prompt`), `deny`, `deny_with_feedback`, `auto`, `plan_denied`, `hook_denied`, or `rule` (naming the specific `deny` rule that matched). |
+| `source` | How it was resolved: `operator` (you were shown a prompt, just now), `rule` (a pattern grant, a cached "always allow" from earlier in the session, a session-scoped shell-prefix grant, or this agent's confinement root), `hook`, `mode` (`AutoAllow` authorizing, or `Plan` refusing a category it doesn't permit), `default` (conway's own built-in default decided it, with no operator-authored rule or cached grant consulted — paired with either `decision: default_in_project_read` or `decision: default_harness_introspection`), or `abort` (paired only with `decision: deny` — the call's own turn was aborted, by `Ctrl-C`, `/quit`, a signal, or any other interrupt, while still waiting for an answer; no prompt reply ever arrived for it). |
 | `waited_ms` | How long the prompt sat in front of you, in milliseconds — present only when `source` is `operator`; absent (never a fabricated `0`) for every other source, since nothing was ever waiting. |
 | `feedback` | The human-readable reason, for any denial — your own typed message from `Esc`, or the rendered explanation any other deny path already gives the model. Absent for an allow. |
 

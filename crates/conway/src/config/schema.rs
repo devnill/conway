@@ -1563,6 +1563,37 @@ impl Default for PluginsConfig {
     }
 }
 
+impl PluginsConfig {
+    /// `install` UNIONED with `default_backends`, deduplicated,
+    /// order-preserving (an id present in both keeps `install`'s position)
+    /// -- the exact set [`crate::ConwayBuilder::install_selected`] resolves
+    /// against every linked `Plugin`/`RouterFactory`/`BackendFactory`
+    /// bundle (see that method's own doc for the full resolution order).
+    ///
+    /// **The ONE "will this id's plugin/router/backend actually run"
+    /// computation -- every caller that needs to answer that question
+    /// calls this method, rather than re-deriving a narrower
+    /// approximation.** Board item `01M3TJHCFA3R9PDVZHQTKKVWNR`'s own
+    /// finding: `conway-cli`'s `first_party_plugins::install` used to read
+    /// `install` alone when deciding whether a `[plugins.config."<id>"]`
+    /// block for a plugin selected ONLY through `default_backends` should
+    /// fail the build or merely warn -- so that plugin's own invalid
+    /// config block was silently downgraded to a warning, exactly the
+    /// outcome this ruling reserves for a plugin that genuinely never
+    /// runs. `install_selected` itself now calls this method too (rather
+    /// than keeping its own, textually-identical copy of the union), so
+    /// the two can no longer drift apart.
+    pub fn installed_ids(&self) -> Vec<String> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        self.install
+            .iter()
+            .chain(self.default_backends.iter())
+            .filter(|id| seen.insert(id.as_str()))
+            .cloned()
+            .collect()
+    }
+}
+
 /// One `[plugins].claude_compat[]` entry: a Claude Code plugin directory the
 /// operator already has on disk -- see [`PluginsConfig::claude_compat`]'s
 /// own doc for the full trust/reachability disclosure and read-at-runtime
@@ -2249,6 +2280,42 @@ fn default_hook_enabled() -> bool {
 mod tests {
     use super::*;
     use conway_core::ids::ToolName;
+
+    /// `installed_ids` unions `install` and `default_backends`,
+    /// deduplicated, keeping `install`'s own order and position for an id
+    /// present in both -- the exact set `ConwayBuilder::install_selected`
+    /// resolves against, board item `01M3TJHCFA3R9PDVZHQTKKVWNR`.
+    #[test]
+    fn installed_ids_unions_install_and_default_backends_order_preserving() {
+        let plugins = PluginsConfig {
+            install: vec!["conway.trim".to_string(), "anthropic".to_string()],
+            default_backends: vec!["anthropic".to_string(), "openai-compat".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            plugins.installed_ids(),
+            vec![
+                "conway.trim".to_string(),
+                "anthropic".to_string(),
+                "openai-compat".to_string(),
+            ]
+        );
+    }
+
+    /// A plugin named ONLY in `default_backends` (never in `install`) is
+    /// still in the union -- the exact gap board item
+    /// `01M3TJHCFA3R9PDVZHQTKKVWNR` closes: `first_party_plugins::install`
+    /// used to read `install` alone when deciding whether that plugin's own
+    /// bad config block should fail the build.
+    #[test]
+    fn installed_ids_includes_a_default_backends_only_entry() {
+        let plugins = PluginsConfig {
+            install: Vec::new(),
+            default_backends: vec!["conway.trim".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(plugins.installed_ids(), vec!["conway.trim".to_string()]);
+    }
 
     const HOOKS_BLOCK: &str = r#"
     {

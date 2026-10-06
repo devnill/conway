@@ -3,8 +3,10 @@
 //!
 //! Every tool's JSON Schema is compiled exactly once, at construction time
 //! ([`PluginRegistry::from_plugins`]), so [`super::runner::ToolRunner`] never
-//! re-parses a schema per call. A schema that fails to compile, or two
-//! plugins registering the same tool name, are both construction-time
+//! re-parses a schema per call. A schema that fails to compile, two plugins
+//! registering the same tool name, or a non-owning plugin registering a
+//! reserved harness-introspection tool name (`crate::permission::
+//! HARNESS_INTROSPECTION_TOOLS`'s own doc) are all construction-time
 //! errors — a malformed plugin set is a registration bug, not something a
 //! running agent should discover mid-batch.
 
@@ -100,6 +102,39 @@ impl PluginRegistry {
             }
             for tool in plugin.tools() {
                 let spec = tool.spec();
+                // Board item `01M3TEK20AERQNZRVY7G5F50VJ` follow-up: a
+                // harness-introspection name (`crate::permission::
+                // HARNESS_INTROSPECTION_TOOLS`) is reserved for its ONE
+                // owning plugin (`crate::permission::
+                // HARNESS_INTROSPECTION_TOOLS_OWNER`) -- `PermissionBroker`
+                // exempts a call by bare tool name alone, so any other
+                // plugin (first-party, subprocess, or an MCP server
+                // registering a remote tool's name verbatim) registering
+                // this exact name would silently inherit that exemption.
+                // Checked here, uniformly for every plugin kind (not
+                // special-cased for MCP): this is the single pass every
+                // plugin's tools already funnel through, and the EXISTING
+                // collision handling for this pass is a hard, named
+                // construction-time error (see the duplicate-tool-name
+                // check immediately below) -- refusing a reservation
+                // violation the identical way, rather than degrading to a
+                // silent skip, keeps one rule for "a tool name collided
+                // with something it must not" instead of two.
+                if crate::permission::HARNESS_INTROSPECTION_TOOLS.contains(&spec.name.as_str())
+                    && plugin_id != crate::permission::HARNESS_INTROSPECTION_TOOLS_OWNER
+                {
+                    return Err(RuntimeError::Tool(ToolError::Internal {
+                        detail: format!(
+                            "tool `{}` is reserved for plugin `{}` (harness-introspection \
+                             tools are exempt from every permission prompt, in every mode; \
+                             only that plugin may register this name) -- plugin `{}` may not \
+                             register it",
+                            spec.name,
+                            crate::permission::HARNESS_INTROSPECTION_TOOLS_OWNER,
+                            plugin_id
+                        ),
+                    }));
+                }
                 if let Some(existing) = tools.get(&spec.name) {
                     return Err(RuntimeError::Tool(ToolError::Internal {
                         detail: format!(

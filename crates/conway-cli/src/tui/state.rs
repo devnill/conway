@@ -630,6 +630,17 @@ pub struct AppState {
     /// [`PluginBrowserEntry::installed`]'s own doc for why this is a
     /// display mirror, never the live installed set).
     pub plugin_browser: Vec<PluginBrowserEntry>,
+    /// Every `[plugins.config."<id>"]` table the operator's merged config
+    /// carries, verbatim -- board item `01M3TJHCFA3R9PDVZHQTKKVWNR`.
+    /// Populated once at `App::new` from `conway.config().plugins.config`
+    /// (the same read [`PluginBrowserEntry::description`]'s own values were
+    /// already derived from, just kept raw here too), read by `view/
+    /// plugins.rs`'s detail panel through the SAME `crate::plugin_rows::
+    /// config_line` renderer (private -- plain code span, not a doc link, on
+    /// purpose) `conway plugin list --verbose` already calls, so the two
+    /// surfaces can never disagree about which table (if any) produced a
+    /// compiled-in row's effective settings.
+    pub plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
     /// Every configured `[plugins].subprocess[]` entry (board item
     /// `01M0VR5RCCB8NDGG2JEQW8X7XR`) -- populated once at `App::new` from
     /// `conway.config().plugins.subprocess`, never mutated afterward (no
@@ -2147,6 +2158,7 @@ impl AppState {
             shell_prefix_grants: Vec::new(),
             hook_rules: Vec::new(),
             plugin_browser: Vec::new(),
+            plugin_config: std::collections::BTreeMap::new(),
             subprocess_plugins: Vec::new(),
             mcp_plugins: Vec::new(),
             claude_compat_plugins: Vec::new(),
@@ -2391,6 +2403,7 @@ impl AppState {
             shell_prefix_grants: _,
             hook_rules,
             plugin_browser,
+            plugin_config,
             subprocess_plugins,
             mcp_plugins,
             claude_compat_plugins,
@@ -2518,6 +2531,7 @@ impl AppState {
         self.structured_prompt_rules = structured_prompt_rules;
         self.hook_rules = hook_rules;
         self.plugin_browser = plugin_browser;
+        self.plugin_config = plugin_config;
         self.subprocess_plugins = subprocess_plugins;
         self.mcp_plugins = mcp_plugins;
         self.claude_compat_plugins = claude_compat_plugins;

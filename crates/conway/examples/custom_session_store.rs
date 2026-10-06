@@ -40,8 +40,8 @@ use async_trait::async_trait;
 use conway::backend::{BackendId, ModelId};
 use conway::plugin::{LiveOwner, SeqRange, StoreError};
 use conway::{
-    ConwayBuilder, LogRecord, LogSeq, ModelRef, PluginSelection, SessionFilter, SessionId,
-    SessionMeta, SessionSpec, SessionStore,
+    ConwayBuilder, LogRecord, LogSeq, ModelRef, PluginSelection, RoleAlias, SessionFilter,
+    SessionId, SessionMeta, SessionSpec, SessionStore,
 };
 use conway_testkit::{FakeBackend, FakeRouter, FakeStore};
 
@@ -147,6 +147,13 @@ impl SessionStore for AuditingSessionStore {
     async fn remove_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError> {
         self.inner.remove_label(sid, label).await?;
         self.audit(format!("remove_label: session={sid} label={label:?}"));
+        Ok(())
+    }
+
+    async fn set_role(&self, sid: &SessionId, role: RoleAlias) -> Result<(), StoreError> {
+        let role_name = role.to_string();
+        self.inner.set_role(sid, role).await?;
+        self.audit(format!("set_role: session={sid} role={role_name}"));
         Ok(())
     }
 

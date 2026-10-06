@@ -32,7 +32,7 @@ use tokio::time::Instant;
 
 use chrono::Utc;
 use conway_core::error::StoreError;
-use conway_core::ids::{LogSeq, SeqRange, SessionId};
+use conway_core::ids::{LogSeq, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{LiveOwner, SessionStore};
 
@@ -1146,6 +1146,27 @@ impl SessionStore for JsonlSessionStore {
 
         let mut new_meta = sf.meta.clone();
         new_meta.labels.retain(|l| l != label);
+        self.rewrite_header_locked(sid, &mut sf, new_meta).await
+    }
+
+    /// Overwrites a session header's `SessionMeta.role` — see the
+    /// trait-level doc for the idempotency and concurrency contract. Same
+    /// lock-order rationale as `add_label`/`remove_label`.
+    async fn set_role(&self, sid: &SessionId, role: RoleAlias) -> Result<(), StoreError> {
+        let _lifecycle = self.lifecycle.lock().await;
+        let handle = self.get_or_open_handle(sid).await?;
+        let mut sf = handle.lock().await;
+
+        if sf.removed {
+            return Err(StoreError::NotFound { session: *sid });
+        }
+        if sf.meta.role.as_ref() == Some(&role) {
+            // Idempotent: already recorded as this role, nothing to rewrite.
+            return Ok(());
+        }
+
+        let mut new_meta = sf.meta.clone();
+        new_meta.role = Some(role);
         self.rewrite_header_locked(sid, &mut sf, new_meta).await
     }
 

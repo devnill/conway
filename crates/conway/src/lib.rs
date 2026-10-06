@@ -103,7 +103,10 @@ pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{
     AgentId, EndpointId, LogSeq, MemoryId, ModelRef, RoleAlias, SegmentId, SessionId, ToolName,
 };
-pub use conway_core::log::{AskOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
+pub use conway_core::log::{
+    AskOrigin, LogRecord, PermissionDecisionRecordKind, PermissionDecisionSource, SessionFilter,
+    SessionMeta, SubagentMode,
+};
 pub use conway_core::ports::{
     ArtifactWriter, Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry,
     PermissionGate, Plugin, RenderKind, Router, RouterBuildContext, RouterBundle, RouterFactory,
@@ -125,6 +128,19 @@ pub use conway_core::ports::{
 /// `rendered` text), so this re-export gives a facade-only consumer the
 /// SAME one implementation, never a second one.
 pub use conway_core::text::sanitize_control_chars;
+
+/// The predicate [`sanitize_control_chars`] itself is built on -- re-exported
+/// for the SAME `conway-core` facade-only reason as that function's own doc
+/// just above, so a facade-only consumer that needs the identical
+/// laundering rule but a DIFFERENT replacement policy (one real exception:
+/// `conway-cli`'s `session_markdown::sanitize` keeps a bare `\n` as a real
+/// line break -- a session export is a static file, not a live terminal or
+/// a pattern-matching input, so a genuine line break stays one; see that
+/// function's own doc for the full reasoning) can still launder every OTHER
+/// character this crate's sanitizer does, from the ONE table
+/// `conway_core::text`'s own module doc names ("One table, not a second
+/// list"), rather than re-deriving a second one here.
+pub use conway_core::text::is_laundered_char;
 
 /// The shared error type [`RouterFactory::build`] and [`BackendFactory::
 /// build`] both return -- `conway_core::error::ConwayError`, distinct from

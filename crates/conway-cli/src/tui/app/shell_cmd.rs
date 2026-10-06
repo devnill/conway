@@ -1067,10 +1067,22 @@ mod tests {
         };
 
         // The exact funnel `/quit`, `Ctrl-D`, the double-`Ctrl-C` exit, and
-        // every other `Effect::Quit` arm now call.
-        tokio::time::timeout(StdDuration::from_secs(5), app.purge_open_ask_modal())
-            .await
-            .expect("quitting must not hang waiting on the shell command's own kill");
+        // every other `Effect::Quit` arm now call. Board item
+        // `01M3WJ7906NP3P2ZNVDK549T1Q` (round 2) added a SEPARATE, also-5s-
+        // bounded step ahead of this test's own shell-kill concern that
+        // aborts (non-terminally) the root's and every known subagent's
+        // current turn (see `Self::abort_in_flight_turns`'s own doc) --
+        // this outer bound is widened to 10s so a slow (but still bounded)
+        // abort cannot make this test flake on timing headroom alone; it is
+        // still a generous upper bound, never the expected latency (the
+        // root here is idle, so `abort_turn` is a no-op and resolves
+        // near-instantly in practice -- see that method's own doc).
+        tokio::time::timeout(
+            StdDuration::from_secs(10),
+            app.purge_open_ask_modal("test quit"),
+        )
+        .await
+        .expect("quitting must not hang waiting on the shell command's own kill");
 
         let mut still_alive = true;
         for _ in 0..100 {

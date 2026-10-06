@@ -177,7 +177,7 @@ while you're composing:
 | `Ctrl-G` | Edit the current input in `$VISUAL`/`$EDITOR` (falling back to `vi`) — see "Keybindings" below. |
 | `Home` / `End` | With the input box empty, jump the transcript to the top/tail instead of moving the cursor. |
 | `PageUp` / `PageDown` | Scroll the transcript a page at a time. |
-| `Ctrl-C` | Abort the session's current reply, in place — the session stays live, and it accepts and answers your next message normally. Pressed with nothing running, it does nothing destructive at all (just a quiet notice that a second press is what quits). Also abandons an in-flight `/ask` or `/distill`, if one is running — see below. |
+| `Ctrl-C` | Abort the session's current reply, in place — the session stays live, and it accepts and answers your next message normally. Pressed with nothing running, it does nothing destructive at all (just a quiet notice that a second press is what quits). Also abandons an in-flight `/ask` or `/distill`, if one is running, and denies a pending permission prompt, if one is showing — see below, and "The permission prompt" below. |
 | `Ctrl-D` | Quit, when the input box is empty. |
 | `@` + a few letters | Open a file-mention completion list — see "Mentioning files," below. |
 | `Tab` | Inside an open mention list, insert the highlighted candidate; otherwise, complete the path-shaped word under the cursor. |
@@ -734,6 +734,19 @@ Your options:
 | `n` | Deny this call. |
 | `Esc` | Deny this call, and tell the model to try a different approach. |
 | `PageUp` / `PageDown` | Scroll a long command's own display. |
+| `Ctrl-C` | Deny this call AND abort the session's current reply — see "`Ctrl-C` stops this too," below. |
+
+**`Ctrl-C` stops this too.** Every other key above only ever decides the ONE
+call on screen; `Ctrl-C` is conway's universal "stop this" gesture, and a
+permission prompt sitting on screen no longer blocks it. Pressing it here
+denies the pending call (the prompt closes, and the tool never runs — the
+model sees a plain denial, the same as `n`) and also aborts the session's
+current reply, exactly as it would with no prompt open at all (the session
+stays live; see the keyboard table above). Any OTHER prompt still queued
+behind this one for the SAME call's agent is denied too, rather than left to
+surface next for a turn that no longer exists — a queued prompt from a
+DIFFERENT agent is unaffected. The second `Ctrl-C` within the usual window
+still quits, same as always.
 
 **`a` needs a deliberate second keystroke.** The first `[a]` does not grant
 anything yet — it arms a confirmation, and the prompt's own hint line
@@ -753,7 +766,10 @@ the prompt appearing, or while the input box already held a draft at that
 instant, is treated as ongoing typing and goes into the draft instead —
 never into a decision — for a window that widens automatically if you were
 already mid-draft when the prompt interrupted you. `y`/`n`/`a`/`p`/`s` all
-answer normally again, as single keys, once that window closes.
+answer normally again, as single keys, once that window closes. `Ctrl-C` is
+never subject to this window at all — it is never typeahead, by
+construction, so it denies the pending call (see above) the instant it is
+pressed, mid-sentence or not.
 
 The guard is vim-aware: with `tui.editor_mode = "vim"` (see "Vim editing
 mode," above) in NORMAL mode, a key inside the window runs as its own vim
@@ -1438,15 +1454,20 @@ included):
   via `[plugins].install`. The only origin with a real ON/OFF switch:
   each row is a checkbox-style `[x]`/`[ ]` box, its id, and a one-line
   summary; pressing `Enter` flips it. Selecting the row opens a detail
-  panel below the list with that plugin's own status plus three rows in
+  panel below the list with that plugin's own status plus four rows in
   the operator's own framing — **you get** (what turning it ON adds),
-  **you lose** (what's different with it OFF), and **costs** (its
-  ongoing cost, if any). A flip writes `~/.conway/settings.json`'s
-  `plugins.install` array directly (or `$CONWAY_CONFIG_DIR/settings.json`
-  when that's set) — the SAME writer, and the SAME restart-to-apply
-  contract, `/settings`' own plugins section used before this command
-  existed: the change applies on your NEXT restart, not immediately, and
-  the footer says so.
+  **you lose** (what's different with it OFF), **costs** (its ongoing
+  cost, if any), and **config** (this plugin's EFFECTIVE `[plugins.config.
+  "<id>"]` table, if it has one that applied: the accepted keys and
+  values, and the table they came from — or `defaults` when no table
+  named this id). The `config` row is the same value/source pair `conway
+  plugin list --verbose` prints for this id, never a second,
+  independently-worded rendering of it. A flip writes `~/.conway/
+  settings.json`'s `plugins.install` array directly (or
+  `$CONWAY_CONFIG_DIR/settings.json` when that's set) — the SAME writer,
+  and the SAME restart-to-apply contract, `/settings`' own plugins section
+  used before this command existed: the change applies on your NEXT
+  restart, not immediately, and the footer says so.
 - **subprocess** — a `[plugins].subprocess[]` entry: an operator-named
   command speaking conway's own wire protocol. Every configured entry is
   spawned unconditionally — there is no candidate set to toggle, so the
@@ -1470,6 +1491,15 @@ This is a listing surface, not a config editor: `Up`/`Down` move,
 `Esc` closes. There is deliberately no way to add, remove, or reconfigure
 a subprocess/MCP entry from here — edit `settings.json` by hand for
 that.
+
+**A broken `[plugins.config."<id>"]` table only stops conway from starting
+when `<id>` is actually installed.** A bad block for a plugin you have
+since turned off, or a typo'd id that never matched one at all, instead
+starts conway normally and shows a one-line warning naming the plugin,
+the offending key, and why it was ignored — the same channel a
+misconfigured headroom or a failed MCP handshake already use. Only a bad
+block for an INSTALLED plugin still refuses to start, exactly as before:
+that one WOULD have governed this session.
 
 The **hooks** section lists every configured `hooks.rules[]` entry whose
 event can currently deny something — `pre_tool_use` (narrows a tool call)
@@ -1702,6 +1732,26 @@ its exact meaning in both vim submodes.
 see the slash command table above). `Ctrl-D` does the same when
 the input box is empty.
 
+**Quitting stops whatever the agent is doing, including a tool it is
+mid-way through running — without ending the session itself.** If a turn
+is in flight — the model streaming a reply, or a tool call actually
+executing — quitting aborts it before the process exits, the SAME
+non-terminal abort a single `Ctrl-C` press already uses (see "Typing while
+the agent works" above): the agent is left idle, ready to resume, never
+given a terminal result. A `keep_alive` session stays fully resumable
+afterward (`--resume`/`/resume`), exactly as if you had pressed `Ctrl-C`
+once and then quit, never as if the session itself had ended in error.
+This matters most for a long-running tool: a `bash` call the model started
+(`sleep 999999 &`, a build, anything that outlives the call that launched
+it) is killed, whole process group and all, rather than left running with
+no supervisor once conway exits — previously, nothing on any quit path
+stopped it, since killing a tool's process group has always depended on
+the call actually being aborted, and no quit path aborted anything. A
+forked or spawned subagent with its own turn running gets the identical
+treatment, not just the root. An MCP server or other plugin-managed
+subprocess needs no separate handling here: those are torn down whenever
+the process holding them exits, regardless of how.
+
 A bare, unprefixed `exit`, `quit`, `q`, `:q` or `:wq` — typed as an
 ordinary message, no leading `/` — is intercepted too, with a one-line
 hint ("to leave, use `/quit` (or `Ctrl-D` on an empty line) — press Enter
@@ -1724,3 +1774,38 @@ manual (unclassified) flow; quitting with `/trust permissions`'s preview
 card open is the same as pressing `[n]` — nothing was ever trusted or
 written, so there is nothing to undo. None of these leave anything
 half-created behind.
+
+### Closing the terminal, or a process manager stopping conway
+
+Closing the terminal window you launched conway from sends it `SIGHUP`; a
+process manager (systemd, a supervisor script, a parent shell's own job
+control) asking it to stop sends `SIGTERM`. Both get the same cleanup
+every other way of ending a session already gets: the agent's own current
+turn is aborted (never the session itself — it stays resumable), just like
+an ordinary `/quit` (see above) — an in-flight `!` command, or a
+model-issued tool call such as `bash`, is killed, whole
+process group and all (bound-awaited, not a bare signal with no
+confirmation it actually landed), every other kind of in-flight residue
+(an `/ask`/`/distill` fork, a parked confirmation card) is discarded
+exactly as it would be on an ordinary quit, and the terminal itself is
+left sane — never stuck in raw mode or the alternate screen. conway then
+exits with the same signal-specific CODE
+[`scripting.md`'s exit-code table](scripting.md#exit-codes) documents for
+one-shot mode: **143** for `SIGTERM`, **129** for `SIGHUP` — the code
+only, not that table's "terminal status is `Cancelled`" wording, which
+describes one-shot mode's own outcome and does not apply here: as the
+paragraph above already says, the session stays resumable with no
+terminal record at all. A second
+`SIGTERM`/`SIGHUP` while that cleanup is still running forces an
+immediate, unconditional exit — the identical "second signal always wins"
+safety valve two consecutive `Ctrl-C` presses already give you above — and,
+unlike the first signal, does **not** wait for the terminal to be restored
+first: that immediate exit exists specifically so a wedged app loop (which
+could itself be the very thing blocking an orderly restore) can never
+prevent getting out at all. A panic is handled differently again: the
+terminal is always restored (the same panic hook that has always done
+this), but an in-flight `!` command's child is not deliberately killed —
+dropping the whole process on an unwinding panic already kills at least
+that command's own leader process (`kill_on_drop`), though a backgrounded
+grandchild it spawned could in principle outlive it; closing that
+remaining gap is tracked as a follow-up, not implemented here.

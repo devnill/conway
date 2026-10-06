@@ -10,6 +10,7 @@ use conway_core::error::{RuntimeError, StoreError};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{CapabilityIndex, RoutingExplainer, SessionStore};
+use conway_core::provenance::Provenance;
 use conway_core::routing::{CapabilitySummary, ExplainReport, MinimalRouter, RouteRequest};
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
 
@@ -1586,12 +1587,42 @@ impl Conway {
     /// role/pin (`ForkSpec::role`/`ForkSpec::model`) and retarget input to
     /// it -- see that command's own doc for why: forking, unlike this
     /// method, is a mechanism that already reaches a LIVE session.
+    ///
+    /// **Board item `01M3SJBY8DXDB1PWEAXARZY9FH`: a `role: None` override
+    /// (every caller except an explicit `--role-override`) is validated
+    /// against THIS config's own `[routing].roles` before it ever reaches
+    /// `resume_root`.** The session's own persisted `SessionMeta::role` is
+    /// ordinarily exactly right -- it is read back unchanged, same as
+    /// before this item. But a role alias is operator config, and config
+    /// can change between the turn that recorded it and the resume that
+    /// reads it back (the alias renamed, or its whole stanza removed) --
+    /// `resume_root` has no way to tell that apart from "configured, just
+    /// never looked up yet" and would otherwise hand the stale alias
+    /// straight to `AgentSpec`, where the first real turn's routing
+    /// admission fails loudly with `RoutingError::UnknownRole` the operator
+    /// never asked for and cannot read as "pick a different role" (see
+    /// `conway_runtime::subagent`'s identical probe, used at fork/spawn
+    /// time instead to FAIL the spawn outright -- deliberately not reused
+    /// here: refusing to resume at all over a renamed alias would be worse
+    /// than this method's own fallback). [`Self::resolve_resumed_role`]
+    /// does the check and, on a miss, substitutes `self.config.default_role`
+    /// and persists a `LogRecord::SystemNote` (reason
+    /// `"role_fallback_at_resume"`) into the session's own log BEFORE
+    /// `resume_root` runs, so the very next backfill -- the one every
+    /// resume path (`--continue`, `--resume`, `/resume`) already performs
+    /// before rendering a single line -- carries the "say so on screen"
+    /// notice the operator needs, with no second, resume-path-specific
+    /// rendering surface to keep in sync.
     pub async fn resume_with(
         &self,
         sid: SessionId,
         role: Option<RoleAlias>,
         model: Option<ModelRef>,
     ) -> Result<SessionHandle> {
+        let role = match role {
+            Some(explicit) => Some(explicit),
+            None => self.resolve_resumed_role(sid).await?,
+        };
         let agent = self
             .rt
             .resume_root(ResumeSpec {
@@ -1631,6 +1662,95 @@ impl Conway {
             agent,
             self.store.clone(),
         ))
+    }
+
+    /// [`Self::resume_with`]'s own role-validation step, factored out so its
+    /// doc can sit beside the method that actually needs it, read in full
+    /// before writing this. `None` (no override to resolve FROM, and
+    /// nothing to validate) when the session's own persisted
+    /// `SessionMeta::role` is itself `None` -- `resume_root`'s existing
+    /// `agent_def`/literal-`"default"` fallback chain is left to handle that
+    /// rarer case exactly as it already did before this item (every session
+    /// this facade creates records a resolved, never-`None` role at
+    /// creation -- see `Self::new_session`'s own `role` resolution -- so in
+    /// practice this arm is reached only by a session persisted before that
+    /// was true).
+    ///
+    /// `Some(recorded)` unchanged when `recorded` is still a key in
+    /// `self.config.routing()`'s own `roles` table -- the overwhelmingly
+    /// common case, and byte-for-byte the value `resume_root` would have
+    /// read off `meta.role` itself had this method not pre-empted it.
+    ///
+    /// `Some(self.config.default_role)` -- NEVER the literal alias
+    /// `"default"` `resume_root`'s own trailing fallback would reach for an
+    /// unconfigured role (see `resume_with`'s own doc for why that distinction
+    /// matters) -- when `recorded` is no longer a configured alias, having
+    /// first appended a `LogRecord::SystemNote` (reason
+    /// `"role_fallback_at_resume"`) naming both the stale alias and the
+    /// fallback it was replaced with. `self.config.routing()`'s own `Err`
+    /// (a malformed `[routing]` table) degrades to `RoutingConfig::default()`
+    /// (no roles at all) via `unwrap_or_default()` -- the same degradation
+    /// [`Self::explain_routing`] already uses for an identical read -- so a
+    /// config-parse failure here reads as "no roles configured" (every
+    /// `recorded` alias treated as unconfigured, always falling back) rather
+    /// than panicking or silently skipping the check.
+    ///
+    /// **Board item `01M3SJBY8DXDB1PWEAXARZY9FH`: the fallback is made
+    /// DURABLE, not just logged.** `SessionMeta::role` was never updated
+    /// before this item, so every later resume of the SAME session re-read
+    /// the identical stale `recorded` alias, re-derived the identical
+    /// fallback, and re-appended the identical `SystemNote` -- one per
+    /// resume, forever, for a session whose own config never changes again
+    /// after the rename. On a fallback, this now also calls
+    /// `SessionStore::set_role` with the fallback alias (best-effort: a
+    /// `set_role` failure is logged via `tracing::error!` and otherwise
+    /// swallowed, the same secondary-persistence posture
+    /// `PermissionBroker::record_decision` already uses for its own durable
+    /// side record, in `conway-runtime` -- the resume itself must not fail
+    /// just because this durability upgrade could not be written), so the
+    /// NEXT resume reads `recorded == fallback`, finds it IS a configured
+    /// alias (assuming `self.config.default_role` itself names one, the
+    /// same assumption this method's fallback has always made), and takes
+    /// the unchanged branch above -- no second note, ever, for this
+    /// session.
+    async fn resolve_resumed_role(&self, sid: SessionId) -> Result<Option<RoleAlias>> {
+        let meta = self.store.meta(&sid).await?;
+        let Some(recorded) = meta.role else {
+            return Ok(None);
+        };
+        let routing = self.config.routing().unwrap_or_default();
+        if routing.roles.contains_key(recorded.as_str()) {
+            return Ok(Some(recorded));
+        }
+        let fallback = self.config.default_role.clone();
+        self.store
+            .append(
+                &sid,
+                LogRecord::SystemNote {
+                    seq: LogSeq::ZERO,
+                    ts: Utc::now(),
+                    text: format!(
+                        "resuming: role '{recorded}' is no longer configured; using the \
+                         default role '{fallback}' instead"
+                    ),
+                    reason: "role_fallback_at_resume".to_string(),
+                    prov: Provenance::SystemNote {
+                        reason: "role_fallback_at_resume".to_string(),
+                    },
+                },
+            )
+            .await?;
+        if let Err(err) = self.store.set_role(&sid, fallback.clone()).await {
+            tracing::error!(
+                session = %sid,
+                role = %fallback,
+                error = %err,
+                "failed to persist the role fallback onto the session header; this resume's \
+                 note was still recorded, but the NEXT resume will re-derive and re-announce \
+                 the identical fallback"
+            );
+        }
+        Ok(Some(fallback))
     }
 
     /// Enumerates persisted sessions via `SessionStore::list`, returned

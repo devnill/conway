@@ -316,6 +316,51 @@ pub(crate) fn all_plugin_rows(
     rows
 }
 
+/// The provenance line for a compiled-in plugin's own effective
+/// configuration -- board item `01M3TJHCFA3R9PDVZHQTKKVWNR`, lifted out of
+/// `commands::plugin` (where it was first written, for `conway plugin list
+/// --verbose`, board item `01M2VA3ARE8RGRZ40VDC349HVK`) so the TUI's
+/// `/plugin` detail panel (`tui::view::plugins::draw_plugin_detail`) can
+/// render the IDENTICAL sentence rather than a second, independently-worded
+/// one -- this item's own binding note: "reuse the same rendering source as
+/// `plugin list --verbose`".
+///
+/// **The ruling this implements: state provenance at the TABLE, never per
+/// value.** A line naming the `[plugins.config."<id>"]` entry that was
+/// applied (with the keys conway actually accepted), or saying plainly that
+/// there is none, is answerable from what every caller already has in
+/// hand. Tagging each individual number `(default)`/`(configured)` is not:
+/// `Plugin::description()` returns free prose, so there is no structured
+/// value for a renderer to tag, and inventing one would mean a per-field
+/// provenance API on every plugin -- a far larger change than the
+/// reporting defect that prompted this function.
+///
+/// This also covers the silent-fallback case: a mistyped KEY inside a table
+/// is already a hard error (`Plugin::configure` refuses an unknown key by
+/// name) when the plugin is installed, and a warning when it is not (board
+/// item `01M3TJHCFA3R9PDVZHQTKKVWNR`'s own `apply_plugin_config` ruling); a
+/// mistyped plugin ID is neither -- `apply_plugin_config` walks candidates
+/// and simply never finds a table that names nothing (now ALSO warned,
+/// separately, by that same function). With this line, the block for
+/// `id` says `defaults -- no [plugins.config."<id>"] entry` for exactly
+/// that case, so the operator sees their table did not land instead of
+/// guessing from an unchanged number.
+pub(crate) fn config_line(id: &str, config: Option<&serde_json::Value>) -> String {
+    let Some(value) = config else {
+        return format!("defaults -- no [plugins.config.\"{id}\"] entry in settings.json");
+    };
+    let rendered = match value.as_object() {
+        Some(map) if map.is_empty() => "(empty table)".to_string(),
+        Some(map) => map
+            .iter()
+            .map(|(key, v)| format!("{key} = {v}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        None => value.to_string(),
+    };
+    format!("{rendered} -- from [plugins.config.\"{id}\"] in settings.json")
+}
+
 pub(crate) fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     if value.is_empty() {
         fallback

@@ -214,6 +214,30 @@ const FIXED_GROUPS: &[FixedGroup] = &[
                 keys: "intent-confirm card: Esc",
                 action: "manual",
             },
+            FixedBinding {
+                keys: "skill-proposal modal: Enter",
+                action: "write the SKILL.md",
+            },
+            FixedBinding {
+                keys: "skill-proposal modal: e",
+                action: "edit before writing",
+            },
+            FixedBinding {
+                keys: "skill-proposal modal: Esc",
+                action: "discard",
+            },
+            FixedBinding {
+                keys: "/distill modal: Enter",
+                action: "spawn a fresh agent from the briefing",
+            },
+            FixedBinding {
+                keys: "/distill modal: e",
+                action: "edit the briefing before spawning",
+            },
+            FixedBinding {
+                keys: "/distill modal: Esc",
+                action: "discard",
+            },
         ],
     },
     FixedGroup {
@@ -591,6 +615,42 @@ mod tests {
                     spec.name
                 );
             }
+        }
+    }
+
+    /// DOGFOOD 2 finding 3 (board item `01M3SJC96P99V9KNT7TDJBWZ66`): `/help`
+    /// already listed the `/ask` modal's and the intent-confirm card's own
+    /// keys under "modal keys", but not the skill-proposal modal's (`Enter`
+    /// write / `e` edit / `Esc` discard, [`crate::tui::input::
+    /// handle_skill_proposal_key`]'s own match) or `/distill`'s modal's
+    /// (`Enter` / `e` / `Esc`, [`crate::tui::input::handle_distill_key`]'s
+    /// own match) -- both are keyboard-driven modal surfaces exactly like
+    /// the two already documented, so an operator reaching `/help` while
+    /// either is open found nothing.
+    #[test]
+    fn help_lists_the_skill_proposal_and_distill_modal_keys() {
+        let groups = build_groups(&keybindings::Keymap::defaults());
+        let modal_group = groups
+            .iter()
+            .find(|g| g.title.contains("modal keys"))
+            .expect("the modal-keys group must exist");
+        let rendered: Vec<String> = modal_group
+            .bindings
+            .iter()
+            .map(|b| format!("{}: {}", b.keys, b.action))
+            .collect();
+        for needle in [
+            "skill-proposal modal: Enter",
+            "skill-proposal modal: e",
+            "skill-proposal modal: Esc",
+            "/distill modal: Enter",
+            "/distill modal: e",
+            "/distill modal: Esc",
+        ] {
+            assert!(
+                rendered.iter().any(|r| r.starts_with(needle)),
+                "{needle:?} must be listed under modal keys -- got {rendered:?}"
+            );
         }
     }
 

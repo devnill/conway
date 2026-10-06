@@ -401,6 +401,14 @@ impl SessionStore for OrderingStore {
         self.inner.remove_label(sid, label).await
     }
 
+    async fn set_role(
+        &self,
+        sid: &SessionId,
+        role: conway_core::ids::RoleAlias,
+    ) -> Result<(), StoreError> {
+        self.inner.set_role(sid, role).await
+    }
+
     async fn live_owner(&self) -> Result<Option<LiveOwner>, StoreError> {
         self.inner.live_owner().await
     }

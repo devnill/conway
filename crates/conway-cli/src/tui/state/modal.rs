@@ -535,6 +535,15 @@ pub enum SkillProposalFate {
 /// "concurrent requests queue in arrival order").
 pub enum Mode {
     Normal,
+    /// **Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`: `Ctrl-C` passes through
+    /// here too now, UNLIKE every other quit key this `Mode`'s own doc
+    /// describes** (`input.rs::handle_permission_key` used to swallow every
+    /// chorded key, this one included -- the universal "stop this" gesture
+    /// did nothing while a prompt was up). It is not a bare pass-through,
+    /// though: `App::handle_ctrl_c` denies the pending call (and anything
+    /// queued behind it for the same agent) in addition to its own ordinary
+    /// root-turn abort -- see that method's own doc. `Ctrl-D` passes through
+    /// as an ordinary `Action::Quit`, same as every other surface.
     AwaitingPermission(PendingPrompt),
     /// The `/ask` single-turn modal (B5). While this is the mode, the input
     /// line is inert and `/agents` is neither visible nor available --
@@ -1356,6 +1365,44 @@ impl AppState {
         self.promote_next_surface();
     }
 
+    /// Board item `01M3YPYDAMR7KPN2WH9RS8TRC7`: `Ctrl-C`'s own denial of the
+    /// currently-showing permission prompt -- `tui::app::shutdown::App::
+    /// handle_ctrl_c`'s one caller, reached only while `mode` is
+    /// `AwaitingPermission` (a no-op otherwise, mirroring [`Self::
+    /// discard_prompts_for_agent`]'s own "nothing to do" shape). See
+    /// [`Mode::AwaitingPermission`]'s own doc for why `Ctrl-C` reaches this
+    /// mode's key handler at all now.
+    ///
+    /// **Denies via an explicit, nameable [`conway::PermissionDecision::
+    /// Deny`]** -- unlike [`Self::discard_prompts_for_agent`]'s bare drop
+    /// (that method's own doc has the "cancelled" reason a dropped reply
+    /// channel produces): the operator just took a deliberate action here,
+    /// so the persisted `permission_decision` record says so in its own
+    /// words rather than reporting a channel closing for no stated reason.
+    ///
+    /// **The rule for what is queued behind it.** Every OTHER prompt in
+    /// `queued_prompts` belonging to the SAME agent is dropped FIRST, before
+    /// the current one resolves -- that agent's turn is the one about to be
+    /// aborted (`App::handle_ctrl_c`'s own call to `SessionHandle::
+    /// abort_turn`, right after this), so none of ITS other queued calls
+    /// will ever be decided either; promoting one of them onto the screen
+    /// next (what [`Self::resolve_current_prompt`]'s own [`Self::
+    /// promote_next_surface`] call would otherwise do, were it called before
+    /// this filter) would show the operator a prompt for a turn that no
+    /// longer exists. A queued prompt belonging to a DIFFERENT agent is
+    /// left exactly as it was -- that agent's turn is untouched, and it may
+    /// become the next surface shown once the current one resolves.
+    pub fn deny_current_permission_for_ctrl_c(&mut self) {
+        let Mode::AwaitingPermission(prompt) = &self.mode else {
+            return;
+        };
+        let agent = prompt.request.agent_id;
+        self.queued_prompts.retain(|p| p.request.agent_id != agent);
+        self.resolve_current_prompt(conway::PermissionDecision::Deny {
+            reason: "the operator pressed Ctrl-C".to_string(),
+        });
+    }
+
     /// Discards any pending permission prompt belonging to `agent` -- the
     /// currently-showing one (if `mode` is `AwaitingPermission` for THIS
     /// agent) and any behind it in `queued_prompts` (board item
@@ -1363,16 +1410,26 @@ impl AppState {
     /// `oneshot::Sender` half, which is exactly `TuiGate::check`'s own
     /// documented fail-closed fallback (`Deny { reason: "cancelled" }` on a
     /// dropped reply channel) -- **this is what actually frees an agent
-    /// parked awaiting the gate's reply.** `SessionHandle::cancel`'s
-    /// `CancellationToken` is checked cooperatively at specific points in
-    /// the agent loop, and the call site that blocks on a permission
-    /// decision (`conway-runtime/src/tools/runner.rs`'s `broker.decide(..)
-    /// .await`, BEFORE the `tokio::select!` that later races the tool's own
-    /// `invoke` against cancellation) is never one of them -- cancelling an
-    /// agent stuck there alone does nothing until its pending prompt is
-    /// separately discarded, which is what this method is for. Called from
-    /// `App::abandon_ask` before `SessionHandle::cancel`, so an ask child
-    /// parked on the gate is not left running.
+    /// parked awaiting the gate's reply, IMMEDIATELY, with no race to win.**
+    ///
+    /// **Board item `01M3YPYDAMR7KPN2WH9RS8TRC7` narrows an older claim this
+    /// doc used to make here.** `SessionHandle::cancel`'s `CancellationToken`
+    /// used to reach no cooperative check point at all along the call site
+    /// that blocks on a permission decision (`conway-runtime/src/tools/
+    /// runner.rs`'s `broker.decide(..).await`, BEFORE the `tokio::select!`
+    /// that races the tool's own `invoke` against cancellation) -- cancelling
+    /// an agent stuck there did nothing by itself. That call site is now
+    /// ALSO raced against the same per-turn token (`PermissionBroker::
+    /// record_turn_aborted`'s own doc has the mechanism), so a bare
+    /// `cancel`/`abort_turn` eventually unsticks it too. This method remains
+    /// the right tool here regardless: it resolves the call SYNCHRONOUSLY,
+    /// in this same call, rather than depending on that race's other side
+    /// noticing and rescheduling -- `App::abandon_ask` (this method's
+    /// original caller) and `App::handle_ctrl_c`'s own permission-prompt
+    /// denial (board item `01M3YPYDAMR7KPN2WH9RS8TRC7`) both want the prompt
+    /// gone from the screen in the SAME tick the operator acts, not
+    /// eventually. Called from `App::abandon_ask` before `SessionHandle::
+    /// cancel`, so an ask child parked on the gate is not left running.
     ///
     /// A no-op (for the live half) if the currently-showing prompt belongs
     /// to a DIFFERENT agent -- an unrelated permission decision in front of
