@@ -263,8 +263,12 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
     // test's second half needs) takes the modal's OTHER forward path:
     // `a`, then a confirming second `a`.
     session.send_shift_tab();
+    // Single-word tokens: the TUI redraws only changed cells, so the spaces
+    // of a multi-word phrase may never reach the pty stream (partial-redraw
+    // trap). "LEAVING" is the modal's title; "further" appears only in the
+    // armed AUTO-ALLOW warning.
     let modal_shown = session.wait_for_since(
-        "approve, switch to Prompt mode",
+        "LEAVING",
         denied,
         Duration::from_secs(10),
     );
@@ -278,7 +282,7 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
     std::thread::sleep(Duration::from_millis(1_200));
     session.send("a");
     let armed = session.wait_for_since(
-        "AUTO-ALLOW: no further tool prompts",
+        "further",
         modal_shown,
         Duration::from_secs(10),
     );
@@ -292,7 +296,12 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
         armed,
         Duration::from_secs(15),
     );
-    let in_auto_allow = session.wait_for_since("AUTO-ALLOW", approved, Duration::from_secs(10));
+    // The mode switches before the approval turn is sent, so the status
+    // line's AUTO-ALLOW is drawn before the ack above; search from the
+    // armed warning (whose own "AUTO-ALLOW:" precedes the "further" it
+    // matched) so the next AUTO-ALLOW is the status line's.
+    let _ = approved;
+    let in_auto_allow = session.wait_for_since("AUTO-ALLOW", armed, Duration::from_secs(10));
 
     // The IDENTICAL kind of call (`bash`) now runs for real, with no
     // permission prompt at all -- the same flagged call, a different

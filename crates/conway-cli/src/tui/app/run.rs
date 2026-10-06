@@ -605,6 +605,7 @@ impl App {
                                 &env.event,
                                 conway::Event::TurnFinished { .. }
                                     | conway::Event::TurnAborted { .. }
+                                    | conway::Event::TurnAbortedByUser { .. }
                             ) && env.agent == self.state.focused_agent;
                             if focused_turn_ended
                                 && self.state.permission_mode == conway::PermissionMode::Plan
