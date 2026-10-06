@@ -518,6 +518,7 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                 MenuNode::leaf(busy_input_label(state.busy_input), LEAF_BUSY_INPUT),
                 MenuNode::leaf(editor_mode_label(state.editor_mode), LEAF_EDITOR_MODE),
                 MenuNode::leaf(theme_label(&state.theme_name), LEAF_THEME),
+                MenuNode::static_row(attention_label(&state.attention)),
             ],
         ),
         group_node(
@@ -924,6 +925,43 @@ fn theme_label(name: &str) -> String {
     format!("theme -- {name} (Enter to cycle; session-only; [tui.theme])")
 }
 
+/// Terminal attention notifications: the `attention` row's own label --
+/// `MenuNode::static_row`, not a leaf, unlike every other row in this
+/// group above it. There is no in-session "cycle to the next method"
+/// action that would mean anything for this one (`AppState::attention`'s
+/// own doc) -- it mirrors the read-only "default model" row's shape
+/// (`build_tree`'s own doc, "Defaults: role settable, model derived")
+/// rather than `busy_input_label`/`editor_mode_label`/`theme_label`'s.
+fn attention_label(config: &crate::tui::config::AttentionConfig) -> String {
+    use crate::tui::config::{AttentionEvent, AttentionMethod, AttentionWhen};
+    let method = match config.method {
+        AttentionMethod::Bell => "bell",
+        AttentionMethod::Osc9 => "osc9",
+        AttentionMethod::Osc777 => "osc777",
+        AttentionMethod::Off => "off",
+    };
+    let when = match config.when {
+        AttentionWhen::Unfocused => "unfocused",
+        AttentionWhen::Always => "always",
+    };
+    let events = if config.events.is_empty() {
+        "no events configured".to_string()
+    } else {
+        config
+            .events
+            .iter()
+            .map(|event| match event {
+                AttentionEvent::TurnFinished => "turn_finished",
+                AttentionEvent::PermissionPending => "permission_pending",
+                AttentionEvent::ChildReported => "child_reported",
+                AttentionEvent::Error => "error",
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!("attention -- {method} when {when} ({events}; [tui.attention])")
+}
+
 /// Board item `01M3TEJPHQF4KHWBA6Y29Z33CY`: the `/settings` footer's key
 /// hint, built from `Context::Settings`'s CURRENT effective bindings
 /// (`keymap.keys_for`) rather than the hardcoded `[Up/Down] move  [Enter]
@@ -1147,6 +1185,41 @@ mod tests {
                 id: LEAF_THEME.to_string()
             }
         );
+    }
+
+    /// Terminal attention notifications: the `attention` row shows the
+    /// CURRENT config (method/`when`/events) and is a read-only
+    /// `MenuNode::Static` row -- unlike `theme_row_shows_the_active_theme_
+    /// name_and_is_a_leaf` immediately above, there is no `Enter`-cyclable
+    /// action for this one (`attention_label`'s own doc).
+    #[test]
+    fn attention_row_shows_the_current_config_and_is_static() {
+        let mut state = AppState::new(AgentId::new());
+        state.attention = crate::tui::config::AttentionConfig {
+            method: crate::tui::config::AttentionMethod::Osc9,
+            when: crate::tui::config::AttentionWhen::Always,
+            events: vec![crate::tui::config::AttentionEvent::TurnFinished],
+        };
+
+        let rows = build_tree(&state).rows();
+        let attention_row = rows
+            .iter()
+            .find(|r| r.label.starts_with("attention"))
+            .expect("the attention row must exist");
+
+        assert!(attention_row.label.contains("osc9"), "{}", attention_row.label);
+        assert!(attention_row.label.contains("always"), "{}", attention_row.label);
+        assert!(
+            attention_row.label.contains("turn_finished"),
+            "{}",
+            attention_row.label
+        );
+        assert!(
+            attention_row.label.contains("[tui.attention]"),
+            "{}",
+            attention_row.label
+        );
+        assert_eq!(attention_row.kind, menu::MenuRowKind::Static);
     }
 
     #[test]

@@ -1373,9 +1373,11 @@ on it. The status markers:
 
 `/settings` opens a menu of six groups: **defaults** (the default role and
 the default model — see below), **display** (show reasoning traces, show
-timestamps, and `busy input` — `queue`/`steer`/`interrupt`, see "Typing
-while the agent works," above), **tool output** (how many lines a folded
-tool call shows before `Ctrl-O` is needed), **permissions** (cycle the
+timestamps, `busy input` — `queue`/`steer`/`interrupt`, see "Typing
+while the agent works," above — and a read-only `attention` row showing
+the current terminal-attention config, below), **tool output** (how many
+lines a folded tool call shows before `Ctrl-O` is needed), **permissions**
+(cycle the
 permission mode; review or revoke individual grants under **allow** — flat
 and structured alike; read-only **deny** and **prompt** sections listing
 every rule — flat or structured — that any permissions file, trusted or
@@ -1552,6 +1554,85 @@ dropped — its own single degrade step removes the `ready`/`awaiting
 permission` word and keeps only the permission-mode label, so `AUTO-ALLOW`
 is the last thing standing on even the narrowest terminal that shows
 anything at all.
+
+## Terminal attention notifications
+
+A coding agent works while you look elsewhere; the moment it finishes or
+stops to ask permission is the moment you want to know. `[tui.attention]`
+in `settings.json` controls a short, out-of-band signal written straight
+to your terminal — never into the transcript — when that happens:
+
+```json
+{
+  "tui": {
+    "attention": {
+      "method": "bell",
+      "when": "unfocused",
+      "events": ["turn_finished", "permission_pending"]
+    }
+  }
+}
+```
+
+This is also the default — you don't need to write any of it yourself to
+get it. `method` is one of:
+
+| Method | What it does |
+| --- | --- |
+| `bell` (default) | The plain terminal bell (`BEL`, `\x07`) — a flash, a dock-icon bounce, or an audible beep, depending on your terminal/OS settings. The lowest common denominator: every terminal this project has had to consider renders *something* for it, with zero configuration, inside or outside tmux, even one that predates the other two methods entirely. |
+| `osc9` | `OSC 9` — a real desktop notification carrying the event's own short text, on terminals that implement it. |
+| `osc777` | `OSC 777` (`notify`) — the richer, two-field desktop-notification variant (title `conway`, body the event's own text) some terminals prefer. |
+| `off` | No signal at all. |
+
+`when` is `unfocused` (default — only notify while this terminal window
+does *not* have focus) or `always` (notify unconditionally, even while
+you're looking right at it). A terminal that never reports focus changes
+at all is treated as unfocused under the default — you still get notified,
+rather than the feature silently never firing because the one signal that
+would have proven it unfocused never arrived.
+
+`events` (default `["turn_finished", "permission_pending"]`) is the list
+of occurrences that count: `turn_finished` (the FOCUSED agent's own turn
+ending) and `permission_pending` (a permission prompt becoming visible —
+including one promoted from the queue once a previous prompt/modal
+closes) are both wired to a real trigger today. `child_reported` and
+`error` are accepted by the schema and reserved for a future item; naming
+either in `events` loads cleanly but produces no notification yet.
+
+### Per-terminal support
+
+| Terminal | `bell` | `osc9` | `osc777` |
+| --- | --- | --- | --- |
+| iTerm2 | yes | yes (desktop notification) | yes |
+| kitty | yes | yes | yes |
+| WezTerm | yes | yes | yes |
+| Ghostty | yes | yes | yes |
+| foot | yes | yes | no |
+| Windows Terminal | yes | yes | no |
+| GNOME Terminal / VTE-based | yes (audible/visual bell setting) | no | no |
+| A plain `xterm` | yes (bell only; no desktop integration) | no | no |
+
+When in doubt, `bell` always does *something*; `osc9`/`osc777` are
+worth opting into once you've confirmed your own terminal supports one
+(most terminal projects document this on their own "escape sequences" or
+"notifications" page).
+
+### Inside tmux
+
+An `OSC` sequence (`osc9`/`osc777`) written to a pane running inside tmux
+is swallowed by tmux itself unless wrapped in tmux's own DCS passthrough
+envelope — conway does this wrapping for you automatically whenever
+`$TMUX` is set, so `osc9`/`osc777` work inside tmux without any change to
+this config. **The one thing conway cannot do for you: tmux's own
+`allow-passthrough` option defaults to off** (tmux 3.3+). Add this to your
+`tmux.conf` once to let the wrapped sequence actually reach your terminal:
+
+```
+set -g allow-passthrough on
+```
+
+`bell` needs none of this — tmux already forwards a plain terminal bell
+as its own bell action.
 
 ## Keybindings
 

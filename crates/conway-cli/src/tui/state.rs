@@ -34,7 +34,7 @@ use conway::{
     Usage,
 };
 
-use super::config::StatusLineConfig;
+use super::config::{AttentionConfig, AttentionEvent, StatusLineConfig};
 use super::form::PendingFormAsk;
 use super::gate::PendingPrompt;
 
@@ -1494,6 +1494,53 @@ pub struct AppState {
     /// editor_mode`'s own module doc for the full CARRY/RESET split against
     /// [`Self::vim`].
     pub editor_mode: EditorMode,
+    /// Terminal attention notifications (`[tui.attention]`): the resolved
+    /// config -- method, `when`, and which events trigger it. Set at
+    /// `App::new` from `crate::tui::config::load`; `AppState::new` defaults
+    /// to `bell`/`unfocused`/`[turn_finished, permission_pending]`.
+    /// Config-only, like [`Self::status_line_config`] -- unlike
+    /// [`Self::busy_input`]/[`Self::editor_mode`], `/settings` shows this as
+    /// a read-only row (`view/settings.rs::attention_label`), never a
+    /// cyclable one: there is no session-side notion of "cycle to the next
+    /// method" that would mean anything. CARRIED across
+    /// [`Self::reset_for_new_session`] -- see that method's own doc for why
+    /// a config field carries.
+    pub attention: AttentionConfig,
+    /// Terminal attention notifications: whether THIS process's controlling
+    /// terminal currently has focus, tracked from crossterm's
+    /// `Event::FocusGained`/`FocusLost` (`app/run.rs`'s own `CEvent::
+    /// FocusGained`/`FocusLost` arms -- the only writers). `None` means "no
+    /// focus event has ever arrived" -- either the terminal does not
+    /// support/report focus changes at all, or (briefly, at startup) one
+    /// simply hasn't arrived yet; `crate::tui::attention::should_notify`
+    /// treats `None` the same as `Some(false)` (unfocused) BY DESIGN: a
+    /// terminal with no focus reporting at all must still get notified
+    /// under the default `when = "unfocused"`.
+    ///
+    /// **Process-level, not session-scoped: CARRIED across
+    /// [`Self::reset_for_new_session`].** Whether the operator's terminal
+    /// window has focus has nothing to do with which agent/session is
+    /// loaded in it -- a `/new`/`/resume` that reset this back to `None`
+    /// would make the TUI forget real, already-observed focus state for no
+    /// reason tied to the session boundary at all.
+    pub terminal_focused: Option<bool>,
+    /// Terminal attention notifications: events that just became real
+    /// (the FOCUSED agent's turn ending; a permission prompt becoming
+    /// visible -- `Self::arm_permission_typeahead_guard`'s own doc) land
+    /// here, queued for `App::drain_attention_queue` to apply
+    /// `crate::tui::attention::should_notify`/`emit_bytes` against and
+    /// actually write. Kept as a queue, drained by the ONE funnel in
+    /// `app/run.rs`'s loop body that runs after every `select!` arm,
+    /// rather than each producer writing bytes directly -- a producer here
+    /// (this struct) has no terminal/writer/tmux-detection to write
+    /// through, and funnelling every producer through one drain point is
+    /// what makes "one notification per event, not per redraw" true by
+    /// construction: each push is one real event, each drain pops and
+    /// consumes it exactly once.
+    ///
+    /// RESET, not carried -- these are facts about the OLD session's own
+    /// events; a session boundary has nothing left pending for the new one.
+    pub pending_attention: std::collections::VecDeque<AttentionEvent>,
     /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`, follow-up: the ACTIVE
     /// theme's own name -- a built-in `crate::tui::view::ThemePreset::name`
     /// or a custom theme file's stem -- for `view/settings.rs::build_tree`
@@ -2235,6 +2282,9 @@ impl AppState {
             show_timestamps: false,
             busy_input: BusyInputMode::default(),
             editor_mode: EditorMode::default(),
+            attention: AttentionConfig::default(),
+            terminal_focused: None,
+            pending_attention: VecDeque::new(),
             theme_name: "system".to_string(),
             held_prompts: VecDeque::new(),
             pending_steers: VecDeque::new(),
@@ -2472,6 +2522,9 @@ impl AppState {
             show_timestamps,
             busy_input,
             editor_mode,
+            attention,
+            terminal_focused,
+            pending_attention: _,
             theme_name,
             held_prompts: _,
             pending_steers: _,
@@ -2547,6 +2600,8 @@ impl AppState {
         self.show_timestamps = show_timestamps;
         self.busy_input = busy_input;
         self.editor_mode = editor_mode;
+        self.attention = attention;
+        self.terminal_focused = terminal_focused;
         self.theme_name = theme_name;
         self.history = history;
         self.history_cap = history_cap;
@@ -3658,6 +3713,55 @@ impl AppState {
             }
             _ => {}
         }
+    }
+}
+
+/// Terminal attention notifications: [`AppState::reset_for_new_session`]'s
+/// own CARRY/RESET classification for `attention` (config, CARRY),
+/// `terminal_focused` (process-level, CARRY), and `pending_attention`
+/// (the old session's own queued occurrences, RESET).
+#[cfg(test)]
+mod reset_for_new_session_attention_classification {
+    use super::*;
+
+    /// A no-op stub: this test never touches a real permission broker, so
+    /// nothing needs revoking.
+    struct NoopRevoke;
+    impl RevokeSessionGrants for NoopRevoke {
+        fn revoke_all_session_scoped_grants(&self) {}
+    }
+
+    #[test]
+    fn attention_and_terminal_focused_carry_while_pending_attention_resets() {
+        let old_root = AgentId::new();
+        let mut state = AppState::new(old_root);
+        state.attention = AttentionConfig {
+            method: crate::tui::config::AttentionMethod::Osc9,
+            when: crate::tui::config::AttentionWhen::Always,
+            events: vec![AttentionEvent::TurnFinished],
+        };
+        state.terminal_focused = Some(true);
+        state.pending_attention.push_back(AttentionEvent::PermissionPending);
+
+        let new_root = AgentId::new();
+        state.reset_for_new_session(new_root, &NoopRevoke);
+
+        assert_eq!(
+            state.attention.method,
+            crate::tui::config::AttentionMethod::Osc9,
+            "config must carry across a session reset"
+        );
+        assert_eq!(
+            state.terminal_focused,
+            Some(true),
+            "real observed focus must carry too -- it describes the process's terminal, \
+             not the old session"
+        );
+        assert!(
+            state.pending_attention.is_empty(),
+            "a stale queued event from the OLD session must not leak into the new one: {:?}",
+            state.pending_attention
+        );
     }
 }
 

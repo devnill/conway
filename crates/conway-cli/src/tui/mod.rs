@@ -14,6 +14,16 @@
 //! send it in the first place). Disabled in `restore_terminal` alongside
 //! raw mode and the alternate screen, on every exit path.
 //!
+//! Terminal attention notifications also enable crossterm's focus-change
+//! reporting here, for the identical reason: without `EnableFocusChange`
+//! the terminal never emits `Event::FocusGained`/`FocusLost`, and
+//! `AppState::terminal_focused` stays permanently `None` -- treated as
+//! unfocused by `crate::tui::attention::should_notify`, so the feature
+//! still works, just always as if unfocused. `app/run.rs`'s own
+//! `CEvent::FocusGained`/`FocusLost` arms are what makes the terminal's
+//! reports actually update that field. Disabled in `restore_terminal`
+//! alongside everything else, on every exit path including the panic hook.
+//!
 //! ## SIGTERM/SIGHUP quit cleanly too (board item `01M3WJ7906NP3P2ZNVDK549T1Q`)
 //!
 //! An uncaught `SIGTERM`/`SIGHUP` (closing the terminal sends the latter; a
@@ -43,6 +53,7 @@
 //! [`install_panic_hook`]'s own doc for the identical reasoning applied to a
 //! panic instead of a second signal.
 
+mod attention;
 pub mod app;
 pub mod commands;
 pub mod config;
@@ -62,7 +73,9 @@ pub mod view;
 
 use conway::{Conway, FacadeError};
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use ratatui::crossterm::event::{
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -179,11 +192,19 @@ pub async fn run(
     enable_raw_mode().map_err(FacadeError::Io)?;
     // T8: bracketed paste alongside the alternate screen -- one `execute!`
     // call so a mid-sequence failure still leaves `restore_terminal` (which
-    // undoes both, best-effort) as the single cleanup path below.
+    // undoes both, best-effort) as the single cleanup path below. Terminal
+    // attention notifications: `EnableFocusChange` rides the same call -- without it
+    // the terminal never emits `Event::FocusGained`/`FocusLost` at all, which
+    // is what makes `AppState::terminal_focused` track real focus instead of
+    // staying permanently unknown (treated as unfocused, `crate::tui::
+    // attention::should_notify`'s own doc). Disabled in `restore_terminal`
+    // alongside bracketed paste/raw mode/the alternate screen, on every exit
+    // path including the panic hook.
     if let Err(e) = execute!(
         std::io::stdout(),
         EnterAlternateScreen,
-        EnableBracketedPaste
+        EnableBracketedPaste,
+        EnableFocusChange
     ) {
         restore_terminal();
         return Err(FacadeError::Io(e));
@@ -252,6 +273,12 @@ pub async fn run(
 /// caller's perspective -- called from both normal exit paths and the panic
 /// hook, neither of which can usefully propagate a further error.
 fn restore_terminal() {
+    // Terminal attention notifications: disable focus-change reporting
+    // before disabling bracketed paste -- reverse order of `run`'s enable,
+    // and independently best-effort like every other step here (a terminal
+    // left reporting focus changes after conway exits is a smaller problem
+    // than one left in raw mode, but there is no reason to leave either).
+    let _ = execute!(std::io::stdout(), DisableFocusChange);
     // T8: disable bracketed paste before leaving the alternate screen --
     // reverse order of `run`'s enable, and independently best-effort like
     // every other step here (a failure disabling paste mode must not skip

@@ -501,6 +501,12 @@ impl App {
         // (default `emacs`) seeds the session's STARTING value, the same
         // session-only posture `busy_input` immediately above already has.
         state.editor_mode = tui_config.editor_mode;
+        // Terminal attention notifications: `[tui.attention]` (default
+        // `bell`/`unfocused`/`[turn_finished, permission_pending]`) seeded
+        // here, config-only -- unlike `busy_input`/`editor_mode` just
+        // above, `/settings` shows this as a read-only row, never a
+        // cyclable one (see `AppState::attention`'s own doc).
+        state.attention = tui_config.attention.clone();
         let history_path = conway::config::discovery::history_file_path(
             &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
         );
@@ -1040,6 +1046,7 @@ impl App {
             env: env_vars,
             cwd,
             quit_queue_warned_at: None,
+            attention_writer: Box::new(crate::tui::attention::StdoutWriter),
         })
     }
 

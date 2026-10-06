@@ -570,6 +570,24 @@ impl App {
                                 }
                                 _ => false,
                             };
+                            // Terminal attention notifications: the FOCUSED
+                            // agent's own turn ending specifically --
+                            // `AgentFinished` does NOT count (it is a
+                            // DIFFERENT, final-report occurrence, not a
+                            // configured attention trigger), unlike
+                            // `refresh_focused_usage` just above, which
+                            // deliberately covers both. Queued rather than
+                            // emitted directly here -- `AppState::
+                            // pending_attention`'s own doc for why every
+                            // producer funnels through the same queue/drain
+                            // seam.
+                            if matches!(&env.event, conway::Event::TurnFinished { .. })
+                                && env.agent == self.state.focused_agent
+                            {
+                                self.state
+                                    .pending_attention
+                                    .push_back(crate::tui::config::AttentionEvent::TurnFinished);
+                            }
                             // the SAME
                             // check, scoped to `self.handle`'s own ROOT agent
                             // rather than whichever agent is focused -- see
@@ -2044,10 +2062,31 @@ impl App {
                             self.kick_off_pending_mention_scan();
                         }
                         CEvent::Resize(_, _) => dirty = true,
+                        // Terminal attention notifications: crossterm only
+                        // emits these at all once `EnableFocusChange` has
+                        // been sent (`tui::run`'s own startup `execute!`
+                        // call) -- `AppState::terminal_focused`'s own doc
+                        // for why `None` (never observed) is treated as
+                        // unfocused rather than skipped. No redraw needed:
+                        // nothing on screen depends on focus state today.
+                        CEvent::FocusGained => {
+                            self.state.terminal_focused = Some(true);
+                        }
+                        CEvent::FocusLost => {
+                            self.state.terminal_focused = Some(false);
+                        }
                         _ => {}
                     }
                 }
             }
+            // Terminal attention notifications: the ONE drain point for
+            // `AppState::pending_attention`, run after EVERY `select!` arm
+            // above (whichever one fired), not just the two that push to
+            // it -- see that field's own doc for why a shared queue +
+            // single drain, rather than each producer writing bytes
+            // directly, is what makes "one notification per event, not per
+            // redraw" true by construction.
+            self.drain_attention_queue();
         }
     }
 }

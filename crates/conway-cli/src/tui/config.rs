@@ -184,6 +184,97 @@ pub struct TuiSection {
     /// posture [`Self::busy_input`] already has.
     #[serde(default)]
     pub editor_mode: EditorMode,
+    /// `[tui.attention]` (terminal attention notifications): what to do
+    /// when something worth the operator's attention happens while they
+    /// are looking elsewhere -- the FOCUSED agent's turn ending, or a
+    /// permission prompt becoming visible, by default. See
+    /// [`AttentionConfig`]'s own doc for the full shape and
+    /// `docs/interactive.md`'s "Terminal attention notifications" section
+    /// for the operator-facing description, including per-terminal
+    /// support and the tmux note.
+    #[serde(default)]
+    pub attention: AttentionConfig,
+}
+
+/// `[tui.attention]`'s shape: `method` (how to signal), `when` (while
+/// focused too, or only while unfocused), and `events` (which occurrences
+/// trigger it). Config-only -- unlike [`TuiSection::busy_input`]/
+/// [`TuiSection::editor_mode`], `/settings` shows this row but does not
+/// make it cyclable; there is no in-session toggle, only the config key.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AttentionConfig {
+    pub method: AttentionMethod,
+    pub when: AttentionWhen,
+    /// Defaults to `[turn_finished, permission_pending]` -- **bell is the
+    /// default method, chosen as the lowest common denominator**: `BEL`
+    /// (`\x07`) is the one signal every terminal emulator this project has
+    /// ever had to consider (`docs/interactive.md`'s own survey of
+    /// `xterm`/`iTerm2`/`kitty`/`WezTerm`/`Ghostty`/`foot`/Windows Terminal)
+    /// renders as *something* noticeable -- a flash, a dock-icon bounce, or
+    /// an actual beep -- with zero configuration, inside or outside tmux,
+    /// on a terminal that predates OSC 9/777 entirely. OSC 9/777 are richer
+    /// (a real desktop notification with text) but are opt-in upgrades for
+    /// an operator who already knows their terminal supports one.
+    #[serde(default = "default_attention_events")]
+    pub events: Vec<AttentionEvent>,
+}
+
+impl Default for AttentionConfig {
+    fn default() -> Self {
+        Self {
+            method: AttentionMethod::default(),
+            when: AttentionWhen::default(),
+            events: default_attention_events(),
+        }
+    }
+}
+
+fn default_attention_events() -> Vec<AttentionEvent> {
+    vec![
+        AttentionEvent::TurnFinished,
+        AttentionEvent::PermissionPending,
+    ]
+}
+
+/// [`AttentionConfig::method`]'s four values. `Off` is a real, explicit
+/// value (not merely an empty `events` list) -- an operator who wants no
+/// terminal signal at all states that directly, rather than leaving the
+/// config in whatever state silences it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionMethod {
+    #[default]
+    Bell,
+    Osc9,
+    Osc777,
+    Off,
+}
+
+/// [`AttentionConfig::when`]'s two values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionWhen {
+    #[default]
+    Unfocused,
+    Always,
+}
+
+/// [`AttentionConfig::events`]'s vocabulary -- which occurrences count as
+/// "worth the operator's attention". `TurnFinished`/`PermissionPending` are
+/// wired to a real producer (`crate::tui::app::run`'s own event loop,
+/// `AppState::arm_permission_typeahead_guard`); `ChildReported`/`Error` are
+/// accepted here (a `settings.json` naming either loads cleanly, and
+/// `crate::tui::attention::notification_text` already has a phrase for
+/// each) but have no producer wired in THIS item -- see
+/// `docs/interactive.md`'s own note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionEvent {
+    TurnFinished,
+    PermissionPending,
+    ChildReported,
+    Error,
 }
 
 /// `[tui.editor_mode]`'s two values -- see [`TuiSection::editor_mode`]'s own
@@ -899,6 +990,136 @@ mod tests {
         let tui = load_from_options(options).expect("a supported value must load");
 
         assert_eq!(tui.editor_mode, EditorMode::Vim);
+    }
+
+    /// Terminal attention notifications: a `settings.json` naming no
+    /// `[tui.attention]` at all loads to the documented default -- `bell`,
+    /// `unfocused`, `[turn_finished, permission_pending]`.
+    #[test]
+    fn absent_tui_attention_loads_to_the_documented_default() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}}
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("load must succeed with no `[tui]` at all");
+
+        assert_eq!(tui.attention.method, AttentionMethod::Bell);
+        assert_eq!(tui.attention.when, AttentionWhen::Unfocused);
+        assert_eq!(
+            tui.attention.events,
+            vec![
+                AttentionEvent::TurnFinished,
+                AttentionEvent::PermissionPending
+            ]
+        );
+    }
+
+    /// A fully-configured `[tui.attention]` block loads every field,
+    /// including the `child_reported`/`error` values the schema accepts
+    /// but does not yet wire to a producer -- see [`AttentionEvent`]'s own
+    /// doc.
+    #[test]
+    fn a_configured_tui_attention_block_loads_every_field() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}},
+                "tui": {
+                    "attention": {
+                        "method": "osc777",
+                        "when": "always",
+                        "events": ["turn_finished", "child_reported", "error"]
+                    }
+                }
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let tui = load_from_options(options).expect("a fully configured block must load");
+
+        assert_eq!(tui.attention.method, AttentionMethod::Osc777);
+        assert_eq!(tui.attention.when, AttentionWhen::Always);
+        assert_eq!(
+            tui.attention.events,
+            vec![
+                AttentionEvent::TurnFinished,
+                AttentionEvent::ChildReported,
+                AttentionEvent::Error
+            ]
+        );
+    }
+
+    /// A typo'd key inside `[tui.attention]` fails loudly, same as every
+    /// other `[tui]` sub-schema (`a_typo_inside_tui_theme_is_a_surfaced_
+    /// parse_error`'s own sibling).
+    #[test]
+    fn a_typo_inside_tui_attention_is_a_surfaced_parse_error() {
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
+        let path = cwd_dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "default_role": "coder",
+                "roles": {"coder": {"chain": []}},
+                "tui": {"attention": {"methdo": "bell"}}
+            }"#,
+        )
+        .expect("write settings.json");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
+        );
+        let options = conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: Some(path),
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        };
+        let err = load_from_options(options).expect_err("a typo'd key must be rejected");
+        assert!(
+            err.to_string().contains("methdo"),
+            "error must name the unrecognized field: {err}"
+        );
     }
 
     /// Board item `01M1YVX43MABAVX491HQ5ZCC2M`: `tui.theme = "dark"` (the
