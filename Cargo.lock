@@ -554,6 +554,7 @@ dependencies = [
  "conway-plugin-compaction",
  "conway-plugin-confine",
  "conway-plugin-discover",
+ "conway-plugin-goal",
  "conway-plugin-history",
  "conway-plugin-idiom",
  "conway-plugin-marketplace",
@@ -711,6 +712,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "conway-plugin-goal"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "conway",
+ "serde_json",
  "tokio",
 ]
 
