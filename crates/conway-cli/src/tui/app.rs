@@ -2058,8 +2058,10 @@ mod tests {
         // "display" group's own single extra line, for the identical
         // reason (the modal's own height cap is `transcript_area.height /
         // CAP_DENOMINATOR` (2), so a one-row content growth needs a
-        // two-row viewport growth to actually raise the cap).
-        let text = crate::tui::test_support::render_text(&app.state, 200, 58);
+        // two-row viewport growth to actually raise the cap). Board item
+        // `01M1YVR8EDN3CFZWDVHNVGYQQW`: 58 to 60 for the "attention" row,
+        // same reason.
+        let text = crate::tui::test_support::render_text(&app.state, 200, 60);
         for needle in [
             "deny",
             "prompt",
