@@ -243,6 +243,37 @@ fn run_sessions_list(isolated: &IsolatedConfigDir, home: &SimulatedHome) -> std:
         .expect("run conway binary")
 }
 
+/// The session root the binary actually resolved, as `conway doctor --json`
+/// reports it in its `session.project_key` check. `sessions list` no longer
+/// creates the session root (stores create their directories on first
+/// write), so the resolved root has to be read rather than observed on disk.
+fn resolved_session_root_summary(isolated: &IsolatedConfigDir, home: &SimulatedHome) -> String {
+    let out = Command::new(assert_cmd::cargo::cargo_bin("conway"))
+        .current_dir(home.nested_cwd())
+        .env("CONWAY_CONFIG_DIR", isolated.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .arg("doctor")
+        .arg("--json")
+        .output()
+        .expect("run conway doctor");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "doctor --json did not print JSON ({e}); stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    report["checks"]
+        .as_array()
+        .expect("checks array")
+        .iter()
+        .find(|check| check["id"] == "session.project_key")
+        .and_then(|check| check["summary"].as_str())
+        .expect("doctor reports session.project_key")
+        .to_string()
+}
+
 /// **ACCEPTANCE 2.** Before the fix, this reproduces the defect: the
 /// unbounded project-discovery walk from a `cwd` beneath the simulated
 /// `$HOME` reaches `<home>/.conway/settings.json`, and -- because `project`
@@ -277,6 +308,13 @@ fn cli_with_conway_config_dir_set_never_reads_a_settings_json_discovered_under_a
     );
 
     let poisoned_root = home.poisoned_sessions_root();
+    let resolved = resolved_session_root_summary(&isolated, &home);
+    assert!(
+        !resolved.contains(&*poisoned_root.to_string_lossy()),
+        "isolation defeated: sessions resolve under the poisoned root {} named by \
+         <simulated $HOME>/.conway/settings.json; doctor reported: {resolved}",
+        poisoned_root.display()
+    );
     assert!(
         !poisoned_root.exists(),
         "isolation defeated: the binary created {} -- the session root named \
@@ -328,12 +366,11 @@ fn cli_with_conway_config_dir_set_resolves_the_session_root_inside_the_isolated_
     );
     let expected_root = conway::config::discovery::session_root(&nested_cwd, None, &env);
 
+    let resolved = resolved_session_root_summary(&isolated, &home);
     assert!(
-        expected_root.exists(),
-        "expected the central-default session root {} (inside the isolated \
-         CONWAY_CONFIG_DIR) to have been created by `sessions list`, but it was not \
-         -- the config that actually resolved came from neither the isolated \
-         layer nor the poisoned one",
+        resolved.contains(&*expected_root.to_string_lossy()),
+        "expected sessions to resolve under the central-default root {} (inside \
+         the isolated CONWAY_CONFIG_DIR); doctor reported: {resolved}",
         expected_root.display()
     );
 }
