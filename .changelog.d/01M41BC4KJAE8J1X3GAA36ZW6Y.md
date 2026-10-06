@@ -1,3 +1,7 @@
 ### Changed
 
 - **The six built-in subagent tools' descriptions and JSON schemas are far smaller on the wire.** `conway_fork`/`conway_ask`/`conway_cancel`/`conway_spawn`/`conway_steer`/`conway_await` are always fully announced (never deferred by `conway.toolindex`), so their combined description/schema text was a fixed cost every session paid on every single turn — measured at ~2,845 estimated tokens. Each tool's description and JSON-schema field docs are now cut to the model-facing contract alone; rationale and caching-mechanics prose that never changed how a tool is called moved into `docs/agents.md`/`docs/tools.md`. Combined wire cost drops from 11,379 to 5,364 characters, a reduction of roughly 1,500 estimated (`heuristic-chars4`) tokens on the default session's `tool_registry` context segment. No tool name, argument, or schema-validated field changed.
+
+### Fixed
+
+- **`conway_await`'s shortened description had dropped fan-out guidance entirely**, with no replacement: a model had no hint in the tool's own text that starting several children before awaiting any one of them is how to fan out, rather than starting and awaiting one child at a time. Restored as one short clause ("Fan out: start several before awaiting any."), while trimming the sentence it replaces to stay within this item's own wire-cost target — net +5 characters to `conway_await`'s description (191 vs. 186), not a reopening of the shortening this item made.

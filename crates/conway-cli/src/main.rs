@@ -504,8 +504,11 @@ async fn build_conway(
     // `[plugins]` section in `settings.json` at all. Every dispatch target
     // sees this union from the SAME choke point, so the property holds for
     // the TUI and every one-shot/subcommand invocation identically.
+    // `None`: a live session always resolves its own memory store for
+    // real (`first_party_plugins::install`'s own doc, "memory_store_
+    // override") -- only `conway doctor` ever overrides it.
     let (builder, memory_store, agent_names, skills_plugin) =
-        first_party_plugins::install(builder, env, form_surface).await?;
+        first_party_plugins::install(builder, env, form_surface, None).await?;
     // The subprocess plugin tier (board item 01KZY8PATND84AKY0J376E3DWV):
     // a SEPARATE choke point from the line above -- see
     // `subprocess_plugins`'s own module doc for why this is a distinct

@@ -40,7 +40,10 @@ status line never shows a `todo` entry.
   a plain argument error rather than being silently coerced into one of the
   three. Give an item an `id` to keep updating the SAME item across calls;
   omit it on a brand new item and a fresh one is minted and shown in the
-  reply. Calling it with an empty `items` array clears the list.
+  reply. Calling it with an empty `items` array clears the list. Two items
+  naming the SAME explicit `id` within one call is rejected outright (a
+  plain argument error) rather than silently picking whichever one happens
+  to survive.
 - **`todo_read()`** reads the current list back, exactly as the most recent
   `todo_write` left it, with no side effect.
 
@@ -53,12 +56,18 @@ pending, `[~]` in progress, `[x]` done).
 A `ContextHook` renders the current list as a single segment near the END
 of the assembled request, only when the list is non-empty — volatile
 content belongs late, not mixed into the stable, cacheable part of a
-request. It is a strict APPEND: every other already-assembled segment is
-returned byte-for-byte unchanged, in the same order, so this segment never
-disturbs whatever a backend might cache about the rest of the request. Its
-provenance is a system note naming the plugin and the current `done/total`
-count, so `/context`'s rendering of that segment's provenance never reads
-as an anonymous note.
+request. Past removing its own plugin's stale notes (see "How the list
+survives a resume" below), this is a strict APPEND: every segment that
+remains is returned byte-for-byte unchanged, in the same order, so this
+segment never disturbs whatever a backend might cache about the rest of
+the request. Its provenance is a system note naming the plugin and the
+current `done/total` count, so `/context`'s rendering of that segment's
+provenance never reads as an anonymous note.
+
+**Cost stays flat, no matter how long the session runs.** Exactly one
+`conway.todo` segment is ever in any one request, regardless of how many
+`todo_write` calls preceded it — see the next section for why a growing
+session does not also mean a growing number of these segments.
 
 ## How the list survives a resume
 
@@ -67,18 +76,32 @@ own log. The channel this plugin uses is the same one
 `conway-plugin-stepguard` already established for an unrelated reason: a
 `ToolObserver` watches for this plugin's own successful `todo_write` calls
 and answers with a note — the whole current list, JSON-encoded — which the
-runtime turns into a real, persisted system-note log record. Context
-assembly already turns every past system-note record back into an ordinary
-history segment on every subsequent request, including the first one a
-freshly started process builds after `--resume` (a resumed session's
-context is rebuilt from the full on-disk log, not from anything held in
-memory by the process that wrote it). So when this plugin's own in-memory
-cache has nothing for an agent — exactly the shape a resume leaves behind —
-its context hook finds the most recent matching note in that replayed
-history, decodes the list from it, and uses that both to render the current
-turn's segment and to refill the cache, so `todo_read` and the status line
-see the same list immediately after, without waiting for another
-`todo_write`.
+runtime turns into a real, persisted system-note log record, ONE PER
+`todo_write` CALL. Context assembly already turns every past system-note
+record back into an ordinary history segment on every subsequent request,
+including the first one a freshly started process builds after `--resume`
+(a resumed session's context is rebuilt from the full on-disk log, not from
+anything held in memory by the process that wrote it). So when this
+plugin's own in-memory cache has nothing for an agent — exactly the shape a
+resume leaves behind — its context hook finds the most recent matching note
+in that replayed history, decodes the list from it, and uses that both to
+render the current turn's segment and to refill the cache, so `todo_read`
+and the status line see the same list immediately after, without waiting
+for another `todo_write`.
+
+**The persisted notes themselves never reach a request.** Left alone,
+context assembly's own unconditional replay would mean a session with N
+`todo_write` calls carries N copies of the list (progressively staler past
+the first) into every later request — the context cost would grow without
+bound over a long session. Before rendering its own segment, the context
+hook removes every one of its own plugin's persisted notes from the
+payload it was handed, on EVERY request, including the very first one
+built right after a note was written — there is no "send it once, then
+start filtering" transition, so a persisted note is never actually part of
+any request a backend sees, and removing it later can never invalidate
+anything a backend might have cached. One request therefore ever carries
+exactly one `conway.todo` segment, never more, regardless of session
+length.
 
 This is session-log persistence only — a list does not follow a model into
 a different, unrelated session.

@@ -257,6 +257,23 @@ pub fn home_settings_path() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".conway").join("settings.json"))
 }
 
+/// The process's home directory itself, bare -- the SAME `directories::
+/// BaseDirs::home_dir()` lookup [`home_settings_path`] already performs for
+/// `~/.conway/settings.json`, factored out one level shallower so a caller
+/// that needs the home directory ITSELF (a leading `~`/`~/` in a
+/// user-typed path, say) does not have to strip a known `.conway/
+/// settings.json` suffix back off [`home_settings_path`]'s own result to
+/// recover it. `conway_core::containment::home_dir` is the identical
+/// lookup's own copy one crate down -- `conway-core` cannot depend on this
+/// crate (layering runs `conway -> conway-core`, never the reverse), so the
+/// two stay two call sites of the same `directories` API rather than one
+/// calling the other. `None` under the same condition every other lookup in
+/// this module returns `None` for: no home directory discoverable on this
+/// platform/environment.
+pub fn home_dir() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+}
+
 /// The user-scoped config path for `conway`: `~/.conway/settings.json`,
 /// or `$CONWAY_CONFIG_DIR/settings.json` when `CONWAY_CONFIG_DIR` is set (and
 /// non-empty) in `env`.

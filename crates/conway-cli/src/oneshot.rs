@@ -873,12 +873,15 @@ async fn run_driven(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
     // only polled while this is `false`, so a closed stdin cannot spin this
     // loop.
     let mut stdin_closed = false;
-    // Set by an explicit `{"type":"end"}` line OR by stdin reaching EOF --
-    // this module's doc comment states why the two are deliberately
-    // identical (`docs/scripting.md` too). Once `true`, no further
-    // `"prompt"` line can ever arrive (stdin is done either way), so the
-    // loop's only remaining job is to drain whatever turn is still running
-    // (if any) and then exit.
+    // Set by an explicit `{"type":"end"}` line, by stdin reaching EOF, OR by
+    // a stdin read error (e.g. invalid UTF-8) -- this module's doc comment
+    // states why EOF and a read error are deliberately treated identically
+    // to `"end"` (`docs/scripting.md` too). Once `true`, no further
+    // `"prompt"` line is ever accepted: either stdin is done (EOF/error) or
+    // the driver itself said no more is coming (`"end"`) and anything it
+    // writes after that is rejected (see the `ending` check in the line-read
+    // arm below), so the loop's only remaining job is to drain whatever turn
+    // is still running (if any) and then exit.
     let mut ending = false;
     let mut grace_deadline: Option<tokio::time::Instant> = None;
     let mut term_cause: Option<signal::TermSignal> = None;
@@ -981,6 +984,20 @@ async fn run_driven(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
                         if raw.trim().is_empty() {
                             continue;
                         }
+                        // Once `ending` is set (an explicit `{"type":"end"}`
+                        // line already arrived, stdin stays open regardless
+                        // -- e.g. a driver keeping the pipe open past its own
+                        // last write), any FURTHER line is rejected outright,
+                        // never parsed and never run: an `"end"` is "no more
+                        // input is coming," and a driver that writes past
+                        // its own `"end"` is a bug this reports back rather
+                        // than acts on silently. A prompt already queued
+                        // BEFORE `"end"` still drains normally -- only lines
+                        // that arrive AFTER are affected.
+                        if ending {
+                            let _ = write_driver_error("input after end".to_string());
+                            continue;
+                        }
                         match parse_driver_input(&raw) {
                             Ok(DriverInput::Prompt(text)) => {
                                 if turn_in_flight {
@@ -1072,8 +1089,20 @@ async fn run_driven(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
                         }
                     }
                     Err(e) => {
+                        // Treated exactly like EOF (see `stdin_closed`'s own
+                        // doc comment above): a read error -- e.g. invalid
+                        // UTF-8 -- means this reader can never usefully be
+                        // polled again, so this must set `ending` and run
+                        // the identical immediate-break check EOF's own arm
+                        // does, or a driver whose stdin fails this way hangs
+                        // forever with a turn result that can never arrive
+                        // (nothing left to produce one).
                         let _ = write_driver_error(format!("stdin read error: {e}"));
                         stdin_closed = true;
+                        ending = true;
+                        if !turn_in_flight && pending_prompts.is_empty() {
+                            break;
+                        }
                     }
                 }
             }
@@ -1107,9 +1136,10 @@ async fn run_driven(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
             signal::TermSignal::Hup => ExitCode::TerminatedBySighup,
         },
         (None, None) if sigint_seen => ExitCode::Interrupted,
-        // No turn ever ran before an `end`/EOF -- a clean, successful
-        // no-op (this driver was asked to do nothing further and did
-        // nothing further), never a failure.
+        // No turn ever ran before an `end`/EOF/stdin-read-error -- a clean,
+        // successful no-op (this driver was asked to do nothing further, or
+        // could not be read from any further, and did nothing further),
+        // never a failure.
         (None, None) => ExitCode::Completed,
     };
     Ok(code)

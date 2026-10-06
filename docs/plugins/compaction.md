@@ -31,10 +31,15 @@ because it is load-bearing, not decoration:
 
 On every request, `before_request` scans the assembled context for
 `ToolResult`-provenance segments. It keeps the `fold_after_turns` most
-recent ones exactly as they are, and replaces every older one with a single
-summary segment: a mechanically truncated (80 characters) excerpt of each
-folded result, joined under a short header naming how many were folded. The
-summary segment's own provenance is a `SystemNote` whose `reason` names
+recent ones exactly as they are, and folds every older one **in place**: the
+segment itself is never removed or reordered, only its content is replaced
+by a short, mechanically truncated (80 characters) excerpt of that SAME
+result's own text, labeled `[folded by conway.compaction: ...]`. The result
+still carries its original `call_id`, so it still answers the exact same
+tool call it always did — nothing about the request's tool-call/result
+pairing changes, only what the folded result's content says. One aggregate
+notice is still appended, as its own segment, at the very end of the
+request: its provenance is a `SystemNote` whose `reason` names
 **`conway.compaction`** and the exact count folded — the transcript never
 shows an anonymous note where this plugin acted, per `INTENT.md` §8.3's
 "never silent" discipline, on two independent surfaces:

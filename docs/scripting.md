@@ -400,9 +400,20 @@ line on stdout —
 NOT an `Envelope`: it carries no `seq`/`session`/`agent`, because it isn't
 tied to any turn — it's the driver reporting a problem with its own input.
 
-**EOF behaves exactly like an explicit `{"type":"end"}`.** A script that
-simply closes its write end of the pipe when it's done never needs to write
-the `end` line at all.
+**EOF, and a stdin read error, both behave exactly like an explicit
+`{"type":"end"}`.** A script that simply closes its write end of the pipe
+when it's done never needs to write the `end` line at all. A read error
+(e.g. a line that is not valid UTF-8) is reported as a driver `error` line
+and then treated identically to EOF — conway cannot usefully read this
+stdin again either way, so waiting for one more line would hang forever —
+never a silent stall.
+
+**Nothing written after `"end"` is accepted.** Once an explicit `"end"`
+line has been read, any FURTHER line — even a well-formed `"prompt"` — is
+rejected with `{"type":"error","message":"input after end"}` and never run.
+A `"prompt"` sent BEFORE `"end"` and still queued (see "Ordering
+guarantees" below) is unaffected and drains normally; this only rejects
+input that arrives on the wire after `"end"` already did.
 
 ### Ordering guarantees
 

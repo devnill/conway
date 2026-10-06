@@ -143,7 +143,7 @@ impl Tool for AwaitTool {
             name: ToolName::new("conway_await"),
             description: "Blocks until the named child finishes, returning its result: \
                 summary, facts, artifacts, structured output, status. Returns immediately \
-                if finished; never waits longer than the child ran."
+                if finished. Fan out: start several before awaiting any."
                 .into(),
             schema: schemars::schema_for!(AwaitArgs),
             category: ToolCategory::Delegate,
