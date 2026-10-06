@@ -892,7 +892,7 @@ fn palette_for(preset: ThemePreset) -> Palette {
 /// `history`/`keybindings.json` -- see those two resolvers' own doc for the
 /// identical shape). `None` when that function is (no resolvable home
 /// directory and `CONWAY_CONFIG_DIR` unset) -- **and also when `name` is not
-/// a safe plain file stem** (see [`is_safe_theme_name`]'s own doc).
+/// a safe plain file stem** (see `is_safe_theme_name`'s own doc).
 /// `tui.theme` is settable from a project's own (lower-trust)
 /// `settings.json`, and `name` reaches this function unvalidated from
 /// there, so a name like `"../../x"` must never escape `<config

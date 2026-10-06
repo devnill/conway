@@ -1242,7 +1242,7 @@ fn resolve_agent_names(install_ids: &[String]) -> Result<Arc<dyn AgentNames>, Fa
 /// the caller still gets a live, typed handle.
 ///
 /// `memory_store_override`, when `Some`, is used VERBATIM in place of
-/// [`resolve_memory_store`]'s own resolution -- never falling through to it,
+/// `resolve_memory_store`'s own resolution -- never falling through to it,
 /// not even to validate anything first. The one caller that passes `Some`
 /// is `conway doctor` (`commands::doctor::build_full_conway`), which hands
 /// in a fresh [`conway_plugin_memory::InMemoryMemoryStore`] so that a

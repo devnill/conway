@@ -249,8 +249,9 @@ mod description_tests {
     #[test]
     fn await_description_names_blocks_and_result_shape() {
         let description = AwaitTool::new().spec().description;
+        let lower = description.to_lowercase();
         assert!(
-            description.contains("blocks") || description.contains("waits"),
+            lower.contains("blocks") || lower.contains("waits"),
             "description must say it blocks/waits: {description:?}"
         );
         assert!(

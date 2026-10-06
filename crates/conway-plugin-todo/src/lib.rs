@@ -344,7 +344,12 @@ impl Tool for TodoWriteTool {
         // method's own choice, made fresh below, never the model's.
         let mut seen_explicit_ids = std::collections::HashSet::new();
         for item in &args.items {
-            let Some(id) = item.id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
+            let Some(id) = item
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            else {
                 continue;
             };
             if !seen_explicit_ids.insert(id.to_string()) {
@@ -1171,7 +1176,9 @@ mod tests {
         let freshly_persisted = PromptSegment::new(
             Role::System,
             vec![ContentBlock::Text { text: note.text }],
-            Provenance::SystemNote { reason: note.reason },
+            Provenance::SystemNote {
+                reason: note.reason,
+            },
         );
 
         let hook = &plugin.context_hooks()[0];
