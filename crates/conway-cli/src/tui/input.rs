@@ -1154,20 +1154,60 @@ fn handle_distill_key(state: &mut AppState, key: KeyEvent) -> Action {
     }
 }
 
+/// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round): how long after
+/// the plan-approval modal becomes visible a decision key is still treated
+/// as a REFLEX off the `Shift-Tab`/`/settings` keypress that opened it,
+/// rather than a deliberate choice -- the plan-approval counterpart of
+/// [`PERMISSION_TYPEAHEAD_WINDOW`], minus that guard's "mid-draft" wider
+/// variant: this modal's own input line is inert the whole time it is
+/// open, so there is no draft for the ruling's second condition to ever
+/// apply to. Reusing the SAME figure as the permission prompt's own
+/// no-draft window is deliberate: both guards answer the identical
+/// question ("was this key struck before the operator could possibly have
+/// read what just appeared"), so there is no principled reason for one to
+/// be stricter than the other.
+const PLAN_APPROVAL_TYPEAHEAD_WINDOW: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// Pure predicate behind [`PLAN_APPROVAL_TYPEAHEAD_WINDOW`]: `true` while
+/// `elapsed` (time since [`AppState::plan_approval_armed_at`] was stamped)
+/// has not yet cleared the window. Unlike [`permission_typeahead_
+/// intercepts`], this is not scoped to a bare `Char` -- `Enter` is exactly
+/// the key this guard exists to catch (a reflexive `Enter` right after
+/// `Shift-Tab` is the ruling's own named failure), so every key this
+/// modal's handler would otherwise treat as a decision is covered.
+fn plan_approval_typeahead_intercepts(elapsed: std::time::Duration) -> bool {
+    elapsed < PLAN_APPROVAL_TYPEAHEAD_WINDOW
+}
+
 /// The plan-approval modal's key handling (board item
-/// `01M1YVPJW9W43HMM8WEF34N4RZ`): exactly three ways out -- `Enter`
-/// (approve -- switch mode and send the fixed turn), `e` (edit the plan
-/// text first, sending the EDITED text as the turn instead), `Esc` (stay in
-/// `Plan`). Mirrors [`handle_distill_key`]'s shape exactly: every other key
-/// is SWALLOWED, the input line is inert, `/agents` is neither visible nor
-/// available, and the quit keys (`Ctrl-C`/`Ctrl-D`) still pass through as
-/// `Action::CtrlC`/`Action::Quit` -- unlike `/distill`'s fork child, nothing
-/// was ever created for this modal to clean up on quit (see
-/// [`crate::tui::state::PlanApprovalModal`]'s own doc), so quitting here
-/// needs no special handling beyond letting the keys through.
+/// `01M1YVPJW9W43HMM8WEF34N4RZ`, operator ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1`):
+/// four ways out, two of them with their own explicit destination --
+/// `Enter` (approve into [`conway::PermissionMode::Prompt`]), `a` (arms,
+/// then on a confirming second `a` approves into [`conway::PermissionMode::
+/// AutoAllow`]), `e` (edit the plan text first, then approve into `Prompt`
+/// with the EDITED text as the turn), `Esc` (stay in `Plan`, or back out of
+/// an armed `a` without discarding the modal). See [`crate::tui::state::
+/// PlanApprovalModal`]'s own doc for the full rationale behind two
+/// destinations and the confirm step.
 ///
-/// `e` only fires on a bare keypress -- a modifier held (Ctrl-E, Alt-E, ...)
-/// is NOT the edit choice, the same guard [`handle_distill_key`] applies.
+/// Mirrors [`handle_distill_key`]'s shape for the parts that are NOT new
+/// here: every key outside the map above is SWALLOWED, the input line is
+/// inert, `/agents` is neither visible nor available, and the quit keys
+/// (`Ctrl-C`/`Ctrl-D`) still pass through as `Action::CtrlC`/`Action::Quit`
+/// -- unlike `/distill`'s fork child, nothing was ever created for this
+/// modal to clean up on quit (see [`crate::tui::state::PlanApprovalModal`]'s
+/// own doc), so quitting here needs no special handling beyond letting the
+/// keys through.
+///
+/// `a`/`e` only fire on a bare keypress -- a modifier held (Ctrl-E, Alt-A,
+/// ...) is NOT a decision key, the same guard [`handle_distill_key`]
+/// applies. The typeahead guard (`plan_approval_typeahead_intercepts`) is
+/// checked ahead of everything below it (after the quit/scroll/modifier
+/// checks, which are never ambiguous with a reflexive keystroke the same
+/// way a bare decision key is) -- EVERY key is swallowed outright while
+/// still inside the window, never routed anywhere (this modal has no draft
+/// to route a swallowed key into, unlike the permission prompt's own
+/// guard).
 fn handle_plan_approval_key(state: &mut AppState, key: KeyEvent) -> Action {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
@@ -1190,8 +1230,54 @@ fn handle_plan_approval_key(state: &mut AppState, key: KeyEvent) -> Action {
     if !key.modifiers.is_empty() {
         return Action::None;
     }
+    if let Some(shown_at) = state.plan_approval_armed_at {
+        if plan_approval_typeahead_intercepts(shown_at.elapsed()) {
+            return Action::None;
+        }
+    }
+
+    // Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round, "no single
+    // stray key can grant beyond once"): the FIRST press of `a` only ARMS
+    // `PlanApprovalModal::autoallow_confirm_armed` -- committing the
+    // `AutoAllow` approval needs a second, deliberate `a` -- mirrors
+    // `handle_permission_key`'s own `permission_confirm_always` flow
+    // exactly, including its two edge cases: `Esc` backs out to the
+    // ordinary, UNARMED modal without discarding it (the operator who
+    // pressed `a` by accident has not thereby decided anything, let alone
+    // "stay in Plan"), and any OTHER key disarms too and falls through to
+    // that key's own ordinary meaning below (a stray `a` followed by a
+    // deliberate `Enter` still approves -- into `Prompt`, never into the
+    // `AutoAllow` the stray `a` never actually confirmed).
+    let armed = matches!(&state.mode, Mode::PlanApproval(modal) if modal.autoallow_confirm_armed);
+    if armed {
+        let confirmed = matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A'));
+        if let Mode::PlanApproval(modal) = &mut state.mode {
+            modal.autoallow_confirm_armed = false;
+            if confirmed {
+                modal.next_mode = conway::PermissionMode::AutoAllow;
+                return Action::PlanApprovalFate(PlanApprovalFate::Approve);
+            }
+        }
+        if key.code == KeyCode::Esc {
+            return Action::None;
+        }
+        // Disarmed, not confirmed, not Esc: fall through to this key's own
+        // ordinary meaning below.
+    }
+
     match key.code {
-        KeyCode::Enter => Action::PlanApprovalFate(PlanApprovalFate::Approve),
+        KeyCode::Enter => {
+            if let Mode::PlanApproval(modal) = &mut state.mode {
+                modal.next_mode = conway::PermissionMode::Prompt;
+            }
+            Action::PlanApprovalFate(PlanApprovalFate::Approve)
+        }
+        KeyCode::Char('a') | KeyCode::Char('A') => {
+            if let Mode::PlanApproval(modal) = &mut state.mode {
+                modal.autoallow_confirm_armed = true;
+            }
+            Action::None
+        }
         KeyCode::Char('e') | KeyCode::Char('E') => Action::PlanApprovalEdit,
         KeyCode::Esc => Action::PlanApprovalFate(PlanApprovalFate::Discard),
         _ => Action::None,
@@ -5618,17 +5704,38 @@ mod tests {
         let mut state = AppState::new(AgentId::new());
         state.offer_plan_approval(crate::tui::state::PlanApprovalModal {
             plan: "the plan".to_string(),
-            next_mode: conway::PermissionMode::AutoAllow,
+            next_mode: conway::PermissionMode::Prompt,
+            autoallow_confirm_armed: false,
         });
+        // These tests exercise the ordinary decision keys, not the
+        // typeahead guard itself (see the `plan_approval_typeahead_guard_*`
+        // tests below) -- clear the stamp `offer_plan_approval` just armed
+        // so a bare `handle_key` call right after this helper is not itself
+        // swallowed by the window it opens.
+        state.plan_approval_armed_at = None;
         state
     }
 
+    fn plan_approval_next_mode(state: &AppState) -> conway::PermissionMode {
+        match &state.mode {
+            Mode::PlanApproval(modal) => modal.next_mode,
+            other => panic!("expected Mode::PlanApproval, got {other:?}"),
+        }
+    }
+
+    /// `Enter` approves into `Prompt` -- operator ruling
+    /// `01M48TK7QKBBSJ1FQ4XPX9DTF1`: the safe, no-confirmation default.
     #[test]
     fn plan_approval_enter_e_esc_map_to_approve_edit_discard() {
         let mut state = plan_approval_state();
         assert_eq!(
             handle_key(&mut state, key(KeyCode::Enter)),
             Action::PlanApprovalFate(PlanApprovalFate::Approve)
+        );
+        assert_eq!(
+            plan_approval_next_mode(&state),
+            conway::PermissionMode::Prompt,
+            "a bare Enter must approve into Prompt, never AutoAllow"
         );
         assert_eq!(
             handle_key(&mut state, key(KeyCode::Char('e'))),
@@ -5646,6 +5753,112 @@ mod tests {
         // None of these keys close the modal themselves -- the app loop
         // does (`App::approve_plan`/`AppState::close_plan_approval`).
         assert!(matches!(state.mode, Mode::PlanApproval(_)));
+    }
+
+    /// `a` only ARMS the `AutoAllow` approval; a second `a` confirms it.
+    /// Operator ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1`.
+    #[test]
+    fn plan_approval_a_arms_then_a_again_confirms_into_autoallow() {
+        let mut state = plan_approval_state();
+        assert_eq!(handle_key(&mut state, key(KeyCode::Char('a'))), Action::None);
+        match &state.mode {
+            Mode::PlanApproval(modal) => assert!(
+                modal.autoallow_confirm_armed,
+                "the first `a` must arm, not approve"
+            ),
+            other => panic!("expected Mode::PlanApproval, got {other:?}"),
+        }
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('a'))),
+            Action::PlanApprovalFate(PlanApprovalFate::Approve)
+        );
+        assert_eq!(plan_approval_next_mode(&state), conway::PermissionMode::AutoAllow);
+        match &state.mode {
+            Mode::PlanApproval(modal) => {
+                assert!(!modal.autoallow_confirm_armed, "confirming must disarm")
+            }
+            other => panic!("expected Mode::PlanApproval, got {other:?}"),
+        }
+    }
+
+    /// `Esc` while armed backs out to the UNARMED modal -- it does not
+    /// discard the plan the way an ordinary `Esc` does.
+    #[test]
+    fn plan_approval_esc_while_autoallow_armed_backs_out_without_discarding() {
+        let mut state = plan_approval_state();
+        assert_eq!(handle_key(&mut state, key(KeyCode::Char('a'))), Action::None);
+        assert_eq!(handle_key(&mut state, key(KeyCode::Esc)), Action::None);
+        match &state.mode {
+            Mode::PlanApproval(modal) => assert!(!modal.autoallow_confirm_armed),
+            other => panic!("expected Mode::PlanApproval (not discarded), got {other:?}"),
+        }
+    }
+
+    /// Any OTHER key disarms too and falls through to its own ordinary
+    /// meaning -- a stray `a` followed by a deliberate `Enter` approves
+    /// into `Prompt`, never the `AutoAllow` the stray `a` never confirmed.
+    #[test]
+    fn plan_approval_any_other_key_while_armed_disarms_and_falls_through() {
+        let mut state = plan_approval_state();
+        assert_eq!(handle_key(&mut state, key(KeyCode::Char('a'))), Action::None);
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Enter)),
+            Action::PlanApprovalFate(PlanApprovalFate::Approve)
+        );
+        assert_eq!(
+            plan_approval_next_mode(&state),
+            conway::PermissionMode::Prompt,
+            "the disarmed Enter must approve into Prompt, not the never-confirmed AutoAllow"
+        );
+    }
+
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round, finding 3):
+    /// a decision key arriving within the typeahead window is swallowed
+    /// outright -- a reflexive `Enter` right after the `Shift-Tab` that
+    /// opened the modal must never approve.
+    #[test]
+    fn plan_approval_typeahead_guard_swallows_a_reflexive_enter() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_plan_approval(crate::tui::state::PlanApprovalModal {
+            plan: "the plan".to_string(),
+            next_mode: conway::PermissionMode::Prompt,
+            autoallow_confirm_armed: false,
+        });
+        assert!(
+            state.plan_approval_armed_at.is_some(),
+            "offer_plan_approval must arm the guard"
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Enter)),
+            Action::None,
+            "an Enter arriving inside the guard window must be swallowed, not approve"
+        );
+        assert!(matches!(state.mode, Mode::PlanApproval(_)));
+    }
+
+    /// Once the window has genuinely elapsed, the identical `Enter`
+    /// approves -- the guard is bounded, not a permanent lockout.
+    #[test]
+    fn plan_approval_typeahead_guard_releases_after_the_window() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_plan_approval(crate::tui::state::PlanApprovalModal {
+            plan: "the plan".to_string(),
+            next_mode: conway::PermissionMode::Prompt,
+            autoallow_confirm_armed: false,
+        });
+        // Back-date the stamp past the window rather than sleeping the
+        // test thread -- the predicate only ever reads the elapsed
+        // `Duration`, so this is byte-identical to the window genuinely
+        // having passed.
+        state.plan_approval_armed_at = Some(
+            std::time::Instant::now()
+                - PLAN_APPROVAL_TYPEAHEAD_WINDOW
+                - std::time::Duration::from_millis(1),
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Enter)),
+            Action::PlanApprovalFate(PlanApprovalFate::Approve)
+        );
     }
 
     /// `e`/`Enter`/`Esc` only fire on a BARE keypress -- a modifier held

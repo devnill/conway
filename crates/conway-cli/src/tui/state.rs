@@ -509,34 +509,93 @@ pub struct AppState {
     /// standing surface ruling -- see `App::new`'s own doc for the
     /// precedence/trust computation).
     pub default_permission_mode: PermissionMode,
-    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: whether the FOCUSED agent
-    /// has produced at least one assistant turn (an `Event::TurnFinished`
-    /// seen by `app/run.rs`'s own event-apply arm) while [`Self::
-    /// permission_mode`] was [`PermissionMode::Plan`] -- the record
-    /// `Action::CyclePermissionMode`'s own arm reads to decide whether
-    /// leaving `Plan` is a bare toggle (nothing to show) or a moment worth
-    /// a modal (`AppState::offer_plan_approval`, `tui/app/plan_approval.rs`).
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round: per-agent,
+    /// not a single bool): every [`AgentId`] that has produced at least one
+    /// assistant turn (an `Event::TurnFinished`/`Event::TurnAborted` seen by
+    /// `app/run.rs`'s own event-apply arm) while [`Self::permission_mode`]
+    /// was [`PermissionMode::Plan`] -- the record `Action::
+    /// CyclePermissionMode`'s own arm consults (`self.contains(&self.
+    /// focused_agent)`) to decide whether leaving `Plan` is a bare toggle
+    /// (nothing to show for the FOCUSED agent) or a moment worth a modal
+    /// (`AppState::offer_plan_approval`, `tui/app/plan_approval.rs`).
     ///
-    /// Set `true` only by that one event-apply site, for the SAME agent/
-    /// mode combination every time -- never by `offer_plan_approval` or the
-    /// modal itself, so a `Plan`-mode turn that finishes while the modal is
-    /// already open (the turn-in-flight race `Action::
-    /// CyclePermissionMode`'s own doc discusses) still leaves a true record
+    /// **Why a set, not a bool (review finding):** a bare bool, reset on
+    /// every `Self::focus_agent` call, loses the evidence the instant the
+    /// operator glances at a different agent and comes back -- the SAME
+    /// agent that just produced a plan in `Plan` mode, still gating on the
+    /// identical, untouched mode, would wrongly read as "nothing to show."
+    /// Keying by [`AgentId`] instead means a focus round-trip never costs
+    /// the record: `Self::focus_agent` does not touch this field at all.
+    /// The flip side -- an agent's own evidence must never leak into
+    /// ANOTHER agent's attempt to leave `Plan` -- holds for the identical
+    /// reason the old bool could never have violated it: the lookup is
+    /// always keyed to whichever agent is CURRENTLY focused, the only
+    /// agent `App::maybe_offer_plan_approval`'s own `last_assistant_text`
+    /// read is scoped to in the first place.
+    ///
+    /// An agent is inserted only by that one event-apply site, for the SAME
+    /// agent/mode combination every time -- never by `offer_plan_approval`
+    /// or the modal itself, so a `Plan`-mode turn that finishes while the
+    /// modal is already open (the turn-in-flight race `Action::
+    /// CyclePermissionMode`'s own doc discusses) still leaves a record
     /// behind for the NEXT attempt to leave, even though that race makes
-    /// THIS attempt fall through to the silent switch instead.
+    /// THIS attempt fall through to the silent switch (or, since the review
+    /// round, defer) instead.
     ///
-    /// Reset `false` in exactly two places: `Self::focus_agent` (a freshly
-    /// focused agent carries no evidence of its own) and `App::approve_plan`
-    /// (`tui/app/plan_approval.rs`, the moment the mode actually leaves
-    /// `Plan` -- a fresh entry into `Plan` later starts this at `false`
-    /// again, same as a session that never entered it at all). Left
-    /// UNTOUCHED by `Esc` on the modal (`AppState::close_plan_approval`):
-    /// staying in `Plan` with the same evidence already recorded means the
-    /// very next attempt to leave shows the identical plan again, which is
-    /// the correct behavior -- nothing about the focused agent's last
-    /// assistant turn changed just because the operator decided not to
-    /// leave yet.
-    pub plan_turn_seen: bool,
+    /// Cleared WHOLESALE in exactly two places: `App::approve_plan` (`tui/
+    /// app/plan_approval.rs`, the moment the mode actually leaves `Plan` --
+    /// a fresh entry into `Plan` later starts empty again, same as a
+    /// session that never entered it at all) and the silent-switch arm of
+    /// `Action::CyclePermissionMode` itself (leaving `Plan` with no evidence
+    /// for the focused agent still ends `Plan` for every OTHER agent's
+    /// recorded turn too -- there is no partial "still in Plan" state once
+    /// the mode has genuinely changed). Left UNTOUCHED by `Esc` on the modal
+    /// (`AppState::close_plan_approval`): staying in `Plan` with the same
+    /// evidence already recorded means the very next attempt to leave shows
+    /// the identical plan again, which is the correct behavior -- nothing
+    /// about the focused agent's last assistant turn changed just because
+    /// the operator decided not to leave yet.
+    pub plan_turn_seen: HashSet<AgentId>,
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round, finding 2):
+    /// `true` from the instant `Action::CyclePermissionMode` finds the
+    /// FOCUSED agent's own turn genuinely in flight (`SessionHandle::
+    /// turn_in_progress`) while trying to leave `Plan`, until that same
+    /// agent's turn settles (`Event::TurnFinished`/`Event::TurnAborted` for
+    /// it, seen by `app/run.rs`'s own event-apply arm) and the plan-approval
+    /// modal is finally opened (or, on the defensive fallback, the mode is
+    /// switched silently) -- see `App::defer_leaving_plan`'s own doc for why
+    /// this exists: switching the mode out from under a turn that is still
+    /// composing its own "plan" would show the operator a stale or
+    /// incomplete reply, so the switch itself waits rather than happening
+    /// silently out of sight.
+    ///
+    /// A second `Shift-Tab`/`/settings` cycle while this is already `true`
+    /// is a deliberate no-op (`Action::CyclePermissionMode`'s own arm) --
+    /// the operator has already asked once; asking again changes nothing
+    /// and must not re-push the "will show the plan..." notice a second
+    /// time. Cleared the instant the deferred reveal actually runs (whether
+    /// that opens the modal or falls through to the silent switch) and by
+    /// `Self::focus_agent` -- switching focus away abandons a stale deferred
+    /// intent, since the agent the operator is now looking at calls for its
+    /// own fresh decision the next time `Shift-Tab` is pressed, not a
+    /// resolution bound to whichever agent was focused when the request was
+    /// first made.
+    pub plan_approval_deferred: bool,
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round, finding 3):
+    /// when the plan-approval modal most recently BECAME the one on screen
+    /// -- mirrors [`Self::permission_prompt_armed_at`] exactly, minus the
+    /// "draft already held text" half (this modal's own input line is
+    /// INERT the whole time it is open, so there is no draft for a
+    /// typed-through character to land in the way the permission prompt's
+    /// guard routes one). `input.rs::handle_plan_approval_key` is the one
+    /// reader: a decision key (`Enter`/`a`/`e`) arriving while still inside
+    /// the window this stamps is a REFLEX off the `Shift-Tab`/`/settings`
+    /// keypress that opened the modal, not a deliberate choice -- see that
+    /// function's own doc for the exact window and why every key is
+    /// SWALLOWED outright during it (never routed anywhere, unlike the
+    /// permission prompt's own guard, since there is no draft to route a
+    /// swallowed key into here).
+    pub plan_approval_armed_at: Option<std::time::Instant>,
     /// V2b: every permission-file candidate `App::new` considered, in
     /// precedence order (project first, then every operator-authored
     /// candidate -- `crate::config::discovery::permission_file_paths`'s own
@@ -2259,7 +2318,9 @@ impl AppState {
             vim: crate::tui::input::vim::VimState::default(),
             permission_mode: PermissionMode::default(),
             default_permission_mode: PermissionMode::default(),
-            plan_turn_seen: false,
+            plan_turn_seen: HashSet::new(),
+            plan_approval_deferred: false,
+            plan_approval_armed_at: None,
             permission_paths: Vec::new(),
             grants_path: None,
             project_config_ignored: false,
@@ -2510,11 +2571,15 @@ impl AppState {
             vim: _,
             permission_mode,
             default_permission_mode,
-            // RESET: whether the OLD focused agent produced an assistant
-            // turn while `Plan` was gating it belongs to that agent's own
-            // conversation, not to the fresh session replacing it -- see
-            // this field's own doc.
+            // RESET: every agent that produced an assistant turn while
+            // `Plan` was gating it belongs to the OLD session, not to the
+            // fresh one replacing it -- see this field's own doc.
             plan_turn_seen: _,
+            // RESET: a deferred "leave Plan" request and the plan-approval
+            // modal's own typeahead-guard stamp both belong to the OLD
+            // session's in-flight turn, not to the fresh one replacing it.
+            plan_approval_deferred: _,
+            plan_approval_armed_at: _,
             permission_paths,
             grants_path,
             project_config_ignored,
@@ -2804,10 +2869,14 @@ impl AppState {
         // `commands::latest_goal_text`) fills this back in, mirroring every
         // other `focused_*` field reset just above.
         self.focused_goal = None;
-        // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: a freshly focused agent
-        // carries no evidence of its OWN -- see `Self::plan_turn_seen`'s own
-        // doc for the only other place this is written.
-        self.plan_turn_seen = false;
+        // Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round): `plan_
+        // turn_seen` is deliberately NOT reset here any more -- it is keyed
+        // by `AgentId` now, so a focus round-trip costs it nothing, fixing
+        // the exact defect the old unconditional reset caused (see that
+        // field's own doc, "Why a set, not a bool"). A deferred "leave
+        // Plan" request, though, DOES belong to whichever agent was focused
+        // when it was made -- see `Self::plan_approval_deferred`'s own doc.
+        self.plan_approval_deferred = false;
     }
 
     /// Opens the NL intent confirmation card (C2), parking it in

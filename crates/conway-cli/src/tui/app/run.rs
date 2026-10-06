@@ -590,16 +590,25 @@ impl App {
                                     .push_back(crate::tui::config::AttentionEvent::TurnFinished);
                             }
                             // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: the
-                            // SAME event this checks above ("a `TurnFinished`
-                            // for the FOCUSED agent"), with the mode test
-                            // added -- see `AppState::plan_turn_seen`'s own
-                            // doc for why `Action::CyclePermissionMode`'s own
-                            // arm needs this record kept.
-                            if matches!(&env.event, conway::Event::TurnFinished { .. })
-                                && env.agent == self.state.focused_agent
+                            // FOCUSED agent's turn ending -- `TurnFinished`
+                            // (a natural completion) OR `TurnAborted` (a
+                            // budget-dimension abort; review round, finding
+                            // 2: a deferred leave must still be revealed
+                            // even when the turn that was in flight ends
+                            // this way, not only on a clean finish) -- with
+                            // the mode test added, see `AppState::
+                            // plan_turn_seen`'s own doc for why `Action::
+                            // CyclePermissionMode`'s own arm needs this
+                            // record kept, per agent.
+                            let focused_turn_ended = matches!(
+                                &env.event,
+                                conway::Event::TurnFinished { .. }
+                                    | conway::Event::TurnAborted { .. }
+                            ) && env.agent == self.state.focused_agent;
+                            if focused_turn_ended
                                 && self.state.permission_mode == conway::PermissionMode::Plan
                             {
-                                self.state.plan_turn_seen = true;
+                                self.state.plan_turn_seen.insert(env.agent);
                             }
                             // the SAME
                             // check, scoped to `self.handle`'s own ROOT agent
@@ -618,6 +627,22 @@ impl App {
                                 _ => false,
                             };
                             self.state.apply(&env);
+                            // Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review
+                            // round, finding 2): AFTER `apply`, so `AppState::
+                            // transcript` already carries this turn's own
+                            // settled reply -- `App::
+                            // maybe_reveal_deferred_plan_approval`'s own
+                            // `last_assistant_text` read needs that. A no-op
+                            // whenever nothing is actually deferred, and
+                            // whenever this is not the focused agent's own
+                            // turn ending (`maybe_reveal_deferred_plan_
+                            // approval` itself only ever runs while `Self::
+                            // plan_approval_deferred` is set, which `Action::
+                            // CyclePermissionMode`'s own arm only ever sets
+                            // for the focused agent's own in-flight turn).
+                            if focused_turn_ended {
+                                self.maybe_reveal_deferred_plan_approval();
+                            }
                             // Board item `01M1YVHKTQVXJRDSRYT3TCRXFX`: review
                             // round 1 moved `busy_input` delivery OFF this
                             // event-apply step entirely -- see `App::
@@ -800,13 +825,17 @@ impl App {
                                 // are written here, together, so the status
                                 // line can never disagree with what
                                 // actually gates calls.
-                                // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`:
+                                // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`
+                                // (operator ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1`):
                                 // leaving `Plan` (the only direction this
-                                // cycle ever leaves it, `Plan -> AutoAllow`)
-                                // is a moment, not a bare toggle, when the
-                                // FOCUSED agent actually said something
-                                // while `Plan` was gating it -- `App::
-                                // maybe_offer_plan_approval` (`app/
+                                // cycle ever leaves it, `Plan -> AutoAllow`
+                                // -- unchanged; see `PlanApprovalModal`'s own
+                                // doc for why the MODAL itself now offers a
+                                // second destination independent of this
+                                // cycle's own order) is a moment, not a bare
+                                // toggle, when the FOCUSED agent actually
+                                // said something while `Plan` was gating it
+                                // -- `App::maybe_offer_plan_approval` (`app/
                                 // plan_approval.rs`) is the one place that
                                 // decides, and it must run BEFORE the
                                 // broker/mirror write below: when it opens
@@ -814,7 +843,12 @@ impl App {
                                 // the mode -- the switch happens later, from
                                 // `App::approve_plan`, only once the
                                 // operator decides (see that module's own
-                                // doc, "Ordering").
+                                // doc, "Ordering"). A turn genuinely in
+                                // flight for the focused agent right now
+                                // DEFERS instead (review round, finding 2)
+                                // -- `Plan` stays in force, no silent switch
+                                // -- rather than reaching `maybe_offer_plan_
+                                // approval` at all.
                                 Action::CyclePermissionMode => {
                                     let current = self.conway.permission_mode();
                                     let next = match current {
@@ -827,10 +861,41 @@ impl App {
                                         _ => conway::PermissionMode::Prompt,
                                     };
                                     let leaving_plan = current == conway::PermissionMode::Plan;
-                                    if !leaving_plan || !self.maybe_offer_plan_approval(next) {
+                                    if leaving_plan && self.state.plan_approval_deferred {
+                                        // Review round, finding 2: the
+                                        // operator already asked once and is
+                                        // still waiting -- a repeat press is
+                                        // a deliberate no-op UNLESS the turn
+                                        // has, in the meantime, genuinely
+                                        // settled behind our back (a race
+                                        // against the event-driven reveal,
+                                        // `App::
+                                        // maybe_reveal_deferred_plan_approval`,
+                                        // which has not run yet) -- in which
+                                        // case this press simply completes
+                                        // the same decision that reveal would
+                                        // have, and clears the flag so that
+                                        // later call (if it still runs) finds
+                                        // nothing left to do.
+                                        if !self
+                                            .handle
+                                            .turn_in_progress(self.state.focused_agent)
+                                        {
+                                            self.state.plan_approval_deferred = false;
+                                            if !self.maybe_offer_plan_approval() {
+                                                self.conway.set_permission_mode(next);
+                                                self.state.permission_mode = next;
+                                                self.state.plan_turn_seen.clear();
+                                            }
+                                        }
+                                    } else if leaving_plan
+                                        && self.handle.turn_in_progress(self.state.focused_agent)
+                                    {
+                                        self.defer_leaving_plan();
+                                    } else if !leaving_plan || !self.maybe_offer_plan_approval() {
                                         self.conway.set_permission_mode(next);
                                         self.state.permission_mode = next;
-                                        self.state.plan_turn_seen = false;
+                                        self.state.plan_turn_seen.clear();
                                     }
                                 }
                                 // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`:

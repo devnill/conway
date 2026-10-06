@@ -1,24 +1,55 @@
-//! Leaving `Plan` mode (board item `01M1YVPJW9W43HMM8WEF34N4RZ`): the one
-//! funnel every path that changes [`conway::PermissionMode`] away from
-//! `Plan` already shares -- `Action::CyclePermissionMode` (`app/run.rs`),
-//! reached identically from `Shift-Tab` (`Mode::Normal`) and from
-//! `/settings`' own `permission_mode` row (`input.rs`'s `LEAF_PERMISSION_
-//! MODE` arm) -- turns into a moment, not a bare toggle, the instant the
-//! FOCUSED agent has said something worth reviewing while `Plan` was
-//! gating it.
+//! Leaving `Plan` mode (board item `01M1YVPJW9W43HMM8WEF34N4RZ`, operator
+//! ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1`): the one funnel every path that
+//! changes [`conway::PermissionMode`] away from `Plan` already shares --
+//! `Action::CyclePermissionMode` (`app/run.rs`), reached identically from
+//! `Shift-Tab` (`Mode::Normal`) and from `/settings`' own `permission_mode`
+//! row (`input.rs`'s `LEAF_PERMISSION_MODE` arm) -- turns into a moment,
+//! not a bare toggle, the instant the FOCUSED agent has said something
+//! worth reviewing while `Plan` was gating it.
 //!
 //! [`App::maybe_offer_plan_approval`] is that one decision point, called
 //! from `Action::CyclePermissionMode`'s own arm BEFORE it ever writes the
 //! broker: when it returns `true`, the modal is now open and the caller
 //! must not touch `permission_mode` itself -- the actual switch happens
 //! later, from [`App::approve_plan`], only once the operator decides.
-//! [`App::approve_plan`] is reached from BOTH of the modal's own forward
-//! paths (`Enter`, with no custom text, and `e`, with the edited text) --
-//! mirroring `app/distill.rs`'s `App::spawn_from_distill`/`App::
-//! apply_distill_edit_action` split, except this feature's `e` is a
-//! complete, one-shot action (edit THEN send, no second `Enter` needed):
-//! the acceptance criterion itself ("send the edited text as the user turn
-//! along with the switch") describes one action, not two.
+//! [`App::approve_plan`] is reached from every one of the modal's own
+//! forward paths (`Enter`, with no custom text, targeting `Prompt`;
+//! confirmed `a`, with no custom text, targeting `AutoAllow`; and `e`,
+//! with the edited text, targeting `Prompt`) -- mirroring `app/distill.rs`'s
+//! `App::spawn_from_distill`/`App::apply_distill_edit_action` split, except
+//! this feature's `e` is a complete, one-shot action (edit THEN send, no
+//! second `Enter` needed): the acceptance criterion itself ("send the
+//! edited text as the user turn along with the switch") describes one
+//! action, not two.
+//!
+//! # Two destinations, not one (review round)
+//!
+//! The ORIGINAL version of this feature let `Enter` approve into whatever
+//! the mode cycle's own order happened to leave `Plan` by (`AutoAllow`,
+//! always, in practice) with no confirmation step and no stated
+//! destination. The operator ruling above replaces that with two
+//! EXPLICITLY labelled forward paths -- see [`crate::tui::state::
+//! PlanApprovalModal`]'s own doc for the full key map and
+//! `input.rs::handle_plan_approval_key` for the two-keystroke confirm `a`
+//! needs before `AutoAllow` actually commits. [`App::approve_plan`] itself
+//! no longer decides which mode to switch to at all: it reads whatever
+//! [`crate::tui::state::PlanApprovalModal::next_mode`] already carries,
+//! written by the key handler at the moment the operator actually chose.
+//!
+//! # Turn in flight: defer, never switch silently (review round)
+//!
+//! [`App::maybe_offer_plan_approval`] still declines to open the modal
+//! while the focused agent's own turn is genuinely in flight (a streaming
+//! turn has no settled "last assistant message" yet). The ORIGINAL version
+//! then fell through to the silent switch, as if nothing had ever been
+//! said in `Plan` -- the review found this indistinguishable, from the
+//! operator's seat, from the mode changing out from under a turn that was
+//! still composing its own plan. [`App::defer_leaving_plan`] replaces that
+//! fallthrough: `Plan` stays in force, a short notice says so, and
+//! [`App::maybe_reveal_deferred_plan_approval`] (called from `app/run.rs`'s
+//! own event-apply arm, on the SAME `TurnFinished`/`TurnAborted`-for-the-
+//! focused-agent check that already sets `AppState::plan_turn_seen`) is
+//! what actually decides once the turn settles.
 //!
 //! # Ordering: the mode write happens before anything else
 //!
@@ -70,51 +101,110 @@ pub(super) fn last_assistant_text(transcript: &[Entry]) -> Option<String> {
 
 impl App {
     /// Called from `Action::CyclePermissionMode`'s own arm the instant the
-    /// cycle is about to leave `Plan` (`current == Plan`; this cycle's only
-    /// way out of it is `Plan -> AutoAllow`, so `next` is always
-    /// `AutoAllow` in practice, but it is taken as a parameter rather than
-    /// hardcoded so this function stays agnostic of the cycle's own order).
+    /// cycle is about to leave `Plan`, and from [`Self::
+    /// maybe_reveal_deferred_plan_approval`] once a deferred leave's turn
+    /// settles -- in both cases ONLY once the caller has already confirmed
+    /// nothing of the focused agent's own is in flight right now.
     ///
-    /// Opens the plan-approval modal, returning `true`, when BOTH:
-    /// - `state.plan_turn_seen` -- the focused agent produced at least one
-    ///   assistant turn while `Plan` was gating it (`AppState::
-    ///   plan_turn_seen`'s own doc names the one event-apply site that sets
-    ///   this).
-    /// - nothing of the focused agent's own is in flight RIGHT NOW
-    ///   (`SessionHandle::turn_in_progress`) -- a turn still streaming has
-    ///   no settled "last assistant message" yet to show as the plan.
+    /// Opens the plan-approval modal, returning `true`, when `state.
+    /// plan_turn_seen` names the focused agent -- it produced at least one
+    /// assistant turn while `Plan` was gating it (`AppState::
+    /// plan_turn_seen`'s own doc names the one event-apply site that
+    /// records this, per agent). Returns `false`, touching nothing, when it
+    /// does not -- the caller falls through to the bare, silent switch.
     ///
-    /// **The turn-in-flight race, decided:** when a turn IS in flight at
-    /// this exact instant, this returns `false` -- the caller falls through
-    /// to the bare switch, exactly as if no assistant turn had ever
-    /// happened in `Plan` at all. The alternative (holding the cycle intent
-    /// pending until the turn ends, then popping the modal later,
-    /// unprompted, possibly well after the keypress that asked for it) was
-    /// rejected: a modal appearing with no keypress behind it, arbitrarily
-    /// later, is a worse surprise than a toggle that -- this one time --
-    /// did not pause to show a plan. `state.plan_turn_seen` is left
-    /// UNTOUCHED either way, so the very next attempt (once the turn
-    /// settles) sees the SAME recorded evidence and gets the modal then.
-    pub(super) fn maybe_offer_plan_approval(&mut self, next_mode: PermissionMode) -> bool {
-        if !self.state.plan_turn_seen {
+    /// The modal opens with [`PlanApprovalModal::next_mode`] seeded to
+    /// [`PermissionMode::Prompt`] as a PLACEHOLDER only -- see that field's
+    /// own doc: `input.rs::handle_plan_approval_key` overwrites it with
+    /// whichever destination the operator actually chooses before
+    /// [`Self::approve_plan`] ever reads it, so the seed value itself
+    /// carries no meaning.
+    pub(super) fn maybe_offer_plan_approval(&mut self) -> bool {
+        if !self.state.plan_turn_seen.contains(&self.state.focused_agent) {
             return false;
         }
+        // Defensive: both call sites already check this themselves before
+        // calling in, but a turn is live state that can change out from
+        // under either of them between that check and this one, and
+        // showing a plan next to a turn that might still be composing its
+        // own continuation is exactly what the review round's defer fix
+        // exists to prevent.
         if self.handle.turn_in_progress(self.state.focused_agent) {
             return false;
         }
         let plan = last_assistant_text(&self.state.transcript).unwrap_or_default();
-        self.state
-            .offer_plan_approval(PlanApprovalModal { plan, next_mode });
+        self.state.offer_plan_approval(PlanApprovalModal {
+            plan,
+            next_mode: PermissionMode::Prompt,
+            autoallow_confirm_armed: false,
+        });
         true
     }
 
-    /// `Enter` (`custom_text: None`) or a completed `e`-edit
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round, finding 2):
+    /// `Action::CyclePermissionMode`'s own arm calls this instead of
+    /// falling through to the silent switch when the focused agent's turn
+    /// is genuinely in flight at the exact instant the operator tries to
+    /// leave `Plan`. `Plan` stays in force -- NEITHER the broker nor the
+    /// display mirror is touched -- and [`AppState::plan_approval_
+    /// deferred`] records that the operator already asked, so [`Self::
+    /// maybe_reveal_deferred_plan_approval`] knows to act once the turn
+    /// settles.
+    ///
+    /// Idempotent: a second call while already deferred (the operator
+    /// pressing `Shift-Tab`/the `/settings` row again before the turn
+    /// finishes) does nothing further, including pushing a second notice
+    /// -- the operator has already been told once.
+    pub(super) fn defer_leaving_plan(&mut self) {
+        if self.state.plan_approval_deferred {
+            return;
+        }
+        self.state.plan_approval_deferred = true;
+        self.state.transcript.push(Entry::Notice {
+            text: "will show the plan when this turn finishes".to_string(),
+        });
+    }
+
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round, finding 2):
+    /// called from `app/run.rs`'s own event-apply arm on the SAME
+    /// `TurnFinished`/`TurnAborted`-for-the-focused-agent condition that
+    /// already records `AppState::plan_turn_seen` -- called UNCONDITIONALLY
+    /// there; this is where the "only if actually deferred" check lives, so
+    /// the ordinary (non-deferred) case stays a cheap no-op.
+    ///
+    /// A no-op unless [`AppState::plan_approval_deferred`] is set. When it
+    /// is, this clears it and re-runs the ordinary decision (`Self::
+    /// maybe_offer_plan_approval`) now that the turn has genuinely settled.
+    /// The defensive fallback -- `maybe_offer_plan_approval` returning
+    /// `false` even though a turn just finished in `Plan` (unreachable in
+    /// practice: the SAME event that calls this one also just recorded the
+    /// evidence it needs, in `app/run.rs`'s own arm, before this runs) --
+    /// still completes the deferred request rather than leaving the
+    /// operator stuck in `Plan` with no visible reason: it performs the
+    /// identical silent switch to `AutoAllow` the ORIGINAL turn-in-flight
+    /// fallthrough always used.
+    pub(super) fn maybe_reveal_deferred_plan_approval(&mut self) {
+        if !self.state.plan_approval_deferred {
+            return;
+        }
+        self.state.plan_approval_deferred = false;
+        if !self.maybe_offer_plan_approval() {
+            self.conway.set_permission_mode(PermissionMode::AutoAllow);
+            self.state.permission_mode = PermissionMode::AutoAllow;
+            self.state.plan_turn_seen.clear();
+        }
+    }
+
+    /// `Enter`/confirmed-`a` (`custom_text: None`) or a completed `e`-edit
     /// (`custom_text: Some(edited)`) on the plan-approval modal: switches
-    /// the mode, records the approval as a `system_note`, then sends the
-    /// turn -- in that order (see this module's own doc, "Ordering"). A
-    /// no-op if no plan-approval modal is open (a stale action after a
-    /// race is not expected in practice, but this never panics on it,
-    /// mirroring `App::spawn_from_distill`'s own guard).
+    /// the mode to whichever destination [`PlanApprovalModal::next_mode`]
+    /// carries (written by `input.rs::handle_plan_approval_key` at the
+    /// moment the operator chose it), records the approval as a
+    /// `system_note` naming that SAME destination, then sends the turn --
+    /// in that order (see this module's own doc, "Ordering"). A no-op if
+    /// no plan-approval modal is open (a stale action after a race is not
+    /// expected in practice, but this never panics on it, mirroring
+    /// `App::spawn_from_distill`'s own guard).
     pub(super) async fn approve_plan(&mut self, custom_text: Option<String>) {
         let Mode::PlanApproval(modal) = &self.state.mode else {
             return;
@@ -125,8 +215,10 @@ impl App {
         self.conway.set_permission_mode(next_mode);
         self.state.permission_mode = next_mode;
         // See `AppState::plan_turn_seen`'s own doc: the mode has now
-        // genuinely left `Plan`, so the evidence it carried is spent.
-        self.state.plan_turn_seen = false;
+        // genuinely left `Plan`, so every agent's recorded evidence is
+        // spent -- there is no partial "still in Plan" state once the mode
+        // has genuinely changed.
+        self.state.plan_turn_seen.clear();
         let agent = self.state.focused_agent;
         self.state.close_plan_approval();
         let note = format!("plan approved by operator, mode → {}", next_mode.label());
@@ -163,6 +255,14 @@ impl App {
     /// a complete, one-shot action rather than a second "now press Enter"
     /// step. `Unchanged`/`Failed` leave the modal open exactly as `/distill`
     /// 's own arm does -- nothing was sent, nothing switched.
+    ///
+    /// **Operator ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1`: `e` always approves
+    /// into `Prompt`, never `AutoAllow`**, regardless of whatever
+    /// placeholder [`PlanApprovalModal::next_mode`] happened to carry
+    /// beforehand (an edited plan is reviewed text, not the confirmed
+    /// "never ask me again" act `a` is) -- set explicitly, right before
+    /// `Self::approve_plan` reads it, rather than relying on the modal
+    /// never having been armed toward `AutoAllow` first.
     pub(super) async fn apply_plan_approval_edit_action<B: ratatui::backend::Backend>(
         &mut self,
         terminal: &mut ratatui::Terminal<B>,
@@ -175,6 +275,9 @@ impl App {
         let outcome = super::editor::edit_prompt_externally(terminal, &current, editor_command);
         match outcome {
             super::editor::EditorOutcome::Replace(text) => {
+                if let Mode::PlanApproval(modal) = &mut self.state.mode {
+                    modal.next_mode = PermissionMode::Prompt;
+                }
                 self.approve_plan(Some(text)).await;
             }
             super::editor::EditorOutcome::Unchanged => {}
@@ -235,7 +338,7 @@ mod tests {
                 if matches!(&env.event, conway::Event::TurnFinished { .. }) && env.agent == agent
                 {
                     if state.permission_mode == PermissionMode::Plan {
-                        state.plan_turn_seen = true;
+                        state.plan_turn_seen.insert(agent);
                     }
                     return;
                 }
@@ -263,8 +366,8 @@ mod tests {
     /// The primary end-to-end proof: a REAL turn, run while `Plan` gates
     /// it, is what `AppState::plan_turn_seen` records -- and `App::
     /// maybe_offer_plan_approval` opens the modal with exactly that agent's
-    /// own last reply as the plan, carrying the `next_mode` it was asked
-    /// to switch to.
+    /// own last reply as the plan, carrying the placeholder `next_mode`
+    /// (`Prompt`) until the operator actually chooses a destination.
     #[tokio::test]
     async fn maybe_offer_plan_approval_opens_with_the_focused_agents_last_reply() {
         let conway = echo_conway();
@@ -283,17 +386,22 @@ mod tests {
         drive_turn_to_finish(&mut events, &mut app.state, root).await;
 
         assert!(
-            app.state.plan_turn_seen,
+            app.state.plan_turn_seen.contains(&root),
             "a real turn finishing for the focused agent while Plan was active must be \
              recorded"
         );
 
-        let opened = app.maybe_offer_plan_approval(PermissionMode::AutoAllow);
+        let opened = app.maybe_offer_plan_approval();
         assert!(opened, "an agent that said something in Plan must get the modal");
         match &app.state.mode {
             Mode::PlanApproval(modal) => {
                 assert_eq!(modal.plan, "hello", "the plan must be the agent's own last reply");
-                assert_eq!(modal.next_mode, PermissionMode::AutoAllow);
+                assert_eq!(
+                    modal.next_mode,
+                    PermissionMode::Prompt,
+                    "the seeded placeholder -- overwritten once the operator chooses"
+                );
+                assert!(!modal.autoallow_confirm_armed);
             }
             other => panic!("expected Mode::PlanApproval, got {other:?}"),
         }
@@ -309,9 +417,9 @@ mod tests {
         let mut app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
-        assert!(!app.state.plan_turn_seen, "sanity: nothing has run yet");
+        assert!(app.state.plan_turn_seen.is_empty(), "sanity: nothing has run yet");
 
-        let opened = app.maybe_offer_plan_approval(PermissionMode::AutoAllow);
+        let opened = app.maybe_offer_plan_approval();
 
         assert!(!opened);
         assert!(
@@ -321,8 +429,61 @@ mod tests {
         );
     }
 
+    /// Cross-agent leak must stay impossible (review round, finding 4):
+    /// evidence recorded for a DIFFERENT agent must never open the modal
+    /// while some other agent is focused.
+    #[tokio::test]
+    async fn maybe_offer_plan_approval_never_leaks_another_agents_evidence() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let other_agent = AgentId::new();
+        app.state.plan_turn_seen.insert(other_agent);
+        assert_ne!(app.state.focused_agent, other_agent);
+
+        assert!(
+            !app.maybe_offer_plan_approval(),
+            "evidence recorded for a different agent must never open the modal for the \
+             focused one"
+        );
+        assert!(matches!(app.state.mode, Mode::Normal));
+    }
+
+    /// Review round, finding 4: a focus round-trip (away, then back) must
+    /// NOT lose the focused agent's own recorded evidence -- the exact
+    /// defect the old bare-`bool` version of `plan_turn_seen` had.
+    #[tokio::test]
+    async fn maybe_offer_plan_approval_survives_a_focus_round_trip() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+        app.state.plan_turn_seen.insert(root);
+
+        let elsewhere = AgentId::new();
+        app.state.focus_agent(elsewhere);
+        assert!(
+            !app.maybe_offer_plan_approval(),
+            "a different agent, now focused, has no evidence of its own"
+        );
+
+        app.state.focus_agent(root);
+        assert!(
+            app.state.plan_turn_seen.contains(&root),
+            "the root agent's own evidence must survive glancing away and back"
+        );
+        assert!(
+            app.maybe_offer_plan_approval(),
+            "and the modal must still open for it once refocused"
+        );
+    }
+
     /// The turn-in-flight race (`Action::CyclePermissionMode`'s own arm,
-    /// `app/run.rs`): even with `plan_turn_seen` already `true`, a turn
+    /// `app/run.rs`): even with `plan_turn_seen` already recorded, a turn
     /// genuinely in flight for the focused agent RIGHT NOW must make this
     /// return `false` too -- see `Self::maybe_offer_plan_approval`'s own
     /// doc for why ("a turn still streaming has no settled 'last assistant
@@ -339,7 +500,7 @@ mod tests {
         app.state.permission_mode = PermissionMode::Plan;
         // Evidence from an EARLIER turn, so the only thing this test
         // proves is the in-flight guard, not the evidence check above.
-        app.state.plan_turn_seen = true;
+        app.state.plan_turn_seen.insert(root);
 
         app.submit("hello".to_string())
             .await
@@ -352,7 +513,7 @@ mod tests {
         .await
         .expect("the turn must genuinely start");
 
-        let opened = app.maybe_offer_plan_approval(PermissionMode::AutoAllow);
+        let opened = app.maybe_offer_plan_approval();
 
         assert!(
             !opened,
@@ -360,7 +521,7 @@ mod tests {
         );
         assert!(matches!(app.state.mode, Mode::Normal));
         assert!(
-            app.state.plan_turn_seen,
+            app.state.plan_turn_seen.contains(&root),
             "the evidence itself must survive this attempt, for the NEXT one"
         );
     }
@@ -370,7 +531,8 @@ mod tests {
     /// doc, "Ordering") -- proven here by checking both the broker and the
     /// display mirror read the NEW mode once `approve_plan` returns, with
     /// the fixed approval text and the recorded `system_note` both landed
-    /// in the real session log.
+    /// in the real session log. Operator ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1`:
+    /// a bare `Enter` approves into `Prompt`, never `AutoAllow`.
     #[tokio::test]
     async fn enter_switches_the_mode_records_a_system_note_and_sends_the_fixed_turn() {
         let conway = echo_conway();
@@ -387,7 +549,13 @@ mod tests {
             .await
             .expect("submit should not error");
         drive_turn_to_finish(&mut events, &mut app.state, root).await;
-        assert!(app.maybe_offer_plan_approval(PermissionMode::AutoAllow));
+        assert!(app.maybe_offer_plan_approval());
+        // This test exercises the ordinary decision keys, not the
+        // typeahead guard `offer_plan_approval` just armed (see
+        // `input.rs`'s own `plan_approval_typeahead_guard_*` tests for
+        // that) -- clear the stamp so the `Enter` below is not itself
+        // swallowed by the window it opened.
+        app.state.plan_approval_armed_at = None;
 
         let action = input::handle_key(&mut app.state, key(ratatui::crossterm::event::KeyCode::Enter));
         assert_eq!(action, Action::PlanApprovalFate(PlanApprovalFate::Approve));
@@ -396,12 +564,12 @@ mod tests {
 
         assert_eq!(
             app.state.permission_mode,
-            PermissionMode::AutoAllow,
+            PermissionMode::Prompt,
             "the display mirror must read the NEW mode"
         );
         assert_eq!(
             app.conway.permission_mode(),
-            PermissionMode::AutoAllow,
+            PermissionMode::Prompt,
             "the broker -- the authority -- must read the NEW mode too"
         );
         assert!(
@@ -410,7 +578,7 @@ mod tests {
             app.state.mode
         );
         assert!(
-            !app.state.plan_turn_seen,
+            app.state.plan_turn_seen.is_empty(),
             "the evidence is spent once the mode has genuinely left Plan"
         );
 
@@ -431,10 +599,58 @@ mod tests {
                 conway::LogRecord::SystemNote { text, reason, .. }
                     if reason == PLAN_APPROVAL_NOTE_REASON
                         && text.contains("plan approved by operator")
+                        && text.contains("prompt")
+            )),
+            "the approval must be recorded as a system_note naming the ACTUAL destination \
+             (prompt, for a bare Enter), so /context and sessions show carry it: {records:?}"
+        );
+    }
+
+    /// Operator ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1`: a confirmed `a`
+    /// approves into `AutoAllow` instead, and the system note names THAT
+    /// destination.
+    #[tokio::test]
+    async fn confirmed_a_switches_the_mode_to_autoallow_and_the_note_names_it() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+        app.conway.set_permission_mode(PermissionMode::Plan);
+        app.state.permission_mode = PermissionMode::Plan;
+
+        let mut events = app.handle.events();
+        app.submit("here is my plan".to_string())
+            .await
+            .expect("submit should not error");
+        drive_turn_to_finish(&mut events, &mut app.state, root).await;
+        assert!(app.maybe_offer_plan_approval());
+        app.state.plan_approval_armed_at = None;
+
+        let arm = input::handle_key(&mut app.state, key(ratatui::crossterm::event::KeyCode::Char('a')));
+        assert_eq!(arm, Action::None, "the first `a` must only arm");
+        let confirm = input::handle_key(&mut app.state, key(ratatui::crossterm::event::KeyCode::Char('a')));
+        assert_eq!(confirm, Action::PlanApprovalFate(PlanApprovalFate::Approve));
+
+        app.approve_plan(None).await;
+
+        assert_eq!(app.state.permission_mode, PermissionMode::AutoAllow);
+        assert_eq!(app.conway.permission_mode(), PermissionMode::AutoAllow);
+
+        let records = app
+            .handle
+            .transcript(root)
+            .await
+            .expect("transcript should read back");
+        assert!(
+            records.iter().any(|r| matches!(
+                r,
+                conway::LogRecord::SystemNote { text, reason, .. }
+                    if reason == PLAN_APPROVAL_NOTE_REASON
                         && text.contains("AUTO-ALLOW")
             )),
-            "the approval must be recorded as a system_note, so /context and sessions show \
-             carry it: {records:?}"
+            "a confirmed `a` must record its own real destination, AUTO-ALLOW: {records:?}"
         );
     }
 
@@ -446,6 +662,12 @@ mod tests {
     /// real_run_rs_path` test shape exactly (a second, independent copy of
     /// its `write_test_script`/`test_terminal` helpers -- private to that
     /// module's own test tree).
+    ///
+    /// The modal is seeded with `next_mode: AutoAllow` here deliberately --
+    /// operator ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1` says `e` always
+    /// approves into `Prompt` regardless of whatever placeholder was there
+    /// beforehand, and this proves the override, not merely a value that
+    /// was already correct.
     #[tokio::test]
     #[cfg(unix)]
     async fn e_sends_the_edited_text_as_the_turn_along_with_the_switch() {
@@ -461,6 +683,7 @@ mod tests {
             .offer_plan_approval(PlanApprovalModal {
                 plan: "original plan".to_string(),
                 next_mode: PermissionMode::AutoAllow,
+                autoallow_confirm_armed: false,
             });
 
         let script = write_test_script(
@@ -482,7 +705,11 @@ mod tests {
             "a completed edit is a complete action -- the modal must close, got: {:?}",
             app.state.mode
         );
-        assert_eq!(app.state.permission_mode, PermissionMode::AutoAllow);
+        assert_eq!(
+            app.state.permission_mode,
+            PermissionMode::Prompt,
+            "`e` always approves into Prompt, overriding whatever placeholder was seeded"
+        );
 
         let records = app
             .handle
@@ -515,7 +742,11 @@ mod tests {
             .offer_plan_approval(PlanApprovalModal {
                 plan: "a plan".to_string(),
                 next_mode: PermissionMode::AutoAllow,
+                autoallow_confirm_armed: false,
             });
+        // This test exercises the ordinary `Esc` decision, not the
+        // typeahead guard `offer_plan_approval` just armed.
+        app.state.plan_approval_armed_at = None;
 
         let action = input::handle_key(&mut app.state, key(ratatui::crossterm::event::KeyCode::Esc));
         assert_eq!(action, Action::PlanApprovalFate(PlanApprovalFate::Discard));
@@ -565,6 +796,7 @@ mod tests {
             .offer_plan_approval(PlanApprovalModal {
                 plan: "the plan".to_string(),
                 next_mode: PermissionMode::AutoAllow,
+                autoallow_confirm_armed: false,
             });
 
         app.approve_plan(None).await;
@@ -604,6 +836,98 @@ mod tests {
             ),
             "a withheld approval turn must never reach the real session log while queued: \
              {records:?}"
+        );
+    }
+
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round, finding 2):
+    /// `App::defer_leaving_plan` is idempotent -- a second call while
+    /// already deferred must push no second notice.
+    #[tokio::test]
+    async fn defer_leaving_plan_is_idempotent() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        app.defer_leaving_plan();
+        app.defer_leaving_plan();
+
+        assert!(app.state.plan_approval_deferred);
+        assert_eq!(
+            app.state
+                .transcript
+                .iter()
+                .filter(|e| matches!(
+                    e,
+                    Entry::Notice { text } if text.contains("will show the plan")
+                ))
+                .count(),
+            1,
+            "a second deferral while already deferred must not push a second notice: {:?}",
+            app.state.transcript
+        );
+    }
+
+    /// End to end: a turn in flight defers (NOT a silent switch -- `Plan`
+    /// stays in force), and once that turn settles,
+    /// `App::maybe_reveal_deferred_plan_approval` opens the modal with the
+    /// now-settled reply, exactly as if the operator had tried again after
+    /// the turn finished.
+    #[tokio::test]
+    async fn a_deferred_leave_reveals_the_modal_once_the_turn_settles() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+        app.conway.set_permission_mode(PermissionMode::Plan);
+        app.state.permission_mode = PermissionMode::Plan;
+
+        let mut events = app.handle.events();
+        app.submit("here is my plan".to_string())
+            .await
+            .expect("submit should not error");
+
+        // The operator tries to leave `Plan` while the turn above is still
+        // in flight -- the review round's own defer, not a silent switch.
+        app.defer_leaving_plan();
+        assert!(app.state.plan_approval_deferred);
+        assert_eq!(
+            app.state.permission_mode,
+            PermissionMode::Plan,
+            "Plan must stay in force while deferred"
+        );
+
+        // A second ask while still deferred changes nothing further.
+        app.defer_leaving_plan();
+        assert_eq!(
+            app.state
+                .transcript
+                .iter()
+                .filter(|e| matches!(e, Entry::Notice { text } if text.contains("will show the plan")))
+                .count(),
+            1
+        );
+
+        drive_turn_to_finish(&mut events, &mut app.state, root).await;
+        app.maybe_reveal_deferred_plan_approval();
+
+        assert!(
+            !app.state.plan_approval_deferred,
+            "the deferred request must be consumed once revealed"
+        );
+        match &app.state.mode {
+            Mode::PlanApproval(modal) => {
+                assert_eq!(modal.plan, "here is my plan");
+            }
+            other => panic!("expected the deferred modal to open, got {other:?}"),
+        }
+        assert_eq!(
+            app.state.permission_mode,
+            PermissionMode::Plan,
+            "revealing the modal must not itself switch the mode -- only approving does"
         );
     }
 

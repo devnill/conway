@@ -17,6 +17,15 @@
 //! for real -- `tests/oneshot_persona_and_budget.rs`'s
 //! `max_turns_flag_overrides_the_configured_default_and_stops_the_run`).
 //!
+//! **The SECOND `Shift-Tab` (`Plan -> AutoAllow`) goes through the
+//! plan-approval modal (board item `01M1YVPJW9W43HMM8WEF34N4RZ`, operator
+//! ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1`), not a silent cycle.** The plan-mode
+//! `bash` call above also finished an assistant turn while `Plan` was
+//! gating it, which is exactly the evidence that turns the SECOND
+//! `Shift-Tab` into a modal rather than a bare toggle -- so this test
+//! reaches `AutoAllow` the way an operator actually would: `a` (arm), then
+//! a confirming second `a`, past the modal's own typeahead-guard window.
+//!
 //! **`bash` is opted in for THIS fixture only, via [`write_fixture_with_bash`]
 //! below -- not via `fixtures/conway.json.tmpl`.** The TUI's real,
 //! shipped default (`main.rs::build_conway`'s `is_tui` branch, which
@@ -117,10 +126,17 @@ fn write_fixture_with_bash(mock: &MockHandle, max_steps: u32) -> Fixture {
     Fixture { dir, config_path }
 }
 
-/// Two full tool round-trips: a `bash` call, denied in plan mode, followed
-/// by the model's own acknowledgement once it sees the denial; then the
-/// SAME shape again once permission mode has moved on to auto-allow, where
-/// the call actually runs.
+/// Two full `bash` round-trips, plus one more plain text-only round trip
+/// between them: a `bash` call, denied in plan mode, followed by the
+/// model's own acknowledgement once it sees the denial; then -- board item
+/// `01M1YVPJW9W43HMM8WEF34N4RZ`'s review round: approving the plan-approval
+/// modal auto-sends a fixed "Plan approved; proceed." user turn through the
+/// SAME session, before the operator's own next typed message -- a round
+/// trip that answers THAT turn, touching no tool at all (keeping this
+/// function's own name honest: there are still only two `bash` round trips,
+/// just three round trips overall); then the original SAME `bash` shape
+/// again once permission mode has moved on to auto-allow, where the call
+/// actually runs.
 fn two_bash_round_trips() -> Script {
     Script(vec![
         vec![
@@ -142,6 +158,10 @@ fn two_bash_round_trips() -> Script {
         ],
         vec![
             Chunk::Text("plan-mode-denial-acknowledged"),
+            Chunk::Finish("stop"),
+        ],
+        vec![
+            Chunk::Text("plan-approval-turn-acknowledged"),
             Chunk::Finish("stop"),
         ],
         vec![
@@ -234,9 +254,46 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
 {screen}"
     );
 
-    // Plan -> AutoAllow: a second Shift-Tab.
+    // Plan -> AutoAllow, via the plan-approval modal (board item
+    // `01M1YVPJW9W43HMM8WEF34N4RZ`, operator ruling
+    // `01M48TK7QKBBSJ1FQ4XPX9DTF1`): the assistant turn just acknowledged
+    // above already ran while `Plan` was gating it, so this second
+    // `Shift-Tab` opens the modal instead of cycling silently -- `[enter]`
+    // alone would now land in `Prompt`, so reaching `AutoAllow` (what this
+    // test's second half needs) takes the modal's OTHER forward path:
+    // `a`, then a confirming second `a`.
     session.send_shift_tab();
-    let in_auto_allow = session.wait_for_since("AUTO-ALLOW", denied, Duration::from_secs(10));
+    let modal_shown = session.wait_for_since(
+        "approve, switch to Prompt mode",
+        denied,
+        Duration::from_secs(10),
+    );
+    // The plan-approval modal arms its own typeahead guard the instant it
+    // opens (review round, finding 3) -- every key arriving inside that
+    // window is swallowed outright, specifically so a reflexive keystroke
+    // right after the `Shift-Tab` that opened the modal (exactly what this
+    // test would otherwise send next) can never be mistaken for a
+    // deliberate decision. Sleeping past the window here is the real
+    // guard's own bound, not a fitted wait.
+    std::thread::sleep(Duration::from_millis(1_200));
+    session.send("a");
+    let armed = session.wait_for_since(
+        "AUTO-ALLOW: no further tool prompts",
+        modal_shown,
+        Duration::from_secs(10),
+    );
+    session.send("a");
+    // Approving sends its own fixed turn ("Plan approved; proceed.")
+    // through the SAME session before anything else this test sends --
+    // wait for the model's scripted ack to it so that turn settles before
+    // this test's own next message (see `two_bash_round_trips`'s own doc).
+    let approved = session.wait_for_since(
+        "plan-approval-turn-acknowledged",
+        armed,
+        Duration::from_secs(15),
+    );
+    let in_auto_allow =
+        session.wait_for_since("AUTO-ALLOW", approved, Duration::from_secs(10));
 
     // The IDENTICAL kind of call (`bash`) now runs for real, with no
     // permission prompt at all -- the same flagged call, a different

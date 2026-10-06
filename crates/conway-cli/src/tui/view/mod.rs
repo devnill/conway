@@ -1442,19 +1442,29 @@ fn draw_distill(
     frame.render_widget(footer, frame_areas.footer_area);
 }
 
-/// Rows the plan-approval modal's footer ALWAYS reserves: the key hint plus
-/// a blank line reserved for symmetry (mirrors [`UI_FORM_FOOTER_ROWS`] below
-/// -- this card, like `ask_question`'s own, has no in-modal error state:
-/// neither of its two ways forward can fail in a way that keeps it open,
-/// see [`PlanApprovalModal`]'s own doc).
+/// Rows the plan-approval modal's footer ALWAYS reserves: the key hint (or,
+/// while armed, the `AutoAllow` confirm wording) plus a blank/second line
+/// reserved for symmetry (mirrors [`UI_FORM_FOOTER_ROWS`] below -- this
+/// card, like `ask_question`'s own, has no in-modal ERROR state: none of
+/// its forward paths can fail in a way that keeps it open with an error
+/// shown, see [`PlanApprovalModal`]'s own doc).
 const PLAN_APPROVAL_FOOTER_ROWS: u16 = 2;
 
-/// The plan-approval modal (board item `01M1YVPJW9W43HMM8WEF34N4RZ`):
-/// bottom-anchored, content-sized, capped, via the shared [`modal`]
-/// primitive -- following [`draw_distill`]'s precedent exactly. Shows the
-/// focused agent's own last assistant message, shown as "the plan"; the
-/// footer shows the three decision keys -- `[enter] approve  [e] edit
-/// [esc] stay in plan`.
+/// The plan-approval modal (board item `01M1YVPJW9W43HMM8WEF34N4RZ`,
+/// operator ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1`): bottom-anchored,
+/// content-sized, capped, via the shared [`modal`] primitive -- following
+/// [`draw_distill`]'s precedent exactly. Shows the focused agent's own last
+/// assistant message, shown as "the plan", with the body ALSO stating the
+/// bare `Enter`'s own destination explicitly (the review round's own
+/// critical finding: the modal never used to say which mode `Enter` landed
+/// in at all). The footer shows the key map's four forward/back choices --
+/// `[enter] approve -> Prompt  [a] approve -> AUTO-ALLOW  [e] edit, then
+/// approve -> Prompt  [esc] stay in plan` -- UNLESS [`PlanApprovalModal::
+/// autoallow_confirm_armed`] is set, in which case the footer is replaced
+/// entirely by the `AutoAllow` confirm wording, rendered in `theme.
+/// fatal_error` -- the one style this project reserves for `AUTO-ALLOW`
+/// itself (`view/status.rs`'s own doc), so an operator mid-confirm sees the
+/// identical visual alarm the status line would show once it commits.
 fn draw_plan_approval(
     frame: &mut Frame,
     transcript_area: Rect,
@@ -1464,6 +1474,7 @@ fn draw_plan_approval(
 ) {
     let mut body_lines = vec![
         Line::from(Span::styled("the plan", theme.emphasized)),
+        Line::from("Enter: approve, switch to Prompt mode"),
         Line::from(""),
     ];
     body_lines.extend(
@@ -1491,12 +1502,27 @@ fn draw_plan_approval(
     let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
     frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
 
-    let hint = if body_max_scroll > 0 {
-        "[enter] approve  [e] edit  [esc] stay in plan  [PageUp/PageDown] scroll"
+    let footer_lines = if modal_state.autoallow_confirm_armed {
+        vec![
+            Line::from(Span::styled(
+                "AUTO-ALLOW: no further tool prompts.",
+                theme.fatal_error,
+            )),
+            Line::from(Span::styled(
+                "Press a again to confirm, Esc to go back",
+                theme.fatal_error,
+            )),
+        ]
     } else {
-        "[enter] approve  [e] edit  [esc] stay in plan"
+        let hint = if body_max_scroll > 0 {
+            "[enter] approve -> Prompt  [a] approve -> AUTO-ALLOW  [e] edit, then approve -> \
+             Prompt  [esc] stay in plan  [PageUp/PageDown] scroll"
+        } else {
+            "[enter] approve -> Prompt  [a] approve -> AUTO-ALLOW  [e] edit, then approve -> \
+             Prompt  [esc] stay in plan"
+        };
+        vec![Line::from(hint), Line::from("")]
     };
-    let footer_lines = vec![Line::from(hint), Line::from("")];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, frame_areas.footer_area);
 }
