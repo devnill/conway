@@ -73,10 +73,9 @@ use std::sync::{Arc, Mutex};
 use conway::plugin::{
     async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, ContentBlock, ContextHook,
     ContextHookCtx, ContextPayload, ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote,
-    PathArgs, PermissionClass, Plugin, PluginDescription, PluginManifest,
-    PluginStatusContribution, PromptSegment, Provenance, RenderKind, ResultStatus, Role, Tool,
-    ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolObserver, ToolOutput, ToolSpec,
-    TruncationPolicy,
+    PathArgs, PermissionClass, Plugin, PluginDescription, PluginManifest, PluginStatusContribution,
+    PromptSegment, Provenance, RenderKind, ResultStatus, Role, Tool, ToolCall, ToolCategory,
+    ToolCtx, ToolError, ToolName, ToolObserver, ToolOutput, ToolSpec, TruncationPolicy,
 };
 use conway::AgentId;
 
@@ -455,7 +454,10 @@ impl ContextHook for TodoContextHook {
                 reason: format!("conway.todo: {done}/{total} done"),
             },
         );
-        let ContextPayload { mut segments, tools } = payload;
+        let ContextPayload {
+            mut segments,
+            tools,
+        } = payload;
         segments.push(segment);
         ContextPayload { segments, tools }
     }
@@ -507,7 +509,10 @@ impl Plugin for TodoPlugin {
         PluginManifest {
             id: PLUGIN_ID.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: vec![ToolName::new(WRITE_TOOL_NAME), ToolName::new(READ_TOOL_NAME)],
+            tools: vec![
+                ToolName::new(WRITE_TOOL_NAME),
+                ToolName::new(READ_TOOL_NAME),
+            ],
             required_host_caps: vec![],
             optional_host_caps: vec![],
             requires: vec![],
@@ -677,7 +682,10 @@ mod tests {
         let manifest = TodoPlugin::new().manifest();
         assert_eq!(
             manifest.tools,
-            vec![ToolName::new(WRITE_TOOL_NAME), ToolName::new(READ_TOOL_NAME)]
+            vec![
+                ToolName::new(WRITE_TOOL_NAME),
+                ToolName::new(READ_TOOL_NAME)
+            ]
         );
     }
 
@@ -749,7 +757,10 @@ mod tests {
         let Provenance::SystemNote { reason } = &appended.provenance else {
             panic!("expected the appended segment to carry Provenance::SystemNote");
         };
-        assert!(reason.contains("conway.todo"), "reason names the plugin: {reason}");
+        assert!(
+            reason.contains("conway.todo"),
+            "reason names the plugin: {reason}"
+        );
         let ContentBlock::Text { text } = &appended.content[0] else {
             panic!("expected a single text block");
         };
@@ -819,7 +830,9 @@ mod tests {
             segments: prefix.clone(),
             tools: vec![],
         };
-        let out = hook.before_request(&hook_ctx(AgentId::new()), payload).await;
+        let out = hook
+            .before_request(&hook_ctx(AgentId::new()), payload)
+            .await;
         assert_eq!(
             out.segments, prefix,
             "no todo items means the payload is returned completely unchanged"
@@ -870,7 +883,10 @@ mod tests {
         .unwrap();
         let second = state.lock().unwrap().lists.get(&agent).cloned().unwrap();
         assert_eq!(second.len(), 1);
-        assert_eq!(second[0].id, id, "a supplied id must survive a whole-list replace unchanged");
+        assert_eq!(
+            second[0].id, id,
+            "a supplied id must survive a whole-list replace unchanged"
+        );
         assert_eq!(second[0].status, TodoStatus::Done);
 
         // A THIRD write keeps that id AND adds a brand new item with none --
@@ -893,7 +909,10 @@ mod tests {
         let third = state.lock().unwrap().lists.get(&agent).cloned().unwrap();
         assert_eq!(third.len(), 2);
         assert_eq!(third[0].id, id);
-        assert_ne!(third[1].id, id, "a freshly minted id must not collide with an existing one");
+        assert_ne!(
+            third[1].id, id,
+            "a freshly minted id must not collide with an existing one"
+        );
     }
 
     // ------------------------------------------------------------------

@@ -1630,8 +1630,18 @@ fn run_driven_piped(
         }
         if Instant::now() > deadline {
             let _ = child.kill();
-            let _ = child.wait();
-            break None;
+            // `child.wait()` after a `kill()` -- rather than discarding the
+            // exit status and returning `None` -- so a genuine future hang
+            // still produces a real `Output` (a killed-process status, plus
+            // every stdout/stderr byte written before the kill) for the
+            // caller's own `assert!(out.status.success(), ...)` to print.
+            // A bare `.expect("... must exit within the bound")` on `None`
+            // discards that diagnostic entirely -- exactly the shape that
+            // hid this file's own real bug (board item
+            // `01M1YVWPXWTPZT73R9AK1TVG1M`'s driven-mode turn-boundary
+            // defect) behind a one-line panic with no event-stream evidence
+            // at all.
+            break child.wait().ok();
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -1649,11 +1659,15 @@ fn run_driven_piped(
 
 /// Two `"prompt"` lines, written up front, drive two separate turns in the
 /// SAME process -- this item's own acceptance criterion: two
-/// `agent_finished` results, with a strictly increasing `seq` (the
-/// session's own live event counter keeps climbing across turns rather than
-/// resetting), and two distinct `/chat/completions` requests against the
-/// mock backend (proof the second prompt genuinely ran a second turn, not a
-/// no-op against a non-`keep_alive` handle).
+/// `turn_finished` results for the root agent (the per-turn boundary a
+/// `keep_alive` session actually emits -- `Event::AgentFinished` never
+/// fires per turn for one at all; see `conway::session_handle::TurnHandle::
+/// result`'s own doc, and `oneshot::run_driven`'s module-doc reconciliation
+/// #13), with a strictly increasing `seq` (the session's own live event
+/// counter keeps climbing across turns rather than resetting), and two
+/// distinct `/chat/completions` requests against the mock backend (proof
+/// the second prompt genuinely ran a second turn, not a no-op against a
+/// non-`keep_alive` handle).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oneshot_input_jsonl_drives_two_prompts_in_one_process_with_increasing_seq() {
     let mock = MockBackend::start(Script(vec![
@@ -1684,15 +1698,15 @@ async fn oneshot_input_jsonl_drives_two_prompts_in_one_process_with_increasing_s
     let lines = jsonl_lines(&out.stdout);
     let finishes: Vec<&Value> = lines
         .iter()
-        .filter(|v| v["event"] == "agent_finished")
+        .filter(|v| v["event"] == "turn_finished")
         .collect();
     assert_eq!(
         finishes.len(),
         2,
-        "two prompts in one process must produce two agent_finished results: {lines:?}"
+        "two prompts in one process must produce two turn_finished results: {lines:?}"
     );
     for finish in &finishes {
-        assert_eq!(finish["result"]["status"]["status"], "completed");
+        assert_eq!(finish["stop"], "end_turn");
     }
     let seq0 = finishes[0]["seq"].as_u64().expect("seq is a number");
     let seq1 = finishes[1]["seq"].as_u64().expect("seq is a number");
@@ -1742,14 +1756,14 @@ async fn oneshot_input_jsonl_malformed_line_emits_error_and_next_prompt_still_ru
     );
     let finishes: Vec<&Value> = lines
         .iter()
-        .filter(|v| v["event"] == "agent_finished")
+        .filter(|v| v["event"] == "turn_finished")
         .collect();
     assert_eq!(
         finishes.len(),
         1,
         "the next, well-formed prompt must still run after a malformed line: {lines:?}"
     );
-    assert_eq!(finishes[0]["result"]["status"]["status"], "completed");
+    assert_eq!(finishes[0]["stop"], "end_turn");
 }
 
 /// `{"type":"end"}` after a turn completes exits 0.

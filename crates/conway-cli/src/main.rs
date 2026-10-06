@@ -888,13 +888,9 @@ async fn dispatch(
         // its own `ConwayBuilder` rather than reusing the already-built
         // `conway` this match arm receives -- see `commands::doctor::run`'s
         // own doc for why) if the early return is ever removed.
-        Some(Command::Doctor(args)) => Ok(commands::doctor::run(
-            args,
-            env,
-            cli.config.as_deref(),
-            cli.root.as_deref(),
-        )
-        .await),
+        Some(Command::Doctor(args)) => {
+            Ok(commands::doctor::run(args, env, cli.config.as_deref(), cli.root.as_deref()).await)
+        }
         // **Disclosed reconciliation, out of this arm's own owning
         // item's paths but unavoidable and unclaimed:** dispatching
         // `Command::External` -- the plugin-contributed-subcommand half of

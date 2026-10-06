@@ -27,8 +27,10 @@ use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
 
-/// A project directory holding a `.conway/settings.json`, plus a separate,
-/// empty config directory standing in for `~/.conway`.
+/// A project directory (for its `.conway/agents`/`.conway/models.json`),
+/// plus a separate config directory standing in for `~/.conway` that
+/// actually carries `settings.json` -- see [`Project::with_settings`]'s own
+/// doc for why the fixture document lives there, not under the project.
 struct Project {
     project: TempDir,
     config: TempDir,
@@ -39,7 +41,23 @@ impl Project {
         let project = tempfile::tempdir().expect("tempdir");
         let conf_dir = project.path().join(".conway");
         std::fs::create_dir_all(&conf_dir).expect("create .conway");
-        std::fs::write(conf_dir.join("settings.json"), contents).expect("write settings.json");
+        let config = tempfile::tempdir().expect("tempdir");
+        // `settings.json` is written to the directory standing in for
+        // `~/.conway` (`CONWAY_CONFIG_DIR`), NOT `<project>/.conway/` -- a
+        // walk-discovered PROJECT settings.json is gated behind an explicit
+        // `conway trust project` consent (`config::merge::
+        // merged_document_impl`'s own `ProjectLayerTrust::Gated`, read back
+        // here as `WarningCode::UntrustedProjectConfigIgnored`), while the
+        // operator's own USER layer is never gated (that same function's
+        // unconditional first branch). Every fixture in this file wants its
+        // settings actually APPLIED so the checks below can observe them --
+        // `trust_cli.rs`'s own tests are the ones that exercise the gate
+        // itself. Writing here instead of `conf_dir` previously made every
+        // settings-dependent check below silently see the baked-in empty
+        // default document (caught by the check never appearing in the
+        // report at all, not by a wrong value -- see this item's
+        // verification report for the full root-cause writeup).
+        std::fs::write(config.path().join("settings.json"), contents).expect("write settings.json");
         // `config::merge::validate`'s per-chain-entry context-window check
         // (`WarningCode::ChainEntryContextWindowUnknown`) only runs AT ALL
         // when `models.json` already names at least one model -- an empty
@@ -67,10 +85,7 @@ impl Project {
             .to_string(),
         )
         .expect("write models.json");
-        Project {
-            project,
-            config: tempfile::tempdir().expect("tempdir"),
-        }
+        Project { project, config }
     }
 
     /// The project root as the SUBPROCESS will see it -- canonicalized, for
@@ -324,7 +339,10 @@ fn doctor_json_report_has_the_documented_top_level_shape() {
     assert!(report["summary"]["pass"].is_u64());
     assert!(report["summary"]["warn"].is_u64());
     assert!(report["summary"]["fail"].is_u64());
-    assert!(saw_fail, "this fixture's dead-port backend must produce at least one fail check");
+    assert!(
+        saw_fail,
+        "this fixture's dead-port backend must produce at least one fail check"
+    );
     assert!(
         !out.status.success(),
         "--json's exit code must still be nonzero when any check is fail"

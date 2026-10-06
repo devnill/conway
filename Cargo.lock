@@ -551,6 +551,7 @@ dependencies = [
  "conway-plugin-backends",
  "conway-plugin-checkpoint",
  "conway-plugin-claude",
+ "conway-plugin-compaction",
  "conway-plugin-confine",
  "conway-plugin-discover",
  "conway-plugin-history",
@@ -566,6 +567,7 @@ dependencies = [
  "conway-plugin-statusline",
  "conway-plugin-stepguard",
  "conway-plugin-subprocess",
+ "conway-plugin-todo",
  "conway-plugin-toolindex",
  "conway-plugin-trim",
  "conway-plugin-ui",
@@ -668,6 +670,16 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "conway-plugin-compaction"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "conway",
+ "serde_json",
  "tokio",
 ]
 
@@ -886,6 +898,20 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "conway-plugin-todo"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "conway",
+ "conway-testkit",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ulid",
 ]
 
 [[package]]

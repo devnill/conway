@@ -403,8 +403,15 @@ the `end` line at all.
   current turn's own result lands, and dispatches it the moment that result
   arrives. A script may therefore write every prompt it has up front and
   read answers as they come back, or wait for each turn's own
-  `agent_finished` before sending the next — both work against the same
-  queue.
+  `turn_finished` before sending the next — both work against the same
+  queue. **`turn_finished`, not `agent_finished`, is the ROOT's per-turn
+  boundary here**: a `keep_alive` agent (every driven session's root) does
+  not emit `agent_finished` per turn at all — only once, if and when the
+  whole session ends outright (a cancel, or `max_tokens`/`--max-seconds`
+  tripping; see the exit-code table above). `turn_finished` carries no
+  `AgentResult` (no `facts`/`artifacts`/`structured`/summary) — just
+  `usage` and the turn's own `stop` reason; read the turn's actual reply
+  from the `text_delta` lines that precede it.
 - **`seq` keeps climbing across turns, in the SAME process.** It is the
   session's own live event counter (see "Streaming" above for its full
   per-session contract) — it is never reset between turns, so a consumer
@@ -453,9 +460,11 @@ def send(obj):
     proc.stdin.write(json.dumps(obj) + "\n")
     proc.stdin.flush()
 
-def read_until_result():
-    """Reads lines until the root's own `agent_finished`, printing text
-    deltas as they arrive and returning the final result."""
+def read_until_turn_finished():
+    """Reads lines until the root's own `turn_finished` -- the driven
+    session's per-turn boundary (never `agent_finished`: a keep_alive root
+    does not emit that per turn at all) -- printing text deltas as they
+    arrive and returning the turn's own stop reason."""
     for line in proc.stdout:
         event = json.loads(line)
         kind = event.get("event") or event.get("type")
@@ -463,17 +472,17 @@ def read_until_result():
             print(event["text"], end="", flush=True)
         elif kind == "error":
             print(f"\n[driver error] {event['message']}")
-        elif kind == "agent_finished":
+        elif kind == "turn_finished":
             print()
-            return event["result"]
+            return event["stop"]
 
 send({"type": "prompt", "text": "what's in this directory?"})
-result = read_until_result()
-print("status:", result["status"]["status"])
+stop = read_until_turn_finished()
+print("stop:", stop)
 
 send({"type": "prompt", "text": "now summarize just the .py files"})
-result = read_until_result()
-print("status:", result["status"]["status"])
+stop = read_until_turn_finished()
+print("stop:", stop)
 
 send({"type": "end"})
 proc.wait()

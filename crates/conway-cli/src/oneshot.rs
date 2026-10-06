@@ -349,13 +349,13 @@
 //! 13. **`--input-format jsonl` (board item `01M1YVWPXWTPZT73R9AK1TVG1M`): the
 //!     persistent half of one-shot mode.** Everything above this entry
 //!     describes [`run`]'s single-prompt-then-exit body; this flag
-//!     dispatches to [`run_driven`] instead, which keeps the process open
+//!     dispatches to `run_driven` instead, which keeps the process open
 //!     and reads newline-delimited JSON from stdin, one input per turn/
 //!     operator action, until an explicit `{"type":"end"}` or EOF. Several
 //!     scope decisions, each disclosed rather than silently assumed:
 //!     - **Only the flag-free session arm is supported.** `--session`/
 //!       `--resume`/`--fork-from` are refused as usage errors with
-//!       `--input-format jsonl` ([`resolve_driven_session`]) -- every one of
+//!       `--input-format jsonl` (`resolve_driven_session`) -- every one of
 //!       them resolves to a handle with `keep_alive: false`
 //!       (`resolve_session`'s own flag-free/`--session` arms;
 //!       `Conway::resume_with` hardcodes it; `Conway::fork_from` has no
@@ -369,22 +369,24 @@
 //!       QUEUED, not rejected or run concurrently.** `SessionHandle::
 //!       prompt`'s own doc warns that two `prompt` calls racing the same
 //!       agent only coalesce the wake signal into the SAME turn rather than
-//!       starting two -- so [`run_driven`] never calls `prompt` again until
-//!       the prior turn's own root `Event::AgentFinished` has actually
-//!       landed, holding any input that arrives in between in a bounded, in
-//!       memory FIFO. `docs/scripting.md` states this as the documented
-//!       ordering guarantee.
+//!       starting two -- so `run_driven` never calls `prompt` again until
+//!       the prior turn's own root `Event::TurnFinished` (its natural
+//!       per-turn boundary -- a `keep_alive` agent's `Event::AgentFinished`
+//!       never fires per turn at all; see `advance_driven_turn`'s own
+//!       call site) has actually landed, holding any input that arrives in
+//!       between in a bounded, in-memory FIFO. `docs/scripting.md` states
+//!       this as the documented ordering guarantee.
 //!     - **`"steer"`/`"cancel"` are dispatched immediately** (both are
 //!       fire-and-forget signals into the runtime, not long-running calls);
 //!       **`"await"` is spawned onto a background task**, never awaited
 //!       inline in the select loop, so a long-running wait can never stall
-//!       this function's own event forwarding -- see [`run_driven`]'s own
+//!       this function's own event forwarding -- see `run_driven`'s own
 //!       doc for why its completion needs no separate output line (the
 //!       awaited agent's own `agent_finished` already reaches this stream,
 //!       per the pre-existing cross-session lifecycle bypass `docs/
 //!       scripting.md`'s `jsonl` section documents).
 //!     - **`conway.skills`' automatic propose-at-the-end trigger
-//!       ([`maybe_propose_skill`]) does not run in driven mode.** Its whole
+//!       (`maybe_propose_skill`) does not run in driven mode.** Its whole
 //!       premise is "the operator's task just ended" -- true for the
 //!       single-prompt path's own terminal `AgentFinished`, not true for
 //!       ANY one turn inside a long-lived driven session. Out of scope for
@@ -395,7 +397,7 @@
 //!       is a SESSION-lifetime cutoff counted from session start -- exactly
 //!       right for a session that runs one turn and exits, exactly wrong
 //!       for a `keep_alive` session meant to stay open across many turns.
-//!       [`resolve_driven_session`] calls its own [`resolve_driven_budget`]
+//!       `resolve_driven_session` calls its own `resolve_driven_budget`
 //!       instead, which defers to `[limits].deadline_secs` (`0` = unbounded)
 //!       when `--max-seconds` is absent -- the same default the TUI's own
 //!       `keep_alive` root already relies on.
@@ -492,7 +494,7 @@ fn is_reasonless_permission_denial(event: &Event) -> bool {
 /// evidence is finally ripe to act on. See `maybe_propose_skill`'s own
 /// doc for what "act on it" means for a non-interactive dispatch target.
 ///
-/// **`cli.input_format == Jsonl` dispatches to [`run_driven`] instead,
+/// **`cli.input_format == Jsonl` dispatches to `run_driven` instead,
 /// before any of the single-prompt machinery below ever runs** -- see this
 /// module's doc comment, reconciliation #13, for the persistent driver that
 /// function implements and the scope it deliberately leaves out (including
@@ -896,38 +898,81 @@ async fn run_driven(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
                     continue;
                 }
                 renderer.on_event(&env)?;
-                // `Event::AgentFinished` is the root's NATURAL end-of-turn
-                // (and, for a non-`keep_alive` agent, end of the whole
-                // session too -- never reached here, since
-                // `resolve_driven_session` always sets `keep_alive: true`).
+                // **`Event::AgentFinished` is NOT the root's per-turn
+                // boundary for a `keep_alive` agent** -- `SessionHandle::
+                // TurnHandle::result`'s own doc states this plainly: "a
+                // keep-alive turn that completes with no pending work does
+                // not emit `AgentFinished` at all -- it idle-awaits the next
+                // prompt instead," and the ONE `AgentFinished` such a
+                // session ever produces arrives only when the session
+                // itself really ends (a cancel, or a session-level budget
+                // dimension -- `max_tokens`/`--max-seconds` -- tripping).
+                // `resolve_driven_session` always sets `keep_alive: true`,
+                // so when this DOES arrive there is no session left to
+                // dispatch a queued prompt against -- this stops the driver
+                // unconditionally, never routing through
+                // [`advance_driven_turn`] (which could otherwise start a new
+                // turn on an agent whose lifecycle has already ended).
+                //
+                // **`Event::TurnFinished` is the root's actual NATURAL
+                // per-turn boundary.** It carries no `AgentResult` (keep-
+                // alive mode has none per turn -- the same doc above:
+                // consume a turn's own output via `text_delta`/`turn_
+                // finished` on the wire, not a per-turn `agent_finished`),
+                // so this never touches `final_result`; it only decides
+                // whether to dispatch the next queued prompt or stop.
                 // `TurnAborted`/`TurnAbortedByUser` are the harness-FORCED
-                // turn boundary (a turn-scoped budget dimension tripping, or
+                // counterpart (a turn-scoped budget dimension tripping, or
                 // an operator abort) -- both "end the turn, not the
-                // session" for a `keep_alive` agent (their own doc) and
-                // return it to idling for the next prompt exactly like a
-                // natural completion does, so this driver reacts to all
-                // three identically via [`advance_driven_turn`].
+                // session" for a `keep_alive` agent (their own doc), so
+                // this driver reacts to all three identically via
+                // [`advance_driven_turn`].
                 let stopping = grace_deadline.is_some();
-                let turn_boundary = match &env.event {
+                match &env.event {
                     Event::AgentFinished { result, .. } if env.agent == root => {
                         final_result = Some(result.clone());
-                        true
+                        break;
                     }
-                    Event::TurnAborted { agent_id, .. } if *agent_id == root => true,
-                    Event::TurnAbortedByUser { agent_id, .. } if *agent_id == root => true,
-                    _ => false,
-                };
-                if turn_boundary
-                    && advance_driven_turn(
-                        &handle,
-                        &mut pending_prompts,
-                        &mut turn_in_flight,
-                        ending,
-                        stopping,
-                    )
-                    .await?
-                {
-                    break;
+                    Event::TurnFinished { .. } if env.agent == root => {
+                        if advance_driven_turn(
+                            &handle,
+                            &mut pending_prompts,
+                            &mut turn_in_flight,
+                            ending,
+                            stopping,
+                        )
+                        .await?
+                        {
+                            break;
+                        }
+                    }
+                    Event::TurnAborted { agent_id, .. } if *agent_id == root => {
+                        if advance_driven_turn(
+                            &handle,
+                            &mut pending_prompts,
+                            &mut turn_in_flight,
+                            ending,
+                            stopping,
+                        )
+                        .await?
+                        {
+                            break;
+                        }
+                    }
+                    Event::TurnAbortedByUser { agent_id, .. } if *agent_id == root => {
+                        if advance_driven_turn(
+                            &handle,
+                            &mut pending_prompts,
+                            &mut turn_in_flight,
+                            ending,
+                            stopping,
+                        )
+                        .await?
+                        {
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
             line = lines.next_line(), if !stdin_closed => {
@@ -1071,7 +1116,9 @@ async fn run_driven(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
 }
 
 /// [`run_driven`]'s own reaction, common to EITHER the root's natural
-/// end-of-turn (`Event::AgentFinished`) or a harness-forced turn boundary
+/// end-of-turn (`Event::TurnFinished` -- never `Event::AgentFinished`,
+/// which a `keep_alive` agent does not emit per turn at all; see this
+/// function's call site for why) or a harness-forced turn boundary
 /// (`Event::TurnAborted`/`Event::TurnAbortedByUser` -- a turn-scoped budget
 /// dimension tripping, or an operator abort; both variants' own doc: "ends
 /// the turn, not the session," returning a `keep_alive` agent to idling for
@@ -1212,7 +1259,10 @@ enum DriverInput {
     Steer { agent: String, text: String },
     /// `{"type":"cancel","agent":"<id>","reason":"..."}` -- `"reason"` is
     /// optional; when absent, a generic driver-attributed reason is used.
-    Cancel { agent: String, reason: Option<String> },
+    Cancel {
+        agent: String,
+        reason: Option<String>,
+    },
     /// `{"type":"await","agent":"<id>"}` -- waits (on a background task,
     /// never this function's own select loop -- see [`run_driven`]'s own
     /// doc) until `agent` reaches a terminal result. The result itself is
@@ -1281,8 +1331,8 @@ fn parse_driver_input(line: &str) -> Result<DriverInput, String> {
 /// it (a reentrant, per-call lock), the same atomicity every renderer in
 /// `render::` already relies on for its own buffered flush.
 fn write_driver_error(message: impl std::fmt::Display) -> std::io::Result<()> {
-    let mut line = serde_json::json!({ "type": "error", "message": message.to_string() })
-        .to_string();
+    let mut line =
+        serde_json::json!({ "type": "error", "message": message.to_string() }).to_string();
     line.push('\n');
     let mut out = std::io::stdout();
     out.write_all(line.as_bytes())?;

@@ -461,11 +461,17 @@ mod tests {
                 user_prompt("please read three files"),
                 tool_result("tc_1", "read_file", "contents of the first, oldest file"),
                 tool_result("tc_2", "read_file", "contents of the second file"),
-                tool_result("tc_3", "read_file", "contents of the third, most recent file"),
+                tool_result(
+                    "tc_3",
+                    "read_file",
+                    "contents of the third, most recent file",
+                ),
             ],
             tools: vec![],
         };
-        let hook = CompactOldToolResults { fold_after_turns: 1 };
+        let hook = CompactOldToolResults {
+            fold_after_turns: 1,
+        };
 
         let out = hook.before_request(&hook_ctx(), payload).await;
 
@@ -570,7 +576,10 @@ mod tests {
             .expect_err("a typo'd/unrecognized key must be refused, not silently ignored");
         match err {
             PluginConfigureError::UnknownKey { key } => {
-                assert_eq!(key, "fold_after_trns", "the error must name the offending key");
+                assert_eq!(
+                    key, "fold_after_trns",
+                    "the error must name the offending key"
+                );
             }
             other => panic!("expected UnknownKey naming 'fold_after_trns', got {other:?}"),
         }
@@ -598,7 +607,9 @@ mod tests {
         let err = plugin
             .configure(&serde_json::json!(3))
             .expect_err("a bare scalar must be refused, not interpreted as a key/value map");
-        assert!(matches!(err, PluginConfigureError::NotAnObject { ref actual } if actual == "number"));
+        assert!(
+            matches!(err, PluginConfigureError::NotAnObject { ref actual } if actual == "number")
+        );
     }
 
     /// `Plugin::description().you_get` already interpolates

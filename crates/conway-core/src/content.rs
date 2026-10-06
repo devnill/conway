@@ -473,7 +473,10 @@ pub fn turn_cost(usage: &Usage, price: &Price) -> Option<Cost> {
         };
         amount += f64::from(usage.cache_write_tokens) * rate / MTOK;
     }
-    Some(Cost { amount, approximate })
+    Some(Cost {
+        amount,
+        approximate,
+    })
 }
 
 /// Why the model stopped generating.
@@ -608,12 +611,7 @@ mod tests {
         assert!(p.temperature.is_none() && p.stop.is_empty() && p.extra.is_empty());
     }
 
-    fn priced(
-        input: f64,
-        output: f64,
-        cache_read: Option<f64>,
-        cache_write: Option<f64>,
-    ) -> Price {
+    fn priced(input: f64, output: f64, cache_read: Option<f64>, cache_write: Option<f64>) -> Price {
         Price {
             input_per_mtok: input,
             output_per_mtok: output,
@@ -645,7 +643,10 @@ mod tests {
             "expected 11.10, got {}",
             cost.amount
         );
-        assert!(!cost.approximate, "every dimension was priced: must be exact");
+        assert!(
+            !cost.approximate,
+            "every dimension was priced: must be exact"
+        );
     }
 
     /// Reasoning tokens are billed at the OUTPUT rate (no separate price

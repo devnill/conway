@@ -830,9 +830,10 @@ mod tests {
     fn model_decision_resolves_focused_model_cost_price_by_exact_key() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
-        state
-            .model_prices
-            .insert("anthropic/claude-sonnet-4-6".to_string(), status_test_price());
+        state.model_prices.insert(
+            "anthropic/claude-sonnet-4-6".to_string(),
+            status_test_price(),
+        );
 
         state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
 
@@ -872,9 +873,10 @@ mod tests {
         let root = AgentId::new();
         let child = AgentId::new();
         let mut state = AppState::new(root);
-        state
-            .model_prices
-            .insert("anthropic/claude-sonnet-4-6".to_string(), status_test_price());
+        state.model_prices.insert(
+            "anthropic/claude-sonnet-4-6".to_string(),
+            status_test_price(),
+        );
         state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
         assert!(state.focused_model_price.is_some());
 

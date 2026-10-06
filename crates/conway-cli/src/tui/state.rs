@@ -982,6 +982,27 @@ pub struct AppState {
     /// that agent's run even after it later finishes; nothing clears an
     /// entry.
     pub budget_warned_agents: HashSet<AgentId>,
+    /// Board item `01M1YVMTDJYEFC5PKSQHDRASJX` (`conway.compaction`),
+    /// INTENT §8.3's "the fold must be named in the transcript when
+    /// active, never silent": the most recent `conway.compaction` fold
+    /// notice TEXT this session has shown per agent (keyed by the agent
+    /// whose context it described), so a repeated, UNCHANGED fold -- the
+    /// plugin's own `ContextHook` recomputes and re-appends its summary
+    /// segment on every request once the threshold is crossed, every
+    /// turn, forever -- renders exactly ONE transcript line per actual
+    /// CHANGE in fold count, never one per turn. Compared by exact text
+    /// (`Event::ContextSegmentAdded`'s `Provenance::SystemNote { reason }`
+    /// already embeds the fold count: `"conway.compaction: folded N
+    /// earlier tool result(s)"`), not by count alone, so there is nothing
+    /// else for this field to parse or re-derive (P-14). Gated on the
+    /// FOCUSED agent, the same scope `Event::ModelDecision`'s own
+    /// fallback notice uses just below, for the identical reason: this is
+    /// "what happened to the context THIS agent's own next request will
+    /// see," not a tree-wide status. A different agent folding while
+    /// unfocused is not reported here -- unlike `budget_warned_agents`'
+    /// own unconditional convention -- see this field's own call site for
+    /// the reasoning spelled out again.
+    pub compaction_fold_notice: HashMap<AgentId, String>,
     /// Board item A1d ("say why a turn fell back"), the "switch-forks do not
     /// pile up" half: every `/model`/`/role` switch's OWN child, mapped to
     /// the agent it replaced -- `switch_session`'s (`commands.rs`) one write
@@ -2163,6 +2184,7 @@ impl AppState {
             shell_in_flight: false,
             last_shell_command: None,
             budget_warned_agents: HashSet::new(),
+            compaction_fold_notice: HashMap::new(),
             switch_lineage: HashMap::new(),
             pending_focus_notice: None,
             pending_exit_word: None,
@@ -2406,6 +2428,7 @@ impl AppState {
             shell_in_flight: _,
             last_shell_command: _,
             budget_warned_agents: _,
+            compaction_fold_notice: _,
             switch_lineage: _,
             pending_focus_notice: _,
             pending_exit_word: _,
@@ -3068,8 +3091,8 @@ impl AppState {
             //   it.
             Event::ContextSegmentAdded {
                 segment,
+                provenance,
                 tokens_est,
-                ..
             } => {
                 if env.agent == self.focused_agent {
                     if self.turn_started_at.is_some() {
@@ -3081,6 +3104,33 @@ impl AppState {
                         self.focused_ctx_tokens = self
                             .focused_ctx_tokens
                             .saturating_add(u64::from(*tokens_est));
+                    }
+                    // Board item `01M1YVMTDJYEFC5PKSQHDRASJX`: `conway.
+                    // compaction`'s own `ContextHook` recomputes and
+                    // re-appends its fold-summary segment on EVERY request
+                    // once the threshold is crossed -- a fresh `SegmentId`
+                    // each time (`PromptSegment::new`'s own doc), so the
+                    // `focused_seen_segments` dedup just above never
+                    // suppresses it. Without this arm, INTENT §8.3's "never
+                    // silent" would be violated the other direction: a
+                    // notice on EVERY turn, not none. Dedupe on the
+                    // `reason` TEXT itself (it already embeds the exact
+                    // fold count), not the segment id or a parsed count --
+                    // nothing else to re-derive (P-14). One line, only when
+                    // the text actually changes from this agent's last one.
+                    if let conway::Provenance::SystemNote { reason } = provenance {
+                        if reason.starts_with(&format!("{}:", conway_plugin_compaction::PLUGIN_ID))
+                        {
+                            let changed =
+                                self.compaction_fold_notice.get(&env.agent) != Some(reason);
+                            if changed {
+                                self.compaction_fold_notice
+                                    .insert(env.agent, reason.clone());
+                                self.transcript.push(Entry::Notice {
+                                    text: reason.clone(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -3691,6 +3741,167 @@ mod turn_abort_status_reset {
             "a turn-scoped budget trip must leave the status bar idle"
         );
         assert!(state.turn_started_at.is_none());
+    }
+}
+
+/// Board item `01M1YVMTDJYEFC5PKSQHDRASJX` (`conway.compaction`), INTENT
+/// §8.3: `apply`'s `Event::ContextSegmentAdded` arm must name the fold in
+/// the transcript exactly once per CHANGE in fold count, never once per
+/// turn (the plugin re-appends its summary segment, with a fresh
+/// `SegmentId`, on every request once the threshold is crossed).
+#[cfg(test)]
+mod compaction_fold_notice {
+    use super::fixtures::envelope;
+    use super::*;
+
+    fn fold_segment(reason: &str, tokens_est: u32) -> Event {
+        Event::ContextSegmentAdded {
+            segment: SegmentId::new(),
+            provenance: conway::Provenance::SystemNote {
+                reason: reason.to_string(),
+            },
+            tokens_est,
+        }
+    }
+
+    #[test]
+    fn a_compaction_fold_notice_appears_once_in_the_transcript() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(
+            session,
+            agent,
+            fold_segment("conway.compaction: folded 3 earlier tool result(s)", 42),
+        ));
+
+        let notices: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notices,
+            vec!["conway.compaction: folded 3 earlier tool result(s)"],
+            "the fold must be named in the transcript, naming the plugin and the count"
+        );
+    }
+
+    /// The core acceptance criterion: an UNCHANGED fold count, re-announced
+    /// by the plugin on every subsequent turn's request (a fresh
+    /// `SegmentId` each time), must not repeat the transcript line.
+    #[test]
+    fn an_unchanged_fold_count_does_not_repeat_the_notice() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        for _ in 0..3 {
+            state.apply(&envelope(
+                session,
+                agent,
+                fold_segment("conway.compaction: folded 3 earlier tool result(s)", 42),
+            ));
+        }
+
+        let notice_count = state
+            .transcript
+            .iter()
+            .filter(|entry| matches!(entry, Entry::Notice { .. }))
+            .count();
+        assert_eq!(
+            notice_count, 1,
+            "re-seeing the SAME fold count across turns must not repeat the notice"
+        );
+    }
+
+    /// The other half: a fold count that genuinely CHANGES (the plugin's
+    /// own `reason` text embeds it) must produce a new, distinct line.
+    #[test]
+    fn a_changed_fold_count_produces_a_new_notice() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(
+            session,
+            agent,
+            fold_segment("conway.compaction: folded 3 earlier tool result(s)", 42),
+        ));
+        state.apply(&envelope(
+            session,
+            agent,
+            fold_segment("conway.compaction: folded 5 earlier tool result(s)", 42),
+        ));
+
+        let notices: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notices,
+            vec![
+                "conway.compaction: folded 3 earlier tool result(s)",
+                "conway.compaction: folded 5 earlier tool result(s)",
+            ],
+            "a genuine change in fold count must produce its own, distinct line"
+        );
+    }
+
+    /// Scoping companion, mirroring `fallback_notice_text`'s own focused-
+    /// agent gate: a DIFFERENT agent's fold must not reach the transcript
+    /// the operator is reading for the focused one.
+    #[test]
+    fn a_non_focused_agents_fold_is_not_reported() {
+        let session = SessionId::new();
+        let focused = AgentId::new();
+        let other = AgentId::new();
+        let mut state = AppState::new(focused);
+
+        state.apply(&envelope(
+            session,
+            other,
+            fold_segment("conway.compaction: folded 3 earlier tool result(s)", 42),
+        ));
+
+        assert!(
+            !state
+                .transcript
+                .iter()
+                .any(|entry| matches!(entry, Entry::Notice { .. })),
+            "an unfocused agent's own fold must not appear in the focused agent's transcript"
+        );
+    }
+
+    /// An ordinary segment (not a `conway.compaction` fold -- any other
+    /// `SystemNote`, or no note at all) must never be mistaken for one.
+    #[test]
+    fn an_unrelated_system_note_is_not_treated_as_a_compaction_notice() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(
+            session,
+            agent,
+            fold_segment("conway.todo: the current list", 10),
+        ));
+
+        assert!(
+            !state
+                .transcript
+                .iter()
+                .any(|entry| matches!(entry, Entry::Notice { .. })),
+            "an unrelated plugin's own SystemNote must not be read as a compaction fold notice"
+        );
     }
 }
 

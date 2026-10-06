@@ -37,9 +37,19 @@ folded result, joined under a short header naming how many were folded. The
 summary segment's own provenance is a `SystemNote` whose `reason` names
 **`conway.compaction`** and the exact count folded — the transcript never
 shows an anonymous note where this plugin acted, per `INTENT.md` §8.3's
-"never silent" discipline. `conway plugin list`/`/context`'s rendering of
-provenance reads this `reason` text directly, so a folded segment reads
-`system note: conway.compaction: folded N earlier tool result(s)`.
+"never silent" discipline, on two independent surfaces:
+
+- **On demand:** `/context`'s rendering of provenance reads this `reason`
+  text directly, so a folded segment reads `system note: conway.compaction:
+  folded N earlier tool result(s)`.
+- **Live, in the TUI transcript, while a fold is actually active:** the
+  same text appears as its own transcript line the first time a request
+  folds anything, and again only when the fold COUNT actually changes
+  (the hook recomputes and re-appends its summary segment on every
+  subsequent request once the threshold is crossed, every turn, forever —
+  re-announcing an unchanged count every turn would be its own kind of
+  noise). An operator who never opens `/context` still sees the fold
+  happen, once, exactly when it starts and whenever it grows or shrinks.
 
 **"Turns" is a label, not a literal count.** A `ContextHook` sees the
 assembled `Vec<PromptSegment>` for one request, not the underlying

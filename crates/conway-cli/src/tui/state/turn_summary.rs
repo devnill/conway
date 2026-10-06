@@ -130,7 +130,10 @@ fn format_turn_summary(
         .and_then(|p| conway::turn_cost(usage, p))
         .map(|cost| format!(" · {}", cost.format()))
         .unwrap_or_default();
-    format!("{elapsed} · {} tok{suffix}{cost_suffix}", compact_tokens(total))
+    format!(
+        "{elapsed} · {} tok{suffix}{cost_suffix}",
+        compact_tokens(total)
+    )
 }
 
 #[cfg(test)]

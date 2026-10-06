@@ -688,7 +688,7 @@ pub struct AgentLoop {
 /// `SessionStore::head` at the EXACT moment `awaiting_prompt` was set `true`
 /// -- captured by whoever arms the gate (`Runtime::start_root`/`resume_root`,
 /// `subagent.rs`'s fork/spawn launch, and `AgentLoop::end_keep_alive_turn`),
-/// never lazily inside the wait itself. [`AgentLoop::wait_for_resume`]
+/// never lazily inside the wait itself. `AgentLoop::wait_for_resume`
 /// compares against THIS value, not a fresh read taken when it happens to
 /// start waiting: a fresh read would race a caller who sends a genuine
 /// prompt/steer BEFORE the newly armed/resumed task is ever polled for the
@@ -720,7 +720,7 @@ impl Default for ResumeGate {
 }
 
 /// What, if anything, justified waking a `keep_alive` agent parked at its
-/// own [`ResumeGate`] -- the outcome of [`AgentLoop::wait_for_resume`].
+/// own [`ResumeGate`] -- the outcome of `AgentLoop::wait_for_resume`.
 ///
 /// Board item `01M44PK089DF2M9TM3C4P5CKMZ`: deliberately NOT produced by the
 /// mere fact that `ResumeGate::notify.notified()` resolved -- see that

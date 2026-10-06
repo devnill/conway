@@ -1363,7 +1363,10 @@ mod tests {
         }
     }
 
-    fn metadata_with_price(key: &str, price: conway::Price) -> conway::config::model_metadata::ModelMetadata {
+    fn metadata_with_price(
+        key: &str,
+        price: conway::Price,
+    ) -> conway::config::model_metadata::ModelMetadata {
         let mut metadata = conway::config::model_metadata::ModelMetadata::empty();
         metadata.models.insert(
             key.to_string(),
@@ -1424,7 +1427,9 @@ mod tests {
         assert_eq!(lines[1], "#2 test/model-a $15.000");
         assert!(lines.contains(&"by model:".to_string()));
         assert!(
-            lines.iter().any(|l| l == "  test/model-a  2 turns  $18.000"),
+            lines
+                .iter()
+                .any(|l| l == "  test/model-a  2 turns  $18.000"),
             "{lines:?}"
         );
         assert_eq!(lines.last().unwrap(), "total: $18.000");
@@ -1500,6 +1505,9 @@ mod tests {
     fn cost_report_lines_with_no_assistant_turns_says_so() {
         let metadata = conway::config::model_metadata::ModelMetadata::empty();
         let lines = cost_report_lines(&[], &metadata);
-        assert_eq!(lines, vec!["no assistant turns in this session yet".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["no assistant turns in this session yet".to_string()]
+        );
     }
 }

@@ -34,7 +34,7 @@
 //!   (`crate::first_party_plugins::install`, `crate::subprocess_plugins::
 //!   install`, `crate::mcp_plugins::install_tolerant`, `crate::
 //!   claude_compat_plugins::install`, then `ConwayBuilder::build` itself) --
-//!   see [`build_full_conway`]'s own doc for the one deliberate difference
+//!   see `build_full_conway`'s own doc for the one deliberate difference
 //!   (a `DenyAllGate`, matching every other read-only subcommand's own
 //!   choice in `main.rs`). A degraded MCP/subprocess entry surfaces exactly
 //!   the way it would in a live session: as a [`WarningCode::
@@ -53,7 +53,7 @@
 //!
 //! # What this deliberately does not do
 //!
-//! No `--fix`: every non-`pass` [`Check`] carries a `fix` string naming the
+//! No `--fix`: every non-`pass` `Check` carries a `fix` string naming the
 //! edit or command that would resolve it, never a mutation this binary
 //! performs on the operator's behalf. No network beyond the backends
 //! already configured (the marketplace/git check never reaches a remote
@@ -202,13 +202,16 @@ pub async fn run(
     }
 
     for (id, entry) in &config.backends {
-        checks.push(backend_reachable_check(id, &classify_entry(
-            entry,
-            env,
-            ProbePolicy::All,
-            conway::backend_usability::DEFAULT_PROBE_TIMEOUT,
-        )
-        .await));
+        checks.push(backend_reachable_check(
+            id,
+            &classify_entry(
+                entry,
+                env,
+                ProbePolicy::All,
+                conway::backend_usability::DEFAULT_PROBE_TIMEOUT,
+            )
+            .await,
+        ));
         checks.push(backend_inert_keys_check(id, entry));
     }
 
@@ -374,12 +377,11 @@ fn warning_fix(code: WarningCode) -> Option<&'static str> {
             "add this backend/model pair to models.json with its real context window, or \
              accept the dialect-default floor routing falls back to",
         ),
-        WarningCode::HeadroomExceedsContext | WarningCode::HeadroomConsumesLargeFractionOfContext => {
-            Some(
-                "lower the role's headroom_tokens, or route it to a model with a larger \
+        WarningCode::HeadroomExceedsContext
+        | WarningCode::HeadroomConsumesLargeFractionOfContext => Some(
+            "lower the role's headroom_tokens, or route it to a model with a larger \
                  context window",
-            )
-        }
+        ),
         WarningCode::PresentationConfigIgnored => Some(
             "move [tui] settings into conway-cli's own presentation config file -- this \
              schema no longer reads them from settings.json",
@@ -387,9 +389,7 @@ fn warning_fix(code: WarningCode) -> Option<&'static str> {
         WarningCode::UntrustedProjectConfigIgnored => {
             Some("run `conway trust project` to review and apply this project's .conway/ files")
         }
-        WarningCode::NoFirstPartyPluginsInstalled => {
-            Some("run `conway plugin install --defaults`")
-        }
+        WarningCode::NoFirstPartyPluginsInstalled => Some("run `conway plugin install --defaults`"),
         _ => None,
     }
 }
@@ -416,9 +416,11 @@ fn backend_reachable_check(id: &str, usability: &Usability) -> Check {
     let check_id = format!("backends.{id}.reachable");
     match usability {
         Usability::Usable => Check::pass(check_id, format!("{id}: reachable")),
-        Usability::Unusable(reason) => {
-            Check::fail(check_id, format!("{id}: {reason}"), unusable_fix(reason, id))
-        }
+        Usability::Unusable(reason) => Check::fail(
+            check_id,
+            format!("{id}: {reason}"),
+            unusable_fix(reason, id),
+        ),
         Usability::Undetermined(reason) => Check::warn(
             check_id,
             format!("{id}: {reason}"),
@@ -464,13 +466,13 @@ fn undetermined_fix(reason: &Undetermined, id: &str) -> String {
 /// re-detected: a typo'd field name (`base_ur1`) lands here silently
 /// (`BackendEntry`'s own doc, "Kind-specific keys: the catch-all shape"),
 /// and this is the one place that surfaces it.
-fn backend_inert_keys_check(
-    id: &str,
-    entry: &conway::config::schema::BackendEntry,
-) -> Check {
+fn backend_inert_keys_check(id: &str, entry: &conway::config::schema::BackendEntry) -> Check {
     let check_id = format!("backends.{id}.inert_keys");
     if entry.extra.is_empty() {
-        return Check::pass(check_id, format!("backends.{id} carries no unrecognized keys"));
+        return Check::pass(
+            check_id,
+            format!("backends.{id} carries no unrecognized keys"),
+        );
     }
     let keys: Vec<&str> = entry.extra.keys().map(String::as_str).collect();
     Check::warn(
@@ -526,7 +528,10 @@ fn agents_check(cwd: &Path) -> Check {
 /// resolver `config::merge::load_impl` uses for `[session].root`'s
 /// effective value, so this always names the directory a real session
 /// launched from this `cwd` would actually write to.
-fn project_key_check(config: &conway::config::ConwayConfig, env: &HashMap<String, String>) -> Check {
+fn project_key_check(
+    config: &conway::config::ConwayConfig,
+    env: &HashMap<String, String>,
+) -> Check {
     let resolved = session_root(&config.cwd, config.session.root.as_deref(), env);
     let summary = match &config.session.root {
         Some(_) => format!(
@@ -793,16 +798,10 @@ mod tests {
     /// own documented contract, and the one JSON consumers rely on.
     #[test]
     fn doctor_exit_code_is_nonzero_iff_any_check_failed() {
-        let clean = vec![
-            Check::pass("a", "ok"),
-            Check::warn("b", "meh", "fix b"),
-        ];
+        let clean = vec![Check::pass("a", "ok"), Check::warn("b", "meh", "fix b")];
         assert_eq!(exit_code_for(&clean), ExitCode::Completed);
 
-        let dirty = vec![
-            Check::pass("a", "ok"),
-            Check::fail("c", "broken", "fix c"),
-        ];
+        let dirty = vec![Check::pass("a", "ok"), Check::fail("c", "broken", "fix c")];
         assert_eq!(exit_code_for(&dirty), ExitCode::AgentFailed);
     }
 
