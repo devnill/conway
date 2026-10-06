@@ -250,6 +250,7 @@ use ratatui::Frame;
 
 use super::agents;
 use super::theme::Theme;
+use conway::plugin::PluginStatusContribution;
 use conway::{AgentId, ContextTokensSource, PermissionMode, ResultStatus};
 
 use crate::tui::config::StatusLineConfig;
@@ -457,7 +458,15 @@ pub fn status_line_spans(state: &AppState, theme: &Theme, width: u16) -> Line<'s
     let fields = resolve_fields(
         &state.status_line_config,
         state.permission_mode,
-        !state.plugin_status_contributions.is_empty(),
+        // Review fix 1 (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): force-in
+        // must agree with what `contributions_ladder` will actually
+        // render, which is `effective_contributions` (raw
+        // `plugin_status_contributions` with `AppState::focused_goal`
+        // substituted for the `goal` key), not the raw field alone --
+        // otherwise a focused goal with no OTHER plugin contribution
+        // present would compute a non-empty ladder that this force-in
+        // check never knew to ask for.
+        !effective_contributions(state).is_empty(),
         state.project_config_ignored,
     );
     // This item: `hint`'s own `focused: <id>` note is suppressed whenever
@@ -1003,6 +1012,48 @@ fn contribution_style(status: &ResultStatus, theme: &Theme) -> Style {
     }
 }
 
+/// Review fix 1 (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): `AppState::
+/// plugin_status_contributions` as-is, EXCEPT the `goal` key
+/// (`conway_plugin_goal::STATUS_KEY`) is replaced by one synthesized
+/// straight from `AppState::focused_goal` -- the FOCUSED agent's own
+/// current goal, tracked by the TUI itself (`app/focus.rs::
+/// try_focus_agent`, `commands::execute`'s `SlashCommand::Goal` arm), never
+/// by `conway_plugin_goal::GoalPlugin::status_contributions`.
+///
+/// **Why the plugin's own `goal` contribution cannot be trusted here.**
+/// `Plugin::status_contributions` takes no argument at all -- the trait has
+/// no notion of "which agent is focused" to hand a plugin, so
+/// `GoalPlugin::status_contributions` can only report whichever agent's
+/// context was MOST RECENTLY built, including a background subagent's. In
+/// a multi-agent session, that agent is not necessarily the one on screen:
+/// without this override, a background agent's own turn would blank or
+/// silently replace the focused agent's `goal:` field the instant its
+/// context got assembled. Every OTHER key this plugin (or any other) might
+/// report is passed through unchanged -- only `goal` is agent-sensitive in
+/// this way.
+///
+/// A plugin that reports no `goal` key at all (not installed, or
+/// genuinely no goal has ever been set on any agent) still gets one
+/// synthesized here whenever `focused_goal` is `Some` -- the status line
+/// must show the focused agent's real goal either way, not only when the
+/// plugin happens to agree.
+fn effective_contributions(state: &AppState) -> Vec<PluginStatusContribution> {
+    let mut contributions: Vec<PluginStatusContribution> = state
+        .plugin_status_contributions
+        .iter()
+        .filter(|c| c.key != conway_plugin_goal::STATUS_KEY)
+        .cloned()
+        .collect();
+    if let Some(text) = &state.focused_goal {
+        contributions.push(PluginStatusContribution {
+            key: conway_plugin_goal::STATUS_KEY.to_string(),
+            status: ResultStatus::Completed,
+            value: conway_plugin_goal::truncate_for_display(text),
+        });
+    }
+    contributions
+}
+
 /// The `plugins` field's ladder (board `01M0X1B7Z41J57N6YP2JFZ2AZW`;
 /// design `DESIGN-permission-modes.md` §3d resolves the "a live guard and a
 /// dead guard look identical" hazard by pointing at exactly this type --
@@ -1030,7 +1081,7 @@ fn contribution_style(status: &ResultStatus, theme: &Theme) -> Style {
 /// what lets `mode` (ranked strictly above it in `drop_priority`) go
 /// untouched until `plugins` has nothing left to give.
 fn contributions_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
-    let contributions = &state.plugin_status_contributions;
+    let contributions = effective_contributions(state);
     if contributions.is_empty() {
         return vec![vec![]];
     }
@@ -3680,6 +3731,80 @@ mod tests {
         }];
         let line = status_line(&state);
         assert!(line.contains("guard: qwen2.5-3b"), "{line}");
+    }
+
+    // ------------------------------------------------------------------
+    // Review fix 1 (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): the `goal`
+    // key is special-cased -- `AppState::focused_goal` always wins over
+    // whatever `conway_plugin_goal::GoalPlugin::status_contributions`
+    // itself reported, because that plugin cannot tell a focused agent
+    // from a background one. This is the regression the finding
+    // describes, reproduced WITHOUT a full two-agent runtime: a
+    // plugin-reported `goal` value standing in for what a background
+    // agent's own context build would have left behind.
+    // ------------------------------------------------------------------
+
+    /// The plugin's own (potentially stale/wrong-agent) `goal`
+    /// contribution is never shown once `focused_goal` disagrees with it.
+    #[test]
+    fn focused_goal_overrides_the_plugins_own_goal_contribution() {
+        let mut state = AppState::new(AgentId::new());
+        state.plugin_status_contributions = vec![PluginStatusContribution {
+            key: "goal".to_string(),
+            status: ResultStatus::Completed,
+            value: "WRONG -- a background agent's own goal".to_string(),
+        }];
+        state.focused_goal = Some("ship the thing".to_string());
+        let line = status_line(&state);
+        assert!(line.contains("goal: ship the thing"), "{line}");
+        assert!(
+            !line.contains("WRONG"),
+            "the plugin's own contribution must never leak through once \
+             `focused_goal` disagrees with it: {line}"
+        );
+    }
+
+    /// `focused_goal` alone (no plugin contribution reporting `goal` at
+    /// all -- e.g. a fresh `GoalPlugin` instance that has not yet built
+    /// any agent's context) still renders: the TUI's own tracked value is
+    /// authoritative, not merely a correction applied on top of the
+    /// plugin's.
+    #[test]
+    fn focused_goal_renders_even_with_no_matching_plugin_contribution() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(state.plugin_status_contributions.is_empty());
+        state.focused_goal = Some("finish the migration".to_string());
+        let line = status_line(&state);
+        assert!(line.contains("goal: finish the migration"), "{line}");
+    }
+
+    /// `focused_goal` being `None` (no goal set on the focused agent, or
+    /// not yet fetched) and the plugin ALSO reporting nothing: no `goal`
+    /// field at all -- proof this override never manufactures a field out
+    /// of nothing.
+    #[test]
+    fn no_goal_field_at_all_when_focused_goal_is_none_and_the_plugin_is_silent() {
+        let state = AppState::new(AgentId::new());
+        assert!(state.focused_goal.is_none());
+        assert!(state.plugin_status_contributions.is_empty());
+        let line = status_line(&state);
+        assert!(!line.contains("goal"), "{line}");
+    }
+
+    /// Every OTHER key the plugin reports passes through unaffected by
+    /// this override -- only `goal` is special-cased.
+    #[test]
+    fn non_goal_contributions_are_unaffected_by_the_focused_goal_override() {
+        let mut state = AppState::new(AgentId::new());
+        state.plugin_status_contributions = vec![PluginStatusContribution {
+            key: "guard".to_string(),
+            status: ResultStatus::Completed,
+            value: "qwen2.5-3b".to_string(),
+        }];
+        state.focused_goal = Some("ship the thing".to_string());
+        let line = status_line(&state);
+        assert!(line.contains("guard: qwen2.5-3b"), "{line}");
+        assert!(line.contains("goal: ship the thing"), "{line}");
     }
 
     /// A contribution with an empty `value` renders the bare `key` -- never

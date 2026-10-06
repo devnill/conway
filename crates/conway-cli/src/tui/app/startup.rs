@@ -390,6 +390,15 @@ impl App {
             state
                 .transcript
                 .extend(crate::tui::state::backfill_entries(&records));
+            // Review fix 1 (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): the
+            // SAME records already fetched above, decoded via
+            // `commands::latest_goal_text` -- no second fetch. Without
+            // this, a resumed session with a standing goal already set on
+            // root would show no `goal` field until the operator switched
+            // focus away and back (`app/focus.rs::try_focus_agent`'s own
+            // re-fetch), even though the root agent IS the one focused
+            // from the very first frame.
+            state.focused_goal = crate::tui::commands::latest_goal_text(&records);
         }
         // the initial, authoritative
         // read of this session's own head -- see `AppState::

@@ -154,9 +154,11 @@
 //!   running config -- the next `conway` invocation picks it up, exactly
 //!   like every other `/plugin` toggle.
 //! - **`--defaults` installs [`crate::first_party_plugins::
-//!   DEFAULT_OPINION_SET`]** -- the same six ids guided first-run setup
-//!   installs unprompted the moment it verifies a working provider
-//!   (`first_run::apply_opinion_set`).
+//!   DEFAULT_OPINION_SET`]** -- the default opinion set guided first-run
+//!   setup installs unprompted the moment it verifies a working provider
+//!   (`first_run::apply_opinion_set`); run `conway plugin list` for the
+//!   current roster rather than counting that array by eye, since it has
+//!   grown since this page was first written and will again.
 //! - **An id this binary does not link is a usage error (exit 2)**, naming
 //!   every id it does -- the same known-id listing
 //!   `ConwayBuilder::install_selected`'s own `plugins.install names unknown

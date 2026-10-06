@@ -173,6 +173,22 @@ impl App {
                     self.state.focused_model_max_context = max;
                     self.state.focused_model_max_context_source = source;
                 }
+                // Review fix 1 (board item `01M1YVVT9RYWZWAZC4YH21T3HN`):
+                // the SAME best-effort re-fetch shape as `session_usage`/
+                // `context_report`/`last_model` just above, for the newly
+                // focused agent's own standing goal -- `focus_agent` just
+                // reset `focused_goal` to `None`; this is the authoritative
+                // fill-in, read directly from `agent`'s own transcript via
+                // the exact decode `/goal`'s own bare show form uses
+                // (`commands::latest_goal_text`), never from
+                // `conway_plugin_goal::GoalPlugin::status_contributions`
+                // (which cannot tell a focused agent from a background
+                // one -- see `AppState::focused_goal`'s own doc). A failed
+                // fetch just leaves it at `None`, matching every sibling
+                // best-effort re-fetch's own convention.
+                if let Ok(records) = host.transcript(agent).await {
+                    self.state.focused_goal = commands::latest_goal_text(&records);
+                }
                 Some(stream)
             }
             Err(e) => {
@@ -437,6 +453,151 @@ mod tests {
             ),
             "the child's replayed prompt must NOT fall back to a Notice, got {:?}",
             app.state.transcript
+        );
+    }
+
+    /// Review fix 1 (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): two agents,
+    /// two DIFFERENT standing goals, each persisted directly onto its own
+    /// log via `SessionHandle::append_system_note` -- the exact facade
+    /// call `/goal <text>` itself drives -- with no `conway.goal` plugin
+    /// installed at all (this fetch reads the raw transcript directly, the
+    /// same way `/goal`'s own bare show form does, so it needs no plugin
+    /// to prove). Focusing the child shows the CHILD's own goal, not the
+    /// root's; focusing back shows the root's again -- `AppState::
+    /// focused_goal` tracks whichever agent is ACTUALLY focused, never a
+    /// stale value left over from whichever agent's context was most
+    /// recently built.
+    #[tokio::test]
+    async fn focus_switch_shows_each_agents_own_standing_goal() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+
+        app.handle
+            .append_system_note(
+                root,
+                "root's own goal".to_string(),
+                conway_plugin_goal::NOTE_REASON,
+            )
+            .await
+            .expect("append_system_note on root should succeed");
+
+        let child = app
+            .handle
+            .spawn(root, conway::SpawnSpec::new("child's own prompt"))
+            .await
+            .expect("spawn should succeed");
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.handle.await_agent(child),
+        )
+        .await;
+        app.handle
+            .append_system_note(
+                child,
+                "child's own DIFFERENT goal".to_string(),
+                conway_plugin_goal::NOTE_REASON,
+            )
+            .await
+            .expect("append_system_note on child should succeed");
+
+        // Focusing the child shows the CHILD's goal, not the root's --
+        // the regression this finding describes would instead show
+        // whichever agent's context was most recently built (here,
+        // neither one's context was built by a model turn at all; this
+        // test's whole point is that the TUI's own tracked value does not
+        // depend on that).
+        app.try_focus_agent(child, None)
+            .await
+            .expect("focusing the child must succeed");
+        assert_eq!(
+            app.state.focused_goal.as_deref(),
+            Some("child's own DIFFERENT goal"),
+            "focusing the child must show the CHILD's own goal"
+        );
+
+        // Focusing back to root shows the ROOT's goal again -- proof this
+        // is a live, per-focus value, not a value that latched onto
+        // whichever agent was focused first.
+        app.try_focus_agent(root, None)
+            .await
+            .expect("focusing back to root must succeed");
+        assert_eq!(
+            app.state.focused_goal.as_deref(),
+            Some("root's own goal"),
+            "focusing back to root must show the ROOT's own goal, not the \
+             child's"
+        );
+    }
+
+    /// Review fix 1's other half: a BACKGROUND agent's own context build
+    /// (`conway_plugin_goal::GoalPlugin`'s `ContextHook`, which updates
+    /// that plugin's OWN internal `last_touched` on every context build,
+    /// by its own module doc's disclosed design) must never change
+    /// `AppState::focused_goal` for a DIFFERENT, focused agent -- this is
+    /// exactly the defect finding 1 describes: before this fix, the
+    /// status line read the plugin's own contribution directly, so a
+    /// background agent's turn blanked or replaced the focused agent's
+    /// field the instant its context was assembled. Here, a real turn
+    /// runs on the (non-focused) child WHILE the root stays focused with
+    /// its own goal already fetched; the child's own turn mutates nothing
+    /// that the focused-agent's status reads from.
+    #[tokio::test]
+    async fn a_background_agents_context_build_does_not_change_the_focused_goal() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+
+        app.handle
+            .append_system_note(
+                root,
+                "root's own standing goal".to_string(),
+                conway_plugin_goal::NOTE_REASON,
+            )
+            .await
+            .expect("append_system_note on root should succeed");
+        // Re-focus root explicitly (root is already `state.focused_agent`
+        // from `App::new`, but `try_focus_agent` is what actually runs the
+        // re-fetch this test depends on) so `focused_goal` reflects the
+        // note just persisted, exactly like a real session would show it
+        // before any background agent exists at all.
+        app.try_focus_agent(root, None)
+            .await
+            .expect("focusing root must succeed");
+        assert_eq!(
+            app.state.focused_goal.as_deref(),
+            Some("root's own standing goal")
+        );
+
+        // A real turn on a DIFFERENT, non-focused child -- this is the
+        // "background subagent's context build" the finding names. The
+        // child has no goal note of its own at all.
+        let child = app
+            .handle
+            .spawn(root, conway::SpawnSpec::new("background child's prompt"))
+            .await
+            .expect("spawn should succeed");
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.handle.await_agent(child),
+        )
+        .await;
+
+        assert_eq!(
+            app.state.focused_agent, root,
+            "the background child's own turn must never move focus"
+        );
+        assert_eq!(
+            app.state.focused_goal.as_deref(),
+            Some("root's own standing goal"),
+            "a background agent's own context build/turn must never blank \
+             or replace the focused agent's own goal"
         );
     }
 

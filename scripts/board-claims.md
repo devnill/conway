@@ -398,3 +398,10 @@ claim: writer.rs resolves a duplicate JSON key by scanning in reverse (last-wins
 paths: crates/conway/src/config/writer.rs
 present: \.rev\(\)
 -->
+
+<!-- claim-check
+why: board item 01M1YVVT9RYWZWAZC4YH21T3HN review finding 3 -- DEFAULT_OPINION_SET grew from six ids to eight (conway.checkpoint, conway.goal added) and three hand-counted "six" mentions (docs/getting-started.md x3, commands/plugin.rs's own --defaults doc) went stale at once. A regression guard so the next addition cannot silently repeat it: these three surfaces now point at `conway plugin list`/the array itself instead of a number.
+claim: none of docs/getting-started.md, commands/plugin.rs, or first_party_plugins.rs's own module doc hand-counts DEFAULT_OPINION_SET's size as "six" any more
+paths: docs/getting-started.md crates/conway-cli/src/commands/plugin.rs crates/conway-cli/src/first_party_plugins.rs
+absent: \bsix\b
+-->

@@ -400,7 +400,10 @@ pub enum SlashCommand {
     ///   marker (`Host::append_system_note` with empty text), so a later
     ///   resume does not resurrect an earlier goal.
     /// - `arg: Some(text)` for any other `text` -- persist `text` as the
-    ///   new standing goal.
+    ///   new standing goal, refused (with a notice naming the limit,
+    ///   before anything is persisted) when `text` is over
+    ///   `conway_plugin_goal::MAX_GOAL_CHARS` characters (review finding 2:
+    ///   never silently truncated).
     Goal {
         arg: Option<String>,
     },
@@ -3164,16 +3167,36 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                     }
                     Some(text) => {
                         let text = text.to_string();
-                        match host
-                            .append_system_note(
-                                state.focused_agent,
-                                text.clone(),
-                                conway_plugin_goal::NOTE_REASON,
-                            )
-                            .await
-                        {
-                            Ok(()) => notice(state, format!("standing goal set: {text}")),
-                            Err(e) => notice(state, e.to_string()),
+                        let len = text.chars().count();
+                        if len > conway_plugin_goal::MAX_GOAL_CHARS {
+                            // Review finding 2 (board item
+                            // `01M1YVVT9RYWZWAZC4YH21T3HN`): refuse, naming
+                            // the limit, rather than silently truncating a
+                            // goal the operator typed in full -- caught
+                            // HERE, before `append_system_note` ever
+                            // persists anything, mirroring the
+                            // `goal_plugin_installed` check just above
+                            // (both guard the SAME write).
+                            notice(
+                                state,
+                                format!(
+                                    "standing goal is {len} characters -- the limit is \
+                                     {} characters; shorten it and try again",
+                                    conway_plugin_goal::MAX_GOAL_CHARS
+                                ),
+                            );
+                        } else {
+                            match host
+                                .append_system_note(
+                                    state.focused_agent,
+                                    text.clone(),
+                                    conway_plugin_goal::NOTE_REASON,
+                                )
+                                .await
+                            {
+                                Ok(()) => notice(state, format!("standing goal set: {text}")),
+                                Err(e) => notice(state, e.to_string()),
+                            }
                         }
                     }
                 }
@@ -3979,29 +4002,30 @@ fn notice(state: &mut AppState, text: impl Into<String>) {
     state.transcript.push(Entry::Notice { text: text.into() });
 }
 
-/// `/goal`'s own bare "show" form: the latest `conway.goal`-reasoned
+/// `/goal`'s own bare "show" form -- and (review fix 1, board item
+/// `01M1YVVT9RYWZWAZC4YH21T3HN`) `app.rs::try_focus_agent`'s own
+/// `AppState::focused_goal` re-fetch: the latest `conway.goal`-reasoned
 /// `LogRecord::SystemNote`'s text, read directly from `records` (the raw
-/// transcript `Host::transcript` returns, oldest first) -- decoded the
-/// SAME two-step way `conway_plugin_goal::reconstruct_from_history` decodes
-/// the identical note once it has been replayed into a `PromptSegment`:
-/// find the single MOST RECENT matching record first, THEN interpret an
-/// empty `text` as a clear marker rather than skipping past it to an
-/// earlier goal. `/goal` reads the raw log directly rather than building a
-/// whole assembled context merely to show one note back to the operator.
-fn latest_goal_text(records: &[conway::LogRecord]) -> Option<String> {
-    let latest = records.iter().rev().find_map(|record| match record {
+/// transcript `Host::transcript` returns, oldest first), decoded via
+/// `conway_plugin_goal::decode_latest_goal_note` -- the SAME shared helper
+/// `conway_plugin_goal::reconstruct_from_history` decodes the identical
+/// note through once it has been replayed into a `PromptSegment`, so the
+/// two readers of two different record shapes can never drift onto two
+/// different interpretations of "latest" or "empty means cleared". `pub
+/// (crate)`: `tui::app::focus`'s own best-effort re-fetch needs this from
+/// outside this module. `/goal` reads the raw log directly rather than
+/// building a whole assembled context merely to show one note back to the
+/// operator.
+pub(crate) fn latest_goal_text(records: &[conway::LogRecord]) -> Option<String> {
+    let texts = records.iter().filter_map(|record| match record {
         conway::LogRecord::SystemNote { text, reason, .. }
             if reason == conway_plugin_goal::NOTE_REASON =>
         {
-            Some(text.clone())
+            Some(text.as_str())
         }
         _ => None,
-    })?;
-    if latest.is_empty() {
-        None
-    } else {
-        Some(latest)
-    }
+    });
+    conway_plugin_goal::decode_latest_goal_note(texts)
 }
 
 /// Runs one `/ask` modal fate (B5) against the facade: exactly one `host`
@@ -7710,6 +7734,80 @@ mod tests {
                 .any(|line| line.contains("ship the thing by friday")),
             "{:?}",
             notice_lines(&state)
+        );
+    }
+
+    /// Review finding 2 (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): a
+    /// `/goal <text>` over `conway_plugin_goal::MAX_GOAL_CHARS` is
+    /// REFUSED, naming the limit, and nothing is persisted -- never
+    /// silently truncated. Both halves asserted: the notice names the
+    /// limit AND the operator's own length, and `appended_system_notes`
+    /// is empty (proving the refusal happens BEFORE the facade call, not
+    /// merely that the eventual value would have been cut).
+    #[tokio::test]
+    async fn goal_text_over_the_limit_is_refused_and_nothing_is_persisted() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root)
+            .with_goal_plugin_installed()
+            .with_append_system_note_ok();
+        let too_long = "x".repeat(conway_plugin_goal::MAX_GOAL_CHARS + 1);
+
+        let effect = execute(
+            SlashCommand::Goal {
+                arg: Some(too_long.clone()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.appended_system_notes().is_empty(),
+            "an over-limit goal must never reach `append_system_note` at \
+             all: {:?}",
+            host.appended_system_notes()
+        );
+        let lines = notice_lines(&state);
+        assert!(
+            lines.iter().any(|line| {
+                line.contains(&conway_plugin_goal::MAX_GOAL_CHARS.to_string())
+                    && line.contains(&(conway_plugin_goal::MAX_GOAL_CHARS + 1).to_string())
+            }),
+            "the refusal must name both the limit and the operator's own \
+             length: {lines:?}"
+        );
+    }
+
+    /// A `/goal <text>` AT exactly the limit is accepted -- the cap is
+    /// inclusive, not off-by-one.
+    #[tokio::test]
+    async fn goal_text_at_exactly_the_limit_is_accepted() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root)
+            .with_goal_plugin_installed()
+            .with_append_system_note_ok();
+        let exactly_at_limit = "x".repeat(conway_plugin_goal::MAX_GOAL_CHARS);
+
+        let effect = execute(
+            SlashCommand::Goal {
+                arg: Some(exactly_at_limit.clone()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(
+            host.appended_system_notes(),
+            vec![(
+                root,
+                exactly_at_limit,
+                conway_plugin_goal::NOTE_REASON.to_string()
+            )]
         );
     }
 

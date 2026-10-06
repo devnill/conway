@@ -388,11 +388,13 @@ repository — see `README.md`'s "First-party plugins" section and
 [`PHILOSOPHY.md`](../PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults)
 for what that tier is for. The *harness* never registers any of them on its
 own — that stays true regardless of what follows. The `conway` *binary*'s
-guided first-run setup does turn six of them on, unprompted, the moment it
-verifies a working provider (see "Your first session" below); every member
-of the tier, installed by first-run or by hand, shares the same `plugins`
-key (not `tools.builtin_plugins`, which names only the four built-ins
-above):
+guided first-run setup does turn on the default opinion set, unprompted, the
+moment it verifies a working provider (see "Your first session" below) —
+`crates/conway-cli/src/first_party_plugins.rs`'s own `DEFAULT_OPINION_SET`;
+run `conway plugin list` any time to see the live roster, marked `[x]`.
+Every member of the tier, installed by first-run or by hand, shares the
+same `plugins` key (not `tools.builtin_plugins`, which names only the four
+built-ins above):
 
 ```json
 // .conway/settings.json
@@ -404,7 +406,9 @@ above):
       "conway.skills",
       "conway.memory",
       "conway.names",
-      "conway.history"
+      "conway.history",
+      "conway.checkpoint",
+      "conway.goal"
     ]
   }
 }
@@ -417,9 +421,12 @@ turn any of them on or off with `conway plugin install <id>`/`conway plugin
 remove <id>`, or by editing the array above by hand and saving the file —
 dropping `"conway.history"`, for example, turns `/conway.history.rewind`
 back off with no other change. `conway plugin install --defaults` installs
-exactly the six ids above in one step, the same set guided first-run setup
-installs unprompted. See [`docs/scripting.md`](scripting.md#conway-plugin)
-for the full `list`/`install`/`remove` reference.
+exactly the default opinion set above in one step, the same set guided
+first-run setup installs unprompted — whatever that set currently is; see
+`conway plugin list` rather than counting the array above by eye, since
+this page is not re-checked every time it grows. See
+[`docs/scripting.md`](scripting.md#conway-plugin) for the full
+`list`/`install`/`remove` reference.
 
 `conway.plugin_skeleton` is the tier's own worked example
 (`crates/conway-plugin-skeleton`): it registers one `skeleton_ping` tool
@@ -439,8 +446,9 @@ conway
 ```
 
 **If guided first-run setup just configured a provider for you** (the
-"Configure a provider" section above), it also installed six first-party
-plugins into `plugins.install` and printed a table naming each one and how
+"Configure a provider" section above), it also installed the default
+opinion set of first-party plugins (`conway plugin list` shows the live
+roster) into `plugins.install` and printed a table naming each one and how
 to remove it, then asked whether to enable bash — see "Installing a
 first-party plugin" above for the exact `settings.json` shape this leaves
 you with. What each one does: `conway.idiom` prepends a session-static
@@ -464,10 +472,17 @@ you name an agent and steer it by that name. `conway.history` is
 persisted sequence number (never free text — see that crate's own module
 doc for why) and switches the TUI to drive it, with the original agent's
 own log untouched; once installed, the status line's `session <id>` field
-grows to `session <id>@<seq>` so there is something to type. None of this
-runs if you configured `settings.json` by hand instead of going through
-guided setup — see "Installing a first-party plugin" above to opt in
-yourself.
+grows to `session <id>@<seq>` so there is something to type. `conway.checkpoint`
+snapshots a file's bytes around every `write`/`edit` tool call into its own
+shadow store, so `/conway.checkpoint.list`/`.diff`/`.rollback` can preview
+and undo the model's edits without touching your own hand edits.
+`conway.goal` is the built-in `/goal` command's own storage: `/goal <text>`
+sets a one-sentence standing objective kept in front of the model every
+turn (and shown on the status line) until `/goal clear`; inert — no
+segment, no status-line entry — until you actually type `/goal` once. None
+of this runs if you configured `settings.json` by hand instead of going
+through guided setup — see "Installing a first-party plugin" above to opt
+in yourself.
 
 You'll see an empty input box at the bottom of the screen (with the
 placeholder text `Type a message, or / for commands`) and a status line

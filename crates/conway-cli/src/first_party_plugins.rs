@@ -131,21 +131,32 @@ use conway_plugin_names::AgentNames;
 
 /// conway's own opinion set for first-run install -- board item
 /// `01M1FS34GNZEVZP4ZBVC90VD6J`, decision `01M1FQFP5D0R3M9GC8R8Z24F5N`
-/// (recorded 2026-09-01, operator-ruled): the six first-party plugin ids
-/// [`crate::first_run::apply_opinion_set`] writes into a fresh operator's
-/// `plugins.install`, unprompted, the moment guided first-run setup
-/// verifies a working backend. Every id here MUST resolve in `bundle`
-/// below -- proven by this module's own
+/// (recorded 2026-09-01, operator-ruled, later grown by its own later
+/// items -- see `conway_plugin_checkpoint`'s and `conway_plugin_goal`'s
+/// own module docs for the two most recent additions): the first-party
+/// plugin ids [`crate::first_run::apply_opinion_set`] writes into a fresh
+/// operator's `plugins.install`, unprompted, the moment guided first-run
+/// setup verifies a working backend. Every id here MUST resolve in
+/// `bundle` below -- proven by this module's own
 /// `default_opinion_set_ids_all_resolve_in_bundle` test -- or a fresh
 /// install would silently write an id that reaches nothing, exactly the
 /// defect this module's own doc names for `conway.trim`'s history.
 ///
-/// **Deliberately narrower than [`all_bundle_plugins`]'s full eleven.**
-/// `conway.plugin_skeleton` (a proof-of-mechanism, not a capability),
-/// `conway.path`/`conway.discover` (a tool pair with no operator-facing
-/// value until BOTH are installed together, this module's own doc), and
-/// `conway.trim`/`conway.ui` are not opinions this item's ruling reaches --
-/// see decision `01M1FQFP5D0R3M9GC8R8Z24F5N` for the six that are.
+/// **Deliberately a narrower list than [`all_bundle_plugins`]'s full
+/// roster, not "most of it."** `conway.plugin_skeleton` (a
+/// proof-of-mechanism, not a capability), `conway.path`/`conway.discover`
+/// (a tool pair with no operator-facing value until BOTH are installed
+/// together, this module's own doc), `conway.trim`/`conway.ui`, and every
+/// candidate added to `bundle` since this ruling (`conway.web`,
+/// `conway.toolindex`, `conway.compaction`, `conway.confine`, …) are not
+/// opinions this item's ruling reaches -- see decision
+/// `01M1FQFP5D0R3M9GC8R8Z24F5N` for which ones are, and this array's own
+/// members (never restated as a bare number anywhere else in this
+/// codebase or its docs -- see `scripts/board-claims.md`'s
+/// `DEFAULT_OPINION_SET` predicate, which pins this array's own length)
+/// for the authoritative, un-stale-able current answer. An operator (or a
+/// future reader of this doc) can always get the live roster with `conway
+/// plugin list`, which marks every member of this exact array `[x]`.
 pub const DEFAULT_OPINION_SET: [&str; 8] = [
     conway_plugin_idiom::PLUGIN_ID,
     conway_plugin_stepguard::PLUGIN_ID,

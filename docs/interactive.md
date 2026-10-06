@@ -976,7 +976,8 @@ standing-goal sentence for the focused agent; the model is reminded of it
 near the end of its context on every turn from then on, as a line reading
 `Standing goal: <text>`. Bare `/goal` shows the current one (reading the
 focused agent's own history directly — no fork, no model call); `/goal
-clear` removes it.
+clear` removes it. A goal over 300 characters is refused, naming the
+limit, rather than silently cut short — shorten it and try again.
 
 The goal is stored as an ordinary record on the agent's own log, so it
 survives a `--resume` and shows up in `conway sessions show`; the status

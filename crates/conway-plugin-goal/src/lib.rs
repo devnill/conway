@@ -101,14 +101,46 @@ pub const NOTE_REASON: &str = "conway.goal";
 /// see `truncate_for_display`'s own doc for why).
 const DISPLAY_MAX_CHARS: usize = 60;
 
+/// Review finding 2 (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): the hard
+/// cap on a `/goal <text>` sentence, in `char`s (never bytes, matching
+/// `DISPLAY_MAX_CHARS`'s own convention), enforced at the moment
+/// `conway_cli::tui::commands::execute`'s `SlashCommand::Goal` arm would
+/// otherwise persist it -- BEFORE `SessionHandle::append_system_note` ever
+/// writes it, not a silent truncation afterward. Chosen generously above
+/// `DISPLAY_MAX_CHARS` (a goal is meant to be read back in full by the
+/// model and by `/goal`'s own bare show form, not merely glanced at on the
+/// status line, which is `truncate_for_display`'s separate job): long
+/// enough for a genuine one-sentence objective, short enough that it
+/// cannot grow into a second system prompt re-sent, unbounded, on every
+/// later request (this crate's own module doc, "Context cost stays
+/// flat" -- flat COUNT, not flat SIZE, without this cap).
+pub const MAX_GOAL_CHARS: usize = 300;
+
 /// Truncates `text` to at most `DISPLAY_MAX_CHARS` characters, appending a
 /// single `…` when it was cut -- operates on `char`s, not bytes, so a
-/// multi-byte UTF-8 goal sentence is never sliced mid-codepoint. Shared by
-/// the status-line contribution and (indirectly, via the same bound) kept
-/// available for any future caller that wants the identical "first words"
-/// rule rather than a second, independently-tuned one.
-fn truncate_for_display(text: &str) -> String {
-    let mut chars = text.chars();
+/// multi-byte UTF-8 goal sentence is never sliced mid-codepoint. First
+/// sanitizes (review finding 5): a literal newline/tab is collapsed to a
+/// single space (a goal sentence wrapping onto a second status-line row,
+/// or a tab skewing its alignment, is never a real possibility the
+/// operator meant), and every OTHER control/format character
+/// [`conway::is_laundered_char`] recognizes (a raw ANSI escape, a
+/// bidirectional override, â¦) is replaced via
+/// [`conway::sanitize_control_chars`] -- the same shared launderer the
+/// permission gate and the runtime's own tool-output rendering already
+/// depend on, reused here rather than a third, independently-tuned
+/// control-character table. `pub`: review fix 1 (`AppState::focused_goal`,
+/// `conway_cli`'s own `view/status.rs`) renders the TUI-computed,
+/// focus-correct goal value through this SAME function, so the two paths
+/// that ever put a goal sentence on screen (this plugin's own
+/// `status_contributions`, for the single-agent/non-TUI case, and the
+/// TUI's focus-aware override) can never sanitize or truncate differently.
+pub fn truncate_for_display(text: &str) -> String {
+    let collapsed: String = text
+        .chars()
+        .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+        .collect();
+    let sanitized = conway::sanitize_control_chars(&collapsed);
+    let mut chars = sanitized.chars();
     let head: String = chars.by_ref().take(DISPLAY_MAX_CHARS).collect();
     if chars.next().is_some() {
         format!("{head}…")
@@ -133,36 +165,51 @@ fn is_persisted_note(segment: &PromptSegment) -> bool {
     )
 }
 
-/// Scans `segments` for the LAST one `is_persisted_note` accepts, and
-/// decodes it: `Some(text)` for a goal-setting note (non-empty `text`),
-/// `None` for a clear marker (empty `text`) OR when no matching note
-/// exists at all.
+/// The single two-step decode every reader of a `conway.goal`-reasoned
+/// system note shares: given the TEXT of every matching note found, in
+/// CHRONOLOGICAL order (oldest first) -- `reconstruct_from_history` below
+/// (reading replayed `PromptSegment`s) and `conway_cli::tui::commands::
+/// latest_goal_text` (reading raw `LogRecord`s) each extract that sequence
+/// their own way, from two different record shapes, then both hand it to
+/// THIS function rather than re-deriving the interpretation step a second
+/// time -- finds the single MOST RECENT entry, then interprets an empty
+/// string as a clear marker (`None`), not the absence of a note.
 ///
 /// **Must find the single MOST RECENT matching note first, then decide --
-/// never keep scanning past a clear marker looking for an earlier goal.**
-/// A clear marker is itself a real, persisted fact (see this crate's own
-/// module doc): once one exists, it is always the right answer for every
-/// request built after it, until a later `/goal <text>` persists a fresh
-/// goal-setting note of its own. Resolving this in two steps -- find the
-/// latest matching segment's raw text, THEN interpret empty-vs-non-empty --
-/// is what keeps that true; `Iterator::find_map` used directly against "is
-/// this text non-empty" would instead silently skip the clear marker and
-/// resurrect whatever goal preceded it, exactly the resume defect this
-/// mechanism exists to avoid.
-fn reconstruct_from_history(segments: &[PromptSegment]) -> Option<String> {
-    let latest_text = segments
-        .iter()
-        .rev()
-        .filter(|segment| is_persisted_note(segment))
-        .find_map(|segment| match segment.content.first() {
-            Some(ContentBlock::Text { text }) => Some(text.clone()),
-            _ => None,
-        })?;
-    if latest_text.is_empty() {
+/// never skip past a clear marker looking for an earlier goal.** A clear
+/// marker is itself a real, persisted fact (see this crate's own module
+/// doc): once one exists, it is always the right answer for every read
+/// after it, until a later `/goal <text>` persists a fresh goal-setting
+/// note of its own. Resolving this in two steps -- take the latest entry's
+/// raw text, THEN interpret empty-vs-non-empty -- is what keeps that true;
+/// filtering for non-empty text directly would instead silently skip the
+/// clear marker and resurrect whatever goal preceded it, exactly the
+/// resume defect this mechanism exists to avoid.
+pub fn decode_latest_goal_note<'a>(
+    matching_texts: impl Iterator<Item = &'a str>,
+) -> Option<String> {
+    let latest = matching_texts.last()?;
+    if latest.is_empty() {
         None
     } else {
-        Some(latest_text)
+        Some(latest.to_string())
     }
+}
+
+/// Scans `segments` for every one `is_persisted_note` accepts, in their
+/// existing (chronological) order, and decodes the result via
+/// [`decode_latest_goal_note`]: `Some(text)` for a goal-setting note
+/// (non-empty `text`), `None` for a clear marker (empty `text`) OR when no
+/// matching note exists at all.
+fn reconstruct_from_history(segments: &[PromptSegment]) -> Option<String> {
+    let texts = segments
+        .iter()
+        .filter(|segment| is_persisted_note(segment))
+        .filter_map(|segment| match segment.content.first() {
+            Some(ContentBlock::Text { text }) => Some(text.as_str()),
+            _ => None,
+        });
+    decode_latest_goal_note(texts)
 }
 
 /// This plugin's whole mutable state: the current goal per agent (`None`
@@ -174,6 +221,24 @@ fn reconstruct_from_history(segments: &[PromptSegment]) -> Option<String> {
 /// plugin has no write-triggering tool call to hook a `ToolObserver` onto,
 /// so "most recently active agent" is the closest analogous signal
 /// available here.
+///
+/// **Known, accepted gap -- worked around at the TUI layer, not here.**
+/// `Plugin::status_contributions` takes no argument, so this method's
+/// answer is only ever correct when exactly one agent's context is ever
+/// built (the single-agent/scripting case). In a multi-agent TUI session,
+/// a BACKGROUND subagent's own context build updates `last_touched` just
+/// the same, which would blank or replace the FOCUSED agent's `goal`
+/// status-line entry with the background one's -- board item
+/// `01M1YVVT9RYWZWAZC4YH21T3HN` review finding 1. `conway_cli`'s own
+/// `tui::view::status::effective_contributions` is the fix: it overrides
+/// whatever THIS method reports under [`STATUS_KEY`] with a value read
+/// directly from the focused agent's own transcript
+/// (`AppState::focused_goal`), never from this struct. This struct and
+/// this method are NOT changed to chase that fix -- adding a
+/// focused-agent parameter to `Plugin::status_contributions` would widen
+/// every OTHER implementor of this trait (subprocess, MCP, statusline,
+/// todo) for a problem only this one plugin has, which is a materially
+/// bigger change than the TUI-side override actually needed.
 #[derive(Default)]
 struct GoalState {
     goals: HashMap<AgentId, Option<String>>,
@@ -672,6 +737,63 @@ mod tests {
 
         let short = "ship it";
         assert_eq!(truncate_for_display(short), short);
+    }
+
+    // ------------------------------------------------------------------
+    // Review finding 5: the status-line value is sanitized before
+    // truncation -- newlines/tabs collapse to a space, and a raw control
+    // character (never typed on purpose) is laundered, never shown live.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn truncate_for_display_collapses_newlines_and_tabs_to_spaces() {
+        let text = "ship\nthe\tthing";
+        assert_eq!(truncate_for_display(text), "ship the thing");
+    }
+
+    #[test]
+    fn truncate_for_display_launders_other_control_characters() {
+        // `\x1b` (ESC) is a raw ANSI escape introducer -- `is_control()`
+        // true, not `\n`/`\t` -- must come out as the shared placeholder,
+        // never live.
+        let text = "ship\x1b[31mit";
+        let out = truncate_for_display(text);
+        assert!(
+            !out.contains('\x1b'),
+            "a raw control character must never survive to the status line: {out:?}"
+        );
+        assert!(
+            out.contains(conway::sanitize_control_chars("\x1b").as_str()),
+            "must be laundered via the SAME shared placeholder \
+             `conway::sanitize_control_chars` produces: {out:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Review finding 4: `decode_latest_goal_note` is the ONE decode both
+    // `reconstruct_from_history` (above) and `conway_cli`'s own
+    // `latest_goal_text` call -- exercised here directly against the
+    // exact two-step contract (latest wins, empty means cleared, no
+    // matching note at all is also `None`).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn decode_latest_goal_note_takes_the_last_entry_and_treats_empty_as_cleared() {
+        assert_eq!(
+            decode_latest_goal_note(["first goal", "second goal"].into_iter()),
+            Some("second goal".to_string())
+        );
+        assert_eq!(
+            decode_latest_goal_note(["first goal", ""].into_iter()),
+            None,
+            "an empty latest entry is a clear marker, not a reason to fall back \
+             to an earlier one"
+        );
+        assert_eq!(
+            decode_latest_goal_note(std::iter::empty()),
+            None,
+            "no matching entry at all is also None"
+        );
     }
 
     // ------------------------------------------------------------------

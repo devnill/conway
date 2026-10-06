@@ -1376,6 +1376,31 @@ pub struct AppState {
     /// correct against a live agent's next `ContextSegmentAdded` instead of
     /// double-counting a segment that fetch already included.
     pub focused_seen_segments: HashSet<SegmentId>,
+    /// Board item `01M1YVVT9RYWZWAZC4YH21T3HN` review fix 1: the FOCUSED
+    /// agent's own current standing goal (`None` meaning "no goal set, or
+    /// not yet known"), read directly from its transcript rather than from
+    /// `conway_plugin_goal::GoalPlugin::status_contributions` -- that
+    /// method carries no per-agent context of its own (`Plugin::
+    /// status_contributions`'s trait signature takes no argument at all),
+    /// so it can only ever report whichever agent's context was MOST
+    /// RECENTLY built, including a background subagent's -- not
+    /// necessarily this one. `view/status.rs`'s `contributions_ladder`
+    /// renders the status line's `goal` field from THIS field, never from
+    /// the plugin's own contribution, which is exactly what keeps a
+    /// background agent's context build from blanking or replacing the
+    /// focused agent's own goal on screen.
+    ///
+    /// Reset to `None` on [`Self::focus_agent`], then immediately
+    /// re-fetched by `app.rs`'s `try_focus_agent` (the same
+    /// "reset-then-authoritatively-refetch" shape `focused_agent_usage`/
+    /// `focused_ctx_tokens` already use) via `Host::transcript` +
+    /// `commands::latest_goal_text` -- the SAME decode `/goal`'s own bare
+    /// show form uses. Also written directly, with no round trip, by
+    /// `commands::execute`'s own `SlashCommand::Goal` arm the instant a
+    /// `/goal <text>`/`/goal clear` on the focused agent succeeds, so the
+    /// status line never waits on a refetch to reflect an operator's own
+    /// just-typed change.
+    pub focused_goal: Option<String>,
     /// T3: the current git branch, read once at startup via
     /// `git rev-parse --abbrev-ref HEAD` (best-effort: `None` when not a
     /// git repo, git is absent, or the command fails). No polling. The
@@ -2270,6 +2295,7 @@ impl AppState {
             focused_model_price: None,
             focused_ctx_tokens: 0,
             focused_seen_segments: HashSet::new(),
+            focused_goal: None,
             git_branch: None,
             cwd_display: None,
             status_line_config: StatusLineConfig::default(),
@@ -2510,6 +2536,7 @@ impl AppState {
             focused_model_price: _,
             focused_ctx_tokens: _,
             focused_seen_segments: _,
+            focused_goal: _,
             git_branch,
             cwd_display,
             status_line_config,
@@ -2721,6 +2748,13 @@ impl AppState {
         self.focused_model_price = None;
         self.focused_ctx_tokens = 0;
         self.focused_seen_segments.clear();
+        // Review fix 1 (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): the
+        // standing goal belongs to whichever agent is focused -- a freshly
+        // focused agent shows no goal until `app.rs::try_focus_agent`'s own
+        // best-effort re-fetch (via `Host::transcript` +
+        // `commands::latest_goal_text`) fills this back in, mirroring every
+        // other `focused_*` field reset just above.
+        self.focused_goal = None;
     }
 
     /// Opens the NL intent confirmation card (C2), parking it in
