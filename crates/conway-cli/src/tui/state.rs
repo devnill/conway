@@ -3741,7 +3741,9 @@ mod reset_for_new_session_attention_classification {
             events: vec![AttentionEvent::TurnFinished],
         };
         state.terminal_focused = Some(true);
-        state.pending_attention.push_back(AttentionEvent::PermissionPending);
+        state
+            .pending_attention
+            .push_back(AttentionEvent::PermissionPending);
 
         let new_root = AgentId::new();
         state.reset_for_new_session(new_root, &NoopRevoke);

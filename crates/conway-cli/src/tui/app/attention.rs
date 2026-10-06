@@ -109,7 +109,9 @@ mod tests {
     async fn turn_finished_while_unfocused_emits_the_default_bell() {
         let (mut app, captured) = app_with_fake_writer().await;
         app.state.terminal_focused = Some(false);
-        app.state.pending_attention.push_back(AttentionEvent::TurnFinished);
+        app.state
+            .pending_attention
+            .push_back(AttentionEvent::TurnFinished);
 
         app.drain_attention_queue();
 
@@ -126,7 +128,9 @@ mod tests {
     async fn turn_finished_while_focused_emits_nothing() {
         let (mut app, captured) = app_with_fake_writer().await;
         app.state.terminal_focused = Some(true);
-        app.state.pending_attention.push_back(AttentionEvent::TurnFinished);
+        app.state
+            .pending_attention
+            .push_back(AttentionEvent::TurnFinished);
 
         app.drain_attention_queue();
 
@@ -143,7 +147,9 @@ mod tests {
         let (mut app, captured) = app_with_fake_writer().await;
         app.state.attention.method = AttentionMethod::Off;
         app.state.terminal_focused = Some(false);
-        app.state.pending_attention.push_back(AttentionEvent::TurnFinished);
+        app.state
+            .pending_attention
+            .push_back(AttentionEvent::TurnFinished);
         app.state
             .pending_attention
             .push_back(AttentionEvent::PermissionPending);
@@ -173,7 +179,10 @@ mod tests {
         let calls = captured.lock().unwrap();
         assert_eq!(calls.len(), 1, "{calls:?}");
         let text = String::from_utf8(calls[0].clone()).expect("ASCII payload");
-        assert_eq!(text, "\x1b]777;notify;conway;conway: permission requested\x07");
+        assert_eq!(
+            text,
+            "\x1b]777;notify;conway;conway: permission requested\x07"
+        );
     }
 
     /// Debounce: one notification per event, not per redraw. Draining the
@@ -184,7 +193,9 @@ mod tests {
     async fn draining_an_empty_queue_repeatedly_writes_nothing_further() {
         let (mut app, captured) = app_with_fake_writer().await;
         app.state.terminal_focused = Some(false);
-        app.state.pending_attention.push_back(AttentionEvent::TurnFinished);
+        app.state
+            .pending_attention
+            .push_back(AttentionEvent::TurnFinished);
 
         app.drain_attention_queue();
         assert_eq!(captured.lock().unwrap().len(), 1);

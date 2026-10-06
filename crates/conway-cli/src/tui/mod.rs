@@ -53,8 +53,8 @@
 //! [`install_panic_hook`]'s own doc for the identical reasoning applied to a
 //! panic instead of a second signal.
 
-mod attention;
 pub mod app;
+mod attention;
 pub mod commands;
 pub mod config;
 pub mod form;

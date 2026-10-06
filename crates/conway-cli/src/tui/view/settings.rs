@@ -1207,8 +1207,16 @@ mod tests {
             .find(|r| r.label.starts_with("attention"))
             .expect("the attention row must exist");
 
-        assert!(attention_row.label.contains("osc9"), "{}", attention_row.label);
-        assert!(attention_row.label.contains("always"), "{}", attention_row.label);
+        assert!(
+            attention_row.label.contains("osc9"),
+            "{}",
+            attention_row.label
+        );
+        assert!(
+            attention_row.label.contains("always"),
+            "{}",
+            attention_row.label
+        );
         assert!(
             attention_row.label.contains("turn_finished"),
             "{}",

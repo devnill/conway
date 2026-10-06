@@ -78,7 +78,11 @@ const MAX_EVENT_TEXT_CHARS: usize = 60;
 /// must still get notified under the default `when = "unfocused"`, rather
 /// than silently never firing because the one signal that would have
 /// proven it unfocused never arrived.
-pub(crate) fn should_notify(config: &AttentionConfig, event: AttentionEvent, focused: Option<bool>) -> bool {
+pub(crate) fn should_notify(
+    config: &AttentionConfig,
+    event: AttentionEvent,
+    focused: Option<bool>,
+) -> bool {
     if config.method == AttentionMethod::Off {
         return false;
     }
@@ -162,7 +166,11 @@ pub(crate) fn attention_bytes(method: AttentionMethod, text: &str) -> Option<Vec
 /// `method`'s bytes, and wrap them for tmux passthrough when `inside_tmux`
 /// (never for `Bell` -- tmux forwards a bare bell on its own, no OSC
 /// payload to swallow). `None` for `Off`, mirroring [`attention_bytes`].
-pub(crate) fn emit_bytes(method: AttentionMethod, raw_text: &str, inside_tmux: bool) -> Option<Vec<u8>> {
+pub(crate) fn emit_bytes(
+    method: AttentionMethod,
+    raw_text: &str,
+    inside_tmux: bool,
+) -> Option<Vec<u8>> {
     let text = sanitize_event_text(raw_text);
     let bytes = attention_bytes(method, &text)?;
     if inside_tmux && matches!(method, AttentionMethod::Osc9 | AttentionMethod::Osc777) {
@@ -201,7 +209,11 @@ mod tests {
 
     // ---- should_notify ----
 
-    fn config(method: AttentionMethod, when: AttentionWhen, events: Vec<AttentionEvent>) -> AttentionConfig {
+    fn config(
+        method: AttentionMethod,
+        when: AttentionWhen,
+        events: Vec<AttentionEvent>,
+    ) -> AttentionConfig {
         AttentionConfig {
             method,
             when,
@@ -216,7 +228,11 @@ mod tests {
             AttentionWhen::Always,
             vec![AttentionEvent::TurnFinished],
         );
-        assert!(!should_notify(&cfg, AttentionEvent::TurnFinished, Some(false)));
+        assert!(!should_notify(
+            &cfg,
+            AttentionEvent::TurnFinished,
+            Some(false)
+        ));
         assert!(!should_notify(&cfg, AttentionEvent::TurnFinished, None));
     }
 
@@ -227,7 +243,11 @@ mod tests {
             AttentionWhen::Always,
             vec![AttentionEvent::PermissionPending],
         );
-        assert!(!should_notify(&cfg, AttentionEvent::TurnFinished, Some(false)));
+        assert!(!should_notify(
+            &cfg,
+            AttentionEvent::TurnFinished,
+            Some(false)
+        ));
     }
 
     #[test]
@@ -259,14 +279,21 @@ mod tests {
             AttentionWhen::Always,
             vec![AttentionEvent::TurnFinished],
         );
-        assert!(should_notify(&cfg, AttentionEvent::TurnFinished, Some(true)));
+        assert!(should_notify(
+            &cfg,
+            AttentionEvent::TurnFinished,
+            Some(true)
+        ));
     }
 
     // ---- sanitize_event_text ----
 
     #[test]
     fn ordinary_text_passes_through_unchanged() {
-        assert_eq!(sanitize_event_text("conway: turn finished"), "conway: turn finished");
+        assert_eq!(
+            sanitize_event_text("conway: turn finished"),
+            "conway: turn finished"
+        );
     }
 
     #[test]
@@ -306,7 +333,10 @@ mod tests {
 
     #[test]
     fn bell_is_the_bare_bel_byte_and_ignores_the_text() {
-        assert_eq!(attention_bytes(AttentionMethod::Bell, "ignored"), Some(vec![0x07]));
+        assert_eq!(
+            attention_bytes(AttentionMethod::Bell, "ignored"),
+            Some(vec![0x07])
+        );
     }
 
     #[test]
@@ -330,8 +360,10 @@ mod tests {
 
     #[test]
     fn bell_is_never_tmux_wrapped() {
-        let inside = emit_bytes(AttentionMethod::Bell, "ignored", true).expect("bell must build bytes");
-        let outside = emit_bytes(AttentionMethod::Bell, "ignored", false).expect("bell must build bytes");
+        let inside =
+            emit_bytes(AttentionMethod::Bell, "ignored", true).expect("bell must build bytes");
+        let outside =
+            emit_bytes(AttentionMethod::Bell, "ignored", false).expect("bell must build bytes");
         assert_eq!(inside, outside);
         assert_eq!(inside, vec![0x07]);
     }
