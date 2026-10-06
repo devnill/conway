@@ -175,9 +175,10 @@ above does not name) are the occupants today — compaction
 the feature; see [`docs/plugins/compaction.md`](docs/plugins/compaction.md).
 
 **The `conway` binary is a different case.** Its guided first-run setup
-installs six of these — `conway.idiom`, `conway.stepguard`, `conway.skills`,
-`conway.memory`, `conway.names`, `conway.history` — into a fresh
-`plugins.install` the moment it verifies a working provider, and prints
+installs several of these — `conway.idiom`, `conway.stepguard`,
+`conway.skills`, `conway.memory`, `conway.names`, `conway.history`,
+`conway.checkpoint`, `conway.goal` — into a fresh `plugins.install` the
+moment it verifies a working provider, and prints
 exactly what it installed and how to remove any one of them (`conway plugin
 remove <id>`, or hand-editing `plugins.install`). This is a property of the
 *binary's* first run, not of the harness or of `ConwayBuilder::build()` — a
