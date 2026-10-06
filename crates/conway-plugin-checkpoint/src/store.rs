@@ -243,10 +243,15 @@ impl CheckpointStore {
     /// case) never creates anything at all. Best-effort for the
     /// `.gitignore` write specifically, matching every other best-effort
     /// write in this crate (a permissions error here should degrade to "no
-    /// `.gitignore`", never block the real write that triggered this).
+    /// `.gitignore`", never block the real write that triggered this). The
+    /// `.gitignore` is seeded only when absent, so an operator's own edit to
+    /// it survives every later write.
     fn ensure_root(&self) -> io::Result<()> {
         fs::create_dir_all(&self.root)?;
-        let _ = fs::write(self.root.join(".gitignore"), "*\n");
+        let gitignore = self.root.join(".gitignore");
+        if !gitignore.exists() {
+            let _ = fs::write(gitignore, "*\n");
+        }
         Ok(())
     }
 

@@ -1052,6 +1052,39 @@ mod tests {
         assert_eq!(gitignore, "*\n");
     }
 
+    /// The `.gitignore` is seeded once: an operator's edit to it survives
+    /// every later write the store makes.
+    #[test]
+    fn an_edited_gitignore_survives_later_writes() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("store");
+        let plugin = CheckpointPlugin::with_root(&root, dir.path());
+        let path = dir.path().join("f.txt");
+        let record = |turn: u64| {
+            plugin
+                .store()
+                .record_observed(
+                    "sess-gitignore-edit",
+                    turn,
+                    &path,
+                    ToolKind::Write,
+                    None,
+                    DEFAULT_MAX_SNAPSHOT_BYTES,
+                    DEFAULT_MAX_PROJECT_BYTES,
+                )
+                .unwrap();
+        };
+        std::fs::write(&path, "v1").unwrap();
+        record(1);
+        std::fs::write(root.join(".gitignore"), "*\n!keep.txt\n").unwrap();
+        std::fs::write(&path, "v2").unwrap();
+        record(2);
+        assert_eq!(
+            std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+            "*\n!keep.txt\n"
+        );
+    }
+
     /// Point 3's migration contract: an existing in-project store
     /// (`<cwd>/.conway/checkpoints`, what every `CheckpointPlugin::new`
     /// caller used before this item) is moved, once, to wherever `with_root`
