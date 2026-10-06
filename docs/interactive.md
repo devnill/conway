@@ -1591,6 +1591,12 @@ at all is treated as unfocused under the default — you still get notified,
 rather than the feature silently never firing because the one signal that
 would have proven it unfocused never arrived.
 
+The same rule applies at startup to a terminal that *does* report focus:
+terminals report focus changes, not the current state, so until you
+switch away from conway and back once, conway cannot tell that you're
+looking at it, and the first notification may ring while the window has
+focus. After that first change, `unfocused` behaves as described.
+
 `events` (default `["turn_finished", "permission_pending"]`) is the list
 of occurrences that count: `turn_finished` (the FOCUSED agent's own turn
 ending) and `permission_pending` (a permission prompt becoming visible —
