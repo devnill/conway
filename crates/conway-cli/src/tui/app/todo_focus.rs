@@ -149,10 +149,10 @@ mod tests {
         );
 
         // Switching focus to the child must show the CHILD's own 2/3.
+        // No manual poll: the focus switch itself must refresh the field.
         app.try_focus_agent(child, None)
             .await
             .expect("focusing the child must succeed");
-        assert!(app.refresh_plugin_status_contributions());
         let child_text = crate::tui::test_support::render_text(&app.state, 120, 40);
         assert!(
             child_text.contains("todo: 2/3"),

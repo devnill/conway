@@ -189,6 +189,11 @@ impl App {
                 if let Ok(records) = host.transcript(agent).await {
                     self.state.focused_goal = commands::latest_goal_text(&records);
                 }
+                // Per-agent plugin status (e.g. conway.todo's done/total)
+                // is polled for the newly focused agent now, not on the next
+                // poll tick, so the field never shows the previous agent's
+                // value after a switch.
+                self.refresh_plugin_status_contributions();
                 Some(stream)
             }
             Err(e) => {

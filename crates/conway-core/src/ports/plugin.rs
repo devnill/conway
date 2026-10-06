@@ -618,9 +618,13 @@ pub trait Plugin: Send + Sync + 'static {
     /// notification channel, the parser, the degrade-on-unknown-tag rule, the
     /// per-key store, and this trait surface. The TUI status-line RENDER path
     /// that would display a plugin's contributed status alongside conway's own
-    /// computed state remains DESIGN-ONLY (see `docs/plugins/hooks.md` point
-    /// 12's own "Status" row); this method is the surface a future render path
-    /// will read, exposed now so the wire half has a reachable consumer.
+    /// computed state is built: the TUI renders contributions in its status
+    /// line, asking through [`Self::status_contributions_for`] with the
+    /// focused agent.
+    ///
+    /// This method is the agent-blind answer. A plugin whose status differs
+    /// per agent should also override `status_contributions_for`; a caller
+    /// that has a specific agent in hand should call that instead.
     fn status_contributions(&self) -> Vec<PluginStatusContribution> {
         Vec::new()
     }

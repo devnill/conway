@@ -43,7 +43,8 @@ const REDRAW_TICK: Duration = Duration::from_millis(16);
 /// input/event responsiveness.
 const ANIMATION_TICK: Duration = Duration::from_millis(125);
 /// Board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`'s cadence floor: the ONLY place
-/// this loop calls `Conway::poll_plugin_status_contributions` -- see that
+/// this loop polls plugin status (`Conway::poll_plugin_status_contributions_for`,
+/// for the focused agent; a focus switch also polls once) -- see that
 /// method's own doc for why re-reading it is cheap (non-blocking by
 /// contract) but still not free to do on every 16ms `REDRAW_TICK`, which
 /// this guards against (polling every plugin per frame is unacceptable).
