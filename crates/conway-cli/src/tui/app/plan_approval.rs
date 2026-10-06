@@ -176,7 +176,7 @@ impl App {
     /// there; this is where the "only if actually deferred" check lives, so
     /// the ordinary (non-deferred) case stays a cheap no-op.
     ///
-    /// A no-op unless [`AppState::plan_approval_deferred`] is set. When it
+    /// A no-op unless `AppState::plan_approval_deferred` is set. When it
     /// is, this clears it and re-runs the ordinary decision (`Self::
     /// maybe_offer_plan_approval`) now that the turn has genuinely settled.
     /// The defensive fallback -- `maybe_offer_plan_approval` returning

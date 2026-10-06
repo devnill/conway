@@ -267,11 +267,7 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
     // of a multi-word phrase may never reach the pty stream (partial-redraw
     // trap). "LEAVING" is the modal's title; "further" appears only in the
     // armed AUTO-ALLOW warning.
-    let modal_shown = session.wait_for_since(
-        "LEAVING",
-        denied,
-        Duration::from_secs(10),
-    );
+    let modal_shown = session.wait_for_since("LEAVING", denied, Duration::from_secs(10));
     // The plan-approval modal arms its own typeahead guard the instant it
     // opens (review round, finding 3) -- every key arriving inside that
     // window is swallowed outright, specifically so a reflexive keystroke
@@ -281,11 +277,7 @@ async fn permission_mode_cycling_changes_what_a_flagged_call_does() {
     // guard's own bound, not a fitted wait.
     std::thread::sleep(Duration::from_millis(1_200));
     session.send("a");
-    let armed = session.wait_for_since(
-        "further",
-        modal_shown,
-        Duration::from_secs(10),
-    );
+    let armed = session.wait_for_since("further", modal_shown, Duration::from_secs(10));
     session.send("a");
     // Approving sends its own fixed turn ("Plan approved; proceed.")
     // through the SAME session before anything else this test sends --
