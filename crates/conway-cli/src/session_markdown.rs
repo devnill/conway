@@ -43,7 +43,7 @@
 //! applied to a bare line break at all, and multi-line tool output (the
 //! overwhelmingly common case -- a file listing, a diff, build output)
 //! NEEDS its line breaks to render as more than one visually garbled line
-//! inside a fenced block. [`sanitize`] reaches the SAME [`conway::
+//! inside a fenced block. `sanitize` reaches the SAME [`conway::
 //! is_laundered_char`] predicate `conway::sanitize_control_chars` is built
 //! on for every OTHER character, rather than re-deriving a second copy of
 //! its table.
@@ -642,7 +642,10 @@ Found two files: a.txt and b.txt.
             usage: Usage::default(),
         };
         let got = render(&entries, &header, 10);
-        assert!(!got.contains('\u{202E}') && !got.contains('\u{2066}'), "{got}");
+        assert!(
+            !got.contains('\u{202E}') && !got.contains('\u{2066}'),
+            "{got}"
+        );
         assert!(got.contains('\u{FFFD}'), "{got}");
     }
 

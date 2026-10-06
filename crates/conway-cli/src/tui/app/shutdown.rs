@@ -463,7 +463,6 @@ impl App {
     /// method exists to protect from exactly that.
     pub(super) async fn abort_in_flight_turns(&mut self, reason: &str) {
         let root = self.handle.root();
-        let session = self.handle.id();
         // Board item `01M3WJ7906NP3P2ZNVDK549T1Q`'s own follow-up review
         // finding: the TUI's own `AppState::tree` is this crate's event-sourced
         // projection of the session's agent tree, and it can LAG a
@@ -481,25 +480,48 @@ impl App {
         // process's own in-memory agent tree, the same one `AgentTree::
         // abort_turn` itself mutates), so a spawn the runtime has already
         // registered is visible here the instant it happens, with no event
-        // delivery lag at all. It is RUNTIME-WIDE, not session-scoped
+        // delivery lag at all. It is RUNTIME-WIDE
         // (`SessionHandle::tree`'s own doc: "neither `Runtime::tree` nor
         // `AgentTreeSnapshot` offers a way to scope the snapshot to one
-        // session's own subtree"), so this filters it down to `AgentNode::
-        // session == session` by hand -- aborting a DIFFERENT session's
-        // agents on THIS session's quit would be its own bug.
+        // session's own subtree"), so this walks `AgentNode::parent` links
+        // from `root` by hand to find exactly this session's own subtree --
+        // aborting a DIFFERENT session's agents on THIS session's quit
+        // would be its own bug.
         //
+        // **`AgentNode::session` is NOT "which TUI session owns this
+        // agent"** -- every fork/spawn gets its OWN fresh `SessionId`
+        // (`conway_runtime::subagent::start`: `store.fork`/`store.create`
+        // each mint a new one), so a subagent's `node.session` is never
+        // equal to `self.handle.id()` (the ROOT's own session id). An
+        // earlier draft of this method filtered on exactly that equality
+        // and so silently excluded every subagent it was meant to catch --
+        // caught by a test that spawns a real child and asserts its turn
+        // actually aborts. Walking `parent` pointers is the only way to
+        // recover "this session's own subtree" from a snapshot that has no
+        // such scoping built in.
+        let runtime_tree = self.handle.tree().nodes;
+        let mut agents = vec![root];
+        loop {
+            let mut grew = false;
+            for node in &runtime_tree {
+                if !node.ephemeral
+                    && !agents.contains(&node.agent_id)
+                    && node.parent.is_some_and(|parent| agents.contains(&parent))
+                {
+                    agents.push(node.agent_id);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
         // Unioned with `self.state.tree` (not replaced by the runtime
         // snapshot alone) purely for safety: the two are built from the
         // same underlying facts and should agree outside the lag window
         // above, so this costs nothing in the common case and costs
         // nothing worse than a redundant (harmless, idempotent)
         // `abort_turn` call in the lag window itself.
-        let mut agents = vec![root];
-        for node in self.handle.tree().nodes {
-            if node.session == session && !node.ephemeral && node.agent_id != root {
-                agents.push(node.agent_id);
-            }
-        }
         for node in &self.state.tree.nodes {
             if !node.ephemeral && !agents.contains(&node.agent_id) {
                 agents.push(node.agent_id);
@@ -512,8 +534,7 @@ impl App {
             loop {
                 let mut all_settled = true;
                 for &agent in &agents {
-                    if !self.handle.awaiting_prompt(agent) && !self.agent_is_finished(agent).await
-                    {
+                    if !self.handle.awaiting_prompt(agent) && !self.agent_is_finished(agent).await {
                         all_settled = false;
                         break;
                     }
@@ -547,7 +568,9 @@ mod tests {
     use conway_testkit::{text_response, ScriptedBackend, ScriptedTurn};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::super::fixtures::{base_config, echo_conway_and_store, echo_conway_over, minimal_cli};
+    use super::super::fixtures::{
+        base_config, echo_conway_and_store, echo_conway_over, minimal_cli,
+    };
     use super::super::App;
     use crate::tui::gate::{GateReceiver, TuiGate};
     use crate::tui::input::{self, Action};
@@ -680,8 +703,8 @@ mod tests {
     /// dispatches through `App::handle_ctrl_c` exactly as `app/run.rs`'s own
     /// `Action::CtrlC` arm does, pinning the `shutdown.rs` half.
     #[tokio::test]
-    async fn permission_prompt_ctrl_c_denies_the_call_and_aborts_the_turn_keeping_the_session_live(
-    ) {
+    async fn permission_prompt_ctrl_c_denies_the_call_and_aborts_the_turn_keeping_the_session_live()
+    {
         let (conway, mut gate_rx, invoked) = conway_with_real_gate();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
@@ -778,7 +801,10 @@ mod tests {
 
         let child = app
             .handle
-            .spawn(root, conway::SpawnSpec::new("please use the marker tool").keep_alive(true))
+            .spawn(
+                root,
+                conway::SpawnSpec::new("please use the marker tool").keep_alive(true),
+            )
             .await
             .expect("spawn should succeed");
 

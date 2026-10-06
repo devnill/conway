@@ -1604,7 +1604,7 @@ impl Conway {
     /// `conway_runtime::subagent`'s identical probe, used at fork/spawn
     /// time instead to FAIL the spawn outright -- deliberately not reused
     /// here: refusing to resume at all over a renamed alias would be worse
-    /// than this method's own fallback). [`Self::resolve_resumed_role`]
+    /// than this method's own fallback). `Self::resolve_resumed_role`
     /// does the check and, on a miss, substitutes `self.config.default_role`
     /// and persists a `LogRecord::SystemNote` (reason
     /// `"role_fallback_at_resume"`) into the session's own log BEFORE

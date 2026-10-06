@@ -83,8 +83,10 @@ async fn resume_with_an_unconfigured_recorded_role_falls_back_and_still_complete
                 ..Default::default()
             })
             .await
-            .expect("new_session should succeed even under an unconfigured role (unvalidated \
-                      at creation time)");
+            .expect(
+                "new_session should succeed even under an unconfigured role (unvalidated \
+                      at creation time)",
+            );
         handle.id()
     };
 
@@ -142,11 +144,16 @@ async fn resume_with_an_unconfigured_recorded_role_falls_back_and_still_complete
         }
         _ => None,
     });
-    let text = fallback_note.expect(
-        "expected a role_fallback_at_resume SystemNote in the resumed session's own log",
+    let text = fallback_note
+        .expect("expected a role_fallback_at_resume SystemNote in the resumed session's own log");
+    assert!(
+        text.contains("custom"),
+        "must name the stale role: {text:?}"
     );
-    assert!(text.contains("custom"), "must name the stale role: {text:?}");
-    assert!(text.contains("default"), "must name the fallback role: {text:?}");
+    assert!(
+        text.contains("default"),
+        "must name the fallback role: {text:?}"
+    );
 
     // Board item `01M3SJBY8DXDB1PWEAXARZY9FH`: the fallback is now durable
     // -- `SessionMeta::role` itself was overwritten to `"default"` by the

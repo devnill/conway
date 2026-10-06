@@ -840,18 +840,18 @@ pub fn clamp_tool_preview_lines(n: Option<u32>) -> u32 {
 /// "tool call … denied" notice with no `ToolResultRecord` to fall back on
 /// -- so this record's own arm reproduces that SAME per-decision
 /// conditional, not a blanket "always show" or "always hide." See
-/// [`permission_decision_backfill_entry`]'s own doc for the exact two cases
+/// `permission_decision_backfill_entry`'s own doc for the exact two cases
 /// and why every other source/kind combination still renders nothing here,
 /// matching the live TUI exactly.
 ///
 /// **The interrupted-final-turn marker** (same board item): once every
 /// record has been folded into `entries` above, a session whose own LAST
 /// record -- skipping any trailing turn-bookkeeping record
-/// [`is_transcript_silent`] already drops from the replay entirely, since
+/// `is_transcript_silent` already drops from the replay entirely, since
 /// one of those (most commonly a `ContextReportRecord`, persisted as part
 /// of assembling the very turn that then never got a reply) can genuinely
 /// be the literal last line a hard kill left behind -- is a bare
-/// [`conway::LogRecord::UserTurn`] gets [`INTERRUPTED_TURN_NOTICE`]
+/// [`conway::LogRecord::UserTurn`] gets `INTERRUPTED_TURN_NOTICE`
 /// appended once more: the hard-kill case, where the process never reached
 /// the graceful-shutdown path that would have persisted an operator-abort
 /// `SystemNote` (`push_record`'s own arm for that record already renders
@@ -864,7 +864,10 @@ pub fn backfill_entries(records: &[conway::LogRecord]) -> Vec<Entry> {
     for record in records {
         push_record(&mut entries, record);
     }
-    let last_significant = records.iter().rev().find(|&record| !is_transcript_silent(record));
+    let last_significant = records
+        .iter()
+        .rev()
+        .find(|&record| !is_transcript_silent(record));
     if matches!(last_significant, Some(conway::LogRecord::UserTurn { .. })) {
         entries.push(Entry::Notice {
             text: INTERRUPTED_TURN_NOTICE.to_string(),

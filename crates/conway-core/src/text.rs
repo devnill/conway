@@ -227,7 +227,11 @@ mod tests {
             '\u{E0020}',
             '\u{E007F}',
         ] {
-            assert!(is_laundered_char(c), "{c:?} (U+{:04X}) must be laundered", c as u32);
+            assert!(
+                is_laundered_char(c),
+                "{c:?} (U+{:04X}) must be laundered",
+                c as u32
+            );
         }
         // A handful of ordinary, non-laundered chars stay themselves.
         for c in ['a', 'Z', '0', ' ', '-', '\u{00AC}', '\u{2025}', '\u{2070}'] {

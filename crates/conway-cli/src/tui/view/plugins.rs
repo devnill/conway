@@ -254,11 +254,9 @@ fn selected_plugin_row<'a>(tree: &MenuState, rows: &'a [PluginRow]) -> Option<&'
 /// Board item `01M3TJHCFA3R9PDVZHQTKKVWNR` added the `config` line below
 /// (one more fixed row than the `5` this constant covered before it: the
 /// header, `you get`/`you lose`/`costs`, and the toggle line).
-const DETAIL_ROWS: u16 = 7;
-
-/// Renders the selected row's own detail: origin, active/toggle state, and
-/// either the full "you get"/"you lose"/"costs" breakdown (compiled-in) or
-/// the plain `contributes` line plus its read-only reason (subprocess/MCP)
+/// Builds the selected row's own detail lines: origin, active/toggle state,
+/// and either the full "you get"/"you lose"/"costs" breakdown (compiled-in)
+/// or the plain `contributes` line plus its read-only reason (subprocess/MCP)
 /// -- see this module's own doc, "Kinds 2 and 3 are honestly thinner".
 ///
 /// `config` is `row.id`'s own `[plugins.config."<id>"]` table, if the
@@ -275,19 +273,18 @@ const DETAIL_ROWS: u16 = 7;
 /// select), so printing it unconditionally alongside `you get`/`you lose`/
 /// `costs` never mislabels a subprocess/MCP/claude-compat row that has no
 /// `[plugins.config.<id>]` concept at all.
-fn draw_plugin_detail(
-    frame: &mut Frame,
-    area: Rect,
+///
+/// Pulled out of [`draw_plugin_detail`] so [`detail_panel_rows`] can measure
+/// the EXACT lines that will render (a real compiled-in plugin's `you_get`/
+/// `you_lose` prose is long enough to wrap across several rows at ordinary
+/// terminal widths -- a fixed row count silently truncated the `config`/
+/// `toggle` lines for exactly that case, caught by a test driving the real
+/// `conway_plugin_trim` description rather than a short canned fixture).
+fn detail_lines(
     row: &PluginRow,
     config: Option<&serde_json::Value>,
     theme: &Theme,
-) {
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(theme.dim);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
+) -> Vec<Line<'static>> {
     let status = if row.active { "active" } else { "off" };
     let mut lines = vec![Line::from(Span::styled(
         format!("[{}] {} \u{b7} {status}", row.origin.label(), row.id),
@@ -330,6 +327,39 @@ fn draw_plugin_detail(
             lines.push(Line::from(format!("toggle    read-only -- {reason}")));
         }
     }
+    lines
+}
+
+/// How many rows [`draw_plugin_detail`] actually needs at `width` (the
+/// detail panel's own usable width -- see [`modal::body_width`], unaffected
+/// by its `Borders::TOP`-only block) for `row`/`config`: the wrapped height
+/// of [`detail_lines`] plus one row for that top border. Measured through
+/// the SAME `Paragraph`/`Wrap` the real draw call renders with (`Paragraph::
+/// line_count`), so this can never under-count relative to what actually
+/// lands on screen -- unlike a fixed constant, which silently truncated the
+/// trailing `config`/`toggle` lines for a real plugin's longer prose.
+fn detail_panel_rows(row: &PluginRow, config: Option<&serde_json::Value>, width: u16) -> u16 {
+    let lines = detail_lines(row, config, &Theme::default());
+    let wrapped = Paragraph::new(lines)
+        .wrap(Wrap { trim: true })
+        .line_count(width.max(1));
+    wrapped.saturating_add(1).min(u16::MAX as usize) as u16
+}
+
+fn draw_plugin_detail(
+    frame: &mut Frame,
+    area: Rect,
+    row: &PluginRow,
+    config: Option<&serde_json::Value>,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(theme.dim);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = detail_lines(row, config, theme);
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, inner);
 }
@@ -358,7 +388,7 @@ const FOOTER_ROWS: u16 = 3;
 /// selection makes capping safe (ratatui auto-scrolls to keep the
 /// selection visible, so rows past the cap stay reachable with
 /// `Up`/`Down`).** The DETAIL PANEL below the list (`draw_plugin_detail`,
-/// [`DETAIL_ROWS`] fixed rows) is NOT part of the capped/scrolled body --
+/// [`detail_panel_rows`] rows) is NOT part of the capped/scrolled body --
 /// it renders into `frame_areas.footer_area`, whose height (`FOOTER_ROWS +
 /// detail_rows`) is fully reserved by [`modal::modal_area`]'s own
 /// `footer_rows` parameter exactly as `/settings`' footer already is, so
@@ -385,10 +415,13 @@ pub(crate) fn modal_rect(state: &AppState, transcript_area: Rect) -> Rect {
     let tree = build_tree(state);
     let content_rows = tree.rows().len().min(u16::MAX as usize) as u16;
     let rows = rows_for(state);
-    let detail_rows = if selected_plugin_row(&tree, &rows).is_some() {
-        DETAIL_ROWS
-    } else {
-        0
+    let detail_rows = match selected_plugin_row(&tree, &rows) {
+        Some(row) => detail_panel_rows(
+            row,
+            state.plugin_config.get(&row.id),
+            modal::body_width(transcript_area),
+        ),
+        None => 0,
     };
     modal::modal_area(
         transcript_area,
@@ -406,7 +439,14 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &
 
     let rows = rows_for(state);
     let detail_row = selected_plugin_row(&tree, &rows);
-    let detail_rows = if detail_row.is_some() { DETAIL_ROWS } else { 0 };
+    let detail_rows = match detail_row {
+        Some(row) => detail_panel_rows(
+            row,
+            state.plugin_config.get(&row.id),
+            modal::body_width(transcript_area),
+        ),
+        None => 0,
+    };
     // `modal_rect` re-derives the SAME `Rect` from the SAME tree/detail
     // state this call just resolved -- never a second, independently-
     // resolved area (steering P-14, mirrors `view/settings.rs::draw`'s own
@@ -431,7 +471,13 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &
                 Constraint::Length(FOOTER_ROWS.min(frame_areas.footer_area.height)),
             ])
             .split(frame_areas.footer_area);
-        draw_plugin_detail(frame, split[0], row, state.plugin_config.get(&row.id), theme);
+        draw_plugin_detail(
+            frame,
+            split[0],
+            row,
+            state.plugin_config.get(&row.id),
+            theme,
+        );
         split[1]
     } else {
         frame_areas.footer_area

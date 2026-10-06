@@ -614,7 +614,10 @@ fn apply_plugin_config(
                     message: format!("[plugins.config.\"{id}\"]: {e}"),
                 });
             }
-            warnings.push(plugin_config_invalid_but_uninstalled_warning(&id, &e.to_string()));
+            warnings.push(plugin_config_invalid_but_uninstalled_warning(
+                &id,
+                &e.to_string(),
+            ));
         }
     }
     for id in config.keys() {
@@ -772,7 +775,7 @@ pub fn all_bundle_plugins(
 /// plugins` hands back `bundle`'s `Vec` untouched, so every `Arc` in it is
 /// still uniquely owned when this line runs.
 ///
-/// `install_ids` is forwarded to [`apply_plugin_config`] unchanged -- see
+/// `install_ids` is forwarded to `apply_plugin_config` unchanged -- see
 /// that function's own doc for why a browser render needs it too: without
 /// it, an uninstalled candidate's own invalid block would fail THIS call
 /// (and therefore the whole listing) over a value that was never going to
