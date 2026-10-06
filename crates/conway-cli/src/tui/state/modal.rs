@@ -520,34 +520,80 @@ pub enum DistillFate {
 /// assistant turn (`AppState::plan_turn_seen`) while [`conway::
 /// PermissionMode::Plan`] was gating it, and nothing of ITS OWN is in
 /// flight right now (`app/plan_approval.rs::App::maybe_offer_plan_approval`'s
-/// own doc has the exact guard). `plan` is that agent's own last assistant
-/// message, read straight from `AppState::transcript` the instant the
-/// cycle fires -- never recomputed later, so an edit (`e`) starts from
-/// exactly what the operator was shown, not a possibly-different "current"
-/// value. `next_mode` is the mode the cycle was ALREADY about to switch to
-/// (`AutoAllow`, the only direction this cycle ever leaves `Plan` by) --
-/// carried rather than hardcoded so `App::approve_plan` stays agnostic of
-/// the cycle's own order.
+/// own doc has the exact guard; a turn genuinely in flight DEFERS this
+/// instead of falling through to a silent switch -- see `App::
+/// defer_leaving_plan`'s own doc). `plan` is that agent's own last
+/// assistant message, read straight from `AppState::transcript` the
+/// instant the cycle fires -- never recomputed later, so an edit (`e`)
+/// starts from exactly what the operator was shown, not a possibly-
+/// different "current" value.
+///
+/// **Operator ruling `01M48TK7QKBBSJ1FQ4XPX9DTF1` (review round): the key
+/// map now has two FORWARD paths with two DIFFERENT, explicitly labelled
+/// destinations, not one path to a single implied mode:**
+/// - `Enter` approves into [`conway::PermissionMode::Prompt`] (tools
+///   unlocked, each still asks) -- the safe default, reachable with no
+///   confirmation step, since landing in `Prompt` can never run a tool the
+///   operator was not asked about.
+/// - `a` approves into [`conway::PermissionMode::AutoAllow`] instead, but
+///   only ARMS that choice on the first press (`PlanApprovalModal::
+///   autoallow_confirm_armed`) -- a second, deliberate `a` commits it,
+///   mirroring `input.rs::handle_permission_key`'s own `permission_confirm_
+///   always` two-keystroke flow for the identical reason ("no single stray
+///   key can grant beyond once", board item `01M44PK089DF2M9TM3C4P5CKMZ`):
+///   `AutoAllow` is the one mode this project renders in `theme.fatal_error`
+///   precisely because an operator who lands in it by a SINGLE stray
+///   keystroke, believing they are still being asked, is the exact failure
+///   that style exists to prevent.
+/// - `e` edits `plan` in `$EDITOR` first, then approves into `Prompt` --
+///   same destination as a bare `Enter`, never `AutoAllow`: an edited plan
+///   is reviewed text, not a confirmed "never ask me again" act.
+/// - `Esc` stays in `Plan` -- no mode change, nothing sent (or, while the
+///   `AutoAllow` confirm is armed, backs out to the UNARMED modal instead,
+///   still showing the same plan).
+///
+/// `next_mode` therefore BECOMES the chosen destination at the moment a
+/// forward path is taken (`input.rs::handle_plan_approval_key` writes it
+/// immediately before returning `Action::PlanApprovalFate(Approve)`), not a
+/// value fixed when the modal opened -- `App::offer_plan_approval`'s own
+/// caller seeds it to `Prompt` as a placeholder that is always overwritten
+/// before `App::approve_plan` ever reads it. `App::approve_plan`'s own
+/// system note names whichever destination actually won
+/// (`next_mode.label()`), so the recorded note can never claim a mode this
+/// specific approval did not switch to.
 ///
 /// Unlike [`AskModal`]/[`DistillModal`]/[`SkillProposalModal`], this carries
-/// no `error` field: neither of its own two ways forward (`Enter`/`e`) can
-/// fail in a way that needs to keep the modal open and show why -- `App::
-/// submit` (the shared funnel both use to actually deliver the turn) never
-/// returns `Err` (every internal failure it can hit already becomes a
-/// transcript `Notice` on its own), and a failed `SessionHandle::
-/// append_system_note` is recorded the same way rather than blocking an
-/// approval that has, at that point, already switched the mode and is
-/// about to send the turn regardless.
+/// no `error` field: neither of its own two ways forward (`Enter`/`a`/`e`)
+/// can fail in a way that needs to keep the modal open and show why --
+/// `App::submit` (the shared funnel every forward path uses to actually
+/// deliver the turn) never returns `Err` (every internal failure it can hit
+/// already becomes a transcript `Notice` on its own), and a failed
+/// `SessionHandle::append_system_note` is recorded the same way rather than
+/// blocking an approval that has, at that point, already switched the mode
+/// and is about to send the turn regardless.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanApprovalModal {
     pub plan: String,
     pub next_mode: conway::PermissionMode,
+    /// `true` while a first `a` press is waiting for the confirming second
+    /// keystroke before the `AutoAllow` approval actually commits -- see
+    /// this struct's own doc, "two FORWARD paths". `input.rs::
+    /// handle_plan_approval_key` is the one reader/writer;
+    /// `view::draw_plan_approval` renders the confirm wording (`theme.
+    /// fatal_error`) while this is `true`, replacing the ordinary key hint
+    /// entirely. Starts `false` for every freshly opened modal.
+    pub autoallow_confirm_armed: bool,
 }
 
 /// `Mode::PlanApproval`'s two ways out -- there is no third. Mirrors
 /// [`DistillFate`]'s own shape, minus a `Fork`/`PullIn`-style third option:
 /// this surface has only ever one thing to approve (the plan) and one way
 /// to decline it (stay in `Plan`), never a choice among several outcomes.
+/// `Approve` covers every one of the modal's forward paths (`Enter` into
+/// `Prompt`, confirmed `a` into `AutoAllow`, `e` into `Prompt`) -- which
+/// mode wins is carried on [`PlanApprovalModal::next_mode`], written by
+/// `input.rs::handle_plan_approval_key` before this is ever returned, not
+/// encoded as a second `Fate` variant (see [`PlanApprovalModal`]'s own doc).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanApprovalFate {
     /// Switches the mode to [`PlanApprovalModal::next_mode`] and sends a
@@ -759,15 +805,16 @@ pub enum Mode {
     /// `AppState::promote_next_surface`.
     Distill(DistillModal),
     /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: the plan-approval modal --
-    /// see [`PlanApprovalModal`]'s own doc. While this is the mode, the
-    /// input line is inert and `input.rs::handle_plan_approval_key` swallows
-    /// every key except `Enter` (approve -- switch mode and send the fixed
-    /// turn), `e` (edit the plan text in `$EDITOR` first, sending the
-    /// EDITED text as the turn instead), `Esc` (stay in `Plan`), plus the
-    /// quit keys (`Ctrl-C`/`Ctrl-D`, which pass through unresolved -- unlike
-    /// `/distill`'s own fork child, nothing was ever created for this modal
-    /// to clean up; quitting with it open or parked just drops it, mirroring
-    /// `Mode::TrustPreview`'s own "nothing was ever written" quit posture).
+    /// see [`PlanApprovalModal`]'s own doc for the full key map (`Enter`
+    /// into `Prompt`, `a`-then-confirm into `AutoAllow`, `e` edits then
+    /// approves into `Prompt`, `Esc` stays in `Plan`). While this is the
+    /// mode, the input line is inert and `input.rs::handle_plan_approval_key`
+    /// swallows every key not in that map, plus every key at all for a
+    /// short window right after the modal opens (`AppState::
+    /// plan_approval_armed_at`'s own doc). Unlike `/distill`'s own fork
+    /// child, nothing was ever created for this modal to clean up; quitting
+    /// with it open or parked just drops it, mirroring `Mode::TrustPreview`'s
+    /// own "nothing was ever written" quit posture.
     /// A permission prompt arriving while this modal is open queues in
     /// `queued_prompts` exactly as it does behind another prompt, and a plan
     /// arriving while any of the other eight modal-bearing surfaces is
@@ -1027,6 +1074,7 @@ impl AppState {
         if let Some(modal) = self.pending_plan_approval.take() {
             self.mode = Mode::PlanApproval(modal);
             self.modal_scroll = 0;
+            self.arm_plan_approval_typeahead_guard();
         }
     }
 
@@ -1160,6 +1208,7 @@ impl AppState {
         if matches!(self.mode, Mode::Normal) {
             self.mode = Mode::PlanApproval(modal);
             self.modal_scroll = 0;
+            self.arm_plan_approval_typeahead_guard();
         } else {
             self.pending_plan_approval = Some(modal);
         }
@@ -1436,6 +1485,21 @@ impl AppState {
         self.permission_confirm_always = false;
         self.pending_attention
             .push_back(super::super::config::AttentionEvent::PermissionPending);
+    }
+
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` (review round, finding 3):
+    /// [`Self::plan_approval_armed_at`]'s own stamp -- the plan-approval
+    /// modal's counterpart to [`Self::arm_permission_typeahead_guard`]
+    /// immediately above, minus the "draft already held text" half (see
+    /// that field's own doc for why this modal needs no such distinction).
+    /// Shared by [`Self::offer_plan_approval`] (nothing else showing) and
+    /// [`Self::promote_next_surface`]'s own plan-approval branch (a parked
+    /// modal taking the screen once the surface ahead of it clears) --
+    /// mirroring exactly which two call sites `arm_permission_typeahead_
+    /// guard` itself shares, for the identical reason: both are "this modal
+    /// just became visible" moments.
+    pub(super) fn arm_plan_approval_typeahead_guard(&mut self) {
+        self.plan_approval_armed_at = Some(std::time::Instant::now());
     }
 
     /// Cycles the scope the prompt's remembered-grant keys (`a`/`p`) grant
@@ -3193,6 +3257,7 @@ mod tests {
         PlanApprovalModal {
             plan: plan.to_string(),
             next_mode: conway::PermissionMode::AutoAllow,
+            autoallow_confirm_armed: false,
         }
     }
 

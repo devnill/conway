@@ -184,39 +184,67 @@ to prompt, so it has no equivalent of a "starting mode").
 `Plan` exists so a model can read and think without changing anything.
 Leaving it used to be a bare toggle — `/settings`/`Shift+Tab` just
 unlocked tools, with no acknowledgment of whatever the model had just
-proposed. Now, if the *focused* agent produced at least one reply while
-`Plan` was gating it, cycling out of `Plan` — by either path, `Shift+Tab`
-or the `/settings` `permissions -> current mode` row; both already go
-through the one `cycle the mode` action, so there is nowhere else this
-check could be bypassed from — opens a modal showing that agent's own
-last reply as "the plan," with three ways out:
+proposed, and no indication of which mode you were about to land in.
+Now, if the *focused* agent produced at least one reply while `Plan` was
+gating it, cycling out of `Plan` — by either path, `Shift+Tab` or the
+`/settings` `permissions -> current mode` row; both already go through
+the one `cycle the mode` action, so there is nowhere else this check
+could be bypassed from — opens a modal showing that agent's own last
+reply as "the plan," with its own destination stated in the body
+(`Enter: approve, switch to Prompt mode`), and four ways out:
 
-- **`Enter`** approves: the mode switches (to `AutoAllow`, the only
-  direction this cycle ever leaves `Plan` by) and a fixed, short message —
-  `Plan approved; proceed.` — is sent as your next turn, so the model
-  knows the mode actually changed. The mode write happens strictly before
-  that turn is sent: `Plan`'s own guarantee ("no tool call runs until the
-  mode has actually changed") holds across this whole flow.
+- **`Enter`** approves into `Prompt`: the mode switches and a fixed, short
+  message — `Plan approved; proceed.` — is sent as your next turn, so the
+  model knows the mode actually changed. This is the safe default: `Prompt`
+  unlocks tools, but every call still asks, so a reflexive `Enter` can
+  never run something you were never asked about. The mode write happens
+  strictly before that turn is sent: `Plan`'s own guarantee ("no tool call
+  runs until the mode has actually changed") holds across this whole flow.
+- **`a`** approves into `AutoAllow` instead — but only *arms* that choice
+  on the first press. The footer replaces itself with a plain warning
+  (`AUTO-ALLOW: no further tool prompts. Press a again to confirm, Esc to
+  go back`), rendered in this project's one reserved "something is about
+  to stop asking you" color. A second, deliberate `a` commits it; `Esc`
+  backs out to the ordinary modal without discarding the plan; any OTHER
+  key disarms too and falls through to its own ordinary meaning (a stray
+  `a` followed by a deliberate `Enter` still approves — into `Prompt`,
+  never the `AutoAllow` the stray `a` never confirmed). This mirrors the
+  permission prompt's own `[a]`-confirm flow for the identical reason: no
+  single stray keystroke should ever land you in the one mode that stops
+  asking.
 - **`e`** opens the plan text in `$EDITOR` first (the same editor path
   `Ctrl-G` and `/distill`'s own modal already use) — the edited text is
-  sent as your turn instead of the fixed message, along with the same
-  mode switch. This is a single action: there is no second "now press
-  Enter" step once the editor closes.
+  sent as your turn instead of the fixed message, along with the SAME
+  switch `Enter` takes, into `Prompt`, never `AutoAllow`. This is a single
+  action: there is no second "now press Enter" step once the editor
+  closes.
 - **`Esc`** stays in `Plan` — no mode change, nothing sent. The same plan
   is shown again the next time you try to leave, unless the agent says
   something new first.
 
 The approval is also recorded as a `system_note` on the focused agent's own
-log (`"plan approved by operator, mode → AUTO-ALLOW"`), so `/context` and
+log, naming whichever destination you actually chose (`"plan approved by
+operator, mode → prompt"` or `"... → AUTO-ALLOW"`), so `/context` and
 `conway sessions show` carry it — a plain, durable record of the decision,
 not only a transcript line.
 
-If the focused agent never produced a reply while `Plan` was active, or a
-turn is in flight for it at the exact instant you cycle out, the switch is
-silent, exactly as it always was — there is no plan to show yet in either
-case. A turn in flight does not make the modal appear once it finishes
-either: the next attempt (after it settles) is what shows it, never an
-unprompted popup with no keypress behind it.
+**A reflexive keystroke right after the `Shift-Tab`/`/settings` press that
+opened the modal cannot approve anything.** For a short window after the
+modal becomes visible, every key is swallowed outright — mirroring the
+permission prompt's own typeahead guard, minus the "insert it into a
+draft" half (this modal's input line is inert the whole time it is open,
+so there is nothing to insert into). Once the window passes, the keys
+above work normally.
+
+If the focused agent never produced a reply while `Plan` was active, the
+switch is silent, exactly as it always was — there is no plan to show yet.
+**A turn genuinely in flight for the focused agent at the exact instant you
+cycle out no longer switches silently, either.** `Plan` stays in force, a
+short notice says so (`will show the plan when this turn finishes`), and
+the modal opens on its own once that turn settles — not immediately on the
+next keypress, but not an unprompted popup out of nowhere either: it is the
+direct continuation of the request you already made. Pressing `Shift-Tab`
+again while still waiting does nothing further; you only need to ask once.
 
 ## Working with bash day to day
 

@@ -1068,21 +1068,34 @@ there is one answer either way) out of `Plan` is an ordinary, silent
 toggle most of the time. It stops being silent the moment the *focused*
 agent has actually said something — produced at least one reply — while
 `Plan` was gating it: a modal opens showing that reply as "the plan,"
-rather than switching straight to `AutoAllow` behind it.
+with its own body stating what a bare `Enter` does
+(`Enter: approve, switch to Prompt mode`), rather than switching straight
+to another mode behind it with no stated destination.
 
-- **`Enter`** approves — switches the mode and sends a fixed, short
-  message (`Plan approved; proceed.`) as your next turn, so the model
-  knows the mode actually changed. The mode is written before that turn
-  is sent, never after.
+- **`Enter`** approves into `Prompt` — the safe default: tools unlock, but
+  every call still asks. The mode is written before the fixed turn
+  (`Plan approved; proceed.`) is sent, never after.
+- **`a`** approves into `AutoAllow` instead, but only *arms* that choice —
+  a second, deliberate `a` confirms it (the footer replaces itself with a
+  plain "no further tool prompts" warning while armed); `Esc` backs out
+  without discarding the plan; any other key disarms and falls through to
+  its own meaning. Mirrors the permission prompt's own `[a]`-confirm flow:
+  no single stray keystroke lands you in the one mode that stops asking.
 - **`e`** opens the plan text in `$EDITOR` first (the same editor path
   `Ctrl-G` and `/distill`'s own modal use) and sends the edited text as
-  your turn instead, along with the same mode switch — one action, not
-  edit-then-a-second-Enter.
+  your turn instead, along with the SAME switch `Enter` takes, into
+  `Prompt` — one action, not edit-then-a-second-Enter.
 - **`Esc`** stays in `Plan`. Nothing switches, nothing is sent.
 
-If the focused agent never produced a reply while `Plan` was gating it, or
-one of its turns is still in flight at the exact instant you cycle out,
-the mode just switches, silently, as it always did — see
+A short typeahead-guard window right after the modal opens swallows every
+key, so a reflexive keystroke off the `Shift-Tab`/`/settings` press that
+opened it can never be mistaken for one of the choices above.
+
+If the focused agent never produced a reply while `Plan` was gating it,
+the mode just switches, silently, as it always did. If one of its turns is
+still in flight at the exact instant you cycle out, the switch no longer
+happens silently behind it, either — `Plan` stays in force, a short notice
+says so, and the modal opens once that turn settles. See
 [`docs/permissions.md`](permissions.md#leaving-plan-the-approval-modal)
 for the full reference, including what the recorded `system_note` says.
 
