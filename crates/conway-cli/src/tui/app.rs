@@ -57,6 +57,7 @@ mod marketplace;
 mod mention_scan;
 #[cfg(test)]
 mod new_session;
+mod plan_approval;
 mod plugin_cmd;
 mod plugin_status;
 mod plugin_toggle;

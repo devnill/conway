@@ -58,9 +58,9 @@ pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use mentions::MentionScanRequest;
 pub use modal::{
     AddProviderContextWindowState, AddProviderCredentialState, AskFate, AskModal,
-    DenyFeedbackState, DistillFate, DistillModal, Mode, SettingsPreviewSection, SkillProposalFate,
-    SkillProposalModal, TrustDecision, TrustPreviewCard, UiFormDecision, UiFormState,
-    DEFAULT_DENY_FEEDBACK,
+    DenyFeedbackState, DistillFate, DistillModal, Mode, PlanApprovalFate, PlanApprovalModal,
+    SettingsPreviewSection, SkillProposalFate, SkillProposalModal, TrustDecision, TrustPreviewCard,
+    UiFormDecision, UiFormState, DEFAULT_DENY_FEEDBACK,
 };
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
 pub use transcript::{backfill_entries, clamp_tool_preview_lines, Entry, ToolStatus};
@@ -509,6 +509,34 @@ pub struct AppState {
     /// standing surface ruling -- see `App::new`'s own doc for the
     /// precedence/trust computation).
     pub default_permission_mode: PermissionMode,
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: whether the FOCUSED agent
+    /// has produced at least one assistant turn (an `Event::TurnFinished`
+    /// seen by `app/run.rs`'s own event-apply arm) while [`Self::
+    /// permission_mode`] was [`PermissionMode::Plan`] -- the record
+    /// `Action::CyclePermissionMode`'s own arm reads to decide whether
+    /// leaving `Plan` is a bare toggle (nothing to show) or a moment worth
+    /// a modal (`AppState::offer_plan_approval`, `tui/app/plan_approval.rs`).
+    ///
+    /// Set `true` only by that one event-apply site, for the SAME agent/
+    /// mode combination every time -- never by `offer_plan_approval` or the
+    /// modal itself, so a `Plan`-mode turn that finishes while the modal is
+    /// already open (the turn-in-flight race `Action::
+    /// CyclePermissionMode`'s own doc discusses) still leaves a true record
+    /// behind for the NEXT attempt to leave, even though that race makes
+    /// THIS attempt fall through to the silent switch instead.
+    ///
+    /// Reset `false` in exactly two places: `Self::focus_agent` (a freshly
+    /// focused agent carries no evidence of its own) and `App::approve_plan`
+    /// (`tui/app/plan_approval.rs`, the moment the mode actually leaves
+    /// `Plan` -- a fresh entry into `Plan` later starts this at `false`
+    /// again, same as a session that never entered it at all). Left
+    /// UNTOUCHED by `Esc` on the modal (`AppState::close_plan_approval`):
+    /// staying in `Plan` with the same evidence already recorded means the
+    /// very next attempt to leave shows the identical plan again, which is
+    /// the correct behavior -- nothing about the focused agent's last
+    /// assistant turn changed just because the operator decided not to
+    /// leave yet.
+    pub plan_turn_seen: bool,
     /// V2b: every permission-file candidate `App::new` considered, in
     /// precedence order (project first, then every operator-authored
     /// candidate -- `crate::config::discovery::permission_file_paths`'s own
@@ -875,6 +903,19 @@ pub struct AppState {
     /// prompt, ask, intent card, trust preview, ui form, skill proposal,
     /// then this -- lowest priority of all eight).
     pending_distill: Option<DistillModal>,
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: a plan-approval modal parked
+    /// behind another modal-bearing surface -- mirrors `pending_distill`
+    /// exactly. `Action::CyclePermissionMode`'s own arm (`app/run.rs`) calls
+    /// [`Self::offer_plan_approval`], which parks here whenever `mode` is
+    /// not `Normal`. Drained in the SAME fixed priority order
+    /// [`Self::promote_next_surface`] already documents (queued prompt,
+    /// ask, intent card, trust preview, ui form, skill proposal, distill,
+    /// then this -- lowest priority of all nine). Unlike `pending_distill`,
+    /// nothing produced this modal's content asynchronously -- it is built
+    /// straight from `self.state.transcript` the instant the operator
+    /// cycles out of `Plan` -- so there is no "in flight"/generation
+    /// counter here at all, only the park slot itself.
+    pending_plan_approval: Option<PlanApprovalModal>,
     /// Whether `/distill`'s ephemeral fork is currently in flight -- mirrors
     /// `skill_propose_in_flight` exactly: while set, a second `/distill` is
     /// refused with a `Notice` rather than competing for the one
@@ -2218,6 +2259,7 @@ impl AppState {
             vim: crate::tui::input::vim::VimState::default(),
             permission_mode: PermissionMode::default(),
             default_permission_mode: PermissionMode::default(),
+            plan_turn_seen: false,
             permission_paths: Vec::new(),
             grants_path: None,
             project_config_ignored: false,
@@ -2280,6 +2322,7 @@ impl AppState {
             pending_skill_proposal: None,
             skill_propose_in_flight: false,
             pending_distill: None,
+            pending_plan_approval: None,
             distill_in_flight: false,
             distill_generation: 0,
             spinner_frame: 0,
@@ -2467,6 +2510,11 @@ impl AppState {
             vim: _,
             permission_mode,
             default_permission_mode,
+            // RESET: whether the OLD focused agent produced an assistant
+            // turn while `Plan` was gating it belongs to that agent's own
+            // conversation, not to the fresh session replacing it -- see
+            // this field's own doc.
+            plan_turn_seen: _,
             permission_paths,
             grants_path,
             project_config_ignored,
@@ -2507,6 +2555,7 @@ impl AppState {
             pending_skill_proposal: _,
             skill_propose_in_flight: _,
             pending_distill: _,
+            pending_plan_approval: _,
             distill_in_flight: _,
             distill_generation: _,
             ask_in_flight: _,
@@ -2755,6 +2804,10 @@ impl AppState {
         // `commands::latest_goal_text`) fills this back in, mirroring every
         // other `focused_*` field reset just above.
         self.focused_goal = None;
+        // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: a freshly focused agent
+        // carries no evidence of its OWN -- see `Self::plan_turn_seen`'s own
+        // doc for the only other place this is written.
+        self.plan_turn_seen = false;
     }
 
     /// Opens the NL intent confirmation card (C2), parking it in

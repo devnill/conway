@@ -75,7 +75,7 @@ use ratatui::Frame;
 use super::state::{
     AddProviderContextWindowState, AddProviderCredentialState, AppState, AskModal,
     DenyFeedbackState, DistillModal, EditingPatternState, EditingShellPrefixState, IntentConfirm,
-    Mode, SkillProposalModal, TrustPreviewCard, UiFormState,
+    Mode, PlanApprovalModal, SkillProposalModal, TrustPreviewCard, UiFormState,
 };
 pub use theme::{Theme, ThemePreset};
 
@@ -255,6 +255,13 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
         draw_distill(frame, areas.transcript, modal, state.modal_scroll, theme);
     }
 
+    // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: the plan-approval modal --
+    // the ninth surface in the SAME never-stack family every branch above
+    // this one belongs to.
+    if let Mode::PlanApproval(modal) = &state.mode {
+        draw_plan_approval(frame, areas.transcript, modal, state.modal_scroll, theme);
+    }
+
     // T7: the `/help` keybinding overlay is NOT a `Mode` variant (see
     // `AppState::help_open`'s own doc) -- it is gated on `Mode::Normal`
     // here instead, which is exactly how it avoids ever stacking on top of
@@ -407,6 +414,7 @@ fn layout(state: &AppState, area: Rect) -> Areas {
                 | Mode::UiForm(_)
                 | Mode::SkillProposal(_)
                 | Mode::Distill(_)
+                | Mode::PlanApproval(_)
         )
         && area.height > input_height + STATUS_HEIGHT + 3;
 
@@ -1430,6 +1438,65 @@ fn draw_distill(
         None => Line::from(""),
     };
     let footer_lines = vec![Line::from(hint), error_line];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
+/// Rows the plan-approval modal's footer ALWAYS reserves: the key hint plus
+/// a blank line reserved for symmetry (mirrors [`UI_FORM_FOOTER_ROWS`] below
+/// -- this card, like `ask_question`'s own, has no in-modal error state:
+/// neither of its two ways forward can fail in a way that keeps it open,
+/// see [`PlanApprovalModal`]'s own doc).
+const PLAN_APPROVAL_FOOTER_ROWS: u16 = 2;
+
+/// The plan-approval modal (board item `01M1YVPJW9W43HMM8WEF34N4RZ`):
+/// bottom-anchored, content-sized, capped, via the shared [`modal`]
+/// primitive -- following [`draw_distill`]'s precedent exactly. Shows the
+/// focused agent's own last assistant message, shown as "the plan"; the
+/// footer shows the three decision keys -- `[enter] approve  [e] edit
+/// [esc] stay in plan`.
+fn draw_plan_approval(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    modal_state: &PlanApprovalModal,
+    scroll: u16,
+    theme: &Theme,
+) {
+    let mut body_lines = vec![
+        Line::from(Span::styled("the plan", theme.emphasized)),
+        Line::from(""),
+    ];
+    body_lines.extend(
+        modal_state
+            .plan
+            .split('\n')
+            .map(|line| Line::from(line.to_string())),
+    );
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        PLAN_APPROVAL_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " LEAVING PLAN ",
+        theme.border_accent,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[enter] approve  [e] edit  [esc] stay in plan  [PageUp/PageDown] scroll"
+    } else {
+        "[enter] approve  [e] edit  [esc] stay in plan"
+    };
+    let footer_lines = vec![Line::from(hint), Line::from("")];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, frame_areas.footer_area);
 }

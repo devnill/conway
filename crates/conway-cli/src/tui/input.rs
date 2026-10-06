@@ -16,8 +16,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::config::EditorMode;
 use super::keybindings::Context;
 use super::state::{
-    AppState, AskFate, DistillFate, IntentChoice, Mode, SkillProposalFate, TrustDecision,
-    UiFormDecision,
+    AppState, AskFate, DistillFate, IntentChoice, Mode, PlanApprovalFate, SkillProposalFate,
+    TrustDecision, UiFormDecision,
 };
 
 pub mod vim;
@@ -259,6 +259,21 @@ pub enum Action {
     /// against the modal's current `briefing` and applies the result via
     /// `AppState::apply_distill_edit`.
     DistillEdit,
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: a decision key was pressed
+    /// while the plan-approval modal was open (`Enter` approve / `Esc` stay
+    /// in `Plan`). The app loop runs `App::approve_plan`/`AppState::
+    /// close_plan_approval`; this module only reports which fate was
+    /// chosen -- mirrors `DistillFate` exactly.
+    PlanApprovalFate(PlanApprovalFate),
+    /// `e` was pressed while the plan-approval modal was open -- the ONE key
+    /// on this modal that needs a live terminal, mirrors `DistillEdit`
+    /// exactly. The app loop's own arm calls `editor::edit_prompt_externally`
+    /// against the modal's current `plan` text, and -- unlike `DistillEdit`
+    /// -- a non-empty result does not merely update the modal: it is sent
+    /// straight on as the approval turn, along with the SAME mode switch
+    /// `Enter` performs (`App::approve_plan(Some(text))`, see that method's
+    /// own doc for why this modal has no second "now press Enter" step).
+    PlanApprovalEdit,
     /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: `Enter` on the settings
     /// providers section's own `add_provider:<id>` leaf -- carries the
     /// chosen [`crate::first_run::ProviderChoice::id`] (never the whole
@@ -441,6 +456,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::SkillProposal(_) => handle_skill_proposal_key(state, key),
         // Board item `01M1YVKQ6ABQDWYSA7CEF20WKG`.
         Mode::Distill(_) => handle_distill_key(state, key),
+        // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`.
+        Mode::PlanApproval(_) => handle_plan_approval_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
 }
@@ -1133,6 +1150,50 @@ fn handle_distill_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Enter => Action::DistillFate(DistillFate::Spawn),
         KeyCode::Char('e') | KeyCode::Char('E') => Action::DistillEdit,
         KeyCode::Esc => Action::DistillFate(DistillFate::Discard),
+        _ => Action::None,
+    }
+}
+
+/// The plan-approval modal's key handling (board item
+/// `01M1YVPJW9W43HMM8WEF34N4RZ`): exactly three ways out -- `Enter`
+/// (approve -- switch mode and send the fixed turn), `e` (edit the plan
+/// text first, sending the EDITED text as the turn instead), `Esc` (stay in
+/// `Plan`). Mirrors [`handle_distill_key`]'s shape exactly: every other key
+/// is SWALLOWED, the input line is inert, `/agents` is neither visible nor
+/// available, and the quit keys (`Ctrl-C`/`Ctrl-D`) still pass through as
+/// `Action::CtrlC`/`Action::Quit` -- unlike `/distill`'s fork child, nothing
+/// was ever created for this modal to clean up on quit (see
+/// [`crate::tui::state::PlanApprovalModal`]'s own doc), so quitting here
+/// needs no special handling beyond letting the keys through.
+///
+/// `e` only fires on a bare keypress -- a modifier held (Ctrl-E, Alt-E, ...)
+/// is NOT the edit choice, the same guard [`handle_distill_key`] applies.
+fn handle_plan_approval_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
+    }
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
+    match key.code {
+        KeyCode::Enter => Action::PlanApprovalFate(PlanApprovalFate::Approve),
+        KeyCode::Char('e') | KeyCode::Char('E') => Action::PlanApprovalEdit,
+        KeyCode::Esc => Action::PlanApprovalFate(PlanApprovalFate::Discard),
         _ => Action::None,
     }
 }
@@ -5536,6 +5597,93 @@ mod tests {
         // purged by the time the modal exists at all (see `DistillModal`'s
         // own doc) -- quitting here is a plain discard, no purge-first
         // special case the way `/ask`'s modal needs.
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
+            Action::CtrlC
+        );
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('d'))),
+            Action::Quit
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: the plan-approval modal's
+    // own key handling -- mirrors the `distill_*` tests immediately above
+    // exactly (`handle_plan_approval_key`'s own doc: "mirrors
+    // `handle_distill_key`'s shape exactly").
+    // -----------------------------------------------------------------
+
+    fn plan_approval_state() -> AppState {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_plan_approval(crate::tui::state::PlanApprovalModal {
+            plan: "the plan".to_string(),
+            next_mode: conway::PermissionMode::AutoAllow,
+        });
+        state
+    }
+
+    #[test]
+    fn plan_approval_enter_e_esc_map_to_approve_edit_discard() {
+        let mut state = plan_approval_state();
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Enter)),
+            Action::PlanApprovalFate(PlanApprovalFate::Approve)
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('e'))),
+            Action::PlanApprovalEdit,
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('E'))),
+            Action::PlanApprovalEdit,
+            "a capital E must also fire the edit action"
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Esc)),
+            Action::PlanApprovalFate(PlanApprovalFate::Discard)
+        );
+        // None of these keys close the modal themselves -- the app loop
+        // does (`App::approve_plan`/`AppState::close_plan_approval`).
+        assert!(matches!(state.mode, Mode::PlanApproval(_)));
+    }
+
+    /// `e`/`Enter`/`Esc` only fire on a BARE keypress -- a modifier held
+    /// (Ctrl-E, Alt-Enter, ...) must not be mistaken for the choice, the
+    /// same guard every other modal-bearing surface's key handler applies
+    /// (`handle_plan_approval_key`'s own doc).
+    #[test]
+    fn plan_approval_edit_key_requires_no_modifier() {
+        let mut state = plan_approval_state();
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('e'))),
+            Action::None
+        );
+        assert!(matches!(state.mode, Mode::PlanApproval(_)));
+    }
+
+    #[test]
+    fn plan_approval_swallows_text_and_palette_keys() {
+        let mut state = plan_approval_state();
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('x'))),
+            Action::None
+        );
+        assert!(state.input.is_empty(), "the input line must stay inert");
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('/'))),
+            Action::None
+        );
+        assert!(state.input.is_empty());
+        assert!(matches!(state.mode, Mode::PlanApproval(_)));
+    }
+
+    #[test]
+    fn plan_approval_quit_keys_pass_through() {
+        let mut state = plan_approval_state();
+        // Nothing was ever created for this modal to clean up (see
+        // `PlanApprovalModal`'s own doc) -- quitting here needs no
+        // special handling beyond letting the keys through.
         assert_eq!(
             handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
             Action::CtrlC

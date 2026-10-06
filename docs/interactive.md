@@ -1060,6 +1060,32 @@ Neither verb ever runs on its own: there is no "at 90% we distill for you,"
 and no automatic trigger of either command. You type `/new` or `/distill`,
 or you don't — nothing about either chain happens behind your back.
 
+### Leaving Plan mode presents the plan
+
+Cycling the permission mode (`Shift-Tab`, or `/settings`' `permissions ->
+current mode` row — both reach the identical "cycle the mode" action, so
+there is one answer either way) out of `Plan` is an ordinary, silent
+toggle most of the time. It stops being silent the moment the *focused*
+agent has actually said something — produced at least one reply — while
+`Plan` was gating it: a modal opens showing that reply as "the plan,"
+rather than switching straight to `AutoAllow` behind it.
+
+- **`Enter`** approves — switches the mode and sends a fixed, short
+  message (`Plan approved; proceed.`) as your next turn, so the model
+  knows the mode actually changed. The mode is written before that turn
+  is sent, never after.
+- **`e`** opens the plan text in `$EDITOR` first (the same editor path
+  `Ctrl-G` and `/distill`'s own modal use) and sends the edited text as
+  your turn instead, along with the same mode switch — one action, not
+  edit-then-a-second-Enter.
+- **`Esc`** stays in `Plan`. Nothing switches, nothing is sent.
+
+If the focused agent never produced a reply while `Plan` was gating it, or
+one of its turns is still in flight at the exact instant you cycle out,
+the mode just switches, silently, as it always did — see
+[`docs/permissions.md`](permissions.md#leaving-plan-the-approval-modal)
+for the full reference, including what the recorded `system_note` says.
+
 ### `/context`: the summary header and the preamble section
 
 `/context <agent>` (or bare `/context`, for the focused agent) lists every
@@ -1777,7 +1803,10 @@ nothing, rather than joining the next line onto this one.
 - `transcript.scroll_page_down` — default `PageDown` — scroll the
   transcript down one page.
 - `transcript.cycle_permission_mode` — default `Shift-Tab` — cycle the
-  permission mode: prompt → plan → auto-allow.
+  permission mode: prompt → plan → auto-allow. Leaving `plan` this way
+  (or via `/settings`) opens an approval modal first if the focused agent
+  said something while `plan` was gating it — see "Leaving Plan mode
+  presents the plan," above.
 
 #### `palette`
 
