@@ -863,6 +863,55 @@ impl SessionHandle {
             .ok_or(FacadeError::Runtime(RuntimeError::AgentNotFound { agent }))
     }
 
+    /// Persists `text` as a `LogRecord::SystemNote` directly onto `agent`'s
+    /// own log, stamped `Provenance::SystemNote { reason }` -- with NO live
+    /// model turn involved and no mailbox hop. Every OTHER `SystemNote` this
+    /// crate writes today is appended from INSIDE a running agent loop or a
+    /// drained mailbox message (`conway-runtime`'s `agent_loop`/`mailbox`
+    /// modules); this is the narrowest addition that lets an OPERATOR-typed
+    /// command do the identical thing with no turn in flight at all -- the
+    /// TUI's own built-in `/goal` command (which sets or clears a standing
+    /// goal, board item `01M1YVVT9RYWZWAZC4YH21T3HN`) is this method's
+    /// first caller, through `conway_cli::tui::commands::Host::
+    /// append_system_note`, the same `Host`-seam indirection every other
+    /// facade call that command dispatch module makes already goes
+    /// through.
+    ///
+    /// An ordinary append, mirroring `Conway::record_operator_shell`'s own
+    /// "ordinary append, `seq`/`ts` are placeholders the store overwrites"
+    /// shape: `agent`'s own session is resolved first (so this reaches the
+    /// right log even for a forked/spawned child with its own session file,
+    /// not only this handle's own root), then one `SessionStore::append`.
+    ///
+    /// Rejects `agent` with `Err(FacadeError::Runtime)` when it does not
+    /// belong to this session's agent tree -- see
+    /// `SessionHandle::ensure_agent_in_session`'s own doc for exactly what
+    /// error that produces, the same guard `Self::steer`/`Self::cancel`
+    /// already apply to their own `target` before writing anything.
+    pub async fn append_system_note(
+        &self,
+        agent: AgentId,
+        text: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Result<LogSeq> {
+        self.ensure_agent_in_session(agent)?;
+        let session = self.resolve_agent_session(agent).await?;
+        let reason = reason.into();
+        Ok(self
+            .store
+            .append(
+                &session,
+                LogRecord::SystemNote {
+                    seq: LogSeq::ZERO,
+                    ts: Utc::now(),
+                    text: text.into(),
+                    reason: reason.clone(),
+                    prov: Provenance::SystemNote { reason },
+                },
+            )
+            .await?)
+    }
+
     async fn effective_transcript(&self, session: SessionId) -> Result<Vec<LogRecord>> {
         let head = self.store.head(&session).await?;
         self.resolve_prefix(session, head).await

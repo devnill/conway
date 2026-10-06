@@ -589,12 +589,12 @@ async fn finish_setup_called_twice_writes_both_backends_and_a_chain_naming_both_
 // ---------------------------------------------------------------------
 
 /// Acceptance 2: after `finish_setup` succeeds against a fresh settings
-/// file, `apply_opinion_set` writes exactly the six ruled ids into
+/// file, `apply_opinion_set` writes exactly the ruled default ids into
 /// `plugins.install` -- no more, no fewer -- and doing it twice is a no-op
 /// the second time (`set_plugin_installed`'s own "Safety posture": a goal
 /// state already holding never rewrites the file).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn apply_opinion_set_after_finish_setup_writes_exactly_the_six_ruled_ids() {
+async fn apply_opinion_set_after_finish_setup_writes_exactly_the_ruled_default_ids() {
     let mock = MockBackend::start(ok_script()).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("settings.json");
@@ -620,6 +620,7 @@ async fn apply_opinion_set_after_finish_setup_writes_exactly_the_six_ruled_ids()
         "conway.names",
         "conway.history",
         "conway.checkpoint",
+        "conway.goal",
     ];
     let applied = first_run::apply_opinion_set(&path).expect("apply_opinion_set must succeed");
     assert_eq!(

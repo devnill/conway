@@ -146,7 +146,7 @@ use conway_plugin_names::AgentNames;
 /// value until BOTH are installed together, this module's own doc), and
 /// `conway.trim`/`conway.ui` are not opinions this item's ruling reaches --
 /// see decision `01M1FQFP5D0R3M9GC8R8Z24F5N` for the six that are.
-pub const DEFAULT_OPINION_SET: [&str; 7] = [
+pub const DEFAULT_OPINION_SET: [&str; 8] = [
     conway_plugin_idiom::PLUGIN_ID,
     conway_plugin_stepguard::PLUGIN_ID,
     conway_plugin_skills::PLUGIN_ID,
@@ -154,6 +154,12 @@ pub const DEFAULT_OPINION_SET: [&str; 7] = [
     conway_plugin_names::PLUGIN_ID,
     conway_plugin_history::PLUGIN_ID,
     conway_plugin_checkpoint::PLUGIN_ID,
+    // `conway.goal`: unlike every other member above, this one is inert
+    // until the operator themselves types the built-in `/goal` command --
+    // no tool, no segment, no status-line entry until that first use (see
+    // `conway_plugin_goal`'s own module doc, "In `DEFAULT_OPINION_SET`,
+    // deliberately"). Board item `01M1YVVT9RYWZWAZC4YH21T3HN`.
+    conway_plugin_goal::PLUGIN_ID,
 ];
 
 /// Every first-party plugin this binary links, in no particular order.
@@ -529,6 +535,18 @@ fn bundle(
         // asked for a visible todo list should not get a new context segment
         // on every turn unasked -- see `conway_plugin_todo`'s own module doc.
         Arc::new(conway_plugin_todo::TodoPlugin::new()),
+        // `conway.goal` (board item `01M1YVVT9RYWZWAZC4YH21T3HN`) -- the
+        // removable half of the BUILT-IN `/goal` TUI command: a compact
+        // `ContextHook` segment near the end of a request while a standing
+        // goal is set, and a `goal` status-line contribution. Needs no
+        // constructor argument, the same bare footing `conway.trim`/
+        // `conway.web`/`conway.toolindex`/`conway.compaction`/`conway.todo`
+        // immediately above already take. In `DEFAULT_OPINION_SET` above,
+        // UNLIKE `conway.todo` immediately above it -- see
+        // `conway_plugin_goal`'s own module doc for why this one is safe
+        // to install unprompted (it contributes nothing at all until the
+        // operator themselves types `/goal`).
+        Arc::new(conway_plugin_goal::GoalPlugin::new()),
     ]
 }
 

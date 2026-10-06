@@ -828,7 +828,7 @@ prints that breakdown for exactly one id (a usage error, exit 2, naming
 every id this binary links, if `<id>` isn't one of them).
 
 `conway plugin install <id>...` turns one or more ids on;
-`conway plugin install --defaults` installs conway's own six-id default
+`conway plugin install --defaults` installs conway's own default
 opinion set in one step (the same set guided first-run setup installs
 unprompted the moment it verifies a working provider — see
 [`getting-started.md`](getting-started.md#installing-a-first-party-plugin)).
