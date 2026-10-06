@@ -661,6 +661,80 @@ fn format_permission_decision_note(
     format!("{verb} · waited {}", humanize_wait_ms(waited_ms))
 }
 
+/// Board item `01M3SJBY8DXDB1PWEAXARZY9FH`: the backfill counterpart of
+/// [`AppState::apply_permission_decision`] -- builds the [`Entry`] one
+/// persisted [`conway::LogRecord::PermissionDecisionRecord`] backfills to,
+/// or `None` when the live TUI never showed anything for the identical
+/// decision either. Shared by [`push_record`] (pushes what this returns)
+/// and [`is_transcript_silent`] (treats a `None` here as "produces no
+/// entry," so `backfill_entries`'s own trailing-record scan can look past
+/// one of these to find the session's true last conversational record).
+///
+/// Exactly two cases produce an entry:
+///
+/// - **`waited_ms.is_some()`.** This decision reached the operator's own
+///   gate live -- [`conway::LogRecord::PermissionDecisionRecord`]'s own doc:
+///   `waited_ms` is `Some` for, and only for,
+///   [`conway::PermissionDecisionSource::Operator`]. The live TUI's
+///   `Event::PermissionDecision` arm (`AppState::apply_permission_decision`)
+///   renders exactly this text via [`format_permission_decision_note`] --
+///   reused here unchanged, via the same `decision` -> live
+///   [`conway::PermissionDecisionKind`] mapping `PermissionBroker::decide`'s
+///   own operator branch uses to build the ONLY four record kinds it ever
+///   persists with a `Some` `waited_ms` (`Allow`/`AllowAlways`/`Deny`/
+///   `DenyWithFeedback` -- matched below; no other kind reaches this branch
+///   in practice, and a future one falls back to `format_permission_decision_
+///   note`'s own `None`-kind handling rather than guessing). A resumed
+///   session's "denied: …"/"denied with feedback: …" line reads identically
+///   to however it looked when it first streamed.
+/// - **`source == Abort`** (board item `01M3YPYDAMR7KPN2WH9RS8TRC7`). The one
+///   denial source whose call produces no `LogRecord::ToolResultRecord` at
+///   all: `conway_runtime::agent_loop::AgentLoop`'s own turn-abort path drops
+///   that batch's outcomes before they ever reach the session log, so this
+///   record is the ONLY persisted trace the call was ever refused. The live
+///   TUI's `Event::PermissionResolved` arm shows this the same bare
+///   `"tool call {call_id} denied"` notice it shows for every denial
+///   (`AppState::apply`'s own arm, in `state.rs`) -- reused here unchanged.
+///
+/// Every other case stays silent, matching the live TUI exactly: a
+/// pattern/rule/hook/mode/default decision never reached the operator (so
+/// `Event::PermissionDecision`'s own live arm rendered nothing -- `waited_ms`
+/// was `None`), and, when it was a denial, its `Event::PermissionResolved`
+/// notice was the same transient line `Abort`'s own case above describes --
+/// but unlike `Abort`, that call's `PermissionOutcome::Deny` DID reach the
+/// session log as an ordinary `LogRecord::ToolResultRecord` carrying the
+/// identical rendered reason, which `push_record`'s own `ToolResultRecord`
+/// arm already folds into the replay. Backfilling the transient notice too
+/// would show the operator the same refusal twice.
+fn permission_decision_backfill_entry(
+    call_id: &str,
+    decision: &conway::PermissionDecisionRecordKind,
+    source: conway::PermissionDecisionSource,
+    waited_ms: Option<u64>,
+    feedback: Option<&str>,
+) -> Option<Entry> {
+    use conway::{PermissionDecisionKind as LiveKind, PermissionDecisionRecordKind as RecordKind};
+    if let Some(waited_ms) = waited_ms {
+        let kind = match decision {
+            RecordKind::Allow => Some(LiveKind::AllowOnce),
+            RecordKind::AllowAlways => Some(LiveKind::AllowAlways),
+            RecordKind::Deny => Some(LiveKind::Denied),
+            RecordKind::DenyWithFeedback => Some(LiveKind::DeniedWithFeedback),
+            _ => None,
+        };
+        return Some(Entry::PermissionDecision {
+            call_id: call_id.to_string(),
+            text: format_permission_decision_note(kind, waited_ms, feedback),
+        });
+    }
+    if source == conway::PermissionDecisionSource::Abort {
+        return Some(Entry::Notice {
+            text: format!("tool call {call_id} denied"),
+        });
+    }
+    None
+}
+
 /// `waited_ms` as `"{m}m {s}s"` for >= 60_000ms, else `"{s}s"` -- mirrors
 /// `state::turn_summary::format_turn_summary`'s own `elapsed` shape exactly
 /// (duplicated here, not shared, matching this crate's own established
@@ -757,6 +831,19 @@ pub fn clamp_tool_preview_lines(n: Option<u32>) -> u32 {
 /// arm for the full reasoning and the dogfood evidence that reversed
 /// this.
 ///
+/// **`PermissionDecisionRecord` is the one exception to "a record kind
+/// either always or never renders"** (board item
+/// `01M3SJBY8DXDB1PWEAXARZY9FH`): the live TUI itself does not render every
+/// `Event::PermissionDecision`/`PermissionResolved` pair the same way --
+/// only a decision that reached the operator's own gate gets the dim
+/// "allowed once · waited …" note, and only an aborted call gets the bare
+/// "tool call … denied" notice with no `ToolResultRecord` to fall back on
+/// -- so this record's own arm reproduces that SAME per-decision
+/// conditional, not a blanket "always show" or "always hide." See
+/// [`permission_decision_backfill_entry`]'s own doc for the exact two cases
+/// and why every other source/kind combination still renders nothing here,
+/// matching the live TUI exactly.
+///
 /// **The interrupted-final-turn marker** (same board item): once every
 /// record has been folded into `entries` above, a session whose own LAST
 /// record -- skipping any trailing turn-bookkeeping record
@@ -786,26 +873,42 @@ pub fn backfill_entries(records: &[conway::LogRecord]) -> Vec<Entry> {
     entries
 }
 
-/// Whether `record`'s own kind is one [`push_record`]'s trailing wildcard
-/// arm drops silently from the replay (a `ContextReportRecord`, or one of
-/// the four pure-bookkeeping kinds its own doc names) -- factored out so
-/// [`backfill_entries`]'s own trailing-record scan (above) can look PAST a
-/// run of these to find the session's actual last CONVERSATIONAL record,
-/// the same way a human skimming the raw log would. Not reusable as a
-/// general "does this produce an entry" predicate for every other kind
-/// `push_record` DOES handle (`Header` also produces no entry, but is
-/// never meaningfully a session's "last" record and is deliberately left
-/// out here) -- this exists for exactly the one caller above.
+/// Whether `record`'s own kind is one [`push_record`] drops silently from
+/// the replay (a `ContextReportRecord`, one of the four pure-bookkeeping
+/// kinds its own trailing wildcard arm names, or a `PermissionDecisionRecord`
+/// [`permission_decision_backfill_entry`] has nothing to render for) --
+/// factored out so [`backfill_entries`]'s own trailing-record scan (above)
+/// can look PAST a run of these to find the session's actual last
+/// CONVERSATIONAL record, the same way a human skimming the raw log would.
+/// Not reusable as a general "does this produce an entry" predicate for
+/// every other kind `push_record` DOES handle (`Header` also produces no
+/// entry, but is never meaningfully a session's "last" record and is
+/// deliberately left out here) -- this exists for exactly the one caller
+/// above.
 fn is_transcript_silent(record: &conway::LogRecord) -> bool {
     use conway::LogRecord;
-    matches!(
-        record,
+    match record {
         LogRecord::ContextReportRecord { .. }
-            | LogRecord::ContextMask { .. }
-            | LogRecord::ContextPathSet { .. }
-            | LogRecord::ContextPathNamed { .. }
-            | LogRecord::PermissionDecisionRecord { .. }
-    )
+        | LogRecord::ContextMask { .. }
+        | LogRecord::ContextPathSet { .. }
+        | LogRecord::ContextPathNamed { .. } => true,
+        LogRecord::PermissionDecisionRecord {
+            call_id,
+            decision,
+            source,
+            waited_ms,
+            feedback,
+            ..
+        } => permission_decision_backfill_entry(
+            call_id,
+            decision,
+            *source,
+            *waited_ms,
+            feedback.as_deref(),
+        )
+        .is_none(),
+        _ => false,
+    }
 }
 
 /// One [`backfill_entries`] record. `#[non_exhaustive]` on
@@ -916,6 +1019,31 @@ fn push_record(entries: &mut Vec<Entry>, record: &conway::LogRecord) {
             to_model: true,
             ts: Some(*ts),
         }),
+        // Board item `01M3SJBY8DXDB1PWEAXARZY9FH`: a `PermissionDecisionRecord`
+        // is NOT blanket-silent -- see [`permission_decision_backfill_entry`]'s
+        // own doc for the two cases it backfills (an operator-prompted
+        // decision, matching the live dim note exactly; an aborted call,
+        // the one denial source with no `ToolResultRecord` to fall back on)
+        // and why every other source/kind combination still produces
+        // nothing, matching the live TUI.
+        LogRecord::PermissionDecisionRecord {
+            call_id,
+            decision,
+            source,
+            waited_ms,
+            feedback,
+            ..
+        } => {
+            if let Some(entry) = permission_decision_backfill_entry(
+                call_id,
+                decision,
+                *source,
+                *waited_ms,
+                feedback.as_deref(),
+            ) {
+                entries.push(entry);
+            }
+        }
         // Board item `01M3SJBY8DXDB1PWEAXARZY9FH` (dogfood round 2):
         // REVERSES this match's previous "declaration-honesty" policy for
         // every record kind with no dedicated arm above, now including
@@ -924,11 +1052,13 @@ fn push_record(entries: &mut Vec<Entry>, record: &conway::LogRecord) {
         // live transcript showed". The live TUI's own `AppState::apply`
         // never renders ANY of these record kinds' live-event
         // counterparts into the transcript pane at all (`Event::
-        // ContextReport`/`PermissionDecision`'s own `apply` arms update
-        // side-channel state only -- `context_report`/
-        // `permission_decision_pending` -- never push an `Entry`; there is
+        // ContextReport`'s own `apply` arm updates side-channel state
+        // only -- `context_report` -- never pushes an `Entry`; there is
         // no live `Event` for `ContextMask`/`ContextPathSet`/
-        // `ContextPathNamed` at all), so a replayed session showing a `[…
+        // `ContextPathNamed` at all; `PermissionDecisionRecord` has its OWN
+        // dedicated arm above, not this one, precisely because its live
+        // counterpart is NOT blanket-silent -- see that arm's own doc), so
+        // a replayed session showing a `[…
         // record not shown in the transcript]` placeholder or a `context
         // report: N segments, M tokens` line for one of these -- exactly
         // what dogfooding this crate against itself (not merely reading
@@ -2594,6 +2724,107 @@ mod tests {
             instruction_fragments: Vec::new(),
             not_admitted: Vec::new(),
         }
+    }
+
+    /// Board item `01M3SJBY8DXDB1PWEAXARZY9FH` (round 3, the permission-
+    /// decision parity fix): an operator-prompted `DenyWithFeedback`
+    /// `PermissionDecisionRecord` (`waited_ms: Some`, `source: Operator` --
+    /// the shape `PermissionBroker::decide`'s own operator branch
+    /// persists) backfills the SAME dim
+    /// `Entry::PermissionDecision` text the live TUI rendered the moment the
+    /// operator pressed `Esc` and typed the feedback, via
+    /// [`format_permission_decision_note`] -- a resumed session must not
+    /// lose the one line that says WHY a tool call never ran.
+    #[test]
+    fn operator_deny_with_feedback_record_replays_the_live_dim_note() {
+        let records = vec![conway::LogRecord::PermissionDecisionRecord {
+            seq: LogSeq(0),
+            ts: ts(),
+            call_id: "tc_1".to_string(),
+            tool: ToolName::new("bash"),
+            decision: conway::PermissionDecisionRecordKind::DenyWithFeedback,
+            source: conway::PermissionDecisionSource::Operator,
+            waited_ms: Some(12_000),
+            feedback: Some("too risky".to_string()),
+        }];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(entries.len(), 1, "{entries:#?}");
+        match &entries[0] {
+            Entry::PermissionDecision { call_id, text } => {
+                assert_eq!(call_id, "tc_1");
+                assert_eq!(text, "denied with feedback: too risky · waited 12s");
+            }
+            other => panic!("expected Entry::PermissionDecision, got {other:?}"),
+        }
+    }
+
+    /// Board item `01M3SJBY8DXDB1PWEAXARZY9FH` (round 3, the permission-
+    /// decision parity fix): the call's own turn being aborted while
+    /// `PermissionBroker::decide` awaited an answer (`source: Abort`,
+    /// `waited_ms: None` -- `PermissionBroker::record_turn_aborted`'s own
+    /// persisted shape) is the one denial source
+    /// with no `LogRecord::ToolResultRecord` to fall back on (the aborted
+    /// batch's outcome is dropped before it ever reaches the session log),
+    /// so this record alone backfills the bare "tool call … denied" notice
+    /// the live TUI's `Event::PermissionResolved` arm shows for every
+    /// denial.
+    #[test]
+    fn aborted_permission_decision_record_replays_the_denied_notice() {
+        let records = vec![conway::LogRecord::PermissionDecisionRecord {
+            seq: LogSeq(0),
+            ts: ts(),
+            call_id: "tc_1".to_string(),
+            tool: ToolName::new("bash"),
+            decision: conway::PermissionDecisionRecordKind::Deny,
+            source: conway::PermissionDecisionSource::Abort,
+            waited_ms: None,
+            feedback: Some(
+                "`bash` was not authorized: its turn was aborted while awaiting a decision"
+                    .to_string(),
+            ),
+        }];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(entries.len(), 1, "{entries:#?}");
+        match &entries[0] {
+            Entry::Notice { text } => {
+                assert_eq!(text, "tool call tc_1 denied");
+            }
+            other => panic!("expected Entry::Notice, got {other:?}"),
+        }
+    }
+
+    /// Board item `01M3SJBY8DXDB1PWEAXARZY9FH` (round 3, the negative case
+    /// the permission-decision parity fix must not regress): a
+    /// `Pattern`-matched allow that never reached the operator
+    /// (`source: Rule`, `waited_ms: None`) stays silent in the replay,
+    /// exactly as the live TUI's own
+    /// `Event::PermissionDecision` arm never rendered a dim line for it
+    /// either -- the vast majority of calls, which must not clutter the
+    /// transcript with a line apiece.
+    #[test]
+    fn auto_allowed_pattern_decision_record_stays_silent() {
+        let records = vec![conway::LogRecord::PermissionDecisionRecord {
+            seq: LogSeq(0),
+            ts: ts(),
+            call_id: "tc_1".to_string(),
+            tool: ToolName::new("bash"),
+            decision: conway::PermissionDecisionRecordKind::Pattern,
+            source: conway::PermissionDecisionSource::Rule,
+            waited_ms: None,
+            feedback: None,
+        }];
+
+        let entries = backfill_entries(&records);
+
+        assert_eq!(
+            entries.len(),
+            0,
+            "an auto-resolved decision the live TUI never showed must stay silent: {entries:#?}"
+        );
     }
 
     /// A persisted `!>` shell command (`LogRecord::OperatorShellRecord`)

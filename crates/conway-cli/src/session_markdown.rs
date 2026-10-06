@@ -35,14 +35,18 @@
 //! this module writes is also run through `sanitize`, this module's OWN
 //! control-character sanitizer -- NOT [`conway::sanitize_control_chars`]
 //! unchanged, see that function's own doc for the one deliberate
-//! difference: a raw ANSI escape or any other embedded control byte still
-//! cannot reach a pasted Markdown file as a live control byte, but a plain
-//! `\n` is left alone. `conway::sanitize_control_chars`'s own hazard --
-//! a forged control sequence surviving a later paste into a terminal --
-//! never applied to a bare line break at all, and multi-line tool output
-//! (the overwhelmingly common case -- a file listing, a diff, build output)
+//! difference: a raw ANSI escape, a bidirectional override, or any other
+//! character [`conway::is_laundered_char`] names still cannot reach a
+//! pasted Markdown file as a live control/format byte, but a plain `\n` is
+//! left alone. `conway::sanitize_control_chars`'s own hazard -- a forged
+//! control sequence surviving a later paste into a terminal -- never
+//! applied to a bare line break at all, and multi-line tool output (the
+//! overwhelmingly common case -- a file listing, a diff, build output)
 //! NEEDS its line breaks to render as more than one visually garbled line
-//! inside a fenced block.
+//! inside a fenced block. [`sanitize`] reaches the SAME [`conway::
+//! is_laundered_char`] predicate `conway::sanitize_control_chars` is built
+//! on for every OTHER character, rather than re-deriving a second copy of
+//! its table.
 //!
 //! ## Out of scope
 //!
@@ -341,10 +345,10 @@ fn fence_len(content: &str) -> usize {
 
 /// This module's own control-character sanitizer -- deliberately NOT a bare
 /// call to [`conway::sanitize_control_chars`]: that shared sentinel treats a
-/// `\n` as just another `Cc` control character to launder (its own doc: the
-/// single source of truth the permission gate's laundering-recognition and
-/// the runtime's `rendered` seam both depend on, so it must never drift for
-/// EITHER of them), which is correct there -- an embedded newline inside a
+/// `\n` as just another laundered character (its own doc: the single source
+/// of truth the permission gate's laundering-recognition and the runtime's
+/// `rendered` seam both depend on, so it must never drift for EITHER of
+/// them), which is correct there -- an embedded newline inside a
 /// single-line shell-command DISPLAY or a permission-pattern match is itself
 /// suspicious -- but wrong here: a session export is a static FILE, written
 /// once, not a live terminal or a pattern-matching input, and this module's
@@ -353,14 +357,18 @@ fn fence_len(content: &str) -> usize {
 /// Replacing every embedded `\n` with a placeholder character would turn
 /// ordinary multi-line tool output into a single garbled line -- this
 /// function keeps `\n` as a real line break and launders every OTHER
-/// control character exactly the shared sentinel would (same replacement
-/// character, `'\u{FFFD}'`, by convention -- not importable here: `conway`
-/// does not re-export `SANITIZED_CONTROL_PLACEHOLDER`, and `conway-core` is
-/// a test-only dependency of this crate, never a production one).
+/// character [`conway::is_laundered_char`] names (a raw control byte, a
+/// bidirectional override, a line/paragraph separator, ...) -- the SAME
+/// predicate [`conway::sanitize_control_chars`] is built on, so this
+/// module's own rule can never drift from a second, independently-written
+/// table. Same replacement character, `'\u{FFFD}'`, by convention -- not
+/// importable here: `conway` does not re-export
+/// `SANITIZED_CONTROL_PLACEHOLDER`, and `conway-core` is a test-only
+/// dependency of this crate, never a production one.
 fn sanitize(text: &str) -> String {
     text.chars()
         .map(|c| {
-            if c == '\n' || !c.is_control() {
+            if c == '\n' || !conway::is_laundered_char(c) {
                 c
             } else {
                 '\u{FFFD}'
@@ -607,6 +615,34 @@ Found two files: a.txt and b.txt.
         };
         let got = render(&entries, &header, 10);
         assert!(!got.contains('\x1b'), "{got}");
+        assert!(got.contains('\u{FFFD}'), "{got}");
+    }
+
+    /// A bidirectional-override character embedded in tool output is
+    /// replaced too, not just a `Cc` control byte -- `sanitize` reaches the
+    /// same [`conway::is_laundered_char`] table [`conway::
+    /// sanitize_control_chars`] is built on (board item
+    /// `01M3SJC96P99V9KNT7TDJBWZ66`'s widened sanitizer).
+    #[test]
+    fn sessions_export_markdown_bidi_override_in_tool_output_is_sanitized() {
+        let entries = vec![Entry::Tool {
+            call_id: "tc_1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "echo safe\u{202E}fr- mr\u{2066}".to_string(),
+            args: String::new(),
+            progress: String::new(),
+            expanded: false,
+            ts: None,
+        }];
+        let header = Header {
+            session_id: SessionId::new(),
+            name: None,
+            models: Vec::new(),
+            usage: Usage::default(),
+        };
+        let got = render(&entries, &header, 10);
+        assert!(!got.contains('\u{202E}') && !got.contains('\u{2066}'), "{got}");
         assert!(got.contains('\u{FFFD}'), "{got}");
     }
 

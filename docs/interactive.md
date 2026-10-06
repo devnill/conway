@@ -1789,9 +1789,13 @@ confirmation it actually landed), every other kind of in-flight residue
 (an `/ask`/`/distill` fork, a parked confirmation card) is discarded
 exactly as it would be on an ordinary quit, and the terminal itself is
 left sane — never stuck in raw mode or the alternate screen. conway then
-exits with the same signal-specific code
+exits with the same signal-specific CODE
 [`scripting.md`'s exit-code table](scripting.md#exit-codes) documents for
-one-shot mode: **143** for `SIGTERM`, **129** for `SIGHUP`. A second
+one-shot mode: **143** for `SIGTERM`, **129** for `SIGHUP` — the code
+only, not that table's "terminal status is `Cancelled`" wording, which
+describes one-shot mode's own outcome and does not apply here: as the
+paragraph above already says, the session stays resumable with no
+terminal record at all. A second
 `SIGTERM`/`SIGHUP` while that cleanup is still running forces an
 immediate, unconditional exit — the identical "second signal always wins"
 safety valve two consecutive `Ctrl-C` presses already give you above — and,

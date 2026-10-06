@@ -407,14 +407,27 @@ impl App {
     /// of -- each agent's `turn_abort` token is independent). A model-
     /// issued `bash` call running inside a FORKED/SPAWNED subagent's own
     /// turn (not the root's) would be missed entirely by aborting only the
-    /// root. This method therefore walks `AppState::tree`
-    /// (`AgentTreeView`, this crate's own event-sourced projection of the
-    /// session's agent tree -- `tui/state/agent_tree.rs`'s own doc: built
-    /// from `Event::AgentSpawned`/`Event::AgentFinished` alone, the
-    /// established pattern this crate already uses instead of calling
-    /// `SessionHandle::tree()` in production code, which returns the
-    /// runtime-WIDE snapshot, every other session included) and aborts
-    /// every node's turn, not only the root's.
+    /// root. This method aborts every node's turn, not only the root's.
+    ///
+    /// **The agent set comes from `SessionHandle::tree()`, this session's
+    /// own subset of it, unioned with `AppState::tree` -- not `AppState::
+    /// tree` alone (board item `01M3WJ7906NP3P2ZNVDK549T1Q`'s own review
+    /// finding).** `AppState::tree` (`AgentTreeView`, this crate's own
+    /// event-sourced projection -- `tui/state/agent_tree.rs`'s own doc:
+    /// built from `Event::AgentSpawned`/`Event::AgentFinished` alone) can
+    /// LAG a model-issued `conway_fork`/`conway_spawn` whose own
+    /// `AgentSpawned` event has not been applied to it yet -- a SIGTERM
+    /// landing in that window would miss the brand-new subagent's own
+    /// in-flight tool call entirely. `SessionHandle::tree()` (`Runtime::
+    /// tree`, sync, no I/O) is the runtime's own authoritative, lag-free
+    /// view -- the same tree `AgentTree::abort_turn` itself mutates -- but
+    /// it is RUNTIME-WIDE, not scoped to one session (that method's own
+    /// doc discloses this rather than silently narrowing it), so this
+    /// filters it to `AgentNode::session == self.handle.id()` by hand
+    /// before using it. `AppState::tree` is kept in the union purely for
+    /// safety -- the two agree outside that lag window, so this costs
+    /// nothing in the common case and at worst one harmless, idempotent
+    /// extra `abort_turn` call in it.
     ///
     /// **Ephemeral forks (`/ask`, `/distill`, skill-propose) are
     /// deliberately EXCLUDED** (`TreeNode::ephemeral`) -- each already has
@@ -450,9 +463,45 @@ impl App {
     /// method exists to protect from exactly that.
     pub(super) async fn abort_in_flight_turns(&mut self, reason: &str) {
         let root = self.handle.root();
+        let session = self.handle.id();
+        // Board item `01M3WJ7906NP3P2ZNVDK549T1Q`'s own follow-up review
+        // finding: the TUI's own `AppState::tree` is this crate's event-sourced
+        // projection of the session's agent tree, and it can LAG a
+        // model-issued `conway_fork`/`conway_spawn` whose `Event::
+        // AgentSpawned` has not been applied to it yet -- `apply` only
+        // updates `self.state.tree` once the event stream delivers that
+        // event, and a SIGTERM can land in the window between the runtime
+        // actually creating the agent (and its turn starting) and this
+        // process's own event loop having drained and applied that one
+        // event. Walking `self.state.tree` alone would then miss that
+        // brand-new subagent's own in-flight `bash` call entirely.
+        //
+        // `SessionHandle::tree()` is the authoritative source instead: a
+        // synchronous, no-I/O read straight off `Runtime::tree()` (this
+        // process's own in-memory agent tree, the same one `AgentTree::
+        // abort_turn` itself mutates), so a spawn the runtime has already
+        // registered is visible here the instant it happens, with no event
+        // delivery lag at all. It is RUNTIME-WIDE, not session-scoped
+        // (`SessionHandle::tree`'s own doc: "neither `Runtime::tree` nor
+        // `AgentTreeSnapshot` offers a way to scope the snapshot to one
+        // session's own subtree"), so this filters it down to `AgentNode::
+        // session == session` by hand -- aborting a DIFFERENT session's
+        // agents on THIS session's quit would be its own bug.
+        //
+        // Unioned with `self.state.tree` (not replaced by the runtime
+        // snapshot alone) purely for safety: the two are built from the
+        // same underlying facts and should agree outside the lag window
+        // above, so this costs nothing in the common case and costs
+        // nothing worse than a redundant (harmless, idempotent)
+        // `abort_turn` call in the lag window itself.
         let mut agents = vec![root];
+        for node in self.handle.tree().nodes {
+            if node.session == session && !node.ephemeral && node.agent_id != root {
+                agents.push(node.agent_id);
+            }
+        }
         for node in &self.state.tree.nodes {
-            if !node.ephemeral && node.agent_id != root {
+            if !node.ephemeral && !agents.contains(&node.agent_id) {
                 agents.push(node.agent_id);
             }
         }
@@ -705,6 +754,77 @@ mod tests {
             !invoked.load(Ordering::SeqCst),
             "the denied tool must never actually execute"
         );
+    }
+
+    /// **Board item `01M3WJ7906NP3P2ZNVDK549T1Q`'s own follow-up review
+    /// finding: a runtime-level spawn `AppState::tree` has not learned
+    /// about yet is still aborted.** Spawns a child DIRECTLY through
+    /// `SessionHandle::spawn` -- never through the TUI's own key-router or
+    /// `/spawn` command, and critically, with no run-loop (`run.rs`'s own
+    /// `self.state.apply(&env)`) ever pumped in between -- so
+    /// `app.state.tree` stays exactly as empty as it started: the lag
+    /// window `abort_in_flight_turns`'s own doc describes, reproduced
+    /// deterministically rather than raced. A version of the fix that
+    /// still walked `AppState::tree` alone would see no agents to abort at
+    /// all here and this test's own final assertion would time out.
+    #[tokio::test]
+    async fn abort_in_flight_turns_reaches_a_spawn_appstate_tree_has_not_applied_yet() {
+        let (conway, mut gate_rx, invoked) = conway_with_real_gate();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        let root = app.handle.root();
+
+        let child = app
+            .handle
+            .spawn(root, conway::SpawnSpec::new("please use the marker tool").keep_alive(true))
+            .await
+            .expect("spawn should succeed");
+
+        // The child's own first turn must actually have reached the gate --
+        // genuinely in flight, not merely dispatched -- before this test's
+        // own abort is a meaningful race at all. Bound to `prompt` and kept
+        // alive (not dropped) until after the abort below: dropping its
+        // `reply` sender early would resolve `TuiGate::check`'s own
+        // `reply_rx.await` to a plain `Deny{"cancelled"}` immediately,
+        // which would race `PermissionBroker::decide` to its OWN ordinary
+        // return before `abort_turn`'s cancellation token ever fires --
+        // short-circuiting the exact race (`record_turn_aborted`, not a
+        // plain deny) this test exists to drive.
+        let prompt = tokio::time::timeout(HANG_TIMEOUT, gate_rx.recv())
+            .await
+            .expect("the spawned child's tool call must reach the gate promptly")
+            .expect("TuiGate's sender half is alive");
+
+        assert!(
+            !app.state.tree.nodes.iter().any(|n| n.agent_id == child),
+            "this test's own premise: AppState::tree must NOT know about the spawn yet, since \
+             no event was ever applied to it -- got {:?}",
+            app.state.tree.nodes
+        );
+
+        app.abort_in_flight_turns("test quit").await;
+
+        tokio::time::timeout(HANG_TIMEOUT, async {
+            while !app.handle.awaiting_prompt(child) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect(
+            "the spawned child's turn must abort and return it to its resume gate within the \
+             bound -- a timeout here means abort_in_flight_turns missed it, the exact lag-window \
+             defect board item 01M3WJ7906NP3P2ZNVDK549T1Q's own review finding fixes",
+        );
+        assert!(
+            !invoked.load(Ordering::SeqCst),
+            "the aborted tool must never actually execute"
+        );
+        // Held alive this entire time precisely so the gate stayed
+        // genuinely pending through the abort race above -- see the
+        // binding's own comment.
+        drop(prompt);
     }
 
     /// **Board item `01M3XGPGT5W7GABVTC7F2NA0C9`: this test used to be named

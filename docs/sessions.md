@@ -281,7 +281,11 @@ session last ran — resuming falls back to your current default role
 instead of failing outright, and says so: a line naming both the stale
 role and the fallback it was replaced with is added to the transcript,
 so you see it on the next backfill, not just in a log file you'd have to
-go dig up.
+go dig up. This fallback is also written back onto the session's own
+header, so this happens — and is announced — once: the next time you
+resume the same session, its recorded role is already the fallback, which
+is (by construction) still configured, so there's nothing to fall back
+from and no second notice.
 
 An explicit `--role-override`/`--model` passed alongside `--resume`/
 `--continue` always wins outright, same as it does for a fresh session —

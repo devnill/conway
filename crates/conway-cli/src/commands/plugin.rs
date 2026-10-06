@@ -681,9 +681,14 @@ pub async fn run_admin(
 /// Exactly `tui::app::startup`'s own `state.plugin_browser` construction
 /// (that call site's own comment cites this as the read to mirror) --
 /// every compiled-in candidate this binary links, each tagged `installed`
-/// by membership in `conway.config().plugins.install`. Kept as its own
-/// function since both [`list`] and [`install`]'s unknown-id check need
-/// the identical candidate set.
+/// by membership in [`conway::config::schema::PluginsConfig::
+/// installed_ids`] (`[plugins].install` UNIONED with `default_backends`
+/// -- board item `01M3TJHCFA3R9PDVZHQTKKVWNR`: a candidate selected only
+/// through `default_backends` genuinely runs too, so it must be tagged
+/// `installed: true` here on the same footing `apply_plugin_config`
+/// already requires of it for its OWN fail-vs-warn decision). Kept as its
+/// own function since both [`list`] and [`install`]'s unknown-id check
+/// need the identical candidate set.
 ///
 /// **Reads through [`first_party_plugins::configured_bundle_plugins`], not
 /// the bare `all_bundle_plugins` scan** -- board item
@@ -702,13 +707,13 @@ fn browser_entries(
     env: &HashMap<String, String>,
 ) -> conway::Result<Vec<PluginBrowserEntry>> {
     let cwd = conway.config().cwd.clone();
-    let install_ids = &conway.config().plugins.install;
+    let install_ids = conway.config().plugins.installed_ids();
     Ok(first_party_plugins::configured_bundle_plugins(
         &cwd,
         memory_store,
         env,
         &conway.config().plugins.config,
-        install_ids,
+        &install_ids,
     )?
     .iter()
     .map(|p| {

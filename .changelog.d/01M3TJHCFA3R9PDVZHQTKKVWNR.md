@@ -1,6 +1,7 @@
 ### Fixed
 
 - **A bad `[plugins.config."<id>"]` block for a plugin you don't actually have installed no longer stops conway from starting at all** — board item `01M3TJHCFA3R9PDVZHQTKKVWNR`. Previously ANY invalid block — an unknown key, a typo'd plugin id that matched nothing — failed the build regardless of whether that plugin ever ran. Now, a block for a plugin that is not in `[plugins].install` (including an id matching no compiled-in plugin at all) degrades to a named, one-line warning on the ordinary config-warning channel instead, and that plugin stays on its own defaults; a block for a plugin that IS installed still fails the build exactly as before, unchanged.
+- **Fixed: a plugin selected only through `[plugins].default_backends` (never named in `[plugins].install]` at all) had its own bad config block wrongly treated as "not installed" too, downgrading a real startup failure to a silently ignored warning.** `[plugins].default_backends` is unioned with `[plugins].install` by the real plugin resolver (`ConwayBuilder::install_selected`), so a plugin named only there genuinely runs — its bad config must fail the build, same as one named in `install`. The "will this plugin run" computation is now one function (`PluginsConfig::installed_ids`) that both the resolver and the config-validity check call, so they cannot diverge again.
 
 ### Added
 

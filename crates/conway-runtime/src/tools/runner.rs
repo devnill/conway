@@ -875,14 +875,17 @@ fn render_call(tool: &dyn Tool, args: &serde_json::Value) -> String {
 }
 
 /// A tool's rendering is derived from model-supplied arguments and is
-/// therefore UNTRUSTED. Replaces every Unicode control character (`Cc`:
-/// `\x00`-`\x1F`, `\x7F`, and the C1 controls `\x80`-`\x9F`) with the
-/// Unicode replacement character, so a model-supplied argument containing
-/// e.g. an ANSI escape sequence (`\x1b[...`) cannot reach the TUI's
-/// permission prompt (or any other consumer of `rendered`) as raw
-/// terminal-control bytes. Applied once, here, rather than by each `Tool`
-/// implementation, so the guarantee holds for the default rendering AND
-/// every override without each one needing to know about it.
+/// therefore UNTRUSTED. Replaces every character `conway_core::text::
+/// is_laundered_char` names -- every Unicode control character (`Cc`:
+/// `\x00`-`\x1F`, `\x7F`, and the C1 controls `\x80`-`\x9F`) plus a fixed
+/// set of bidirectional-control/format and line/paragraph-separator
+/// characters -- with the Unicode replacement character, so a model-
+/// supplied argument containing e.g. an ANSI escape sequence (`\x1b[...`)
+/// or a bidirectional override cannot reach the TUI's permission prompt
+/// (or any other consumer of `rendered`) as raw terminal-control bytes or
+/// as a visually-reordered display. Applied once, here, rather than by
+/// each `Tool` implementation, so the guarantee holds for the default
+/// rendering AND every override without each one needing to know about it.
 ///
 /// Delegates to `conway_core::text::sanitize_control_chars` -- the single
 /// shared home for the replace-semantics sanitizer -- so this seam and the

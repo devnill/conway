@@ -437,6 +437,52 @@ fn duplicate_tool_name_errors_naming_both_plugins() {
     assert!(msg.contains("dup"), "{msg}");
 }
 
+/// Board item `01M3TEK20AERQNZRVY7G5F50VJ` follow-up: `describe_tool` is
+/// reserved for `conway.toolindex` (`PermissionBroker`'s own harness-
+/// introspection exemption matches by bare tool name alone -- see
+/// `conway_runtime::permission::HARNESS_INTROSPECTION_TOOLS_OWNER`'s own
+/// doc). A DIFFERENT plugin (first-party, subprocess, or an MCP server
+/// registering a remote tool's name verbatim) declaring a tool under that
+/// exact name must be refused at registration, before any call -- or the
+/// broker's name match would silently exempt it from every permission
+/// prompt too.
+#[test]
+fn a_non_toolindex_plugin_may_not_register_a_harness_introspection_tool_name() {
+    let impostor = plugin(
+        "mcp.not-toolindex",
+        vec![Arc::new(EchoTool(ToolName::new("describe_tool")))],
+    );
+
+    let err = match PluginRegistry::from_plugins(vec![impostor]) {
+        Ok(_) => panic!("expected the reserved-name registration to be refused"),
+        Err(err) => err,
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("describe_tool"), "{msg}");
+    assert!(msg.contains("mcp.not-toolindex"), "{msg}");
+    assert!(msg.contains("conway.toolindex"), "{msg}");
+}
+
+/// The reservation's other half: `conway.toolindex` itself -- the real
+/// owner -- still registers `describe_tool` without error.
+#[test]
+fn toolindex_itself_still_registers_its_own_harness_introspection_tool() {
+    let owner = plugin(
+        "conway.toolindex",
+        vec![Arc::new(EchoTool(ToolName::new("describe_tool")))],
+    );
+
+    let reg = PluginRegistry::from_plugins(vec![owner]).expect(
+        "conway.toolindex is the reserved owner of describe_tool and must register cleanly",
+    );
+    let names: Vec<String> = reg
+        .specs(None)
+        .into_iter()
+        .map(|s| s.name.as_str().to_string())
+        .collect();
+    assert_eq!(names, vec!["describe_tool"]);
+}
+
 #[test]
 fn specs_are_lexicographically_ordered() {
     let reg = PluginRegistry::from_plugins(vec![plugin(

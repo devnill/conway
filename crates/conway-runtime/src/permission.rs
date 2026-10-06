@@ -1054,31 +1054,47 @@ fn default_in_project_read_allows(ctx: &PermissionCtx, call: &AuthorizedCall) ->
 ///    widen what the call reveals beyond what the model could already see
 ///    unprompted.
 ///
-/// # Matched by name only -- a disclosed gap, not an oversight
+/// # Matched by name only -- now sound, because the name is reserved
+///
 /// [`AuthorizedCall`] carries no plugin-id field: nothing between a
 /// resolved `Tool` and this broker threads a `PluginRegistry` owning-
 /// plugin identity through (`PluginRegistry::specs` returns bare
 /// `ToolSpec`s, documented as carrying no such field --
 /// `conway_plugin_toolindex`'s own module doc, "Which tools are
 /// deferrable"). Widening `AuthorizedCall`/`ToolRunner::execute_one` to
-/// carry one, so this list could also require the OWNING plugin to be
-/// `conway.toolindex`, is out of scope for this fix. The practical
-/// consequence: a third-party plugin that registered a tool under the
-/// exact name `describe_tool` would also match this list, unprompted.
-/// This is accepted, not hidden, because today's one entry is a
-/// first-party plugin's own reserved name
-/// (`conway_plugin_toolindex::TOOL_NAME`) -- an operator who installs a
-/// plugin that deliberately collides with it has already extended that
-/// plugin's author far more trust than one exempted tool name.
+/// carry one, purely so THIS broker could check it per call, is still out
+/// of scope -- but the broker does not need to any more: `conway_runtime::
+/// tools::registry::PluginRegistry::from_plugins` now REFUSES to register
+/// any tool whose name is on [`HARNESS_INTROSPECTION_TOOLS`] unless the
+/// registering plugin's own manifest id is [`HARNESS_INTROSPECTION_TOOLS_
+/// OWNER`] (`conway_plugin_toolindex::PLUGIN_ID`). A third-party plugin
+/// (first-party, subprocess, or an MCP server -- `conway_plugin_mcp`
+/// registers a remote server's tool names verbatim, through the identical
+/// `from_plugins` pass) that declares a tool under the exact name
+/// `describe_tool` is therefore refused at construction time, before this
+/// broker, or any call, ever runs -- closing what used to be a disclosed
+/// gap rather than merely documenting it. See that function's own doc for
+/// the refusal and why it applies uniformly (first-party or MCP) rather
+/// than degrading to a silent skip for one kind of plugin only.
 ///
 /// This crate has no dependency on `conway-plugin-toolindex`
 /// (`no_forbidden_deps`), so the name below is a bare string literal, not
 /// a re-export of that crate's `TOOL_NAME` constant.
 pub(crate) const HARNESS_INTROSPECTION_TOOLS: &[&str] = &["describe_tool"];
 
+/// The single plugin id `crate::tools::registry::PluginRegistry::
+/// from_plugins` permits to register a tool whose name is on
+/// [`HARNESS_INTROSPECTION_TOOLS`] -- `conway_plugin_toolindex::
+/// PLUGIN_ID` (`"conway.toolindex"`), spelled as a bare string literal for
+/// the identical `no_forbidden_deps` reason [`HARNESS_INTROSPECTION_
+/// TOOLS`] itself is.
+pub(crate) const HARNESS_INTROSPECTION_TOOLS_OWNER: &str = "conway.toolindex";
+
 /// Whether `call` names a tool on [`HARNESS_INTROSPECTION_TOOLS`] -- see
-/// that constant's own doc for the admission rule and the name-only
-/// matching caveat.
+/// that constant's own doc for the admission rule. Sound by name alone:
+/// [`HARNESS_INTROSPECTION_TOOLS_OWNER`]'s own doc explains why no other
+/// plugin can ever have registered a tool under one of these names in the
+/// first place.
 fn is_harness_introspection_tool(call: &AuthorizedCall) -> bool {
     HARNESS_INTROSPECTION_TOOLS.contains(&call.tool.as_str())
 }

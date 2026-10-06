@@ -1169,17 +1169,11 @@ impl ConwayBuilder {
         backend_factories: Vec<Arc<dyn BackendFactory>>,
     ) -> Result<Self> {
         // [plugins].install UNIONED with [plugins].default_backends,
-        // deduplicated, order-preserving -- see this method's own doc.
-        let mut seen: HashSet<&str> = HashSet::new();
-        let wanted: Vec<String> = self
-            .config
-            .plugins
-            .install
-            .iter()
-            .chain(self.config.plugins.default_backends.iter())
-            .filter(|id| seen.insert(id.as_str()))
-            .cloned()
-            .collect();
+        // deduplicated, order-preserving -- see this method's own doc, and
+        // `PluginsConfig::installed_ids`'s own doc for why this is the ONE
+        // computation of that union rather than a copy kept "in sync" by
+        // hand.
+        let wanted: Vec<String> = self.config.plugins.installed_ids();
 
         // every supplied
         // backend-factory id `wanted` does NOT name is a DECLINED kind, not

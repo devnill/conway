@@ -2574,6 +2574,38 @@ mod tests {
         );
     }
 
+    /// The widened sanitizer (board item `01M3SJC96P99V9KNT7TDJBWZ66`): a
+    /// bidirectional-override character and a line-separator (`U+2028`),
+    /// neither of them `Cc`, both land here already laundered into the
+    /// placeholder -- `permission_command_lines`'s per-line path
+    /// (`conway::sanitize_control_chars` applied to each line recovered
+    /// from `req.arguments`) must show the SAME placeholder a real `Cc`
+    /// control byte gets, not the raw bidi/separator bytes.
+    #[test]
+    fn permission_overlay_launders_bidi_override_in_a_multiline_shell_command() {
+        let raw_command = "echo safe\u{202E}fr- mr\u{2066}\nsecond\u{2028}line";
+        let sanitized_rendered = conway::sanitize_control_chars(raw_command);
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let request = PermissionRequest {
+            arguments: serde_json::json!({ "command": raw_command }),
+            rendered: sanitized_rendered,
+            ..sample_request("placeholder")
+        };
+        let (prompt, _rx) = PendingPrompt::new_for_test(request);
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        let text = render_text(&state, 80, 24);
+        assert!(
+            !text.contains('\u{202E}') && !text.contains('\u{2066}') && !text.contains('\u{2028}'),
+            "no raw bidi-override/separator byte must reach the rendered prompt: {text}"
+        );
+        assert!(
+            text.contains('\u{FFFD}'),
+            "the laundered characters must still be EVIDENCE (replaced), not erased: {text}"
+        );
+    }
+
     // ---- B5: the /ask single-turn modal ----
 
     fn ask_modal_state(question: &str, answer: &str, error: Option<&str>) -> AppState {

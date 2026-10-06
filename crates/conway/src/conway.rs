@@ -1694,6 +1694,25 @@ impl Conway {
     /// config-parse failure here reads as "no roles configured" (every
     /// `recorded` alias treated as unconfigured, always falling back) rather
     /// than panicking or silently skipping the check.
+    ///
+    /// **Board item `01M3SJBY8DXDB1PWEAXARZY9FH`: the fallback is made
+    /// DURABLE, not just logged.** `SessionMeta::role` was never updated
+    /// before this item, so every later resume of the SAME session re-read
+    /// the identical stale `recorded` alias, re-derived the identical
+    /// fallback, and re-appended the identical `SystemNote` -- one per
+    /// resume, forever, for a session whose own config never changes again
+    /// after the rename. On a fallback, this now also calls
+    /// `SessionStore::set_role` with the fallback alias (best-effort: a
+    /// `set_role` failure is logged via `tracing::error!` and otherwise
+    /// swallowed, the same secondary-persistence posture
+    /// `PermissionBroker::record_decision` already uses for its own durable
+    /// side record, in `conway-runtime` -- the resume itself must not fail
+    /// just because this durability upgrade could not be written), so the
+    /// NEXT resume reads `recorded == fallback`, finds it IS a configured
+    /// alias (assuming `self.config.default_role` itself names one, the
+    /// same assumption this method's fallback has always made), and takes
+    /// the unchanged branch above -- no second note, ever, for this
+    /// session.
     async fn resolve_resumed_role(&self, sid: SessionId) -> Result<Option<RoleAlias>> {
         let meta = self.store.meta(&sid).await?;
         let Some(recorded) = meta.role else {
@@ -1721,6 +1740,16 @@ impl Conway {
                 },
             )
             .await?;
+        if let Err(err) = self.store.set_role(&sid, fallback.clone()).await {
+            tracing::error!(
+                session = %sid,
+                role = %fallback,
+                error = %err,
+                "failed to persist the role fallback onto the session header; this resume's \
+                 note was still recorded, but the NEXT resume will re-derive and re-announce \
+                 the identical fallback"
+            );
+        }
         Ok(Some(fallback))
     }
 

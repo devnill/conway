@@ -562,15 +562,28 @@ fn bundle(
 /// `01M1YYB8STS6NDGR254YZ76XKJ`).** `plugins` is always the UNFILTERED
 /// candidate set (every caller below passes `bundle`'s own Vec, minus at
 /// most `conway.skills`, handled separately) -- so a `value` naming a
-/// candidate here may belong to a plugin that never ends up in
-/// `[plugins].install` at all. For THAT candidate, a `configure` refusal
-/// degrades to a [`conway::config::WarningCode::PluginConfigIgnored`]
-/// warning rather than a build failure: nothing running in this process
-/// was ever going to read that value anyway, so refusing to start over it
-/// would stop a session the block cannot possibly affect. A candidate
-/// NAMED in `install_ids`, by contrast, still fails exactly as before --
-/// unchanged fail-closed behavior for the one case that matters, a block
-/// that WOULD have governed this session's real plugin.
+/// candidate here may belong to a plugin that never ends up RUNNING at
+/// all. For THAT candidate, a `configure` refusal degrades to a
+/// [`conway::config::WarningCode::PluginConfigIgnored`] warning rather
+/// than a build failure: nothing running in this process was ever going
+/// to read that value anyway, so refusing to start over it would stop a
+/// session the block cannot possibly affect. A candidate NAMED in
+/// `install_ids`, by contrast, still fails exactly as before -- unchanged
+/// fail-closed behavior for the one case that matters, a block that WOULD
+/// have governed this session's real plugin.
+///
+/// **`install_ids` must mean "will run," not merely "named in `[plugins].
+/// install]`."** Every caller below passes [`conway::config::schema::
+/// PluginsConfig::installed_ids`] (`install` UNIONED with
+/// `default_backends`, that method's own doc), never a bare
+/// `plugins.install.clone()` -- a plugin selected ONLY through
+/// `default_backends` is resolved by [`conway::ConwayBuilder::
+/// install_selected`] exactly like one named in `install`, so its own bad
+/// config block must fail the build too, not degrade to a warning for a
+/// plugin that is, in fact, about to run. (This is the bug this doc
+/// comment's own ruling citation used to leave open: fixed by routing
+/// every caller through the same union `install_selected` itself resolves
+/// against, rather than each re-deriving its own narrower approximation.)
 ///
 /// **The other half of the same ruling: an id in `config` that matches NO
 /// candidate in `plugins` at all** (a typo, or a plugin this binary never
@@ -1239,7 +1252,13 @@ pub async fn install(
 > {
     let cwd = builder.config().cwd.clone();
     let plugin_config = builder.config().plugins.config.clone();
-    let install_ids = builder.config().plugins.install.clone();
+    // `installed_ids`, not a bare clone of `[plugins].install`: a plugin
+    // selected ONLY through `[plugins].default_backends` genuinely runs
+    // too, and `apply_plugin_config` (below) needs to agree with
+    // `install_selected`'s own resolution about what "will run" means --
+    // see `PluginsConfig::installed_ids`'s own doc for the bug this closes
+    // (board item `01M3TJHCFA3R9PDVZHQTKKVWNR`).
+    let install_ids = builder.config().plugins.installed_ids();
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
     let agent_names = resolve_agent_names(&builder.config().plugins.install)?;
     let idiom_plugin = resolve_idiom_plugin(&cwd, env)?;
@@ -2001,6 +2020,52 @@ mod tests {
         assert!(
             you_get.contains(&conway_plugin_trim::DEFAULT_KEEP_TURNS.to_string()),
             "conway.trim must stay on its default after an ignored bad block, got: {you_get}"
+        );
+    }
+
+    /// Follow-up finding on board item `01M3TJHCFA3R9PDVZHQTKKVWNR`: a
+    /// plugin selected ONLY through `[plugins].default_backends` -- never
+    /// named in `[plugins].install]` at all -- genuinely runs
+    /// (`ConwayBuilder::install_selected` resolves the UNION of the two),
+    /// so its own bad `[plugins.config."<id>"]` block must still fail the
+    /// build, not degrade to a warning. `install_ids` here is built the
+    /// SAME way `first_party_plugins::install` itself now builds it
+    /// (`PluginsConfig::installed_ids`), exercising the fix at its real
+    /// call shape rather than hand-constructing a `Vec` that could drift
+    /// from it.
+    #[test]
+    fn apply_plugin_config_fails_for_a_plugin_selected_only_via_default_backends() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let mut plugins = bundle(
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(&cwd),
+            test_confine_plugin(),
+            None,
+            default_skills_plugin(&cwd),
+            test_checkpoint_plugin(&cwd),
+        );
+        let config: std::collections::BTreeMap<String, serde_json::Value> = [(
+            conway_plugin_trim::PLUGIN_ID.to_string(),
+            serde_json::json!({ "keep_tuns": 3 }),
+        )]
+        .into_iter()
+        .collect();
+        let plugins_config = conway::config::schema::PluginsConfig {
+            install: Vec::new(),
+            default_backends: vec![conway_plugin_trim::PLUGIN_ID.to_string()],
+            ..Default::default()
+        };
+        let install_ids = plugins_config.installed_ids();
+        let err = apply_plugin_config(&mut plugins, &config, &install_ids).expect_err(
+            "a plugin selected only via default_backends must still fail on its own bad \
+             config, exactly like one named in install",
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("keep_tuns"),
+            "the error must name the offending key, got: {message}"
         );
     }
 

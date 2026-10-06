@@ -867,13 +867,13 @@ impl App {
         // build ("unused, cheap, no I/O").
         let browse_memory_store: std::sync::Arc<dyn conway::plugin::MemoryStore> =
             std::sync::Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let install_ids = &conway.config().plugins.install;
+        let install_ids = conway.config().plugins.installed_ids();
         let plugin_candidates = crate::first_party_plugins::configured_bundle_plugins(
             &conway.config().cwd,
             browse_memory_store.clone(),
             &env_vars,
             &conway.config().plugins.config,
-            install_ids,
+            &install_ids,
         )
         .unwrap_or_else(|_| {
             crate::first_party_plugins::all_bundle_plugins(

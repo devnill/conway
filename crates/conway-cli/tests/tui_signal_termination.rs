@@ -283,7 +283,11 @@ fn write_fixture_with_bash(mock: &common::mock_backend::MockHandle, max_steps: u
 /// children) -- it is only ever killed by an explicit, awaited
 /// `kill_group` call reached through a `CancellationToken` trip, which
 /// nothing on any quit path performed until this fix threaded
-/// `SessionHandle::cancel`+`await_agent` into the shared funnel.
+/// `SessionHandle::abort_turn`, bound-awaited via `awaiting_prompt`/
+/// `agent_is_finished` (not `cancel`+`await_agent`, which would end the
+/// session with a terminal result rather than leave it resumable -- see
+/// `shutdown.rs::abort_in_flight_turns`'s own doc), into the shared
+/// funnel.
 ///
 /// **Why Shift-Tab into `AutoAllow` rather than answering a live permission
 /// prompt.** Mirrors `tui_permission_mode.rs`'s own established approach

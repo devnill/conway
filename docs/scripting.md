@@ -122,9 +122,9 @@ entry point.
 | 2 | Usage | A malformed or conflicting flag, an empty/unreadable prompt, an unknown `--session`/`--resume` id, a malformed `--model`/`--fork-from` reference, or any `FacadeError::Config`/`AgentDef`/`Build`/`UnsupportedFeature`. |
 | 4 | NoHealthyBackend | Routing could not supply any model for the turn: the role is unknown (e.g. `--role-override` naming a role the config does not define), no candidate in the role's chain was admissible (an unregistered `backend/model` pair, a health-open breaker, every fallback entry exhausted against a live backend), or the assembled context exceeds every candidate's window (`RoutingError::ContextTooLarge` — no truncation or escalation is performed). |
 | 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). A plain `-p "<prompt>"` run is never a keep-alive session (`SessionSpec::keep_alive` is an opt-in the interactive/library facade sets, and — see "Driving conway as a persistent process" below — `--input-format jsonl` too), so every dimension here is session-lifetime and `limit` always reads `"max_steps=40 (this session)"` (the whole run) — see `json`'s `steps_taken`/`steps_this_turn` fields, immediately below, for the two counters this scope label distinguishes. A **keep-alive** session (the TUI, or `--input-format jsonl`) behaves differently for two of these four dimensions: `max_steps`/`max_tool_calls` are per-turn runaway-loop guards there, so tripping one ends only the current turn (`Event::TurnAborted`, no exit code involved — the process is still running), never the session; only `max_tokens`/`deadline` can still end a keep-alive session outright, and produce this same exit code when they do. See [`interactive.md`](interactive.md#when-a-turn-is-cut-off) for the keep-alive behavior. |
-| 129 | TerminatedBySighup | A `SIGHUP` was observed and the run's terminal status is `Cancelled { reason: "signal: SIGHUP" }` — `128 + 1`, the same POSIX "terminated by signal N" convention `130`/`143` already follow. |
+| 129 | TerminatedBySighup | A `SIGHUP` was observed and the run's terminal status is `Cancelled { reason: "signal: SIGHUP" }` — `128 + 1`, the same POSIX "terminated by signal N" convention `130`/`143` already follow. **One-shot (`-p`) only** — see the note below the table for the TUI's own, non-terminal reaction to the identical signal and exit code. |
 | 130 | Interrupted | A SIGINT was observed (once, or twice for an immediate hard exit) and the run's terminal status is `Cancelled`. |
-| 143 | TerminatedBySigterm | A `SIGTERM` was observed and the run's terminal status is `Cancelled { reason: "signal: SIGTERM" }` — `128 + 15`. See [`agents.md`](agents.md#what-a-parent-sees-when-a-child-dies-board-item-a53) for why this signal is the one a backgrounded `conway -p ... &` child is most likely to receive from something else's timeout/cancellation handling, and why catching it (rather than dying with no record at all) is this exit code's whole point. |
+| 143 | TerminatedBySigterm | A `SIGTERM` was observed and the run's terminal status is `Cancelled { reason: "signal: SIGTERM" }` — `128 + 15`. See [`agents.md`](agents.md#what-a-parent-sees-when-a-child-dies-board-item-a53) for why this signal is the one a backgrounded `conway -p ... &` child is most likely to receive from something else's timeout/cancellation handling, and why catching it (rather than dying with no record at all) is this exit code's whole point. **One-shot (`-p`) only** — see the note below the table for the TUI's own, non-terminal reaction to the identical signal and exit code. |
 
 129/130/143 share a shape `0`–`5` don't: like SIGINT, an uncaught `SIGTERM`/
 `SIGHUP` runs no process code at all before the OS tears the process down —
@@ -136,6 +136,17 @@ with the code above; a SECOND delivery of any of the three forces an
 immediate, unconditional exit regardless of whether that graceful path ever
 finishes. `SIGKILL` cannot be caught by any handler, on any platform, ever
 — nothing here or in `agents.md` claims otherwise.
+
+**129 and 143's "terminal status is `Cancelled`" wording is one-shot
+(`-p`) only.** The TUI installs the identical signal handler and exits
+with the identical code — `143` for `SIGTERM`, `129` for `SIGHUP` — but
+reacts to the first delivery by *aborting the current turn*, the same
+non-terminal primitive `/quit`/a double `Ctrl-C` already use there (see
+[`interactive.md`](interactive.md#closing-the-terminal-or-a-process-manager-stopping-conway)):
+the session itself is never ended, nothing terminal is published or
+persisted, and it stays fully resumable afterward. A script branching on
+these two codes to decide "this session is now over" is correct for
+one-shot mode and wrong for a TUI process it happens to be watching.
 
 Code 3 is unassigned. There is no permission-denied exit code, and that is
 a decision, not a gap: a denied tool call becomes a tool result fed back

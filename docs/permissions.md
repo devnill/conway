@@ -134,14 +134,17 @@ itself owns — never a property a tool can declare about itself (a
 third-party plugin's tool could otherwise self-declare its way out of
 every prompt).
 
-**Matched by tool name only.** Nothing between a resolved tool and the
-broker currently threads the OWNING PLUGIN's identity through, so this
-allowlist cannot also require the match to come from `conway.toolindex`
-specifically — a third-party tool registered under the exact name
-`describe_tool` would also be exempted. This is a disclosed, accepted gap:
-an operator who installs a plugin that deliberately collides with a
-first-party reserved tool name has already extended that plugin's author
-far more trust than one exempted name represents.
+**Matched by tool name only — and the name is reserved, so that match is
+sound.** Nothing between a resolved tool and the broker threads the OWNING
+PLUGIN's identity through at *decision* time, so the broker itself still
+only ever compares a bare name. What closes the gap is earlier, at
+*registration*: conway refuses to register any tool under one of these
+names unless the registering plugin is the one that is supposed to own it
+(`conway.toolindex`, for `describe_tool`) — whether that other plugin is
+first-party, a subprocess plugin, or an MCP server exposing a remote tool
+under a colliding name. A third-party plugin can therefore never occupy one
+of these names in the first place, which is what makes the broker's later
+name-only match trustworthy.
 
 **Every operator rule still outranks this, exactly like the in-project-read
 default above:** a `deny` rule naming `describe_tool` refuses it outright;

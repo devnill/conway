@@ -147,6 +147,58 @@ async fn resume_with_an_unconfigured_recorded_role_falls_back_and_still_complete
     );
     assert!(text.contains("custom"), "must name the stale role: {text:?}");
     assert!(text.contains("default"), "must name the fallback role: {text:?}");
+
+    // Board item `01M3SJBY8DXDB1PWEAXARZY9FH`: the fallback is now durable
+    // -- `SessionMeta::role` itself was overwritten to `"default"` by the
+    // resume above (`Conway::resolve_resumed_role`'s own `set_role` call),
+    // so a THIRD `Conway` -- a second simulated restart, sharing the same
+    // store -- resuming the SAME session reads `recorded == "default"`,
+    // finds it IS configured, and takes the unchanged branch: no SECOND
+    // `role_fallback_at_resume` note. Before this item, `SessionMeta::role`
+    // was never updated, so this same resume would have re-derived and
+    // re-appended an identical note every time.
+    let backend3 = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("third"))])
+            .with_id(BackendId::new("fake")),
+    );
+    let conway3 = ConwayBuilder::from_parts(base_config())
+        .with_backend(backend3)
+        .with_session_store(store.clone())
+        .with_permission_gate(allow_once_gate())
+        .with_router(real_router())
+        .build()
+        .expect("build should succeed");
+
+    let resumed_again = conway3
+        .resume(sid)
+        .await
+        .expect("a second resume, after the fallback already landed, must still succeed");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let turn = resumed_again
+        .prompt("third turn text")
+        .await
+        .expect("prompt on the twice-resumed handle must succeed");
+    tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .expect("result() must not hang")
+        .expect("the twice-resumed turn must actually complete");
+
+    let records_after_second_resume = resumed_again
+        .transcript(resumed_again.root())
+        .await
+        .expect("transcript should be readable");
+    let fallback_note_count = records_after_second_resume
+        .iter()
+        .filter(|record| {
+            matches!(record, LogRecord::SystemNote { reason, .. } if reason == "role_fallback_at_resume")
+        })
+        .count();
+    assert_eq!(
+        fallback_note_count, 1,
+        "the second resume must NOT append a second fallback note now that the fallback is \
+         durable: {records_after_second_resume:#?}"
+    );
 }
 
 /// The negative case: a role that IS still configured is read back
