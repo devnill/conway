@@ -48,14 +48,15 @@ fn write_no_backends_fixture() -> Fixture {
     Fixture { dir, config_path }
 }
 
-/// conway's own six-id default opinion set (decision
-/// `01M1FQFP5D0R3M9GC8R8Z24F5N`) -- pinned here, by literal, as the
+/// conway's own default opinion set (decision
+/// `01M1FQFP5D0R3M9GC8R8Z24F5N`, widened to add `conway.goal` -- board
+/// item `01M1YVVT9RYWZWAZC4YH21T3HN`) -- pinned here, by literal, as the
 /// independent expectation every assertion below checks the real binary's
 /// output against. If this list and `first_party_plugins::
 /// DEFAULT_OPINION_SET` ever disagree, that is exactly the drift this test
 /// exists to catch -- so this is deliberately NOT `use`d from the source
 /// crate.
-const DEFAULT_IDS: [&str; 7] = [
+const DEFAULT_IDS: [&str; 8] = [
     "conway.idiom",
     "conway.stepguard",
     "conway.skills",
@@ -63,6 +64,7 @@ const DEFAULT_IDS: [&str; 7] = [
     "conway.names",
     "conway.history",
     "conway.checkpoint",
+    "conway.goal",
 ];
 
 /// Acceptance 1: on a fixture with no `plugins.install` at all, `conway
@@ -114,11 +116,11 @@ async fn list_with_no_install_key_shows_every_bundle_member_off() {
     );
 }
 
-/// Acceptance 2: `conway plugin install --defaults` writes exactly the six
-/// ruled ids, and a subsequent `conway plugin list` shows exactly those six
-/// as `[x]` -- every other bundle member stays `[ ]`.
+/// Acceptance 2: `conway plugin install --defaults` writes exactly the
+/// ruled default ids, and a subsequent `conway plugin list` shows exactly
+/// those as `[x]` -- every other bundle member stays `[ ]`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn install_defaults_writes_exactly_the_six_ruled_ids() {
+async fn install_defaults_writes_exactly_the_ruled_default_ids() {
     let mock = MockBackend::start(Script(vec![])).await;
     let fixture = write_fixture(&mock, 10);
 

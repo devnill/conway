@@ -255,6 +255,20 @@ conway-plugin-compaction = { path = "../conway-plugin-compaction" }
 # `first_party_plugins.rs` bundle doc and
 # `conway-plugin-todo/src/lib.rs`'s own module doc for the opt-in reasoning.
 conway-plugin-todo = { path = "../conway-plugin-todo" }
+# `conway.goal`: the built-in `/goal` TUI command's own removable behaviour
+# -- a context segment near the end of the request while a goal is set,
+# and a `goal` status-line entry. Resolved through the SAME
+# `[plugins].install`/`src/first_party_plugins.rs` choke point every other
+# tool-contributing entry above uses, and ALSO named directly by
+# `tui::commands`'s own `/goal` dispatch (`Host::goal_plugin_installed`,
+# `conway_plugin_goal::NOTE_REASON`) -- unlike every other
+# `conway-plugin-*` dependency on this list, this one is read from TWO
+# places in this crate, not only `first_party_plugins.rs`, because `/goal`
+# itself is a BUILT-IN command, not a plugin-declared one; see
+# `conway-plugin-goal/src/lib.rs`'s own module doc for the split. In
+# `DEFAULT_OPINION_SET` -- see this crate's own `first_party_plugins.rs`
+# bundle doc.
+conway-plugin-goal = { path = "../conway-plugin-goal" }
 clap = { workspace = true, features = ["derive", "env"] }
 # "io-std"/"io-util" (board item 01M1YVWPXWTPZT73R9AK1TVG1M): `oneshot::
 # run_driven`'s `--input-format jsonl` reads stdin line-by-line, async,

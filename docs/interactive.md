@@ -944,6 +944,7 @@ anything else.
 | `/cancel` | `/cancel <agent> [<reason>]` | Cancel a running agent immediately — stops it and its whole subtree, but never the session itself: cancelling any OTHER agent leaves the parent session working, and cancelling the session's own root agent is refused (use `/quit` to end the session instead). The cancelled agent's row in `/agents`/`/tree` flips to `Cancelled`. |
 | `/await` | `/await <agent>` | Ask to be told when a running agent finishes — the operator's counterpart to the model's `conway_await` tool. Posts an immediate notice ("awaiting `<agent>`; a keep_alive agent ends only on `/cancel`"), then keeps working — input never blocks — and posts a second notice once the agent reaches a terminal state, naming its status, summary, and how many facts/artifacts it produced. Awaiting the session's own root agent is refused (use `/quit`); a second `/await` on an agent already being awaited is refused too — one waiter per agent from this surface. |
 | `/context` | `/context [<agent>]` | Show an agent's assembled context, including its preamble (see below). With no argument, shows the focused agent's context; see [the agent panel](#the-agent-panel-agents) for where to find another agent's id. |
+| `/goal` | `/goal [<text>\|clear]` | Set, show, or clear the focused agent's standing goal — see "`/goal`: a reminder that survives twenty turns" below. |
 | `/why` | `/why` | Show the last routing decision — and, after a `/model`/`/role` switch, what changed. |
 | `/fork` | `/fork [--role <alias>\|--model <backend/model>] [<text>]` or `/fork [--role <alias>\|--model <backend/model>] @<agent> <directive>` | Open an interactive fork of the focused agent (inherits its context, frozen at the fork point), or fork a specific agent explicitly. `--role`/`--model` (mutually exclusive) pick the child's routing explicitly instead of inheriting the focused agent's; giving either skips the free-text classification below entirely (there is nothing left to infer once routing is explicit). Otherwise, free text is classified into a fork/spawn recipe and confirmed before anything is created. |
 | `/spawn` | `/spawn [--role <alias>\|--model <backend/model>] [@<agent_def>] [<prompt>]` | Open an interactive spawned agent — a clean slate, optionally from a named agent definition; inherits the parent's role/model if none is given. `--role`/`--model` (mutually exclusive) pick the child's routing explicitly — see `/fork`'s own row for the identical mutual-exclusion and classification-skip rules. |
@@ -965,6 +966,37 @@ typing `/` — the `/` palette is generated from the same command table this
 page's own list is, so the two cannot drift apart the way they once did
 (board item `01M0RW29F2ATVGCV0R8H0GQEYH`: `/trust` and `/tree` used to work
 while being absent from the palette).
+
+### `/goal`: a reminder that survives twenty turns
+
+A long run drifts: after enough turns of exploring, trying things, and
+backing out of dead ends, neither the model nor you can see the objective
+it started with from the transcript alone. `/goal <text>` sets a single
+standing-goal sentence for the focused agent; the model is reminded of it
+near the end of its context on every turn from then on, as a line reading
+`Standing goal: <text>`. Bare `/goal` shows the current one (reading the
+focused agent's own history directly — no fork, no model call); `/goal
+clear` removes it.
+
+The goal is stored as an ordinary record on the agent's own log, so it
+survives a `--resume` and shows up in `conway sessions show`; the status
+line also carries a short `goal: <first words>` field once one is set.
+Setting a new goal replaces the old one outright — it does not accumulate,
+no matter how many times you change it, and clearing persists its own
+marker so a later resume does not quietly bring an old goal back.
+
+A forked child inherits whatever goal was set on its parent, because it
+inherits the parent's whole log; a spawned child starts clean, with no
+goal at all, since nothing of the parent's log carries over to a spawn.
+`/goal` sets or clears nothing on its own but intent — it never continues
+a conversation automatically and carries no token budget; it is a
+reminder, not an enforcement mechanism.
+
+This command's own behavior — the context line and the status-line field —
+lives in the small, first-party `conway.goal` plugin (installed by
+default; see [`docs/plugins/goal.md`](plugins/goal.md)). Uninstalling it
+turns `/goal` into a command that says so, rather than one that silently
+stores a goal nothing ever reads back.
 
 ### `/new` and `/distill`: shrinking a conversation, out loud
 

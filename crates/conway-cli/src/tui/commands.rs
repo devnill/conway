@@ -380,6 +380,30 @@ pub enum SlashCommand {
     /// Takes no arguments -- `parse` rejects anything else with `usage:
     /// /conway.skills.propose (no arguments)`.
     SkillsPropose,
+    /// `/goal [<text>|clear]` (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): a
+    /// BUILT-IN, operator-typed command -- deliberately NOT namespaced as
+    /// `/conway.goal.set` the way a plugin-declared command would be,
+    /// because setting a standing goal is core TUI vocabulary an operator
+    /// should be able to type regardless of which plugins happen to be
+    /// installed. What IS removable is the behaviour behind it: the
+    /// context segment and status-line entry live in the small, opt-in
+    /// (but default-installed) `conway.goal` plugin, and `execute`'s own
+    /// arm checks `Host::goal_plugin_installed` before persisting
+    /// anything, so typing this with the plugin uninstalled says so
+    /// instead of silently writing a note nothing ever reads back.
+    ///
+    /// Three forms, told apart by `arg`:
+    /// - `arg: None` (bare `/goal`) -- show the focused agent's current
+    ///   goal, read directly from its transcript (`Host::transcript`), not
+    ///   through a fork or a model call.
+    /// - `arg: Some("clear")` (the one reserved word) -- persist a clear
+    ///   marker (`Host::append_system_note` with empty text), so a later
+    ///   resume does not resurrect an earlier goal.
+    /// - `arg: Some(text)` for any other `text` -- persist `text` as the
+    ///   new standing goal.
+    Goal {
+        arg: Option<String>,
+    },
 }
 
 /// `/plugin`'s optional action (board item `01M0WB5W5DX844HSJQG3JP23X0`,
@@ -613,6 +637,12 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             usage: "/conway.skills.propose",
             description: "propose a SKILL.md for the procedure just used (writes only on Enter)",
         },
+        SlashCommand::Goal { .. } => CommandSpec {
+            name: "/goal",
+            usage: "/goal [<text>|clear]",
+            description: "show, set, or clear the focused agent's standing goal (kept in front \
+                           of the model every turn)",
+        },
     }
 }
 
@@ -690,6 +720,7 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
             via_exit_alias: false,
         },
         SlashCommand::SkillsPropose,
+        SlashCommand::Goal { arg: None },
     ]
 }
 
@@ -946,6 +977,23 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/conway.skills.propose" => {
             parse_no_arg(rest, "/conway.skills.propose")?;
             Ok(SlashCommand::SkillsPropose)
+        }
+        // `/goal` is a BUILT-IN command (`SlashCommand::Goal`'s own doc) --
+        // recognized here, BEFORE the generic plugin-command fallback
+        // immediately below, exactly like `/conway.skills.propose` just
+        // above. `rest` is free text, never further tokenized -- a goal
+        // sentence may contain anything, including the word "clear" as
+        // part of ordinary prose, so only an EXACT, whole-argument match
+        // against the literal `"clear"` is treated as the clear form,
+        // mirroring `/trust`'s own one-reserved-word convention.
+        "/goal" => {
+            let trimmed = rest.trim();
+            let arg = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+            Ok(SlashCommand::Goal { arg })
         }
         other => {
             // a plugin command's full
@@ -1788,6 +1836,32 @@ pub trait Host {
     /// trigger (`oneshot.rs`) uses, so the two surfaces can never read this
     /// knob differently.
     fn skills_write_approval(&self) -> conway_plugin_skills::WriteApproval;
+
+    /// `/goal` (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): a thin
+    /// passthrough to `SessionHandle::append_system_note` -- the narrowest
+    /// facade addition that lets this OPERATOR-typed command persist an
+    /// arbitrary `LogRecord::SystemNote` onto `agent`'s own log with no
+    /// live model turn involved (see that method's own doc for why no
+    /// existing call already did this). Routed through this trait like
+    /// every other facade call so `execute`'s `SlashCommand::Goal` arm is
+    /// unit-testable against `tests::FakeHost`.
+    async fn append_system_note(
+        &self,
+        agent: AgentId,
+        text: String,
+        reason: &str,
+    ) -> conway::Result<()>;
+
+    /// Whether `"conway.goal"` is named in this process's resolved plugin
+    /// id set (`[plugins].install` unioned with `[plugins].
+    /// default_backends` -- `conway::config::schema::PluginsConfig::
+    /// installed_ids`) -- `execute`'s `SlashCommand::Goal` arm reads this
+    /// BEFORE persisting anything, so typing `/goal <text>` with the
+    /// plugin not installed says so instead of silently writing a note
+    /// nothing ever reads back into context. Synchronous, not async --
+    /// a config read, mirroring `Self::skills_write_approval`'s own "sync,
+    /// not async" reasoning.
+    fn goal_plugin_installed(&self) -> bool;
 }
 
 /// The live [`Host`]: pure delegation to a `SessionHandle` + `Conway` pair
@@ -2051,6 +2125,27 @@ impl Host for LiveHost<'_> {
 
     fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
         self.commands.resolve(full_name)
+    }
+
+    async fn append_system_note(
+        &self,
+        agent: AgentId,
+        text: String,
+        reason: &str,
+    ) -> conway::Result<()> {
+        self.handle
+            .append_system_note(agent, text, reason.to_string())
+            .await?;
+        Ok(())
+    }
+
+    fn goal_plugin_installed(&self) -> bool {
+        self.conway
+            .config()
+            .plugins
+            .installed_ids()
+            .iter()
+            .any(|id| id == conway_plugin_goal::PLUGIN_ID)
     }
 
     fn skills_write_approval(&self) -> conway_plugin_skills::WriteApproval {
@@ -3032,6 +3127,59 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 Effect::RunSkillPropose { root: host.root() }
             }
         }
+        // `/goal` (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): see
+        // `SlashCommand::Goal`'s own doc for the three forms and why this
+        // checks `Host::goal_plugin_installed` FIRST, before persisting
+        // anything -- an operator who never installed `conway.goal` gets
+        // told so, rather than a note silently written into a log nothing
+        // ever reads back into context.
+        SlashCommand::Goal { arg } => {
+            if !host.goal_plugin_installed() {
+                notice(
+                    state,
+                    "conway.goal is not installed -- /goal has nothing to read or write; name \
+                     \"conway.goal\" in [plugins].install to use it",
+                );
+            } else {
+                match arg.as_deref() {
+                    None => match host.transcript(state.focused_agent).await {
+                        Ok(records) => match latest_goal_text(&records) {
+                            Some(text) => notice(state, format!("standing goal: {text}")),
+                            None => notice(state, "no standing goal is set"),
+                        },
+                        Err(e) => notice(state, e.to_string()),
+                    },
+                    Some("clear") => {
+                        match host
+                            .append_system_note(
+                                state.focused_agent,
+                                String::new(),
+                                conway_plugin_goal::NOTE_REASON,
+                            )
+                            .await
+                        {
+                            Ok(()) => notice(state, "standing goal cleared"),
+                            Err(e) => notice(state, e.to_string()),
+                        }
+                    }
+                    Some(text) => {
+                        let text = text.to_string();
+                        match host
+                            .append_system_note(
+                                state.focused_agent,
+                                text.clone(),
+                                conway_plugin_goal::NOTE_REASON,
+                            )
+                            .await
+                        {
+                            Ok(()) => notice(state, format!("standing goal set: {text}")),
+                            Err(e) => notice(state, e.to_string()),
+                        }
+                    }
+                }
+            }
+            Effect::None
+        }
         SlashCommand::Tree => {
             // Item A3: no facade call -- the alias renders from
             // `state.tree` (the panel's own view), so its labels, recipe
@@ -3829,6 +3977,31 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
 
 fn notice(state: &mut AppState, text: impl Into<String>) {
     state.transcript.push(Entry::Notice { text: text.into() });
+}
+
+/// `/goal`'s own bare "show" form: the latest `conway.goal`-reasoned
+/// `LogRecord::SystemNote`'s text, read directly from `records` (the raw
+/// transcript `Host::transcript` returns, oldest first) -- decoded the
+/// SAME two-step way `conway_plugin_goal::reconstruct_from_history` decodes
+/// the identical note once it has been replayed into a `PromptSegment`:
+/// find the single MOST RECENT matching record first, THEN interpret an
+/// empty `text` as a clear marker rather than skipping past it to an
+/// earlier goal. `/goal` reads the raw log directly rather than building a
+/// whole assembled context merely to show one note back to the operator.
+fn latest_goal_text(records: &[conway::LogRecord]) -> Option<String> {
+    let latest = records.iter().rev().find_map(|record| match record {
+        conway::LogRecord::SystemNote { text, reason, .. }
+            if reason == conway_plugin_goal::NOTE_REASON =>
+        {
+            Some(text.clone())
+        }
+        _ => None,
+    })?;
+    if latest.is_empty() {
+        None
+    } else {
+        Some(latest)
+    }
 }
 
 /// Runs one `/ask` modal fate (B5) against the facade: exactly one `host`
@@ -5690,6 +5863,36 @@ mod tests {
         assert_eq!(err.to_string(), "usage: /trust permissions");
     }
 
+    // ---------------------------------------------------------------
+    // /goal (board item `01M1YVVT9RYWZWAZC4YH21T3HN`): a BUILT-IN,
+    // operator-typed command -- see `SlashCommand::Goal`'s own doc.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn bare_goal_parses_to_show() {
+        assert_eq!(parse("/goal"), Ok(SlashCommand::Goal { arg: None }));
+    }
+
+    #[test]
+    fn goal_with_text_parses_to_set() {
+        assert_eq!(
+            parse("/goal ship the thing by friday"),
+            Ok(SlashCommand::Goal {
+                arg: Some("ship the thing by friday".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn goal_clear_parses_to_the_clear_form() {
+        assert_eq!(
+            parse("/goal clear"),
+            Ok(SlashCommand::Goal {
+                arg: Some("clear".to_string())
+            })
+        );
+    }
+
     #[test]
     fn agents_parses() {
         assert_eq!(parse("/agents"), Ok(SlashCommand::Agents));
@@ -6167,6 +6370,23 @@ mod tests {
         /// WriteApproval` itself documents. See [`Self::
         /// with_skills_write_approval`].
         skills_write_approval: conway_plugin_skills::WriteApproval,
+        /// `Host::goal_plugin_installed`'s scripted response -- `false` by
+        /// default (mirroring `cancel_ok`/`fate_ok`'s own "opt in to the
+        /// happy path" convention), so a test exercising the "not
+        /// installed" notice needs no scripting at all. See [`Self::
+        /// with_goal_plugin_installed`].
+        goal_plugin_installed: bool,
+        /// `Host::append_system_note` succeeds with `Ok(())` when `true`,
+        /// otherwise fails with `fake_error()` -- same "opt in to the
+        /// happy path" convention as `goal_plugin_installed` above. See
+        /// [`Self::with_append_system_note_ok`].
+        append_system_note_ok: bool,
+        /// Every `(agent, text, reason)` triple `Host::append_system_note`
+        /// was actually called with -- the one assertion that proves
+        /// `execute`'s `SlashCommand::Goal` arm persisted exactly the text
+        /// (and the clear marker's exactly-empty text) it was supposed to.
+        /// See [`Self::appended_system_notes`].
+        appended_system_notes: Mutex<Vec<(AgentId, String, String)>>,
     }
 
     impl FakeHost {
@@ -6198,6 +6418,9 @@ mod tests {
                 resumable_sessions_result: None,
                 skills_write_approval: conway_plugin_skills::WriteApproval::Ask,
                 session_name: None,
+                goal_plugin_installed: false,
+                append_system_note_ok: false,
+                appended_system_notes: Mutex::new(Vec::new()),
             }
         }
 
@@ -6216,6 +6439,26 @@ mod tests {
         ) -> Self {
             self.skills_write_approval = approval;
             self
+        }
+
+        /// Scripts `goal_plugin_installed` to answer `true` -- see that
+        /// field's own doc.
+        fn with_goal_plugin_installed(mut self) -> Self {
+            self.goal_plugin_installed = true;
+            self
+        }
+
+        /// Scripts `append_system_note` to succeed -- see
+        /// `append_system_note_ok`'s own doc.
+        fn with_append_system_note_ok(mut self) -> Self {
+            self.append_system_note_ok = true;
+            self
+        }
+
+        /// Every `(agent, text, reason)` triple `append_system_note` was
+        /// actually called with -- see that field's own doc.
+        fn appended_system_notes(&self) -> Vec<(AgentId, String, String)> {
+            self.appended_system_notes.lock().unwrap().clone()
         }
 
         /// Registers `command` under `full_name`, for a test exercising
@@ -6594,6 +6837,29 @@ mod tests {
         fn skills_write_approval(&self) -> conway_plugin_skills::WriteApproval {
             self.calls.lock().unwrap().push("skills_write_approval");
             self.skills_write_approval
+        }
+
+        async fn append_system_note(
+            &self,
+            agent: AgentId,
+            text: String,
+            reason: &str,
+        ) -> conway::Result<()> {
+            self.calls.lock().unwrap().push("append_system_note");
+            self.appended_system_notes
+                .lock()
+                .unwrap()
+                .push((agent, text, reason.to_string()));
+            if self.append_system_note_ok {
+                Ok(())
+            } else {
+                Err(fake_error())
+            }
+        }
+
+        fn goal_plugin_installed(&self) -> bool {
+            self.calls.lock().unwrap().push("goal_plugin_installed");
+            self.goal_plugin_installed
         }
     }
 
@@ -7315,7 +7581,178 @@ mod tests {
         );
     }
 
-    /// **Hang-safety, direct proof (P-15).** `execute` must return promptly
+    // ---------------------------------------------------------------
+    // execute() -- SlashCommand::Goal (board item
+    // `01M1YVVT9RYWZWAZC4YH21T3HN`).
+    // ---------------------------------------------------------------
+
+    /// `conway.goal` not installed (`FakeHost::new`'s own default): EVERY
+    /// form of `/goal` says so, before anything is read or written --
+    /// neither `transcript` nor `append_system_note` is ever called.
+    #[tokio::test]
+    async fn goal_says_so_when_the_plugin_is_not_installed() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::Goal { arg: None }, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("not installed")),
+            "the refusal must name the missing plugin: {:?}",
+            notice_lines(&state)
+        );
+        assert!(
+            !host.calls().contains(&"transcript") && !host.calls().contains(&"append_system_note"),
+            "an uninstalled plugin must never be read from or written to: {:?}",
+            host.calls()
+        );
+    }
+
+    /// Bare `/goal` with nothing in the transcript: a clear, typed "no
+    /// standing goal" notice, read from `Host::transcript` directly --
+    /// never through a fork or a model call.
+    #[tokio::test]
+    async fn bare_goal_with_no_note_in_the_transcript_says_none_is_set() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root).with_goal_plugin_installed();
+
+        let effect = execute(SlashCommand::Goal { arg: None }, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("no standing goal")),
+            "{:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// Bare `/goal` with the most recent `conway.goal` note set: the
+    /// notice names the text. A CLEAR marker further back must not
+    /// resurface -- only the LATEST note governs.
+    #[tokio::test]
+    async fn bare_goal_shows_the_most_recent_set_note() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root).with_goal_plugin_installed();
+        host.transcript = vec![
+            conway::LogRecord::SystemNote {
+                seq: conway::LogSeq(1),
+                ts: chrono::Utc::now(),
+                text: String::new(),
+                reason: conway_plugin_goal::NOTE_REASON.to_string(),
+                prov: conway::Provenance::SystemNote {
+                    reason: conway_plugin_goal::NOTE_REASON.to_string(),
+                },
+            },
+            conway::LogRecord::SystemNote {
+                seq: conway::LogSeq(2),
+                ts: chrono::Utc::now(),
+                text: "ship the thing".to_string(),
+                reason: conway_plugin_goal::NOTE_REASON.to_string(),
+                prov: conway::Provenance::SystemNote {
+                    reason: conway_plugin_goal::NOTE_REASON.to_string(),
+                },
+            },
+        ];
+
+        let effect = execute(SlashCommand::Goal { arg: None }, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("ship the thing")),
+            "{:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// `/goal <text>` persists exactly `text`, under `conway_plugin_goal::
+    /// NOTE_REASON`, against the FOCUSED agent -- the one assertion that
+    /// proves the facade call was actually made with the right arguments,
+    /// not merely that SOME call happened.
+    #[tokio::test]
+    async fn goal_with_text_persists_exactly_that_text() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root)
+            .with_goal_plugin_installed()
+            .with_append_system_note_ok();
+
+        let effect = execute(
+            SlashCommand::Goal {
+                arg: Some("ship the thing by friday".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(
+            host.appended_system_notes(),
+            vec![(
+                root,
+                "ship the thing by friday".to_string(),
+                conway_plugin_goal::NOTE_REASON.to_string()
+            )]
+        );
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("ship the thing by friday")),
+            "{:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// `/goal clear` persists an EMPTY text under the SAME reason -- a
+    /// clear marker, not merely the absence of a call -- so a later resume
+    /// does not resurrect an earlier goal (see `conway_plugin_goal::
+    /// reconstruct_from_history`'s own doc for the mechanism this feeds).
+    #[tokio::test]
+    async fn goal_clear_persists_an_empty_text_marker() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root)
+            .with_goal_plugin_installed()
+            .with_append_system_note_ok();
+
+        let effect = execute(
+            SlashCommand::Goal {
+                arg: Some("clear".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(
+            host.appended_system_notes(),
+            vec![(
+                root,
+                String::new(),
+                conway_plugin_goal::NOTE_REASON.to_string()
+            )]
+        );
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("cleared")),
+            "{:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// **Hang-safety, direct proof.** `execute` must return promptly
     /// even though `FakeHost::await_agent` never resolves -- `execute`'s
     /// `SlashCommand::Await` arm never calls it at all (see `Effect::
     /// RunAwait`'s own doc). Written and run against a scratch version of
