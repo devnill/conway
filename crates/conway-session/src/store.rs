@@ -405,16 +405,22 @@ fn assign_seq(rec: LogRecord, seq: LogSeq) -> Result<LogRecord, StoreError> {
 }
 
 impl JsonlSessionStore {
-    /// Opens `root`, creating it recursively if absent. Never reads or
-    /// modifies any session file — session state is loaded lazily, per
-    /// session, on first access.
+    /// Opens `root`. Never creates it, and never reads or modifies any
+    /// session file — session state is loaded lazily, per session, on first
+    /// access. Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: `root` itself is
+    /// created lazily too, by `create_inner` (the one place this store ever
+    /// writes a NEW session), so a caller that opens a store and only ever
+    /// reads (`conway doctor`, `sessions list`/`show` against a project
+    /// that has never run one) leaves no trace on disk. `SessionIndex::
+    /// load_or_rebuild` copes with `root` not existing yet exactly like it
+    /// copes with an empty one: no `index.jsonl`, zero session files,
+    /// nothing to persist.
     pub async fn open(root: PathBuf) -> Result<Self, StoreError> {
         Self::open_with(root, StoreConfig::default()).await
     }
 
     /// As [`open`](Self::open), with an explicit [`StoreConfig`].
     pub async fn open_with(root: PathBuf, cfg: StoreConfig) -> Result<Self, StoreError> {
-        tokio::fs::create_dir_all(&root).await.map_err(io_err)?;
         let index = Arc::new(SessionIndex::load_or_rebuild(&root).await?);
         let handles: Arc<AsyncRwLock<HashMap<SessionId, Handle>>> =
             Arc::new(AsyncRwLock::new(HashMap::new()));
@@ -659,6 +665,13 @@ impl JsonlSessionStore {
     pub(crate) async fn create_inner(&self, meta: SessionMeta) -> Result<SessionId, StoreError> {
         let sid = meta.id;
         let path = self.session_path(&sid);
+        // Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: `root` is created HERE,
+        // on the first real write a `JsonlSessionStore` ever performs
+        // (`open_with` no longer creates it eagerly) — so a store that is
+        // opened and only ever read from never touches disk at all.
+        tokio::fs::create_dir_all(&self.root)
+            .await
+            .map_err(io_err)?;
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)

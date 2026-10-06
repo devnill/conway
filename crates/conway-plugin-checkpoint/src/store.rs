@@ -232,6 +232,24 @@ impl CheckpointStore {
         self.root.join("sessions").join(session).join("index.jsonl")
     }
 
+    /// Creates `root` itself (if it is not already there) and writes its
+    /// self-ignoring `.gitignore` -- the two side effects `with_root_and_
+    /// bounds` used to perform unconditionally at construction time, now
+    /// run here instead, at the one call common to every real write this
+    /// store ever makes ([`Self::put_blob`]/[`Self::append_index`], both
+    /// `create_dir_all` an ancestor of `root` anyway). A read-only session
+    /// (list/diff against an empty store, or a `CheckpointPlugin`
+    /// constructed and never written through -- `conway doctor`'s own
+    /// case) never creates anything at all. Best-effort for the
+    /// `.gitignore` write specifically, matching every other best-effort
+    /// write in this crate (a permissions error here should degrade to "no
+    /// `.gitignore`", never block the real write that triggered this).
+    fn ensure_root(&self) -> io::Result<()> {
+        fs::create_dir_all(&self.root)?;
+        let _ = fs::write(self.root.join(".gitignore"), "*\n");
+        Ok(())
+    }
+
     fn dir_total_bytes(dir: &Path) -> io::Result<u64> {
         let mut total = 0u64;
         let entries = match fs::read_dir(dir) {
@@ -312,6 +330,7 @@ impl CheckpointStore {
     /// re-written, never touches the eviction order.
     pub fn put_blob(&self, bytes: &[u8], max_project_bytes: u64) -> io::Result<PutBlobOutcome> {
         let hash = blake3::hash(bytes).to_hex().to_string();
+        self.ensure_root()?;
         fs::create_dir_all(self.objects_dir())?;
         let path = self.blob_path(&hash);
         if path.exists() {
@@ -454,6 +473,7 @@ impl CheckpointStore {
     fn append_index(&self, session: &str, entry: &CheckpointEntry) -> io::Result<()> {
         use std::io::Write;
         let path = self.session_index_path(session);
+        self.ensure_root()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }

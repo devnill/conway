@@ -4190,8 +4190,21 @@ fn build_default_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn SessionStore
 /// location to lose.
 #[cfg(feature = "jsonl-store")]
 fn build_default_path_store(cwd: &Path, root: &Path) -> Result<Arc<dyn PathStore>> {
-    let sessions_root = resolve_path(cwd, root);
-    let paths_root = match sessions_root.file_name() {
+    let paths_root = default_path_store_root(&resolve_path(cwd, root));
+    let path_store = block_on(conway_session::FsPathStore::open(paths_root))?;
+    Ok(Arc::new(path_store))
+}
+
+/// The pure half of [`build_default_path_store`]: just the "sibling of
+/// `sessions_root` itself" formula, with no I/O. Split out so this crate's
+/// own test suite can assert the formula directly (board item
+/// `01M488BT2JE9ZMNANPWCBG5QSQ`: `FsPathStore::open`/`put` no longer touch
+/// disk until a real selection is written, so a test can no longer observe
+/// WHERE `build()` would have opened the default path store by checking
+/// for a directory that `build()` alone never creates).
+#[cfg(feature = "jsonl-store")]
+pub(crate) fn default_path_store_root(sessions_root: &Path) -> PathBuf {
+    match sessions_root.file_name() {
         Some(name) => {
             let mut paths_name = std::ffi::OsString::from(name);
             paths_name.push("-paths");
@@ -4201,9 +4214,7 @@ fn build_default_path_store(cwd: &Path, root: &Path) -> Result<Arc<dyn PathStore
         // a nested `paths/` so we still never write a stray file into the
         // session directory itself.
         None => sessions_root.join("paths"),
-    };
-    let path_store = block_on(conway_session::FsPathStore::open(paths_root))?;
-    Ok(Arc::new(path_store))
+    }
 }
 
 /// The `jsonl-store`-off arm, mirroring [`build_default_store`]'s own: no

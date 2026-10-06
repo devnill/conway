@@ -61,48 +61,38 @@
 //! wrote into `settings.json`). No telemetry: nothing this module computes
 //! leaves the process except what `--json`/the text report print to stdout.
 //!
-//! # On-disk side effects -- closed for `conway.memory`, still open for two others
+//! # On-disk side effects -- closed
 //!
 //! `build_full_conway` (below) reuses `main.rs`'s own tiered plugin-install
 //! pipeline (this doc's own first section) precisely so doctor's checks
 //! never drift from what a live session actually does -- but that pipeline
-//! was written for a process that is ABOUT to run a session, and two of its
-//! steps perform real disk I/O as a result, which doctor inherits just by
-//! calling it:
+//! was written for a process that is ABOUT to run a session, so every
+//! component it touches has to earn "doctor never writes" on its own:
 //!
 //! - **`conway.memory`** (in `first_party_plugins::DEFAULT_OPINION_SET`, so
-//!   an ordinary project hits this): closed. `build_full_conway` passes
+//!   an ordinary project hits this): `build_full_conway` passes
 //!   `first_party_plugins::install` a fresh `conway_plugin_memory::
 //!   InMemoryMemoryStore` override rather than letting it call
 //!   `resolve_memory_store`, which would otherwise `create_dir_all(".conway/
 //!   memory/memories")` the moment doctor ran.
-//! - **`conway.checkpoint`** (also in `DEFAULT_OPINION_SET`): NOT closed.
-//!   `first_party_plugins::checkpoint_plugin` calls `CheckpointPlugin::
-//!   with_root`, which unconditionally `create_dir_all`s its shadow-store
-//!   root (by default under the operator's OWN config directory, e.g.
-//!   `~/.conway/checkpoints/<project-key>`, never inside the project --
-//!   `conway::config::discovery::checkpoint_store_root`'s own doc) and
-//!   writes a self-ignoring `.gitignore` into it, every time this pipeline
-//!   runs, regardless of whether `"conway.checkpoint"` is actually selected
-//!   for this project.
-//! - **The session store**: NOT closed. `ConwayBuilder::build()` (the last
-//!   stage `build_full_conway` runs) calls `build_default_store` whenever no
-//!   store was injected, which `create_dir_all`s the resolved session root
-//!   (`conway::config::discovery::session_root`, the directory
-//!   `session.project_key` below already just READS the location of).
+//! - **`conway.checkpoint`** (also in `DEFAULT_OPINION_SET`) and **the
+//!   session store** (`ConwayBuilder::build()`'s `build_default_store`,
+//!   plus its sibling default path store, `build_default_path_store`):
+//!   none of the three creates its own root directory at construction time
+//!   any more. Each defers that `create_dir_all` -- and, for `conway.
+//!   checkpoint`, the self-ignoring `.gitignore` it also used to write
+//!   unconditionally -- to its own first REAL write (`CheckpointStore::
+//!   put_blob`/`append_index`, `JsonlSessionStore::create_inner`,
+//!   `FsPathStore::put`), none of which doctor's build-only path ever
+//!   reaches. A project that has never run a session, and a doctor run
+//!   against it, both see nothing on disk at any of these three locations;
+//!   a REAL session still creates all three exactly as before, on its own
+//!   first write.
 //!
-//! Closing the latter two is real further work, deliberately left to a
-//! follow-up rather than attempted here: `conway_core::ports::SessionStore`
-//! is a large, concurrency-sensitive trait (fork/remove guarantees in
-//! particular) with no existing non-test, zero-I/O implementation this
-//! crate could borrow the way `conway_plugin_memory::InMemoryMemoryStore`
-//! already existed for `conway.memory`, and the checkpoint migration/
-//! `.gitignore` write happens inside `CheckpointPlugin::with_root` itself,
-//! unconditionally, with no override seam yet. Both are at most a small,
-//! OS-visible side effect (a directory and a two-line `.gitignore`, never
-//! session/task data), unlike the `conway.memory` case this item closes,
-//! which would have written a durable memory file the first time an
-//! operator who had never run a session at all ran `conway doctor`.
+//! Every reader of these directories already copes with one not existing
+//! yet: a session listing against a store nobody has written to returns
+//! empty rather than erroring, and `session.project_key` below only ever
+//! NAMES the resolved location, never creates it.
 //!
 //! # `--json`
 //!

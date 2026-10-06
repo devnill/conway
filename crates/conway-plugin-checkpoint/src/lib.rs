@@ -729,38 +729,38 @@ impl CheckpointPlugin {
     /// [`Self::with_root`] with explicit bounds -- the fullest constructor,
     /// every other one on this type delegates to it.
     ///
-    /// Two things happen here, beyond opening the store, both best-effort
-    /// and both disclosed rather than silently assumed:
+    /// Exactly one thing happens here, beyond opening the store, best-effort
+    /// and disclosed rather than silently assumed: **a one-time migration
+    /// off the OLD in-project location** (`<cwd>/.conway/checkpoints`), when
+    /// `root` itself is a DIFFERENT path and nothing exists at `root` yet. A
+    /// plain `fs::rename` -- cheap, and correct for the overwhelmingly
+    /// common case (the old and new locations are on the same filesystem,
+    /// which they are whenever `CONWAY_CONFIG_DIR`/the operator's home
+    /// directory and the project live on the same disk). If that rename
+    /// fails for any reason -- most plausibly a cross-device move, e.g. a
+    /// project on a network mount with a local home directory -- the old
+    /// store is left exactly where it is, undiscovered by this or any later
+    /// `CheckpointPlugin` construction: this plugin's own shadow store is
+    /// transient undo data, not something worth a second, more elaborate
+    /// migration path (a dual-root reader, a background copy) over. An
+    /// operator in that position keeps old snapshots reachable the old way
+    /// (reading `<cwd>/.conway/checkpoints` directly, or constructing a
+    /// `CheckpointStore` against it by hand) and gets new ones at the new
+    /// location from here on. Best-effort (`let _ =`) for the identical
+    /// reason this plugin's observer never fails a tool call over a local
+    /// filesystem problem -- a permissions error here should degrade to "no
+    /// migration," never to a `CheckpointPlugin` that fails to construct at
+    /// all. This step only ever touches disk when a legacy store is
+    /// actually there to move (`migrate_legacy_in_project_store`'s own
+    /// early-return doc) -- a fresh project triggers no write here.
     ///
-    /// 1. **A one-time migration off the OLD in-project location**
-    ///    (`<cwd>/.conway/checkpoints`), when `root` itself is a DIFFERENT
-    ///    path and nothing exists at `root` yet. A plain `fs::rename` --
-    ///    cheap, and correct for the overwhelmingly common case (the old
-    ///    and new locations are on the same filesystem, which they are
-    ///    whenever `CONWAY_CONFIG_DIR`/the operator's home directory and the
-    ///    project live on the same disk). If that rename fails for any
-    ///    reason -- most plausibly a cross-device move, e.g. a project on a
-    ///    network mount with a local home directory -- the old store is
-    ///    left exactly where it is, undiscovered by this or any later
-    ///    `CheckpointPlugin` construction: this plugin's own shadow store
-    ///    is transient undo data, not something worth a second, more
-    ///    elaborate migration path (a dual-root reader, a background copy)
-    ///    over. An operator in that position keeps old snapshots reachable
-    ///    the old way (reading `<cwd>/.conway/checkpoints` directly, or
-    ///    constructing a `CheckpointStore` against it by hand) and gets new
-    ///    ones at the new location from here on.
-    /// 2. **A self-ignoring `.gitignore`** (`*`) written into `root` --
-    ///    belt-and-braces for the rare fallback branch `checkpoint_store_
-    ///    root` itself documents (no home directory discoverable AND
-    ///    `CONWAY_CONFIG_DIR` unset), which still resolves inside the
-    ///    project. Harmless everywhere else: a `.gitignore` sitting outside
-    ///    any git working tree governs nothing.
-    ///
-    /// Both steps are best-effort (`let _ =`) for the identical reason this
-    /// plugin's observer never fails a tool call over a local filesystem
-    /// problem -- a permissions error here should degrade to "no migration,
-    /// no `.gitignore`," never to a `CheckpointPlugin` that fails to
-    /// construct at all.
+    /// Construction itself never creates `root`, and never writes its
+    /// self-ignoring `.gitignore` (`*`) -- both are deferred to
+    /// `CheckpointStore::put_blob`/`append_index`, the store's own first
+    /// real write, via `CheckpointStore::ensure_root`. That is what makes a
+    /// `CheckpointPlugin` constructed but never written through (`conway
+    /// doctor`'s own case, among every other read-only dispatch target)
+    /// create nothing at all.
     pub fn with_root_and_bounds(
         root: impl Into<PathBuf>,
         cwd: impl Into<PathBuf>,
@@ -770,8 +770,6 @@ impl CheckpointPlugin {
         let cwd = cwd.into();
         let root = root.into();
         Self::migrate_legacy_in_project_store(&cwd, &root);
-        let _ = std::fs::create_dir_all(&root);
-        let _ = std::fs::write(root.join(".gitignore"), "*\n");
         Self {
             store: Arc::new(CheckpointStore::new(root, cwd)),
             max_snapshot_bytes,
@@ -1007,17 +1005,50 @@ mod tests {
         );
     }
 
-    /// Point 3's self-ignoring `.gitignore` backstop -- written into `root`
-    /// regardless of where `root` resolves, so even the rare in-project
-    /// fallback (`checkpoint_store_root`'s own doc: no home directory
-    /// discoverable) cannot dirty `git status`.
+    /// Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: `with_root` alone -- no
+    /// write through the store -- must create NOTHING, so a read-only
+    /// caller (`conway doctor`, among every other read-only dispatch
+    /// target) that constructs a `CheckpointPlugin` but never calls
+    /// `record_observed`/`rollback` leaves no trace on disk.
     #[test]
-    fn with_root_writes_a_self_ignoring_gitignore_into_the_store_root() {
+    fn with_root_alone_creates_nothing_on_disk() {
         let dir = TempDir::new().unwrap();
         let root = dir.path().join("store");
         let _plugin = CheckpointPlugin::with_root(&root, dir.path());
+        assert!(
+            !root.exists(),
+            "construction alone must never create the store root"
+        );
+    }
+
+    /// Point 3's self-ignoring `.gitignore` backstop -- written into `root`
+    /// regardless of where `root` resolves, so even the rare in-project
+    /// fallback (`checkpoint_store_root`'s own doc: no home directory
+    /// discoverable) cannot dirty `git status`. Board item
+    /// `01M488BT2JE9ZMNANPWCBG5QSQ`: deferred to the store's first real
+    /// write (construction alone creates nothing -- the test above), so
+    /// this one drives an actual write before checking for it.
+    #[test]
+    fn with_root_writes_a_self_ignoring_gitignore_on_its_first_real_write() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("store");
+        let plugin = CheckpointPlugin::with_root(&root, dir.path());
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "v1").unwrap();
+        plugin
+            .store()
+            .record_observed(
+                "sess-gitignore",
+                1,
+                &path,
+                ToolKind::Write,
+                None,
+                DEFAULT_MAX_SNAPSHOT_BYTES,
+                DEFAULT_MAX_PROJECT_BYTES,
+            )
+            .unwrap();
         let gitignore = std::fs::read_to_string(root.join(".gitignore"))
-            .expect("with_root must write a .gitignore into its own root");
+            .expect("the first real write must write a .gitignore into the store root");
         assert_eq!(gitignore, "*\n");
     }
 

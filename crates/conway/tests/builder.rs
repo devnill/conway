@@ -528,18 +528,33 @@ async fn build_falls_back_to_the_old_fixed_default_when_from_parts_leaves_root_u
 /// directly via two explicit `session.root` values under a common
 /// `sessions/` directory (without touching `config::load`'s own
 /// resolution, which this test has no need to exercise) and proves the two
-/// builds' path stores land in two DIFFERENT directories, neither of which
+/// builds' path stores resolve to two DIFFERENT locations, neither of which
 /// is the shared parent's own bare `sessions/paths`.
+///
+/// Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: this used to drive the
+/// assertion by checking which directories `build()` + a bare
+/// `new_session()` (no path-store write at all) left on disk -- which
+/// worked only because `FsPathStore::open` used to create its directory
+/// unconditionally. Nothing in this workspace's production code writes
+/// through `PathStore` outside an explicit `conway.path` tool call
+/// (`build_default_path_store`'s own doc), so `build()` + `new_session()`
+/// now leaves no path-store directory to inspect at all -- correctly: see
+/// `path_store_root_still_builds_successfully_and_matches_the_formula`
+/// below for confirmation that `build()` still succeeds and resolves each
+/// project to the formula's own answer, asked the same way `build()` itself
+/// does (`conway::test_support::default_path_store_root`), with no I/O.
 #[cfg(feature = "jsonl-store")]
 #[tokio::test]
 async fn two_projects_sharing_a_central_sessions_parent_get_different_path_store_roots() {
     let root = support::unique_temp_dir("builder-path-store-no-collision");
     let shared_sessions_parent = root.join("sessions");
+    let mut resolved_roots = Vec::new();
 
     for key in ["-Users-dan-project-a", "-Users-dan-project-b"] {
+        let session_root = shared_sessions_parent.join(key);
         let mut cfg = base_config();
         cfg.cwd = root.clone();
-        cfg.session.root = Some(shared_sessions_parent.join(key));
+        cfg.session.root = Some(session_root.clone());
 
         let backend = fake_backend("fake");
         let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
@@ -553,23 +568,54 @@ async fn two_projects_sharing_a_central_sessions_parent_get_different_path_store
             .new_session(SessionSpec::default())
             .await
             .expect("new_session against the real store should succeed");
+
+        resolved_roots.push(conway::test_support::default_path_store_root(&session_root));
     }
 
+    assert_ne!(
+        resolved_roots[0], resolved_roots[1],
+        "the two projects must not have collided on one shared path-store root"
+    );
+    assert_eq!(
+        resolved_roots[0],
+        shared_sessions_parent.join("-Users-dan-project-a-paths")
+    );
+    assert_eq!(
+        resolved_roots[1],
+        shared_sessions_parent.join("-Users-dan-project-b-paths")
+    );
     assert!(
-        !shared_sessions_parent.join("paths").is_dir(),
+        !shared_sessions_parent.join("paths").exists(),
         "the two projects must not have collided on one shared paths/ directory"
     );
+}
+
+/// Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: `build()` alone -- no session
+/// ever created, no path ever composed -- must leave the default path
+/// store's directory uncreated (`FsPathStore::open` defers it to `put`'s
+/// first real write), so a read-only command (`conway doctor`, among every
+/// other read-only dispatch target) that reaches `build()` creates nothing.
+#[cfg(feature = "jsonl-store")]
+#[tokio::test]
+async fn build_alone_creates_no_default_path_store_directory() {
+    let mut cfg = base_config();
+    let root = support::unique_temp_dir("builder-path-store-build-alone");
+    cfg.cwd = root.clone();
+    cfg.session.root = Some(std::path::PathBuf::from("sessions"));
+
+    let backend = fake_backend("fake");
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let _conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_permission_gate(gate)
+        .with_router(empty_router())
+        .build()
+        .expect("build should synthesize a real FsPathStore");
+
+    let expected_root = conway::test_support::default_path_store_root(&root.join("sessions"));
     assert!(
-        shared_sessions_parent
-            .join("-Users-dan-project-a-paths")
-            .is_dir(),
-        "project a's own path store must exist, keyed by its own session root"
-    );
-    assert!(
-        shared_sessions_parent
-            .join("-Users-dan-project-b-paths")
-            .is_dir(),
-        "project b's own path store must exist, keyed by its own session root"
+        !expected_root.exists(),
+        "build() alone must never create the default path store's directory: {expected_root:?}"
     );
 }
 

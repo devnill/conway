@@ -426,3 +426,65 @@ async fn a_conflicted_rollback_exits_non_zero_headless() {
         "a refused rollback must never touch the file"
     );
 }
+
+// -----------------------------------------------------------------------
+// (4) A real session still creates its directories, on first write
+// -----------------------------------------------------------------------
+
+/// Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: the companion to `doctor_cli.
+/// rs`'s own `doctor_with_the_default_plugin_set_creates_or_modifies_
+/// nothing_on_disk` -- `conway.checkpoint`'s shadow store and the session
+/// store both defer creating their directory until their own first real
+/// write, so doctor (which never writes) creates neither. This test proves
+/// the OTHER half: an ordinary session that DOES write still creates both,
+/// exactly as before -- the deferral did not quietly make `conway` itself
+/// incapable of writing them, only `doctor`'s read-only build path stopped
+/// triggering it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_normal_write_turn_still_creates_the_session_and_checkpoint_store_dirs() {
+    let mock = MockBackend::start(write_script(1)).await;
+    let fixture = write_fixture(&mock, 10);
+    add_plugins_install(&fixture, &["conway.checkpoint"]);
+
+    let sessions_dir = common::session_dir(&fixture);
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "CONWAY_CONFIG_DIR".to_string(),
+        fixture.dir.path().to_string_lossy().into_owned(),
+    );
+    let project_dir = fixture
+        .dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| fixture.dir.path().to_path_buf());
+    let checkpoint_dir = conway::config::discovery::checkpoint_store_root(&project_dir, &env);
+    assert!(
+        !sessions_dir.exists(),
+        "sanity: nothing has written a session yet"
+    );
+    assert!(
+        !checkpoint_dir.exists(),
+        "sanity: nothing has written a checkpoint snapshot yet"
+    );
+
+    let out = run_conway(
+        &["-p", "write the notes file", "--allowed-tools", "write"],
+        &fixture,
+    );
+    assert!(
+        out.status.success(),
+        "the scripted write turn must succeed -- stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        sessions_dir.is_dir(),
+        "a real session must still create its own session-store directory on its first \
+         write: {sessions_dir:?}"
+    );
+    assert!(
+        checkpoint_dir.join("sessions").exists(),
+        "conway.checkpoint must still create its own shadow store on its first captured \
+         snapshot: {checkpoint_dir:?}"
+    );
+}

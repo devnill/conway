@@ -203,3 +203,17 @@ pub fn build_conway_with_builtins(
         .build()
         .expect("build should succeed with the real builtin tools registered")
 }
+
+/// Re-exports `crate::builder::default_path_store_root` -- the pure
+/// "sibling of `sessions_root` itself" formula `ConwayBuilder::build` uses
+/// to resolve the default path store's location, with no I/O of its own.
+/// Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: `build()` no longer creates the
+/// default path store's directory just by running (`FsPathStore::open`/
+/// `put` defer that to a real write), so a test asserting WHERE `build()`
+/// would resolve it can no longer do so by checking for a directory `build`
+/// alone never creates -- this lets it ask the same question `build` itself
+/// answers internally, directly.
+#[cfg(feature = "jsonl-store")]
+pub fn default_path_store_root(sessions_root: &std::path::Path) -> PathBuf {
+    crate::builder::default_path_store_root(sessions_root)
+}

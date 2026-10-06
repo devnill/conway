@@ -190,17 +190,26 @@ impl PathIndex {
     /// with the set of key files on disk. A rebuild triggered by anything
     /// other than plain absence logs `tracing::warn!(..., "index rebuild")`.
     pub(crate) async fn load_or_rebuild(root: &Path) -> Result<Self, PathStoreError> {
-        let state = match Self::try_load(root).await {
+        // `needs_persist` is `false` only for the genuinely fresh case: no
+        // `paths-index.jsonl` AND zero selection files on disk (board item
+        // `01M488BT2JE9ZMNANPWCBG5QSQ`) — mirrors `SessionIndex::
+        // load_or_rebuild`'s own reasoning, including why every other
+        // outcome still persists eagerly.
+        let (state, needs_persist) = match Self::try_load(root).await {
             Ok(state) => {
                 return Ok(Self {
                     state: RwLock::new(state),
                     root: root.to_path_buf(),
                 });
             }
-            Err(LoadOutcome::Missing) => Self::rebuild_scan(root).await?,
+            Err(LoadOutcome::Missing) => {
+                let state = Self::rebuild_scan(root).await?;
+                let needs_persist = !state.by_session.is_empty();
+                (state, needs_persist)
+            }
             Err(LoadOutcome::Invalid(detail)) => {
                 tracing::warn!(root = %root.display(), detail = %detail, "index rebuild");
-                Self::rebuild_scan(root).await?
+                (Self::rebuild_scan(root).await?, true)
             }
         };
 
@@ -208,11 +217,13 @@ impl PathIndex {
             state: RwLock::new(state),
             root: root.to_path_buf(),
         };
-        if let Err(e) = index.persist_full().await {
-            tracing::warn!(
-                error = %e,
-                "path index rebuild: failed to persist rebuilt paths-index.jsonl (will be rebuilt again next open)"
-            );
+        if needs_persist {
+            if let Err(e) = index.persist_full().await {
+                tracing::warn!(
+                    error = %e,
+                    "path index rebuild: failed to persist rebuilt paths-index.jsonl (will be rebuilt again next open)"
+                );
+            }
         }
         Ok(index)
     }
@@ -410,13 +421,15 @@ pub struct FsPathStore {
 }
 
 impl FsPathStore {
-    /// Opens `root`, creating `root/paths` recursively if absent. Loads (or
-    /// rebuilds) the reverse index from `root/paths-index.jsonl`.
+    /// Opens `root`. Never creates it, or `root/paths` -- board item
+    /// `01M488BT2JE9ZMNANPWCBG5QSQ`: both are created lazily by [`Self::
+    /// put`] instead, the one place this store ever writes a new selection,
+    /// so a store that is opened and only ever read from (`get`/
+    /// `selections_referencing`) leaves no trace on disk. Loads (or
+    /// rebuilds) the reverse index from `root/paths-index.jsonl`, which
+    /// copes with `root`/`root/paths` not existing yet exactly like it
+    /// copes with either being empty.
     pub async fn open(root: PathBuf) -> Result<Self, PathStoreError> {
-        tokio::fs::create_dir_all(&root).await.map_err(io_err)?;
-        tokio::fs::create_dir_all(root.join("paths"))
-            .await
-            .map_err(io_err)?;
         let index = Arc::new(PathIndex::load_or_rebuild(&root).await?);
         Ok(Self { root, index })
     }
@@ -497,6 +510,14 @@ impl PathStore for FsPathStore {
         if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             return Ok(key);
         }
+
+        // Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: `root`/`root/paths` are
+        // created HERE, on the first real write this store ever performs
+        // (`open` no longer creates them eagerly) — a store that is opened
+        // and only ever read from never touches disk at all.
+        tokio::fs::create_dir_all(self.root.join("paths"))
+            .await
+            .map_err(io_err)?;
 
         // Write the selection object file (the body as given, with its prefix
         // reference intact — content-addressed sharing: `prefix(A) ++ [n1]`
@@ -620,6 +641,41 @@ mod tests {
     /// compiles (mirrors the conway-core port module's own assertion).
     #[allow(dead_code)]
     fn _assert_path_store_object_safe(_: Arc<dyn PathStore>) {}
+
+    /// Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: `open` alone must never
+    /// create `root` or `root/paths` -- a store that is opened and only
+    /// ever read from (`conway doctor`, among every other read-only
+    /// dispatch target) leaves no trace on disk.
+    #[tokio::test]
+    async fn open_alone_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("nested").join("paths-store");
+        assert!(!root.exists());
+        let _store = FsPathStore::open(root.clone()).await.unwrap();
+        assert!(!root.exists(), "open alone must never create root");
+    }
+
+    /// The other half: the first real `put` creates `root` and
+    /// `root/paths` recursively.
+    #[tokio::test]
+    async fn put_creates_root_and_paths_recursively_on_first_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("nested").join("paths-store");
+        let store = FsPathStore::open(root.clone()).await.unwrap();
+        assert!(!root.exists(), "open alone must still create nothing");
+
+        let s = SessionId::new();
+        let sel = PathSelection {
+            prefix: None,
+            nodes: vec![own(s, 1)],
+            incoherence: Vec::new(),
+        };
+        store.put(sel).await.unwrap();
+        assert!(
+            root.join("paths").is_dir(),
+            "the first put must create root/paths recursively"
+        );
+    }
 
     /// put→get round-trip (prefix=None): the returned key recomputed from the
     /// same nodes matches `SelectionKey::from_nodes`.

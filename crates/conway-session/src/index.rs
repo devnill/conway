@@ -226,7 +226,15 @@ enum LoadOutcome {
 /// ULID stem, so no special-casing is needed beyond the parse check).
 async fn scan_session_files(root: &Path) -> Result<Vec<(SessionId, PathBuf)>, StoreError> {
     let mut out = Vec::new();
-    let mut rd = tokio::fs::read_dir(root).await.map_err(io_err)?;
+    // Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: `root` itself is created
+    // lazily now (`JsonlSessionStore::create_inner`'s own doc), so a store
+    // that has never recorded a session has no directory to scan at all —
+    // that is zero session files, not a failure.
+    let mut rd = match tokio::fs::read_dir(root).await {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(io_err(e)),
+    };
     while let Some(entry) = rd.next_entry().await.map_err(io_err)? {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
@@ -300,17 +308,33 @@ impl SessionIndex {
     /// has no entry. A rebuild triggered by anything other than plain
     /// absence logs `tracing::warn!(..., "index rebuild")`.
     pub(crate) async fn load_or_rebuild(root: &Path) -> Result<Self, StoreError> {
-        let state = match Self::try_load(root).await {
+        // `needs_persist` is `false` only for the genuinely fresh case:
+        // no `index.jsonl` AND zero session files on disk (board item
+        // `01M488BT2JE9ZMNANPWCBG5QSQ`) — `root` itself may not even exist
+        // yet (`scan_session_files`'s own NotFound tolerance), and there is
+        // nothing to lose by skipping the write: the first real `create`
+        // persists via `record_header` anyway, and `create_dir_all`s `root`
+        // before that append ever runs. Every other outcome still persists
+        // eagerly, exactly as before — a corrupt/stale index is repaired
+        // immediately, and a Missing-but-nonempty disk (an index.jsonl
+        // deleted by hand, say) recovers its rebuilt-by-scan state onto
+        // disk right away rather than leaving it one open-without-a-write
+        // away from being silently lost again.
+        let (state, needs_persist) = match Self::try_load(root).await {
             Ok(state) => {
                 return Ok(Self {
                     state: RwLock::new(state),
                     root: root.to_path_buf(),
                 });
             }
-            Err(LoadOutcome::Missing) => Self::rebuild_scan(root).await?,
+            Err(LoadOutcome::Missing) => {
+                let state = Self::rebuild_scan(root).await?;
+                let needs_persist = !state.by_id.is_empty();
+                (state, needs_persist)
+            }
             Err(LoadOutcome::Invalid(detail)) => {
                 tracing::warn!(root = %root.display(), detail = %detail, "index rebuild");
-                Self::rebuild_scan(root).await?
+                (Self::rebuild_scan(root).await?, true)
             }
         };
 
@@ -318,11 +342,13 @@ impl SessionIndex {
             state: RwLock::new(state),
             root: root.to_path_buf(),
         };
-        if let Err(e) = index.persist_full().await {
-            tracing::warn!(
-                error = %e,
-                "index rebuild: failed to persist rebuilt index.jsonl (will be rebuilt again next open)"
-            );
+        if needs_persist {
+            if let Err(e) = index.persist_full().await {
+                tracing::warn!(
+                    error = %e,
+                    "index rebuild: failed to persist rebuilt index.jsonl (will be rebuilt again next open)"
+                );
+            }
         }
         Ok(index)
     }

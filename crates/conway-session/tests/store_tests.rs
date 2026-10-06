@@ -112,13 +112,38 @@ async fn interval_policy_flusher_syncs_idle_sessions() {
     );
 }
 
+/// Board item `01M488BT2JE9ZMNANPWCBG5QSQ`: `open` alone must never create
+/// `root` -- a store that is opened and only ever read from (`conway
+/// doctor`, among every other read-only dispatch target) leaves no trace on
+/// disk.
 #[tokio::test]
-async fn open_creates_root_recursively() {
+async fn open_alone_creates_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("nested").join("sessions");
     assert!(!root.exists());
     let _store = JsonlSessionStore::open(root.clone()).await.unwrap();
-    assert!(root.is_dir());
+    assert!(
+        !root.exists(),
+        "open alone must never create root recursively"
+    );
+}
+
+/// The other half: a real session still creates `root` (and every ancestor)
+/// recursively, on its first write.
+#[tokio::test]
+async fn create_creates_root_recursively_on_first_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("nested").join("sessions");
+    assert!(!root.exists());
+    let store = JsonlSessionStore::open(root.clone()).await.unwrap();
+    assert!(!root.exists(), "open alone must still create nothing");
+
+    let sid = SessionId::new();
+    store.create(meta_for(sid)).await.unwrap();
+    assert!(
+        root.is_dir(),
+        "the first session create must create root recursively"
+    );
 }
 
 #[tokio::test]

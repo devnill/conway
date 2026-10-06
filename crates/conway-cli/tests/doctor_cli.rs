@@ -402,3 +402,90 @@ fn doctor_never_creates_a_memory_store_directory_even_with_conway_memory_install
         stdout(&out)
     );
 }
+
+/// Recursively records every entry under `root`: `(relative_path,
+/// Some(contents))` for a file, `(relative_path, None)` for a directory --
+/// sorted by path, so two snapshots of the same tree compare by plain
+/// equality. [`doctor_with_the_default_plugin_set_creates_or_modifies_
+/// nothing_on_disk`] below walks both the project directory and the
+/// directory standing in for `~/.conway` this way, before and after a
+/// `conway doctor` run, so a side effect in ANY subdirectory -- not just
+/// the two this item's own history already named (`conway.checkpoint`'s
+/// shadow store, the session store) -- fails it.
+fn snapshot_tree(root: &std::path::Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    fn walk(
+        dir: &std::path::Path,
+        root: &std::path::Path,
+        out: &mut Vec<(PathBuf, Option<Vec<u8>>)>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            if path.is_dir() {
+                out.push((rel, None));
+                walk(&path, root, out);
+            } else {
+                out.push((rel, std::fs::read(&path).ok()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Board item `01M488BT2JE9ZMNANPWCBG5QSQ`'s own acceptance test: `conway
+/// doctor` against a fresh project and a fresh directory standing in for
+/// `~/.conway`, with the DEFAULT first-party plugin set explicitly
+/// installed (the same seven ids `conway plugin install --defaults` would
+/// write, `conway.checkpoint`/`conway.memory`/`conway.history` among them --
+/// the plugins whose build-time directory creation this item and its
+/// `conway.memory` predecessor (`01M1YVXNPTBNH18ZEWFM18F00T`) close) must
+/// create or modify NOTHING on disk, under either directory, at all.
+/// `snapshot_tree` walks both recursively rather than naming the two
+/// specific subdirectories this item's own history already caught --
+/// a side effect in ANY other subdirectory fails this test too.
+#[test]
+fn doctor_with_the_default_plugin_set_creates_or_modifies_nothing_on_disk() {
+    let settings = serde_json::json!({
+        "plugins": {
+            "install": [
+                "conway.idiom",
+                "conway.stepguard",
+                "conway.skills",
+                "conway.memory",
+                "conway.names",
+                "conway.history",
+                "conway.checkpoint",
+            ]
+        }
+    })
+    .to_string();
+    let project = Project::with_settings(&settings);
+
+    let before_project = snapshot_tree(&project.root());
+    let before_config = snapshot_tree(project.config.path());
+
+    let out = project.run(&["doctor"]);
+
+    let after_project = snapshot_tree(&project.root());
+    let after_config = snapshot_tree(project.config.path());
+
+    assert_eq!(
+        before_project,
+        after_project,
+        "conway doctor must create or modify nothing under the project directory: stdout: {}",
+        stdout(&out)
+    );
+    assert_eq!(
+        before_config,
+        after_config,
+        "conway doctor must create or modify nothing under the directory standing in for \
+         ~/.conway: stdout: {}",
+        stdout(&out)
+    );
+}
