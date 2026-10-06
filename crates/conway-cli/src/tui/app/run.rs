@@ -29,7 +29,8 @@ use crate::tui::gate::GateReceiver;
 use crate::tui::input::{self, Action};
 use crate::tui::session_picker;
 use crate::tui::state::{
-    should_animate, AskModal, DistillFate, Entry, SkillProposalFate, MODEL_DECISION_HISTORY_CAP,
+    should_animate, AskModal, DistillFate, Entry, PlanApprovalFate, SkillProposalFate,
+    MODEL_DECISION_HISTORY_CAP,
 };
 use crate::tui::view;
 
@@ -589,6 +590,18 @@ impl App {
                                     .pending_attention
                                     .push_back(crate::tui::config::AttentionEvent::TurnFinished);
                             }
+                            // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: the
+                            // SAME event this checks above ("a `TurnFinished`
+                            // for the FOCUSED agent"), with the mode test
+                            // added -- see `AppState::plan_turn_seen`'s own
+                            // doc for why `Action::CyclePermissionMode`'s own
+                            // arm needs this record kept.
+                            if matches!(&env.event, conway::Event::TurnFinished { .. })
+                                && env.agent == self.state.focused_agent
+                                && self.state.permission_mode == conway::PermissionMode::Plan
+                            {
+                                self.state.plan_turn_seen = true;
+                            }
                             // the SAME
                             // check, scoped to `self.handle`'s own ROOT agent
                             // rather than whichever agent is focused -- see
@@ -788,8 +801,24 @@ impl App {
                                 // are written here, together, so the status
                                 // line can never disagree with what
                                 // actually gates calls.
+                                // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`:
+                                // leaving `Plan` (the only direction this
+                                // cycle ever leaves it, `Plan -> AutoAllow`)
+                                // is a moment, not a bare toggle, when the
+                                // FOCUSED agent actually said something
+                                // while `Plan` was gating it -- `App::
+                                // maybe_offer_plan_approval` (`app/
+                                // plan_approval.rs`) is the one place that
+                                // decides, and it must run BEFORE the
+                                // broker/mirror write below: when it opens
+                                // the modal, this arm must NOT also switch
+                                // the mode -- the switch happens later, from
+                                // `App::approve_plan`, only once the
+                                // operator decides (see that module's own
+                                // doc, "Ordering").
                                 Action::CyclePermissionMode => {
-                                    let next = match self.conway.permission_mode() {
+                                    let current = self.conway.permission_mode();
+                                    let next = match current {
                                         conway::PermissionMode::Prompt => {
                                             conway::PermissionMode::Plan
                                         }
@@ -798,8 +827,39 @@ impl App {
                                         }
                                         _ => conway::PermissionMode::Prompt,
                                     };
-                                    self.conway.set_permission_mode(next);
-                                    self.state.permission_mode = next;
+                                    let leaving_plan = current == conway::PermissionMode::Plan;
+                                    if !leaving_plan || !self.maybe_offer_plan_approval(next) {
+                                        self.conway.set_permission_mode(next);
+                                        self.state.permission_mode = next;
+                                        self.state.plan_turn_seen = false;
+                                    }
+                                }
+                                // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`:
+                                // the plan-approval modal's decision.
+                                // `Approve` needs `App::approve_plan`'s own
+                                // two awaits (the system note, then the
+                                // turn) -- see that method's own doc.
+                                // `Discard` is a plain mode close: nothing
+                                // was ever created for this modal to clean
+                                // up (see `PlanApprovalModal`'s own doc).
+                                Action::PlanApprovalFate(fate) => match fate {
+                                    PlanApprovalFate::Approve => {
+                                        self.approve_plan(None).await;
+                                    }
+                                    PlanApprovalFate::Discard => {
+                                        self.state.close_plan_approval();
+                                    }
+                                },
+                                // `e` on the plan-approval modal -- needs a
+                                // live terminal, exactly like
+                                // `Action::DistillEdit` above.
+                                Action::PlanApprovalEdit => {
+                                    let editor_command = editor::resolve_editor_command();
+                                    self.apply_plan_approval_edit_action(
+                                        terminal,
+                                        &editor_command,
+                                    )
+                                    .await;
                                 }
                                 // Board item `01M1YVX43MABAVX491HQ5ZCC2M`,
                                 // follow-up: rebuilds `self.theme` for the

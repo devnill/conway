@@ -514,6 +514,53 @@ pub enum DistillFate {
     Discard,
 }
 
+/// Board item `01M1YVPJW9W43HMM8WEF34N4RZ` ("leaving plan mode presents the
+/// plan"): the one moment `Action::CyclePermissionMode` turns into a modal
+/// instead of a bare toggle -- the FOCUSED agent produced at least one
+/// assistant turn (`AppState::plan_turn_seen`) while [`conway::
+/// PermissionMode::Plan`] was gating it, and nothing of ITS OWN is in
+/// flight right now (`app/plan_approval.rs::App::maybe_offer_plan_approval`'s
+/// own doc has the exact guard). `plan` is that agent's own last assistant
+/// message, read straight from `AppState::transcript` the instant the
+/// cycle fires -- never recomputed later, so an edit (`e`) starts from
+/// exactly what the operator was shown, not a possibly-different "current"
+/// value. `next_mode` is the mode the cycle was ALREADY about to switch to
+/// (`AutoAllow`, the only direction this cycle ever leaves `Plan` by) --
+/// carried rather than hardcoded so `App::approve_plan` stays agnostic of
+/// the cycle's own order.
+///
+/// Unlike [`AskModal`]/[`DistillModal`]/[`SkillProposalModal`], this carries
+/// no `error` field: neither of its own two ways forward (`Enter`/`e`) can
+/// fail in a way that needs to keep the modal open and show why -- `App::
+/// submit` (the shared funnel both use to actually deliver the turn) never
+/// returns `Err` (every internal failure it can hit already becomes a
+/// transcript `Notice` on its own), and a failed `SessionHandle::
+/// append_system_note` is recorded the same way rather than blocking an
+/// approval that has, at that point, already switched the mode and is
+/// about to send the turn regardless.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanApprovalModal {
+    pub plan: String,
+    pub next_mode: conway::PermissionMode,
+}
+
+/// `Mode::PlanApproval`'s two ways out -- there is no third. Mirrors
+/// [`DistillFate`]'s own shape, minus a `Fork`/`PullIn`-style third option:
+/// this surface has only ever one thing to approve (the plan) and one way
+/// to decline it (stay in `Plan`), never a choice among several outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanApprovalFate {
+    /// Switches the mode to [`PlanApprovalModal::next_mode`] and sends a
+    /// fixed, short user turn ("Plan approved; proceed.") so the model
+    /// knows -- `App::approve_plan(None)`.
+    Approve,
+    /// Stays in `Plan` -- no mode change, nothing sent. The SAME plan is
+    /// shown again the next time the operator tries to leave, unless a new
+    /// assistant turn changes it first (`AppState::plan_turn_seen`'s own
+    /// doc).
+    Discard,
+}
+
 /// `Mode::SkillProposal`'s three ways out -- there is no fourth: quitting
 /// with the modal open (`Ctrl-C`/`Ctrl-D`) discards it, mirroring `/ask`'s
 /// own quit-path purge (the ephemeral child is ALREADY purged by the time
@@ -711,6 +758,24 @@ pub enum Mode {
     /// never-stack discipline, lowest priority, checked last in
     /// `AppState::promote_next_surface`.
     Distill(DistillModal),
+    /// Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: the plan-approval modal --
+    /// see [`PlanApprovalModal`]'s own doc. While this is the mode, the
+    /// input line is inert and `input.rs::handle_plan_approval_key` swallows
+    /// every key except `Enter` (approve -- switch mode and send the fixed
+    /// turn), `e` (edit the plan text in `$EDITOR` first, sending the
+    /// EDITED text as the turn instead), `Esc` (stay in `Plan`), plus the
+    /// quit keys (`Ctrl-C`/`Ctrl-D`, which pass through unresolved -- unlike
+    /// `/distill`'s own fork child, nothing was ever created for this modal
+    /// to clean up; quitting with it open or parked just drops it, mirroring
+    /// `Mode::TrustPreview`'s own "nothing was ever written" quit posture).
+    /// A permission prompt arriving while this modal is open queues in
+    /// `queued_prompts` exactly as it does behind another prompt, and a plan
+    /// arriving while any of the other eight modal-bearing surfaces is
+    /// showing parks in `pending_plan_approval` until the surface clears --
+    /// the NINTH modal-bearing surface joining the same never-stack
+    /// discipline, lowest priority, checked last in `AppState::
+    /// promote_next_surface`.
+    PlanApproval(PlanApprovalModal),
 }
 
 impl std::fmt::Debug for Mode {
@@ -747,6 +812,9 @@ impl std::fmt::Debug for Mode {
             }
             Mode::SkillProposal(modal) => write!(f, "SkillProposal(name={})", modal.name),
             Mode::Distill(modal) => write!(f, "Distill(child={})", modal.child),
+            Mode::PlanApproval(modal) => {
+                write!(f, "PlanApproval(next_mode={:?})", modal.next_mode)
+            }
         }
     }
 }
@@ -898,10 +966,12 @@ impl AppState {
     ///    that completed while any of the above was showing.
     /// 7. A parked `/distill` briefing ([`Self::pending_distill`]) -- a
     ///    `/distill` that completed while any of the above was showing.
-    ///    Lowest priority of all seven: a briefing waiting to be reviewed
-    ///    is still less urgent than a decision already forcing the
-    ///    operator's attention.
-    /// 8. Nothing -- `mode` stays `Normal`.
+    /// 8. A parked plan-approval modal ([`Self::pending_plan_approval`]) --
+    ///    board item `01M1YVPJW9W43HMM8WEF34N4RZ`: the operator cycled out
+    ///    of `Plan` while any of the above was showing. Lowest priority of
+    ///    all eight: a plan waiting to be reviewed is still less urgent than
+    ///    a decision already forcing the operator's attention.
+    /// 9. Nothing -- `mode` stays `Normal`.
     ///
     /// Exactly one surface (at most) is promoted per call; the next call
     /// happens when THAT surface closes.
@@ -951,6 +1021,11 @@ impl AppState {
         }
         if let Some(modal) = self.pending_distill.take() {
             self.mode = Mode::Distill(modal);
+            self.modal_scroll = 0;
+            return;
+        }
+        if let Some(modal) = self.pending_plan_approval.take() {
+            self.mode = Mode::PlanApproval(modal);
             self.modal_scroll = 0;
         }
     }
@@ -1074,6 +1149,45 @@ impl AppState {
         };
         modal.briefing = briefing;
         modal.error = None;
+    }
+
+    /// Opens the plan-approval modal (board item
+    /// `01M1YVPJW9W43HMM8WEF34N4RZ`), parking it in `pending_plan_approval`
+    /// instead whenever another modal-bearing surface currently owns `mode`
+    /// -- mirrors [`Self::offer_distill`] exactly, the new lowest-priority
+    /// slot in `Self::promote_next_surface`.
+    pub fn offer_plan_approval(&mut self, modal: PlanApprovalModal) {
+        if matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::PlanApproval(modal);
+            self.modal_scroll = 0;
+        } else {
+            self.pending_plan_approval = Some(modal);
+        }
+    }
+
+    /// Drains a modal parked in `pending_plan_approval`. Used by `app.rs`'s
+    /// quit path so a plan parked behind another surface when the operator
+    /// quits is not silently lost from view -- mirrors [`Self::
+    /// take_pending_distill`] exactly: nothing was ever created or written
+    /// for this modal (see [`PlanApprovalModal`]'s own doc), so draining
+    /// here just means dropping it on the floor. Returns the parked modal
+    /// if one was waiting, else `None`; either way `pending_plan_approval`
+    /// is cleared.
+    pub fn take_pending_plan_approval(&mut self) -> Option<PlanApprovalModal> {
+        self.pending_plan_approval.take()
+    }
+
+    /// Closes the plan-approval modal -- used for BOTH ways out
+    /// (`PlanApprovalFate::Discard`, directly, and `App::approve_plan`,
+    /// after it has already switched the mode and sent the turn) -- and
+    /// promotes the next parked/queued surface via `Self::
+    /// promote_next_surface`. A no-op when no plan-approval modal is open.
+    pub fn close_plan_approval(&mut self) {
+        if !matches!(self.mode, Mode::PlanApproval(_)) {
+            return;
+        }
+        self.mode = Mode::Normal;
+        self.promote_next_surface();
     }
 
     /// Opens `ask_question`'s modal (board item `01M19NH39AE2D5AMJK0RZRQY86`),
@@ -3064,6 +3178,87 @@ mod tests {
         assert!(
             modal.error.is_none(),
             "a fresh edit must clear a previous spawn error"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: the plan-approval modal's
+    // own never-stack coverage -- mirrors `offer_distill_parks_behind_an_
+    // open_modal_and_opens_once_it_closes`/`a_permission_prompt_arriving_
+    // while_distill_is_open_queues_and_is_promoted_on_close` exactly, now
+    // the NINTH/lowest-priority surface.
+    // -----------------------------------------------------------------
+
+    fn plan_approval_modal(plan: &str) -> PlanApprovalModal {
+        PlanApprovalModal {
+            plan: plan.to_string(),
+            next_mode: conway::PermissionMode::AutoAllow,
+        }
+    }
+
+    #[test]
+    fn offer_plan_approval_parks_behind_an_open_modal_and_opens_once_it_closes() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_trust_preview(trust_card("/repo/.conway/permissions.json"));
+        assert!(matches!(state.mode, Mode::TrustPreview(_)));
+
+        state.offer_plan_approval(plan_approval_modal("parked-behind-trust"));
+
+        assert!(
+            matches!(state.mode, Mode::TrustPreview(_)),
+            "the trust-preview card must keep the floor; the plan parks, got: {:?}",
+            state.mode
+        );
+
+        state.close_trust_preview();
+
+        assert!(
+            matches!(&state.mode, Mode::PlanApproval(m) if m.plan == "parked-behind-trust"),
+            "the parked plan must open once the trust-preview card closes, got: {:?}",
+            state.mode
+        );
+    }
+
+    /// The reverse direction: a plan-approval modal already open keeps
+    /// the floor, and a LATER permission prompt queues behind it rather
+    /// than stealing it -- mirrors `a_permission_prompt_arriving_while_
+    /// distill_is_open_queues_and_is_promoted_on_close`'s own proof
+    /// exactly.
+    #[test]
+    fn a_permission_prompt_arriving_while_plan_approval_is_open_queues_and_is_promoted_on_close() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_plan_approval(plan_approval_modal("the plan"));
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(
+            matches!(state.mode, Mode::PlanApproval(_)),
+            "the plan must keep the floor; the prompt queues, got: {:?}",
+            state.mode
+        );
+
+        state.close_plan_approval();
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "closing the plan must promote the queued prompt, got: {:?}",
+            state.mode
+        );
+    }
+
+    /// `close_plan_approval` is a no-op when no plan-approval modal is
+    /// open -- mirrors every other `close_*` method's own guard (e.g.
+    /// `close_distill`'s doc "a no-op when no `/distill` modal is open").
+    #[test]
+    fn close_plan_approval_is_a_no_op_when_none_is_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_trust_preview(trust_card("/repo/.conway/permissions.json"));
+
+        state.close_plan_approval();
+
+        assert!(
+            matches!(state.mode, Mode::TrustPreview(_)),
+            "closing a plan-approval modal that was never open must not touch an unrelated \
+             open surface, got: {:?}",
+            state.mode
         );
     }
 }

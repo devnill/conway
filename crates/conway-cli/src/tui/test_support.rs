@@ -240,7 +240,17 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // `app/run.rs`'s run loop only, mirroring `SkillProposalFate`/
         // `SkillProposalEdit` immediately above exactly.
         | Action::DistillFate(_)
-        | Action::DistillEdit => {}
+        | Action::DistillEdit
+        // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: mirrors `DistillFate`/
+        // `DistillEdit` immediately above for the identical reason --
+        // `Approve`/`Discard` need `App::approve_plan`/`AppState::
+        // close_plan_approval`, and `PlanApprovalEdit` needs a live
+        // `Terminal`/child-process suspend-resume exactly like
+        // `Action::OpenExternalEditor` above -- none of which this
+        // terminal-free harness has, so all three are applied in
+        // `app/run.rs`'s run loop only; a test asserts on the ACTION alone.
+        | Action::PlanApprovalFate(_)
+        | Action::PlanApprovalEdit => {}
     }
     action
 }

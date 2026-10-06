@@ -179,6 +179,45 @@ Distinct from `--permission-mode`, one-shot (`-p`) mode's own,
 unrelated flag (`allowlist`/`deny` only — a non-interactive run has nobody
 to prompt, so it has no equivalent of a "starting mode").
 
+### Leaving Plan: the approval modal
+
+`Plan` exists so a model can read and think without changing anything.
+Leaving it used to be a bare toggle — `/settings`/`Shift+Tab` just
+unlocked tools, with no acknowledgment of whatever the model had just
+proposed. Now, if the *focused* agent produced at least one reply while
+`Plan` was gating it, cycling out of `Plan` — by either path, `Shift+Tab`
+or the `/settings` `permissions -> current mode` row; both already go
+through the one `cycle the mode` action, so there is nowhere else this
+check could be bypassed from — opens a modal showing that agent's own
+last reply as "the plan," with three ways out:
+
+- **`Enter`** approves: the mode switches (to `AutoAllow`, the only
+  direction this cycle ever leaves `Plan` by) and a fixed, short message —
+  `Plan approved; proceed.` — is sent as your next turn, so the model
+  knows the mode actually changed. The mode write happens strictly before
+  that turn is sent: `Plan`'s own guarantee ("no tool call runs until the
+  mode has actually changed") holds across this whole flow.
+- **`e`** opens the plan text in `$EDITOR` first (the same editor path
+  `Ctrl-G` and `/distill`'s own modal already use) — the edited text is
+  sent as your turn instead of the fixed message, along with the same
+  mode switch. This is a single action: there is no second "now press
+  Enter" step once the editor closes.
+- **`Esc`** stays in `Plan` — no mode change, nothing sent. The same plan
+  is shown again the next time you try to leave, unless the agent says
+  something new first.
+
+The approval is also recorded as a `system_note` on the focused agent's own
+log (`"plan approved by operator, mode → AUTO-ALLOW"`), so `/context` and
+`conway sessions show` carry it — a plain, durable record of the decision,
+not only a transcript line.
+
+If the focused agent never produced a reply while `Plan` was active, or a
+turn is in flight for it at the exact instant you cycle out, the switch is
+silent, exactly as it always was — there is no plan to show yet in either
+case. A turn in flight does not make the modal appear once it finishes
+either: the next attempt (after it settles) is what shows it, never an
+unprompted popup with no keypress behind it.
+
 ## Working with bash day to day
 
 Every operator running `bash` daily hits the same wall: a shell command can

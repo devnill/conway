@@ -826,6 +826,9 @@ fn mode_label(mode: &Mode, activity: &Activity) -> String {
         // `/distill` (board item `01M1YVKQ6ABQDWYSA7CEF20WKG`): the
         // distilled-briefing modal owns the screen.
         Mode::Distill(_) => "distill".to_string(),
+        // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: the plan-approval modal
+        // owns the screen.
+        Mode::PlanApproval(_) => "plan approval".to_string(),
     }
 }
 

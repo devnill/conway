@@ -334,6 +334,15 @@ impl App {
         // ephemeral child and exits on its own schedule even after this
         // method returns.
         let _ = self.state.take_pending_distill();
+        // Board item `01M1YVPJW9W43HMM8WEF34N4RZ`: drain a parked
+        // plan-approval modal on exit too, for the identical reason the
+        // `/distill` briefing just above needs it -- there is no live
+        // child to purge at all (nothing was ever created or written for
+        // this modal, see `PlanApprovalModal`'s own doc), so quitting here
+        // IS the discard fate. A plan currently LIVE in `Mode::PlanApproval`
+        // needs no special handling either, mirroring `take_pending_distill`'s
+        // own doc.
+        let _ = self.state.take_pending_plan_approval();
         // Review round 1 (SIGNIFICANT finding 1, "orphaned child on
         // quit"): an in-flight `!` command's own process group, killed and
         // bound-awaited -- see `Self::kill_shell_command_for_quit`'s own
