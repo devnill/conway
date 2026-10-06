@@ -232,8 +232,7 @@ mod tests {
                     .await
                     .expect("the event stream must not end mid-turn");
                 state.apply(&env);
-                if matches!(&env.event, conway::Event::TurnFinished { .. }) && env.agent == agent
-                {
+                if matches!(&env.event, conway::Event::TurnFinished { .. }) && env.agent == agent {
                     if state.permission_mode == PermissionMode::Plan {
                         state.plan_turn_seen = true;
                     }
@@ -289,10 +288,16 @@ mod tests {
         );
 
         let opened = app.maybe_offer_plan_approval(PermissionMode::AutoAllow);
-        assert!(opened, "an agent that said something in Plan must get the modal");
+        assert!(
+            opened,
+            "an agent that said something in Plan must get the modal"
+        );
         match &app.state.mode {
             Mode::PlanApproval(modal) => {
-                assert_eq!(modal.plan, "hello", "the plan must be the agent's own last reply");
+                assert_eq!(
+                    modal.plan, "hello",
+                    "the plan must be the agent's own last reply"
+                );
                 assert_eq!(modal.next_mode, PermissionMode::AutoAllow);
             }
             other => panic!("expected Mode::PlanApproval, got {other:?}"),
@@ -389,7 +394,10 @@ mod tests {
         drive_turn_to_finish(&mut events, &mut app.state, root).await;
         assert!(app.maybe_offer_plan_approval(PermissionMode::AutoAllow));
 
-        let action = input::handle_key(&mut app.state, key(ratatui::crossterm::event::KeyCode::Enter));
+        let action = input::handle_key(
+            &mut app.state,
+            key(ratatui::crossterm::event::KeyCode::Enter),
+        );
         assert_eq!(action, Action::PlanApprovalFate(PlanApprovalFate::Approve));
 
         app.approve_plan(None).await;
@@ -457,11 +465,10 @@ mod tests {
         let root = app.handle.root();
         app.conway.set_permission_mode(PermissionMode::Plan);
         app.state.permission_mode = PermissionMode::Plan;
-        app.state
-            .offer_plan_approval(PlanApprovalModal {
-                plan: "original plan".to_string(),
-                next_mode: PermissionMode::AutoAllow,
-            });
+        app.state.offer_plan_approval(PlanApprovalModal {
+            plan: "original plan".to_string(),
+            next_mode: PermissionMode::AutoAllow,
+        });
 
         let script = write_test_script(
             "appends",
@@ -511,13 +518,13 @@ mod tests {
         let root = app.handle.root();
         app.conway.set_permission_mode(PermissionMode::Plan);
         app.state.permission_mode = PermissionMode::Plan;
-        app.state
-            .offer_plan_approval(PlanApprovalModal {
-                plan: "a plan".to_string(),
-                next_mode: PermissionMode::AutoAllow,
-            });
+        app.state.offer_plan_approval(PlanApprovalModal {
+            plan: "a plan".to_string(),
+            next_mode: PermissionMode::AutoAllow,
+        });
 
-        let action = input::handle_key(&mut app.state, key(ratatui::crossterm::event::KeyCode::Esc));
+        let action =
+            input::handle_key(&mut app.state, key(ratatui::crossterm::event::KeyCode::Esc));
         assert_eq!(action, Action::PlanApprovalFate(PlanApprovalFate::Discard));
         app.state.close_plan_approval();
 
@@ -561,11 +568,10 @@ mod tests {
         app.state.permission_mode = PermissionMode::Plan;
         app.state.busy_input = crate::tui::config::BusyInputMode::Queue;
         app.state.activity = crate::tui::state::Activity::Thinking;
-        app.state
-            .offer_plan_approval(PlanApprovalModal {
-                plan: "the plan".to_string(),
-                next_mode: PermissionMode::AutoAllow,
-            });
+        app.state.offer_plan_approval(PlanApprovalModal {
+            plan: "the plan".to_string(),
+            next_mode: PermissionMode::AutoAllow,
+        });
 
         app.approve_plan(None).await;
 
@@ -654,9 +660,9 @@ mod tests {
             let notices_before = app.state.transcript.len();
             app.apply_plan_approval_edit_action(terminal, editor_command)
                 .await;
-            let busy = app.state.transcript[notices_before..].iter().any(|e| {
-                matches!(e, Entry::Notice { text } if text.contains("Text file busy"))
-            });
+            let busy = app.state.transcript[notices_before..]
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text.contains("Text file busy")));
             if !busy {
                 return;
             }
