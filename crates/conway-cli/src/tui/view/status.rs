@@ -1020,17 +1020,33 @@ fn contribution_style(status: &ResultStatus, theme: &Theme) -> Style {
 /// try_focus_agent`, `commands::execute`'s `SlashCommand::Goal` arm), never
 /// by `conway_plugin_goal::GoalPlugin::status_contributions`.
 ///
-/// **Why the plugin's own `goal` contribution cannot be trusted here.**
-/// `Plugin::status_contributions` takes no argument at all -- the trait has
-/// no notion of "which agent is focused" to hand a plugin, so
-/// `GoalPlugin::status_contributions` can only report whichever agent's
-/// context was MOST RECENTLY built, including a background subagent's. In
-/// a multi-agent session, that agent is not necessarily the one on screen:
-/// without this override, a background agent's own turn would blank or
-/// silently replace the focused agent's `goal:` field the instant its
-/// context got assembled. Every OTHER key this plugin (or any other) might
-/// report is passed through unchanged -- only `goal` is agent-sensitive in
-/// this way.
+/// **Why the plugin's own `goal` contribution still cannot be trusted here,
+/// even after board item `01M48N3N1PRQXPGF6VQGK745VE` gave `Plugin` a
+/// focused-agent-aware `status_contributions_for`, and `App::
+/// refresh_plugin_status_contributions` started calling it with
+/// `Some(state.focused_agent)`.** That general fix is what keeps `AppState::
+/// plugin_status_contributions` itself (the source this function reads
+/// EVERY key but `goal` from) correct per focused agent now -- `conway.todo`
+/// needs nothing more than that; it has no override here at all. `goal`
+/// still does, for two reasons that are about WHEN `GoalPlugin`'s own
+/// in-memory cache is populated, not WHICH agent it answers for (see
+/// `conway_plugin_goal::GoalState`'s own doc for the identical pair, stated
+/// from the plugin's side): (1) **startup/resume backfill** -- a resumed
+/// session's root agent may already have a standing goal on disk from a
+/// PAST process, yet nothing has called `GoalPlugin::status_contributions_for`
+/// for it in THIS one until the first turn runs, so the plugin would report
+/// nothing even though a real goal is on disk; and (2) **instant `/goal`
+/// feedback** -- `/goal <text>`/`/goal clear` persists a note directly via
+/// `SessionHandle::append_system_note`, never through this plugin, so its
+/// cache would not reflect an operator's own just-typed change until that
+/// agent's NEXT context build happens to run. `AppState::focused_goal` is
+/// populated straight from the focused agent's own transcript
+/// (`app/focus.rs::try_focus_agent`'s best-effort re-fetch, `app/startup.rs`'s
+/// one-time backfill) and written directly by `commands::execute`'s
+/// `SlashCommand::Goal` arm the instant a change succeeds -- closing both
+/// gaps the plugin's own cache cannot, no matter which agent it is asked
+/// about. Every OTHER key any plugin reports is passed through unchanged --
+/// only `goal` needs this second, TUI-side override.
 ///
 /// A plugin that reports no `goal` key at all (not installed, or
 /// genuinely no goal has ever been set on any agent) still gets one

@@ -108,9 +108,16 @@ a different, unrelated session.
 
 ## The status line and the operator command
 
-- A `todo` status-line contribution shows `todo: N/M` for whichever agent
-  most recently called `todo_write` — the most recent write wins, since the
-  status line carries one value per key, not one per agent.
+- A `todo` status-line contribution shows `todo: N/M` for the FOCUSED
+  agent's own list — the TUI's status-line poll asks `Plugin::
+  status_contributions_for(focused_agent)` (board item
+  `01M48N3N1PRQXPGF6VQGK745VE`), and this plugin's own state is already
+  keyed per agent, so a background agent's own `todo_write` call can
+  never blank or replace the focused agent's own entry. Outside the TUI
+  (a single agent, or any host with no notion of "focused"),
+  `Plugin::status_contributions` alone still answers for whichever agent
+  most recently called `todo_write` — the only answer available with no
+  agent of its own to ask for.
 - `/conway.todo.list` prints the calling agent's current list as a plain
   text block, the same rendering the tools themselves reply with, for an
   operator who wants to see it without asking the model.

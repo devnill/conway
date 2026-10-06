@@ -177,6 +177,24 @@ fn counts(items: &[TodoItem]) -> (usize, usize) {
     (done, items.len())
 }
 
+/// The one `{STATUS_KEY}: done/total` contribution a non-empty list
+/// renders as, or nothing at all for an empty (or absent) one -- shared by
+/// [`TodoPlugin::status_contributions`] (the `last_touched` fallback) and
+/// [`TodoPlugin::status_contributions_for`] (looked up by the CALLER's own
+/// agent) so the two can never drift onto two different renderings of the
+/// same pair.
+fn status_contribution_from_items(items: &[TodoItem]) -> Vec<PluginStatusContribution> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let (done, total) = counts(items);
+    vec![PluginStatusContribution {
+        key: STATUS_KEY.to_string(),
+        status: ResultStatus::Completed,
+        value: format!("{done}/{total}"),
+    }]
+}
+
 /// One line per item, `- [<glyph>] <id>: <text>` -- the SINGLE rendering
 /// every reader of the current list (the `todo_write`/`todo_read` tool
 /// replies, the context segment, `/conway.todo.list`) shares, so an id a
@@ -209,10 +227,14 @@ fn describe(items: &[TodoItem]) -> String {
 }
 
 /// This plugin's whole mutable state: the current list per agent, plus
-/// which agent most recently wrote one -- the single value
+/// which agent most recently wrote one -- the latter is the single value
 /// [`Plugin::status_contributions`] (which carries no per-agent context of
 /// its own) reports against, mirroring a single-root-agent session's own
-/// shape.
+/// shape. `lists` is ALREADY keyed per agent, which is exactly what lets
+/// [`TodoPlugin::status_contributions_for`] (board item
+/// `01M48N3N1PRQXPGF6VQGK745VE`) answer for any one caller-named agent
+/// with no new state at all -- only `last_touched`'s own single-value
+/// fallback predates that method.
 #[derive(Default)]
 struct TodoState {
     lists: HashMap<AgentId, Vec<TodoItem>>,
@@ -668,7 +690,13 @@ impl Plugin for TodoPlugin {
     /// The most recently written agent's `done/total` pair, or nothing at
     /// all before any `todo_write` call -- see `TodoState::last_touched`'s
     /// own doc for why this method (which carries no per-agent context of
-    /// its own) reports a single value rather than one per agent.
+    /// its own) reports a single value rather than one per agent. A caller
+    /// that knows which agent it actually wants should call
+    /// [`Self::status_contributions_for`] instead -- this method is kept
+    /// exactly as it was (the required [`Plugin::status_contributions`]
+    /// method still has no agent to receive) for a single-agent/scripting
+    /// caller, and remains what [`Self::status_contributions_for`]'s own
+    /// default (`agent: None`) falls back to.
     fn status_contributions(&self) -> Vec<PluginStatusContribution> {
         let state = self.state.lock().expect("todo state lock poisoned");
         let Some(agent) = state.last_touched else {
@@ -677,15 +705,26 @@ impl Plugin for TodoPlugin {
         let Some(items) = state.lists.get(&agent) else {
             return Vec::new();
         };
-        if items.is_empty() {
+        status_contribution_from_items(items)
+    }
+
+    /// Board item `01M48N3N1PRQXPGF6VQGK745VE`: [`Self::status_contributions`],
+    /// but scoped to `agent` -- `TodoState::lists` already keys its whole
+    /// store by [`AgentId`], so answering for ONE caller-named agent
+    /// instead of whichever one was `last_touched` needs no new state,
+    /// only a different lookup key. `agent: None` falls back to
+    /// [`Self::status_contributions`] unchanged, matching
+    /// [`Plugin::status_contributions_for`]'s own documented default for
+    /// every implementor that has no opinion about a specific agent.
+    fn status_contributions_for(&self, agent: Option<AgentId>) -> Vec<PluginStatusContribution> {
+        let Some(agent) = agent else {
+            return self.status_contributions();
+        };
+        let state = self.state.lock().expect("todo state lock poisoned");
+        let Some(items) = state.lists.get(&agent) else {
             return Vec::new();
-        }
-        let (done, total) = counts(items);
-        vec![PluginStatusContribution {
-            key: STATUS_KEY.to_string(),
-            status: ResultStatus::Completed,
-            value: format!("{done}/{total}"),
-        }]
+        };
+        status_contribution_from_items(items)
     }
 }
 
@@ -859,6 +898,128 @@ mod tests {
             panic!("expected a single text block");
         };
         assert!(text.contains("write tests"));
+    }
+
+    // ------------------------------------------------------------------
+    // Board item `01M48N3N1PRQXPGF6VQGK745VE`: `status_contributions_for`
+    // answers for the CALLER-NAMED agent, not whichever one wrote most
+    // recently -- the shape a focused-agent TUI status line needs and
+    // `status_contributions` itself (no agent parameter at all) cannot
+    // give it.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn status_contributions_for_follows_the_named_agent_not_the_last_writer() {
+        let plugin = TodoPlugin::new();
+        let agent_a = AgentId::new();
+        let agent_b = AgentId::new();
+        let write_tool = find_tool(&plugin, WRITE_TOOL_NAME);
+
+        write_tool
+            .invoke(
+                call(
+                    WRITE_TOOL_NAME,
+                    serde_json::json!({ "items": [
+                        {"text": "a1", "status": "done"},
+                        {"text": "a2", "status": "pending"},
+                    ] }),
+                ),
+                tool_ctx(agent_a),
+            )
+            .await
+            .expect("todo_write on agent_a must succeed");
+        write_tool
+            .invoke(
+                call(
+                    WRITE_TOOL_NAME,
+                    serde_json::json!({ "items": [
+                        {"text": "b1", "status": "done"},
+                        {"text": "b2", "status": "done"},
+                        {"text": "b3", "status": "pending"},
+                    ] }),
+                ),
+                tool_ctx(agent_b),
+            )
+            .await
+            .expect("todo_write on agent_b must succeed");
+
+        // `status_contributions` (no agent parameter) reports whichever
+        // agent wrote MOST RECENTLY -- agent_b, here.
+        let last_writer = plugin.status_contributions();
+        assert_eq!(last_writer.len(), 1);
+        assert_eq!(last_writer[0].value, "2/3");
+
+        // `status_contributions_for` answers for whichever agent the
+        // CALLER names -- agent_a's own 1/2, even though agent_b wrote
+        // afterward.
+        let for_a = plugin.status_contributions_for(Some(agent_a));
+        assert_eq!(for_a.len(), 1);
+        assert_eq!(for_a[0].key, STATUS_KEY);
+        assert_eq!(
+            for_a[0].value, "1/2",
+            "status_contributions_for(agent_a) must report agent_a's OWN list, not agent_b's \
+             (the most recent writer)"
+        );
+
+        let for_b = plugin.status_contributions_for(Some(agent_b));
+        assert_eq!(for_b[0].value, "2/3");
+    }
+
+    #[tokio::test]
+    async fn status_contributions_for_a_background_write_does_not_change_the_focused_agents_value()
+    {
+        let plugin = TodoPlugin::new();
+        let focused = AgentId::new();
+        let background = AgentId::new();
+        let write_tool = find_tool(&plugin, WRITE_TOOL_NAME);
+
+        write_tool
+            .invoke(
+                call(
+                    WRITE_TOOL_NAME,
+                    serde_json::json!({ "items": [ {"text": "focused item", "status": "pending"} ] }),
+                ),
+                tool_ctx(focused),
+            )
+            .await
+            .expect("todo_write on the focused agent must succeed");
+
+        let before = plugin.status_contributions_for(Some(focused));
+        assert_eq!(before[0].value, "0/1");
+
+        // A write on a completely different, BACKGROUND agent -- this is
+        // the exact event that used to blank or replace the focused
+        // agent's own value when read through the single-value
+        // `status_contributions` alone.
+        write_tool
+            .invoke(
+                call(
+                    WRITE_TOOL_NAME,
+                    serde_json::json!({ "items": [
+                        {"text": "bg1", "status": "done"},
+                        {"text": "bg2", "status": "done"},
+                    ] }),
+                ),
+                tool_ctx(background),
+            )
+            .await
+            .expect("todo_write on the background agent must succeed");
+
+        let after = plugin.status_contributions_for(Some(focused));
+        assert_eq!(
+            after[0].value, "0/1",
+            "a background agent's own write must never change the FOCUSED agent's own \
+             contribution: {after:?}"
+        );
+    }
+
+    #[test]
+    fn status_contributions_for_none_falls_back_to_status_contributions() {
+        let plugin = TodoPlugin::new();
+        assert_eq!(
+            plugin.status_contributions_for(None),
+            plugin.status_contributions()
+        );
     }
 
     // ------------------------------------------------------------------

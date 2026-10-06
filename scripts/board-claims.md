@@ -405,3 +405,10 @@ claim: none of docs/getting-started.md, commands/plugin.rs, or first_party_plugi
 paths: docs/getting-started.md crates/conway-cli/src/commands/plugin.rs crates/conway-cli/src/first_party_plugins.rs
 absent: \bsix\b
 -->
+
+<!-- claim-check
+why: board item 01M48N3N1PRQXPGF6VQGK745VE -- first_party_plugins.rs's own module doc hand-counted `bundle()`'s full candidate list as "eleven" and was never updated across six later additions (conway.confine, conway.checkpoint, conway.web, conway.toolindex, conway.compaction, conway.todo, conway.goal), the exact "DEFAULT_OPINION_SET grew and the number did not" defect the claim-check immediately above already guards for the NARROWER default-install list. This one guards the WIDER full-bundle list the same way: the fix dropped the hand-counted number entirely rather than updating it to a new one that would only go stale again at the next addition, so no number for `bundle()`'s own size belongs in this doc going forward.
+claim: first_party_plugins.rs's own module doc does not hand-count bundle()'s full candidate list as "eleven" plugin entries
+paths: crates/conway-cli/src/first_party_plugins.rs
+absent: \beleven\b
+-->

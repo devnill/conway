@@ -1,0 +1,3 @@
+### Fixed
+
+- **`conway.todo`'s status-line `todo: done/total` field showed whichever agent wrote most recently, not the one on screen** — the same shape board item `01M1YVVT9RYWZWAZC4YH21T3HN` already fixed for `conway.goal`, now fixed generally: `Plugin::status_contributions_for(agent)` is a new, defaulted trait method every implementor keeps compiling unmodified against, and the TUI's status-line poll now calls it with the focused agent. `conway.todo` and `conway.goal` both implement it against their existing per-agent state, so a background agent's own write can no longer blank or replace the focused agent's own entry for either plugin.

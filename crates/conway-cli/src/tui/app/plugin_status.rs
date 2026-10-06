@@ -11,11 +11,32 @@ use super::App;
 
 impl App {
     /// Re-polls every installed plugin's CURRENT status contributions via
-    /// [`conway::Conway::poll_plugin_status_contributions`] and writes the
-    /// result into `AppState::plugin_status_contributions` **wholesale** --
-    /// replacing whatever was there, never merging into it. Returns whether
-    /// the value actually changed, so [`super::run`]'s caller only marks the
-    /// frame dirty (forcing a redraw) when there is something new to show.
+    /// [`conway::Conway::poll_plugin_status_contributions_for`], passed
+    /// `Some(self.state.focused_agent)`, and writes the result into
+    /// `AppState::plugin_status_contributions` **wholesale** -- replacing
+    /// whatever was there, never merging into it. Returns whether the value
+    /// actually changed, so [`super::run`]'s caller only marks the frame
+    /// dirty (forcing a redraw) when there is something new to show.
+    ///
+    /// **Board item `01M48N3N1PRQXPGF6VQGK745VE`: the focused agent, not the
+    /// agent-blind sibling.** Before board item `01M48N3N1PRQXPGF6VQGK745VE`,
+    /// this method called `Conway::poll_plugin_status_contributions` (no
+    /// agent at all), so a
+    /// per-agent-tracking plugin like `conway.todo` could only ever answer
+    /// for whichever agent its own context was MOST RECENTLY built for --
+    /// in a multi-agent session, a background subagent's own turn could
+    /// blank or replace the FOCUSED agent's own `todo: done/total` entry
+    /// the instant its context was assembled, the exact shape board item
+    /// `01M1YVVT9RYWZWAZC4YH21T3HN` already found and fixed for
+    /// `conway.goal` at the TUI layer alone. Passing the focused agent
+    /// through to `Plugin::status_contributions_for` fixes this for EVERY
+    /// per-agent-tracking plugin, present and future, not only `conway.goal`
+    /// -- see that trait method's own doc. `view/status.rs`'s own
+    /// `effective_contributions` still overrides the `goal` key
+    /// specifically, from `AppState::focused_goal` -- see that function's
+    /// own doc for the two gaps (startup/resume backfill, instant `/goal`
+    /// feedback) this per-agent poll alone still cannot close for THAT one
+    /// plugin.
     ///
     /// **Synchronous and non-blocking**, deliberately not `async fn` despite
     /// every sibling `refresh_*` method on this type being one:
@@ -41,7 +62,9 @@ impl App {
     /// (`crates/conway-plugin-subprocess/src/session.rs`,
     /// `docs/plugins/hooks.md` point 12).
     pub(super) fn refresh_plugin_status_contributions(&mut self) -> bool {
-        let latest = self.conway.poll_plugin_status_contributions();
+        let latest = self
+            .conway
+            .poll_plugin_status_contributions_for(Some(self.state.focused_agent));
         if latest == self.state.plugin_status_contributions {
             return false;
         }

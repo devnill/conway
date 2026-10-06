@@ -214,31 +214,52 @@ fn reconstruct_from_history(segments: &[PromptSegment]) -> Option<String> {
 
 /// This plugin's whole mutable state: the current goal per agent (`None`
 /// meaning "cleared, or never set"), plus which agent's context was most
-/// recently assembled -- the single value [`Plugin::status_contributions`]
-/// (which carries no per-agent context of its own) reports against,
-/// mirroring `conway-plugin-todo`'s identical `last_touched` shape, except
-/// updated on every context build rather than only on a write: this
-/// plugin has no write-triggering tool call to hook a `ToolObserver` onto,
-/// so "most recently active agent" is the closest analogous signal
-/// available here.
+/// recently assembled -- the latter is the single value
+/// [`Plugin::status_contributions`] (which carries no per-agent context of
+/// its own) reports against, mirroring `conway-plugin-todo`'s identical
+/// `last_touched` shape, except updated on every context build rather than
+/// only on a write: this plugin has no write-triggering tool call to hook a
+/// `ToolObserver` onto, so "most recently active agent" is the closest
+/// analogous signal available here. `goals` is ALREADY keyed per agent,
+/// which is exactly what lets [`GoalPlugin::status_contributions_for`]
+/// (board item `01M48N3N1PRQXPGF6VQGK745VE`) answer for any one
+/// caller-named agent with no new state at all.
 ///
-/// **Known, accepted gap -- worked around at the TUI layer, not here.**
-/// `Plugin::status_contributions` takes no argument, so this method's
-/// answer is only ever correct when exactly one agent's context is ever
-/// built (the single-agent/scripting case). In a multi-agent TUI session,
-/// a BACKGROUND subagent's own context build updates `last_touched` just
+/// **A narrower gap than `status_contributions_for` alone fixes, which is
+/// why the TUI-side override described below still stands.**
+/// `Plugin::status_contributions` (no agent parameter) is only ever
+/// correct when exactly one agent's context is ever built (the
+/// single-agent/scripting case); in a multi-agent TUI session, a
+/// BACKGROUND subagent's own context build updates `last_touched` just
 /// the same, which would blank or replace the FOCUSED agent's `goal`
-/// status-line entry with the background one's -- board item
-/// `01M1YVVT9RYWZWAZC4YH21T3HN` review finding 1. `conway_cli`'s own
-/// `tui::view::status::effective_contributions` is the fix: it overrides
-/// whatever THIS method reports under [`STATUS_KEY`] with a value read
-/// directly from the focused agent's own transcript
-/// (`AppState::focused_goal`), never from this struct. This struct and
-/// this method are NOT changed to chase that fix -- adding a
-/// focused-agent parameter to `Plugin::status_contributions` would widen
-/// every OTHER implementor of this trait (subprocess, MCP, statusline,
-/// todo) for a problem only this one plugin has, which is a materially
-/// bigger change than the TUI-side override actually needed.
+/// status-line entry with the background one's if that method were read
+/// directly -- board item `01M1YVVT9RYWZWAZC4YH21T3HN` review finding 1.
+/// [`GoalPlugin::status_contributions_for`] closes THAT part of the gap:
+/// called with the focused agent's own id, it answers from `goals` keyed
+/// by that id, never `last_touched`, so a background agent's own context
+/// build cannot touch what it reports for a different, focused one.
+///
+/// **What `status_contributions_for` still cannot do, and why
+/// `conway_cli::tui::view::status::effective_contributions`'s override
+/// remains, unretired.** This plugin's own cache (`goals`) is populated by
+/// [`resolve_current`] ONLY as a side effect of a real context build for
+/// that agent -- there is no other write path. Two cases that fix
+/// therefore cannot reach, both already handled by the TUI's own
+/// `AppState::focused_goal` (populated from the agent's raw transcript via
+/// `conway_cli::tui::commands::latest_goal_text`, never from this plugin):
+/// (1) **startup/resume backfill** -- a resumed session's root agent may
+/// already have a standing goal on disk from a PAST process, yet this
+/// process has not built that agent's context even once, so `goals` has
+/// no entry for it at all until the first turn runs; and (2) **instant
+/// `/goal` feedback** -- the built-in `/goal <text>`/`/goal clear` command
+/// persists a note directly via `SessionHandle::append_system_note`
+/// without ever calling into this plugin, so `goals` would not reflect an
+/// operator's own just-typed change until that agent's NEXT context build
+/// happens to run, which could be turns away or never. Both gaps are
+/// about WHEN this plugin's cache is populated, not WHICH agent it is
+/// keyed by -- the question `status_contributions_for`'s own `agent`
+/// parameter answers -- so threading an agent through this method could
+/// never have subsumed either one.
 #[derive(Default)]
 struct GoalState {
     goals: HashMap<AgentId, Option<String>>,
@@ -396,12 +417,39 @@ impl Plugin for GoalPlugin {
     /// before any agent's context has been built even once -- see
     /// `GoalState::last_touched`'s own doc for why this method (which
     /// carries no per-agent context of its own) reports a single value
-    /// rather than one per agent.
+    /// rather than one per agent. A caller that knows which agent it
+    /// actually wants should call [`Self::status_contributions_for`]
+    /// instead; this method is unchanged and remains what that method's
+    /// own `agent: None` falls back to.
     fn status_contributions(&self) -> Vec<PluginStatusContribution> {
         let state = self.state.lock().expect("goal state lock poisoned");
         let Some(agent) = state.last_touched else {
             return Vec::new();
         };
+        let Some(Some(text)) = state.goals.get(&agent) else {
+            return Vec::new();
+        };
+        vec![PluginStatusContribution {
+            key: STATUS_KEY.to_string(),
+            status: ResultStatus::Completed,
+            value: truncate_for_display(text),
+        }]
+    }
+
+    /// Board item `01M48N3N1PRQXPGF6VQGK745VE`: [`Self::status_contributions`],
+    /// but scoped to `agent` -- `GoalState::goals` already keys its whole
+    /// store by [`AgentId`], so answering for ONE caller-named agent
+    /// instead of whichever one was `last_touched` needs no new state,
+    /// only a different lookup key. `agent: None` falls back to
+    /// [`Self::status_contributions`] unchanged. See `GoalState`'s own doc
+    /// for the two gaps this method does NOT close (startup/resume
+    /// backfill and instant `/goal` feedback) and why `conway_cli`'s own
+    /// TUI-side override still exists to cover them.
+    fn status_contributions_for(&self, agent: Option<AgentId>) -> Vec<PluginStatusContribution> {
+        let Some(agent) = agent else {
+            return self.status_contributions();
+        };
+        let state = self.state.lock().expect("goal state lock poisoned");
         let Some(Some(text)) = state.goals.get(&agent) else {
             return Vec::new();
         };
@@ -568,6 +616,111 @@ mod tests {
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].key, STATUS_KEY);
         assert_eq!(status[0].value, "finish the migration");
+    }
+
+    // ------------------------------------------------------------------
+    // Board item `01M48N3N1PRQXPGF6VQGK745VE`: `status_contributions_for`
+    // answers for the CALLER-NAMED agent, not whichever one's context was
+    // most recently built.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn status_contributions_for_follows_the_named_agent_not_the_last_touched_one() {
+        let plugin = GoalPlugin::new();
+        let agent_a = AgentId::new();
+        let agent_b = AgentId::new();
+        let hook = &plugin.context_hooks()[0];
+
+        // agent_a's context is built first, with its own goal.
+        hook.before_request(
+            &hook_ctx(agent_a),
+            ContextPayload {
+                segments: vec![persisted_note("agent a's own goal")],
+                tools: vec![],
+            },
+        )
+        .await;
+        // agent_b's context is built SECOND, with a DIFFERENT goal -- this
+        // is now `last_touched`.
+        hook.before_request(
+            &hook_ctx(agent_b),
+            ContextPayload {
+                segments: vec![persisted_note("agent b's own DIFFERENT goal")],
+                tools: vec![],
+            },
+        )
+        .await;
+
+        // `status_contributions` (no agent parameter) reports whichever
+        // agent was touched MOST RECENTLY -- agent_b, here.
+        let last_touched = plugin.status_contributions();
+        assert_eq!(last_touched[0].value, "agent b's own DIFFERENT goal");
+
+        // `status_contributions_for` answers for whichever agent the
+        // CALLER names -- agent_a's own goal, even though agent_b's
+        // context was built afterward.
+        let for_a = plugin.status_contributions_for(Some(agent_a));
+        assert_eq!(for_a.len(), 1);
+        assert_eq!(for_a[0].key, STATUS_KEY);
+        assert_eq!(
+            for_a[0].value, "agent a's own goal",
+            "status_contributions_for(agent_a) must report agent_a's OWN goal, not agent_b's \
+             (the last-touched agent)"
+        );
+
+        let for_b = plugin.status_contributions_for(Some(agent_b));
+        assert_eq!(for_b[0].value, "agent b's own DIFFERENT goal");
+    }
+
+    #[tokio::test]
+    async fn status_contributions_for_a_background_agents_build_does_not_change_the_focused_agents_value(
+    ) {
+        let plugin = GoalPlugin::new();
+        let focused = AgentId::new();
+        let background = AgentId::new();
+        let hook = &plugin.context_hooks()[0];
+
+        hook.before_request(
+            &hook_ctx(focused),
+            ContextPayload {
+                segments: vec![persisted_note("the focused agent's own goal")],
+                tools: vec![],
+            },
+        )
+        .await;
+
+        let before = plugin.status_contributions_for(Some(focused));
+        assert_eq!(before[0].value, "the focused agent's own goal");
+
+        // A context build for a completely different, BACKGROUND agent --
+        // the exact event that used to blank or replace the focused
+        // agent's own value when read through the single-value
+        // `status_contributions` alone (board item
+        // `01M1YVVT9RYWZWAZC4YH21T3HN` review finding 1).
+        hook.before_request(
+            &hook_ctx(background),
+            ContextPayload {
+                segments: vec![persisted_note("a background agent's own goal")],
+                tools: vec![],
+            },
+        )
+        .await;
+
+        let after = plugin.status_contributions_for(Some(focused));
+        assert_eq!(
+            after[0].value, "the focused agent's own goal",
+            "a background agent's own context build must never change the FOCUSED agent's own \
+             contribution: {after:?}"
+        );
+    }
+
+    #[test]
+    fn status_contributions_for_none_falls_back_to_status_contributions() {
+        let plugin = GoalPlugin::new();
+        assert_eq!(
+            plugin.status_contributions_for(None),
+            plugin.status_contributions()
+        );
     }
 
     // ------------------------------------------------------------------

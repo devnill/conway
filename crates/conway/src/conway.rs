@@ -314,9 +314,46 @@ impl Conway {
     pub fn poll_plugin_status_contributions(
         &self,
     ) -> Vec<conway_core::ports::PluginStatusContribution> {
+        self.poll_plugin_status_contributions_for(None)
+    }
+
+    /// [`Self::poll_plugin_status_contributions`], narrowed to `agent` --
+    /// board item `01M48N3N1PRQXPGF6VQGK745VE`. Re-invokes
+    /// `Plugin::status_contributions_for(agent)` (not
+    /// `Plugin::status_contributions()`) against every entry in
+    /// `Self::live_plugins`, fresh, on every call -- same non-blocking,
+    /// wholesale-not-merged contract [`Self::poll_plugin_status_contributions`]'s
+    /// own doc establishes, extended with an agent a caller actually cares
+    /// about.
+    ///
+    /// **Why a caller with a focused agent in hand should call this
+    /// instead of the agent-blind sibling above.** A plugin that tracks a
+    /// value PER AGENT in-process (`conway-plugin-todo`, `conway-plugin-
+    /// goal`) can only answer `Plugin::status_contributions()` for
+    /// whichever agent it was most recently touched by -- in a
+    /// multi-agent TUI session, a background subagent's own turn could
+    /// blank or replace a focused agent's own entry the instant its
+    /// context was built (board item `01M1YVVT9RYWZWAZC4YH21T3HN` review
+    /// finding 1, first found against `conway.goal`). Passing `Some(agent)`
+    /// here reaches `Plugin::status_contributions_for` instead -- see that
+    /// trait method's own doc for why it is a separate, defaulted method
+    /// rather than a changed signature on the original. `agent: None`
+    /// reaches the exact same code every implementor's
+    /// `status_contributions()` already runs (the default simply
+    /// delegates), which is what keeps [`Self::poll_plugin_status_contributions`]
+    /// itself byte-identical to calling this with `None`.
+    ///
+    /// Every other property [`Self::poll_plugin_status_contributions`]'s own
+    /// doc states (non-blocking by construction, sets no cadence, wholesale
+    /// not merged) applies here unchanged -- this method differs only in
+    /// which trait method it calls per plugin.
+    pub fn poll_plugin_status_contributions_for(
+        &self,
+        agent: Option<AgentId>,
+    ) -> Vec<conway_core::ports::PluginStatusContribution> {
         self.live_plugins
             .iter()
-            .flat_map(|p| p.status_contributions())
+            .flat_map(|p| p.status_contributions_for(agent))
             .collect()
     }
 

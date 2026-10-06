@@ -97,19 +97,30 @@ parent's log either.
 The status line's `goal` field shows `goal: <first words>` — truncated
 sanely on a character boundary (never mid-codepoint), with a literal
 newline/tab collapsed to a single space and every other control character
-laundered before display — for the FOCUSED agent, always. This plugin's own
-`Plugin::status_contributions` has no notion of "which agent is focused" at
-all (the trait takes no argument), so on its own it can only answer for
-whichever agent's context was most recently assembled — in a multi-agent
-TUI session, a background subagent's own turn, not necessarily the one on
-screen. The TUI itself closes that gap: it tracks the focused agent's own
-goal directly (re-read from that agent's own transcript on every focus
-switch, and updated immediately by `/goal` itself with no round trip) and
-renders THAT, overriding whatever this plugin's own contribution says under
-the `goal` key. Outside the TUI (a single agent, or any other host), this
-plugin's own contribution is the only answer there is, and is correct by
-construction — the "most recently active agent" ambiguity only exists once
-more than one agent's context can be built in the same process.
+laundered before display — for the FOCUSED agent, always. `Plugin::
+status_contributions` itself has no notion of "which agent is focused" at
+all (the trait method takes no argument), so calling it alone can only ever
+answer for whichever agent's context was most recently assembled — in a
+multi-agent TUI session, a background subagent's own turn, not necessarily
+the one on screen. `Plugin::status_contributions_for(agent)` (a separate,
+defaulted trait method) closes most of that gap generally: this plugin
+answers it from its own per-agent cache, keyed by whichever agent the
+caller actually names, and the TUI's status-line poll calls it with the
+focused agent on every tick. Two narrower gaps remain that even the
+per-agent poll cannot close, both about WHEN this plugin's own cache gets
+populated rather than which agent it answers for: a resumed session's own
+goal is not in the cache until this process has built that agent's context
+at least once, and a bare `/goal <text>`/`/goal clear` persists its note
+directly without ever touching this plugin's cache. The TUI closes both by
+tracking the focused agent's own goal directly instead (re-read from that
+agent's own transcript on every focus switch and at startup, and updated
+immediately by `/goal` itself with no round trip), overriding whatever this
+plugin's own contribution says under the `goal` key either way. Outside the
+TUI (a single agent, or any other host), this plugin's own contribution —
+`status_contributions` or `status_contributions_for` alike — is the only
+answer there is, and is correct by construction once at least one turn has
+run: the "most recently active agent" ambiguity only exists once more than
+one agent's context can be built in the same process.
 
 A `/goal <text>` longer than 300 characters is refused outright, naming the
 limit, rather than silently truncated — the cap exists so a long sentence

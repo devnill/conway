@@ -1954,14 +1954,17 @@ pub struct AppState {
     /// (`app/run.rs`'s `plugin_status_ticker` arm) calls `App::
     /// refresh_plugin_status_contributions` on a bounded cadence
     /// (`PLUGIN_STATUS_POLL_TICK`), which overwrites this field wholesale
-    /// with whatever `Conway::poll_plugin_status_contributions()` returns at
-    /// that moment -- a plugin whose health changes mid-session (a guard
-    /// that dies, a build that finishes, a build that later FAILS) is
-    /// reflected here within one tick either way, and a plugin that stops
-    /// reporting entirely drops out of this field on the very next tick
-    /// rather than leaving a stale value behind. See `app/plugin_status.rs`
-    /// for the refresh method and its own tests, and `Conway::
-    /// poll_plugin_status_contributions`'s doc for the non-blocking
+    /// with whatever `Conway::poll_plugin_status_contributions_for(Some(
+    /// state.focused_agent))` returns at that moment (board item
+    /// `01M48N3N1PRQXPGF6VQGK745VE`: the focused-agent-aware sibling, not
+    /// the agent-blind `poll_plugin_status_contributions` this call used to
+    /// make) -- a plugin whose health changes mid-session (a guard that
+    /// dies, a build that finishes, a build that later FAILS) is reflected
+    /// here within one tick either way, and a plugin that stops reporting
+    /// entirely drops out of this field on the very next tick rather than
+    /// leaving a stale value behind. See `app/plugin_status.rs` for the
+    /// refresh method and its own tests, and `Conway::
+    /// poll_plugin_status_contributions_for`'s doc for the non-blocking
     /// contract the cadence relies on.
     ///
     /// Tests in `view/status.rs` still set this field directly, matching

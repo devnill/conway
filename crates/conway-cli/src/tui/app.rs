@@ -67,6 +67,7 @@ mod shell_cmd;
 mod shutdown;
 mod skill_propose;
 mod startup;
+mod todo_focus;
 mod viewport;
 
 #[cfg(test)]

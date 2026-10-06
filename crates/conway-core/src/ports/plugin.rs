@@ -625,6 +625,50 @@ pub trait Plugin: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// [`Self::status_contributions`], narrowed to ONE agent's own point of
+    /// view -- board item `01M48N3N1PRQXPGF6VQGK745VE`. `agent` is the
+    /// caller's own notion of "whose status this view is for" (a TUI's
+    /// focused agent, for instance); `None` means "no particular agent in
+    /// mind," the exact question [`Self::status_contributions`] itself
+    /// already answers.
+    ///
+    /// **The default delegates to [`Self::status_contributions`] and
+    /// ignores `agent` entirely** -- the SAME zero-cost-default precedent
+    /// every other method on this trait establishes: every existing
+    /// implementor (a subprocess plugin speaking `status/1`,
+    /// `conway-plugin-mcp`, `conway-plugin-statusline`, any third party)
+    /// keeps compiling unmodified AND keeps its exact current behavior.
+    /// This method exists for a plugin that tracks a VALUE PER AGENT
+    /// in-process (`conway-plugin-todo`, `conway-plugin-goal`) to answer
+    /// correctly for the one agent a caller actually cares about, without
+    /// widening what every OTHER implementor has to handle.
+    ///
+    /// **Why this exists instead of changing [`Self::status_contributions`]
+    /// itself.** `conway-plugin-todo`'s own `TodoState` and
+    /// `conway-plugin-goal`'s own `GoalState` each already keep a
+    /// `HashMap<AgentId, _>` keyed per agent, plus a `last_touched:
+    /// Option<AgentId>` fallback used only because
+    /// [`Self::status_contributions`] itself has nowhere to receive a
+    /// caller's own agent -- in a multi-agent TUI session, a BACKGROUND
+    /// subagent's own turn updates `last_touched` exactly the same as the
+    /// FOCUSED agent's would, so the single-value method can blank or
+    /// replace whichever entry the operator is actually looking at the
+    /// instant an unrelated agent's turn runs (board item
+    /// `01M1YVVT9RYWZWAZC4YH21T3HN` review finding 1, first found against
+    /// `conway.goal` and worked around entirely at the TUI layer at the
+    /// time -- see `conway_plugin_goal`'s own module doc for that earlier,
+    /// narrower fix, and `conway_cli::tui::view::status`'s module doc for
+    /// why that override still stands even after this method exists).
+    /// Threading `agent` through this separate, DEFAULTED method answers
+    /// the general shape of that defect once, for every present and future
+    /// per-agent-tracking plugin, without widening
+    /// [`Self::status_contributions`]'s own signature -- which would have
+    /// forced every OTHER implementor (none of which has this problem) to
+    /// accept a parameter it has no use for.
+    fn status_contributions_for(&self, _agent: Option<AgentId>) -> Vec<PluginStatusContribution> {
+        self.status_contributions()
+    }
+
     /// Zero or more capabilities this plugin makes callable by ANOTHER
     /// plugin -- Edge B, `docs/vision/DESIGN-plugin-dependencies.md` §2:
     /// "every plugin that wants a checkbox reimplements a checkbox" is the

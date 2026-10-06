@@ -14,8 +14,24 @@
 //! links.
 //!
 //! **This bundle is a worked example, not a commitment to any of its
-//! members individually.** Today it contains eleven plugin entries --
-//! `conway-plugin-skeleton`, a skeleton proving nothing beyond the install
+//! members individually.** It has grown plugin by plugin since it began,
+//! and keeps growing -- a specific COUNT stated here would only go stale
+//! the next time one is added or removed without updating this doc too
+//! (board item `01M48N3N1PRQXPGF6VQGK745VE` found exactly that: a stale
+//! spelled-out word for this doc's own count, several members behind the
+//! real, 18-candidate `bundle` function below by the time it was caught --
+//! see `scripts/board-claims.md`'s own regression guard over this exact
+//! file for why that stale word is not spelled out here even in this
+//! retelling). `bundle`'s own `vec!` is the
+//! current, authoritative, order-preserving list; the paragraphs below
+//! narrate the ones through `conway.ui` for their own historical reasoning,
+//! not as a claim that the enumeration itself is complete --
+//! `conway.confine`/`conway.checkpoint`/`conway.web`/`conway.toolindex`/
+//! `conway.compaction`/`conway.todo`/`conway.goal` each carry their own
+//! reasoning as inline comments on their own `bundle` entry instead, the
+//! same place every FUTURE addition should put it rather than growing this
+//! already-long preamble further. `conway-plugin-skeleton`, a skeleton
+//! proving nothing beyond the install
 //! mechanism (see that crate's own module doc); `conway-plugin-history`,
 //! `/conway.history.rewind`/`/conway.history.mask`/`/conway.history.checkout`
 //! -- so `/checkout` and a reachable `ContextMask` are built too, not only
